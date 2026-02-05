@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ScriptRun - Queue {{ queue.id if queue else 'Not Found' }}</title>
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 min-h-screen">
+    <div class="container mx-auto px-4 py-8">
+        <header class="mb-8">
+            <div class="flex items-center justify-between">
+                <div>
+                    <h1 class="text-3xl font-bold text-gray-800">
+                        Queue {% if queue %}{{ queue.id }}{% else %}Not Found{% endif %}
+                    </h1>
+                    {% if queue %}
+                    <p class="text-gray-600">{{ queue.source_name }} on {{ queue.cluster_name }}</p>
+                    {% endif %}
+                </div>
+                <a href="/queues" class="text-blue-600 hover:text-blue-800">
+                    &larr; Back to Queues
+                </a>
+            </div>
+        </header>
+
+        {% if error %}
+        <div class="bg-red-100 border border-red-300 text-red-700 px-4 py-3 rounded mb-6">
+            {{ error }}
+        </div>
+        {% endif %}
+
+        {% if queue %}
+        <!-- Queue Info -->
+        <div class="bg-white rounded-lg shadow-md p-6 mb-6">
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <div>
+                    <p class="text-sm text-gray-500">Status</p>
+                    <p class="text-lg font-semibold {{ queue.status_class }}">{{ queue.status.value }}</p>
+                </div>
+                <div>
+                    <p class="text-sm text-gray-500">Progress</p>
+                    <p class="text-lg font-semibold text-gray-800">{{ queue.progress[0] }} / {{ queue.progress[1] }}</p>
+                </div>
+                <div>
+                    <p class="text-sm text-gray-500">Created</p>
+                    <p class="text-lg font-semibold text-gray-800">{{ queue.created_at.strftime('%Y-%m-%d %H:%M:%S') }}</p>
+                </div>
+                <div>
+                    <p class="text-sm text-gray-500">Max Concurrent</p>
+                    <p class="text-lg font-semibold text-gray-800">{{ queue.max_concurrent }}</p>
+                </div>
+            </div>
+
+            <!-- Progress Bar -->
+            <div class="mt-4">
+                <div class="w-full bg-gray-200 rounded-full h-3">
+                    <div class="bg-blue-600 h-3 rounded-full transition-all" style="width: {{ queue.progress_percent }}%"></div>
+                </div>
+                <div class="flex justify-between text-sm text-gray-500 mt-1">
+                    <span>{{ queue.completed_count }} completed</span>
+                    <span>{{ queue.running_count }} running</span>
+                    <span>{{ queue.pending_count }} pending</span>
+                    {% if queue.failed_count > 0 %}
+                    <span class="text-red-600">{{ queue.failed_count }} failed</span>
+                    {% endif %}
+                </div>
+            </div>
+
+            <!-- Cancel Button -->
+            {% if queue.status.value in ['pending', 'running'] %}
+            <div class="mt-4">
+                <button
+                    hx-post="/queues/{{ queue.id }}/cancel"
+                    hx-swap="none"
+                    hx-confirm="Cancel all pending and running tasks?"
+                    hx-on::after-request="if(event.detail.successful) window.location.reload()"
+                    class="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors text-sm font-medium"
+                >
+                    Cancel Queue
+                </button>
+            </div>
+            {% endif %}
+        </div>
+
+        <!-- Queue Items -->
+        <div class="bg-white rounded-lg shadow-md overflow-hidden"
+             id="queue-items"
+             hx-get="/queues/{{ queue.id }}/items"
+             hx-trigger="every 5s"
+             hx-swap="innerHTML">
+            {% include "queue_items.html" %}
+        </div>
+        {% endif %}
+    </div>
+</body>
+</html>

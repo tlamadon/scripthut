@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ScriptRun - {{ title }}</title>
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 min-h-screen">
+    <div class="container mx-auto px-4 py-8">
+        <header class="mb-6">
+            <div class="flex items-center justify-between">
+                <div>
+                    <h1 class="text-2xl font-bold text-gray-800">{{ title }}</h1>
+                    {% if log_path %}
+                    <p class="text-sm text-gray-500 font-mono">{{ log_path }}</p>
+                    {% endif %}
+                </div>
+                <div class="flex items-center gap-3">
+                    {% if content_type == 'log' %}
+                    <!-- Refresh and tail controls -->
+                    <div class="flex items-center gap-2">
+                        <label class="text-sm text-gray-600">Tail:</label>
+                        <select
+                            id="tail-select"
+                            class="text-sm border rounded px-2 py-1"
+                            onchange="updateTail(this.value)"
+                        >
+                            <option value="" {% if not tail %}selected{% endif %}>All</option>
+                            <option value="50" {% if tail == 50 %}selected{% endif %}>50 lines</option>
+                            <option value="100" {% if tail == 100 %}selected{% endif %}>100 lines</option>
+                            <option value="500" {% if tail == 500 %}selected{% endif %}>500 lines</option>
+                        </select>
+                    </div>
+                    <button
+                        onclick="window.location.reload()"
+                        class="px-3 py-1 bg-blue-600 text-white rounded hover:bg-blue-700 text-sm"
+                    >
+                        Refresh
+                    </button>
+                    {% endif %}
+                    <a href="/queues/{{ queue_id }}" class="text-blue-600 hover:text-blue-800">
+                        &larr; Back to Queue
+                    </a>
+                </div>
+            </div>
+        </header>
+
+        {% if error %}
+        <div class="bg-red-100 border border-red-300 text-red-700 px-4 py-3 rounded mb-6">
+            {{ error }}
+        </div>
+        {% endif %}
+
+        {% if content is not none %}
+        <div class="bg-white rounded-lg shadow-md overflow-hidden">
+            <!-- Content toolbar -->
+            <div class="px-4 py-2 bg-gray-50 border-b flex items-center justify-between">
+                <span class="text-sm text-gray-600">
+                    {% if content_type == 'script' %}
+                    sbatch script
+                    {% elif content_type == 'log' %}
+                    {% if log_type == 'output' %}stdout{% else %}stderr{% endif %}
+                    {% endif %}
+                </span>
+                <button
+                    onclick="copyToClipboard()"
+                    class="text-xs px-2 py-1 bg-gray-200 hover:bg-gray-300 rounded text-gray-700"
+                >
+                    Copy
+                </button>
+            </div>
+
+            <!-- Content display -->
+            <pre id="content" class="p-4 overflow-x-auto text-sm font-mono bg-gray-900 text-gray-100 max-h-[70vh] overflow-y-auto">{{ content }}</pre>
+        </div>
+
+        {% if content_type == 'log' %}
+        <!-- Log navigation -->
+        <div class="mt-4 flex items-center gap-4">
+            <span class="text-sm text-gray-600">View:</span>
+            <a
+                href="/queues/{{ queue_id }}/tasks/{{ task_id }}/logs/output{% if tail %}?tail={{ tail }}{% endif %}"
+                class="text-sm {% if log_type == 'output' %}font-semibold text-blue-700{% else %}text-blue-600 hover:text-blue-800{% endif %}"
+            >
+                Output (stdout)
+            </a>
+            <a
+                href="/queues/{{ queue_id }}/tasks/{{ task_id }}/logs/error{% if tail %}?tail={{ tail }}{% endif %}"
+                class="text-sm {% if log_type == 'error' %}font-semibold text-blue-700{% else %}text-blue-600 hover:text-blue-800{% endif %}"
+            >
+                Error (stderr)
+            </a>
+            <span class="text-gray-300">|</span>
+            <a
+                href="/queues/{{ queue_id }}/tasks/{{ task_id }}/script"
+                class="text-sm text-blue-600 hover:text-blue-800"
+            >
+                View Script
+            </a>
+        </div>
+        {% else %}
+        <!-- Script navigation -->
+        <div class="mt-4 flex items-center gap-4">
+            <span class="text-sm text-gray-600">View:</span>
+            <a
+                href="/queues/{{ queue_id }}/tasks/{{ task_id }}/logs/output"
+                class="text-sm text-blue-600 hover:text-blue-800"
+            >
+                Output Log
+            </a>
+            <a
+                href="/queues/{{ queue_id }}/tasks/{{ task_id }}/logs/error"
+                class="text-sm text-blue-600 hover:text-blue-800"
+            >
+                Error Log
+            </a>
+        </div>
+        {% endif %}
+        {% else %}
+        <div class="bg-white rounded-lg shadow-md p-8 text-center">
+            <p class="text-gray-500">No content available.</p>
+        </div>
+        {% endif %}
+    </div>
+
+    <script>
+        function copyToClipboard() {
+            const content = document.getElementById('content').textContent;
+            navigator.clipboard.writeText(content).then(() => {
+                // Brief visual feedback
+                const btn = event.target;
+                const originalText = btn.textContent;
+                btn.textContent = 'Copied!';
+                setTimeout(() => { btn.textContent = originalText; }, 1500);
+            });
+        }
+
+        function updateTail(value) {
+            const url = new URL(window.location.href);
+            if (value) {
+                url.searchParams.set('tail', value);
+            } else {
+                url.searchParams.delete('tail');
+            }
+            window.location.href = url.toString();
+        }
+    </script>
+</body>
+</html>

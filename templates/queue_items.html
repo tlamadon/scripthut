@@ -1,0 +1,108 @@
+{% if queue and queue.items %}
+<div class="px-6 py-4 bg-gray-50 border-b flex justify-between items-center">
+    <h2 class="text-xl font-semibold text-gray-800">Tasks</h2>
+    <span class="text-sm text-gray-600">{{ queue.items|length }} total</span>
+</div>
+<div class="overflow-x-auto">
+    <table class="min-w-full divide-y divide-gray-200">
+        <thead class="bg-gray-50">
+            <tr>
+                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Task ID</th>
+                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Name</th>
+                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Slurm Job</th>
+                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Partition</th>
+                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Resources</th>
+                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Submitted</th>
+                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Started</th>
+                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Finished</th>
+                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+            </tr>
+        </thead>
+        <tbody class="bg-white divide-y divide-gray-200">
+            {% for item in queue.items %}
+            <tr class="hover:bg-gray-50">
+                <td class="px-4 py-3 whitespace-nowrap text-sm font-mono text-gray-900">{{ item.task.id }}</td>
+                <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-900">{{ item.task.name }}</td>
+                <td class="px-4 py-3 whitespace-nowrap">
+                    <span class="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium rounded-full {{ item.status_class }}
+                        {% if item.status.value == 'running' %}bg-blue-100{% elif item.status.value == 'completed' %}bg-green-100{% elif item.status.value == 'failed' %}bg-red-100{% elif item.status.value == 'submitted' %}bg-yellow-100{% else %}bg-gray-100{% endif %}">
+                        {% if item.status.value == 'running' %}
+                        <span class="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></span>
+                        {% elif item.status.value == 'submitted' %}
+                        <span class="w-2 h-2 bg-yellow-500 rounded-full"></span>
+                        {% endif %}
+                        {{ item.status.value }}
+                    </span>
+                </td>
+                <td class="px-4 py-3 whitespace-nowrap text-sm font-mono text-gray-600">
+                    {{ item.slurm_job_id or '-' }}
+                </td>
+                <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-600">{{ item.task.partition }}</td>
+                <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-600">
+                    {{ item.task.cpus }} CPU, {{ item.task.memory }}, {{ item.task.time_limit }}
+                </td>
+                <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
+                    {% if item.submitted_at %}
+                    {{ item.submitted_at.strftime('%H:%M:%S') }}
+                    {% else %}
+                    -
+                    {% endif %}
+                </td>
+                <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
+                    {% if item.started_at %}
+                    {{ item.started_at.strftime('%H:%M:%S') }}
+                    {% else %}
+                    -
+                    {% endif %}
+                </td>
+                <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
+                    {% if item.finished_at %}
+                    {{ item.finished_at.strftime('%H:%M:%S') }}
+                    {% else %}
+                    -
+                    {% endif %}
+                </td>
+                <td class="px-4 py-3 whitespace-nowrap text-sm">
+                    <div class="flex items-center gap-2">
+                        <a href="/queues/{{ queue.id }}/tasks/{{ item.task.id }}/script"
+                           class="text-blue-600 hover:text-blue-800"
+                           title="View sbatch script">
+                            Script
+                        </a>
+                        {% if item.status.value in ['running', 'completed', 'failed'] %}
+                        <span class="text-gray-300">|</span>
+                        <a href="/queues/{{ queue.id }}/tasks/{{ item.task.id }}/logs/output"
+                           class="text-blue-600 hover:text-blue-800"
+                           title="View stdout log">
+                            Out
+                        </a>
+                        <a href="/queues/{{ queue.id }}/tasks/{{ item.task.id }}/logs/error"
+                           class="text-blue-600 hover:text-blue-800"
+                           title="View stderr log">
+                            Err
+                        </a>
+                        {% endif %}
+                    </div>
+                </td>
+            </tr>
+            {% if item.error %}
+            <tr class="bg-red-50">
+                <td colspan="10" class="px-4 py-2 text-sm text-red-700">
+                    <span class="font-medium">Error:</span> {{ item.error }}
+                </td>
+            </tr>
+            {% endif %}
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% elif queue %}
+<div class="px-6 py-12 text-center">
+    <p class="text-gray-500">No tasks in this queue.</p>
+</div>
+{% else %}
+<div class="px-6 py-12 text-center">
+    <p class="text-gray-500">Queue not found.</p>
+</div>
+{% endif %}

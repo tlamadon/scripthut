@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ScriptRun - Job Monitor</title>
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <script src="https://unpkg.com/htmx.org@1.9.10/dist/ext/sse.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 min-h-screen">
+    <div class="container mx-auto px-4 py-8">
+        <header class="mb-8 flex items-center justify-between">
+            <div>
+                <h1 class="text-3xl font-bold text-gray-800">ScriptRun</h1>
+                <p class="text-gray-600">Remote Job Monitor</p>
+            </div>
+            <a href="/queues" class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium">
+                Task Queues &rarr;
+            </a>
+        </header>
+
+        <!-- Status Panel -->
+        <div class="mb-6 grid grid-cols-1 md:grid-cols-2 gap-4">
+            <!-- Clusters Status -->
+            <div class="bg-white rounded-lg shadow-md p-4">
+                <h3 class="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-3">Clusters</h3>
+                {% if clusters %}
+                <div class="space-y-2">
+                    {% for name, cluster in clusters.items() %}
+                    <div class="flex items-center justify-between p-2 rounded {% if cluster.status.connected %}bg-green-50{% else %}bg-red-50{% endif %}">
+                        <div class="flex items-center gap-2">
+                            <span class="w-2.5 h-2.5 rounded-full {% if cluster.status.connected %}bg-green-500{% else %}bg-red-500{% endif %}"></span>
+                            <span class="font-medium text-gray-800">{{ name }}</span>
+                            <span class="text-xs text-gray-500">({{ cluster.cluster_type }})</span>
+                        </div>
+                        <div class="text-right">
+                            {% if cluster.status.connected %}
+                            <span class="text-sm text-green-700">{{ cluster.status.host }}</span>
+                            {% if cluster.status.last_poll %}
+                            <span class="text-xs text-gray-500 ml-2">{{ cluster.status.last_poll.strftime('%H:%M:%S') }}</span>
+                            {% endif %}
+                            {% else %}
+                            <span class="text-sm text-red-700">Disconnected</span>
+                            {% endif %}
+                        </div>
+                    </div>
+                    {% if cluster.status.error %}
+                    <div class="ml-4 p-2 bg-red-100 rounded text-sm text-red-700 font-mono text-xs">
+                        {{ cluster.status.error }}
+                    </div>
+                    {% endif %}
+                    {% endfor %}
+                </div>
+                {% else %}
+                <p class="text-sm text-gray-500">No clusters configured</p>
+                {% endif %}
+            </div>
+
+            <!-- Sources Status -->
+            <div class="bg-white rounded-lg shadow-md p-4">
+                <h3 class="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-3">Sources</h3>
+                {% if sources %}
+                <div class="space-y-2">
+                    {% for name, source in sources.items() %}
+                    <div class="flex items-center justify-between p-2 rounded {% if source.cloned %}bg-green-50{% elif source.error %}bg-red-50{% else %}bg-yellow-50{% endif %}">
+                        <div class="flex items-center gap-2">
+                            <span class="w-2.5 h-2.5 rounded-full {% if source.cloned %}bg-green-500{% elif source.error %}bg-red-500{% else %}bg-yellow-500{% endif %}"></span>
+                            <span class="font-medium text-gray-800">{{ name }}</span>
+                            <span class="text-xs text-gray-500">({{ source.branch }})</span>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            {% if source.last_commit %}
+                            <span class="text-xs font-mono text-gray-500">{{ source.last_commit }}</span>
+                            {% endif %}
+                            <button
+                                hx-post="/sources/{{ name }}/sync"
+                                hx-swap="none"
+                                class="text-xs px-2 py-1 bg-gray-200 hover:bg-gray-300 rounded text-gray-700"
+                            >
+                                Sync
+                            </button>
+                        </div>
+                    </div>
+                    {% if source.error %}
+                    <div class="ml-4 p-2 bg-red-100 rounded text-sm text-red-700 font-mono text-xs">
+                        {{ source.error }}
+                    </div>
+                    {% endif %}
+                    {% endfor %}
+                </div>
+                {% else %}
+                <p class="text-sm text-gray-500">No sources configured</p>
+                {% endif %}
+            </div>
+        </div>
+
+        <!-- Jobs Section -->
+        <div class="bg-white rounded-lg shadow-md overflow-hidden"
+             id="jobs-section"
+             hx-get="/jobs"
+             hx-trigger="every {{ poll_interval }}s"
+             hx-swap="innerHTML">
+            {% include "jobs.html" %}
+        </div>
+
+        <!-- SSE connection for live updates -->
+        <div hx-ext="sse" sse-connect="/jobs/stream" sse-swap="jobs-updated">
+            <!-- SSE will trigger refresh when jobs change -->
+        </div>
+    </div>
+
+    <script>
+        // Listen for SSE events and trigger HTMX refresh
+        document.body.addEventListener('sse:jobs-updated', function(e) {
+            htmx.trigger('#jobs-section', 'htmx:trigger');
+        });
+    </script>
+</body>
+</html>

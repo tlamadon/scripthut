@@ -1,0 +1,101 @@
+# ScriptRun Configuration
+# Copy this file to scriptrun.yaml and customize for your environment
+
+# Remote clusters to monitor
+clusters:
+  # Slurm cluster example
+  - name: hpc-cluster
+    type: slurm
+    ssh:
+      host: slurm-login.cluster.edu
+      port: 22
+      user: your_username
+      key_path: ~/.ssh/id_rsa
+      # cert_path: ~/.ssh/id_rsa-cert.pub  # Optional: for certificate-based auth
+      # known_hosts: ~/.ssh/known_hosts    # Optional: enable host key checking
+
+  # Multiple clusters can be defined
+  # - name: secondary-cluster
+  #   type: slurm
+  #   ssh:
+  #     host: slurm2.cluster.edu
+  #     user: your_username
+  #     key_path: ~/.ssh/cluster2_key
+
+  # ECS cluster example (not yet implemented)
+  # - name: production-ecs
+  #   type: ecs
+  #   aws:
+  #     profile: my-aws-profile  # AWS CLI profile name
+  #     region: us-east-1
+  #     cluster_name: my-ecs-cluster
+
+# Git repositories containing job definitions
+sources:
+  # Example: ML pipeline jobs
+  - name: ml-jobs
+    url: git@github.com:your-org/ml-pipelines.git
+    branch: main
+    deploy_key: ~/.ssh/ml-jobs-deploy-key
+
+  # Example: Data processing jobs
+  # - name: data-processing
+  #   url: git@github.com:your-org/data-jobs.git
+  #   branch: main
+  #   deploy_key: ~/.ssh/data-deploy-key
+
+# Task sources for batch job submission
+# These are SSH commands that return JSON task lists
+# Trigger them via the UI to create a queue of jobs
+task_sources:
+  # Example: ML training pipeline
+  - name: ml-training
+    cluster: hpc-cluster          # Which cluster to submit jobs to
+    command: "python /shared/scripts/get_training_tasks.py"
+    max_concurrent: 5             # Max jobs running at once
+    description: "ML model training pipeline"
+
+  # Example: Data processing batch
+  # - name: data-processing
+  #   cluster: hpc-cluster
+  #   command: "cat /shared/tasks/data_pipeline.json"
+  #   max_concurrent: 10
+  #   description: "Daily data processing batch"
+
+# Task source commands must return JSON in this format:
+# {
+#   "tasks": [
+#     {
+#       "id": "task-001",
+#       "name": "train-model-v1",
+#       "command": "python train.py --config config.yaml",
+#       "working_dir": "/home/user/project",
+#       "partition": "gpu",
+#       "cpus": 4,
+#       "memory": "16G",
+#       "time_limit": "4:00:00",
+#       "output_file": "/path/to/custom/output.log",  # Optional: custom stdout path
+#       "error_file": "/path/to/custom/error.log"     # Optional: custom stderr path
+#     }
+#   ]
+# }
+#
+# If output_file/error_file are not specified, logs will be written to:
+#   /tmp/scriptrun/{queue_id}/{task_id}.out
+#   /tmp/scriptrun/{queue_id}/{task_id}.err
+
+# Global settings
+settings:
+  # How often to poll for job updates (seconds, minimum 5)
+  poll_interval: 60
+
+  # Web server binding
+  server_host: 127.0.0.1
+  server_port: 8000
+
+  # Directory to cache cloned repositories
+  sources_cache_dir: ~/.cache/scriptrun/sources
+
+  # Filter jobs by username (shows toggle button in UI)
+  # Set to your username to enable "My Jobs" filter
+  filter_user: your_username
