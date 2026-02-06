@@ -112,19 +112,6 @@ settings:
 | `server_port` | Web server bind port | `8000` |
 | `sources_cache_dir` | Directory for cloned repos | `~/.cache/scripthut/sources` |
 
-### Legacy .env Support
-
-For backwards compatibility, ScriptHut also supports `.env` files for single-cluster setups:
-
-```env
-SSH_HOST=slurm-login.cluster.edu
-SSH_USER=researcher
-SSH_KEY_PATH=~/.ssh/cluster_key
-POLL_INTERVAL=30
-```
-
-> **Note**: The `.env` format is deprecated. Please migrate to `scripthut.yaml`.
-
 ## Usage
 
 ```bash
