@@ -1,6 +1,6 @@
 [project]
 name = "scripthut"
-version = "0.1.0"
+version = "0.2.0"
 description = "Web interface to start and track jobs on remote systems (Slurm, ECS, AWS Batch)"
 readme = "README.md"
 requires-python = ">=3.11"
