@@ -15,6 +15,10 @@ dependencies = [
     "sse-starlette>=2.0.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/tlamadon/scripthut"
+Repository = "https://github.com/tlamadon/scripthut"
+
 [project.optional-dependencies]
 dev = [
     "mypy>=1.8.0",

@@ -1,5 +1,7 @@
 # ScriptHut
 
+[![PyPI version](https://img.shields.io/pypi/v/scripthut)](https://pypi.org/project/scripthut/)
+
 A Python web interface to start and track jobs on remote systems like Slurm, ECS, and AWS Batch over SSH.
 
 ## Features
