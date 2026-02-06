@@ -3,9 +3,9 @@
 import logging
 from datetime import datetime
 
-from scriptrun.backends.base import JobBackend
-from scriptrun.models import JobState, SlurmJob
-from scriptrun.ssh.client import SSHClient
+from scripthut.backends.base import JobBackend
+from scripthut.models import JobState, SlurmJob
+from scripthut.ssh.client import SSHClient
 
 logger = logging.getLogger(__name__)
 

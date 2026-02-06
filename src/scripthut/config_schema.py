@@ -58,6 +58,10 @@ class SlurmClusterConfig(BaseModel):
     name: str = Field(description="Unique identifier for this cluster")
     type: Literal["slurm"] = "slurm"
     ssh: SSHConfig = Field(description="SSH connection settings")
+    account: str | None = Field(
+        default=None,
+        description="Slurm account to charge jobs to (e.g., phd, pi-faculty)",
+    )
 
 
 class ECSClusterConfig(BaseModel):
@@ -125,7 +129,7 @@ class GlobalSettings(BaseModel):
         description="Port to bind the server to",
     )
     sources_cache_dir: Path = Field(
-        default=Path("~/.cache/scriptrun/sources"),
+        default=Path("~/.cache/scripthut/sources"),
         description="Directory to cache cloned repositories",
     )
     filter_user: str | None = Field(
@@ -139,8 +143,8 @@ class GlobalSettings(BaseModel):
         return self.sources_cache_dir.expanduser()
 
 
-class ScriptRunConfig(BaseModel):
-    """Root configuration model for scriptrun.yaml."""
+class ScriptHutConfig(BaseModel):
+    """Root configuration model for scripthut.yaml."""
 
     clusters: list[ClusterConfig] = Field(
         default_factory=list,

@@ -36,7 +36,7 @@ ENV/
 .env.local
 
 # Local config (may contain sensitive info)
-scriptrun.yaml
+scripthut.yaml
 
 # Type checking
 .mypy_cache/

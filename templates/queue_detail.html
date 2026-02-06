@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ScriptRun - Queue {{ queue.id if queue else 'Not Found' }}</title>
+    <title>ScriptHut - Queue {{ queue.id if queue else 'Not Found' }}</title>
     <script src="https://unpkg.com/htmx.org@1.9.10"></script>
     <script src="https://cdn.tailwindcss.com"></script>
 </head>
@@ -37,7 +37,26 @@
             <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
                 <div>
                     <p class="text-sm text-gray-500">Status</p>
-                    <p class="text-lg font-semibold {{ queue.status_class }}">{{ queue.status.value }}</p>
+                    <span class="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-full
+                        {% if queue.status.value == 'running' %}bg-green-100 text-green-700
+                        {% elif queue.status.value == 'pending' %}bg-gray-100 text-gray-600
+                        {% elif queue.status.value == 'completed' %}bg-blue-100 text-blue-700
+                        {% elif queue.status.value == 'failed' %}bg-red-100 text-red-700
+                        {% elif queue.status.value == 'cancelled' %}bg-gray-100 text-gray-600
+                        {% else %}bg-gray-100 text-gray-600{% endif %}">
+                        {% if queue.status.value == 'running' %}
+                        <span class="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span>
+                        {% elif queue.status.value == 'pending' %}
+                        <span class="w-2 h-2 bg-gray-400 rounded-full"></span>
+                        {% elif queue.status.value == 'completed' %}
+                        <span class="w-2 h-2 bg-blue-500 rounded-full"></span>
+                        {% elif queue.status.value == 'failed' %}
+                        <span class="w-2 h-2 bg-red-500 rounded-full"></span>
+                        {% elif queue.status.value == 'cancelled' %}
+                        <span class="w-2 h-2 bg-gray-400 rounded-full"></span>
+                        {% endif %}
+                        {{ queue.status.value }}
+                    </span>
                 </div>
                 <div>
                     <p class="text-sm text-gray-500">Progress</p>

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Example task source script for ScriptRun.
+Example task source script for ScriptHut.
 
 This script generates a list of simple test tasks that can be submitted to Slurm.
 Each task runs a small script that sleeps and writes output.
@@ -8,13 +8,13 @@ Each task runs a small script that sleeps and writes output.
 Usage:
     python generate_tasks.py [--count N] [--working-dir DIR]
 
-Example scriptrun.yaml config:
+Example scripthut.yaml config:
     task_sources:
       - name: test-tasks
         cluster: hpc-cluster
         command: "python /path/to/generate_tasks.py --count 5"
         max_concurrent: 2
-        description: "Test tasks for ScriptRun"
+        description: "Test tasks for ScriptHut"
 """
 
 import argparse
@@ -44,7 +44,7 @@ def generate_tasks(count: int, working_dir: str, partition: str) -> dict:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Generate test tasks for ScriptRun")
+    parser = argparse.ArgumentParser(description="Generate test tasks for ScriptHut")
     parser.add_argument(
         "--count", "-n",
         type=int,

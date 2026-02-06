@@ -1,5 +1,5 @@
 [project]
-name = "scriptrun"
+name = "scripthut"
 version = "0.1.0"
 description = "Web interface to start and track jobs on remote systems (Slurm, ECS, AWS Batch)"
 readme = "README.md"
@@ -24,7 +24,7 @@ dev = [
 ]
 
 [project.scripts]
-scriptrun = "scriptrun.main:run"
+scripthut = "scripthut.main:run"
 
 [build-system]
 requires = ["hatchling"]
@@ -34,7 +34,7 @@ build-backend = "hatchling.build"
 sources = ["src"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/scriptrun"]
+packages = ["src/scripthut"]
 
 [tool.mypy]
 python_version = "3.11"

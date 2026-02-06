@@ -49,33 +49,59 @@ class TaskDefinition:
             error_file=data.get("error_file"),
         )
 
-    def get_output_path(self, queue_id: str, log_dir: str = "/tmp/scriptrun") -> str:
+    def get_output_path(self, queue_id: str, log_dir: str = "~/.cache/scripthut/logs") -> str:
         """Get the output log file path."""
         if self.output_file:
             return self.output_file
-        return f"{log_dir}/{queue_id}/{self.id}.out"
+        # Flat structure with IDs in filename
+        return f"{log_dir}/scripthut_{queue_id}_{self.id}.out"
 
-    def get_error_path(self, queue_id: str, log_dir: str = "/tmp/scriptrun") -> str:
+    def get_error_path(self, queue_id: str, log_dir: str = "~/.cache/scripthut/logs") -> str:
         """Get the error log file path."""
         if self.error_file:
             return self.error_file
-        return f"{log_dir}/{queue_id}/{self.id}.err"
+        # Flat structure with IDs in filename
+        return f"{log_dir}/scripthut_{queue_id}_{self.id}.err"
 
-    def to_sbatch_script(self, queue_id: str, log_dir: str = "/tmp/scriptrun") -> str:
+    def to_sbatch_script(
+        self,
+        queue_id: str,
+        log_dir: str = "~/.cache/scripthut/logs",
+        account: str | None = None,
+    ) -> str:
         """Generate sbatch script for this task."""
         output_path = self.get_output_path(queue_id, log_dir)
         error_path = self.get_error_path(queue_id, log_dir)
+
+        # Build account line if specified
+        account_line = f"#SBATCH --account={account}\n" if account else ""
+
         return f"""#!/bin/bash
 #SBATCH --job-name={self.name}
 #SBATCH --partition={self.partition}
-#SBATCH --cpus-per-task={self.cpus}
+{account_line}#SBATCH --cpus-per-task={self.cpus}
 #SBATCH --mem={self.memory}
 #SBATCH --time={self.time_limit}
 #SBATCH --output={output_path}
 #SBATCH --error={error_path}
 
+echo "=== ScriptHut Task: {self.name} ==="
+echo "Task ID: {self.id}"
+echo "Started: $(date)"
+echo "Host: $(hostname)"
+echo "Working dir: {self.working_dir}"
+echo "=================================="
+echo ""
+
 cd {self.working_dir}
 {self.command}
+EXIT_CODE=$?
+
+echo ""
+echo "=================================="
+echo "Finished: $(date)"
+echo "Exit code: $EXIT_CODE"
+exit $EXIT_CODE
 """
 
 
@@ -125,7 +151,8 @@ class Queue:
     created_at: datetime
     items: list[QueueItem]
     max_concurrent: int
-    log_dir: str = "/tmp/scriptrun"  # Directory for log files on the remote cluster
+    log_dir: str = "~/.cache/scripthut/logs"  # Directory for log files on the remote cluster
+    account: str | None = None  # Slurm account to charge jobs to
 
     @property
     def status(self) -> QueueStatus:

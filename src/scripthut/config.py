@@ -8,9 +8,9 @@ import yaml
 from pydantic import Field, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from scriptrun.config_schema import (
+from scripthut.config_schema import (
     GlobalSettings,
-    ScriptRunConfig,
+    ScriptHutConfig,
     SlurmClusterConfig,
     SSHConfig,
 )
@@ -19,8 +19,8 @@ logger = logging.getLogger(__name__)
 
 # Default config file locations (in priority order)
 DEFAULT_CONFIG_PATHS = [
-    Path("./scriptrun.yaml"),
-    Path("./scriptrun.yml"),
+    Path("./scripthut.yaml"),
+    Path("./scripthut.yml"),
 ]
 
 
@@ -86,14 +86,14 @@ def find_config_file(config_path: Path | None = None) -> Path | None:
     return None
 
 
-def load_yaml_config(config_path: Path) -> ScriptRunConfig:
+def load_yaml_config(config_path: Path) -> ScriptHutConfig:
     """Load and validate YAML configuration.
 
     Args:
         config_path: Path to the YAML config file.
 
     Returns:
-        Validated ScriptRunConfig object.
+        Validated ScriptHutConfig object.
 
     Raises:
         ValidationError: If the YAML doesn't match the schema.
@@ -107,20 +107,20 @@ def load_yaml_config(config_path: Path) -> ScriptRunConfig:
     if raw_config is None:
         raw_config = {}
 
-    return ScriptRunConfig.model_validate(raw_config)
+    return ScriptHutConfig.model_validate(raw_config)
 
 
-def load_legacy_config() -> ScriptRunConfig:
+def load_legacy_config() -> ScriptHutConfig:
     """Load configuration from .env file (legacy mode).
 
-    Emits a deprecation warning and converts to ScriptRunConfig format.
+    Emits a deprecation warning and converts to ScriptHutConfig format.
 
     Returns:
-        ScriptRunConfig object created from .env settings.
+        ScriptHutConfig object created from .env settings.
     """
     warnings.warn(
         "Using .env configuration is deprecated. "
-        "Please migrate to scriptrun.yaml format.",
+        "Please migrate to scripthut.yaml format.",
         DeprecationWarning,
         stacklevel=2,
     )
@@ -148,26 +148,26 @@ def load_legacy_config() -> ScriptRunConfig:
         server_port=legacy.server_port,
     )
 
-    return ScriptRunConfig(
+    return ScriptHutConfig(
         clusters=[slurm_cluster],
         sources=[],
         settings=settings,
     )
 
 
-def load_config(config_path: Path | None = None) -> ScriptRunConfig:
+def load_config(config_path: Path | None = None) -> ScriptHutConfig:
     """Load application configuration.
 
     Priority:
     1. Explicit config_path argument
-    2. ./scriptrun.yaml or ./scriptrun.yml
+    2. ./scripthut.yaml or ./scripthut.yml
     3. .env file (legacy, deprecated)
 
     Args:
         config_path: Optional explicit path to config file.
 
     Returns:
-        ScriptRunConfig object.
+        ScriptHutConfig object.
 
     Raises:
         FileNotFoundError: If explicit config_path doesn't exist.
@@ -187,16 +187,16 @@ def load_config(config_path: Path | None = None) -> ScriptRunConfig:
             raise
         # No config found at all
         raise FileNotFoundError(
-            "No configuration found. Create scriptrun.yaml or .env file. "
-            "See scriptrun.example.yaml for the recommended format."
+            "No configuration found. Create scripthut.yaml or .env file. "
+            "See scripthut.example.yaml for the recommended format."
         ) from e
 
 
 # Global config instance (set by main.py)
-_config: ScriptRunConfig | None = None
+_config: ScriptHutConfig | None = None
 
 
-def get_config() -> ScriptRunConfig:
+def get_config() -> ScriptHutConfig:
     """Get the loaded configuration.
 
     Raises:
@@ -207,7 +207,7 @@ def get_config() -> ScriptRunConfig:
     return _config
 
 
-def set_config(config: ScriptRunConfig) -> None:
+def set_config(config: ScriptHutConfig) -> None:
     """Set the global configuration instance."""
     global _config
     _config = config

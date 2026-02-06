@@ -35,8 +35,12 @@ class SSHClient:
         """Check if the connection is active."""
         return self._connection is not None and not self._connection.is_closed()
 
-    async def connect(self) -> None:
-        """Establish SSH connection."""
+    async def connect(self, timeout: int = 15) -> None:
+        """Establish SSH connection.
+
+        Args:
+            timeout: Connection timeout in seconds (default 15).
+        """
         async with self._lock:
             if self.is_connected:
                 return
@@ -59,19 +63,25 @@ class SSHClient:
                 else:
                     client_keys = [str(self.key_path)]
 
-                self._connection = await asyncssh.connect(
-                    host=self.host,
-                    port=self.port,
-                    username=self.user,
-                    client_keys=client_keys,
-                    known_hosts=known_hosts_arg,
-                    keepalive_interval=30,
-                    keepalive_count_max=3,
-                    # Disable password/keyboard-interactive auth to prevent terminal prompts
-                    password=None,
-                    preferred_auth=["publickey"],
+                self._connection = await asyncio.wait_for(
+                    asyncssh.connect(
+                        host=self.host,
+                        port=self.port,
+                        username=self.user,
+                        client_keys=client_keys,
+                        known_hosts=known_hosts_arg,
+                        keepalive_interval=30,
+                        keepalive_count_max=3,
+                        # Disable password/keyboard-interactive auth to prevent terminal prompts
+                        password=None,
+                        preferred_auth=["publickey"],
+                    ),
+                    timeout=timeout,
                 )
                 logger.info(f"Connected to {self.host}")
+            except asyncio.TimeoutError:
+                logger.error(f"SSH connection timed out after {timeout}s")
+                raise RuntimeError(f"SSH connection timed out after {timeout}s")
             except asyncssh.Error as e:
                 logger.error(f"SSH connection failed: {e}")
                 raise
@@ -85,9 +95,13 @@ class SSHClient:
                 self._connection = None
                 logger.info(f"Disconnected from {self.host}")
 
-    async def run_command(self, command: str) -> tuple[str, str, int]:
+    async def run_command(self, command: str, timeout: int = 30) -> tuple[str, str, int]:
         """
         Run a command on the remote host.
+
+        Args:
+            command: The command to run.
+            timeout: Timeout in seconds (default 30).
 
         Returns:
             Tuple of (stdout, stderr, exit_code)
@@ -99,12 +113,18 @@ class SSHClient:
             raise RuntimeError("Failed to establish SSH connection")
 
         try:
-            result = await self._connection.run(command, check=False)
+            result = await asyncio.wait_for(
+                self._connection.run(command, check=False),
+                timeout=timeout,
+            )
             return (
                 result.stdout or "",
                 result.stderr or "",
                 result.exit_status or 0,
             )
+        except asyncio.TimeoutError:
+            logger.error(f"Command timed out after {timeout}s: {command[:50]}...")
+            raise RuntimeError(f"Command timed out after {timeout}s")
         except asyncssh.Error as e:
             logger.error(f"Command execution failed: {e}")
             # Try to reconnect on next attempt

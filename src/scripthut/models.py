@@ -89,3 +89,5 @@ class ConnectionStatus:
     host: str
     last_poll: datetime | None = None
     error: str | None = None
+    last_poll_duration_ms: int | None = None  # How long the last poll took in milliseconds
+    job_count: int = 0  # Number of jobs returned by last poll

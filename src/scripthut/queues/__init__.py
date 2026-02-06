@@ -1,12 +1,12 @@
 """Queue management for task submission."""
 
-from scriptrun.queues.models import (
+from scripthut.queues.models import (
     Queue,
     QueueItem,
     QueueItemStatus,
     TaskDefinition,
 )
-from scriptrun.queues.manager import QueueManager
+from scripthut.queues.manager import QueueManager
 
 __all__ = [
     "Queue",

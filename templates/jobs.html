@@ -1,6 +1,6 @@
 <!-- Jobs Header -->
 <div class="px-6 py-4 bg-gray-50 border-b flex justify-between items-center">
-    <h2 class="text-xl font-semibold text-gray-800">Slurm Jobs</h2>
+    <h2 class="text-xl font-semibold text-gray-800">Jobs</h2>
     <div class="flex items-center gap-4">
         {% if filter_user %}
         <button
@@ -20,13 +20,13 @@
         </button>
         {% endif %}
         <span class="text-sm text-gray-600">
-            {{ jobs|length }}{% if filter_enabled and all_jobs_count %}/{{ all_jobs_count }}{% endif %} jobs
+            {{ unified_jobs|length }} jobs
         </span>
     </div>
 </div>
 
 <!-- Jobs Table -->
-{% if jobs %}
+{% if unified_jobs %}
 <div class="overflow-x-auto">
     <table class="min-w-full divide-y divide-gray-200">
         <thead class="bg-gray-50">
@@ -35,46 +35,76 @@
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Name</th>
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">User</th>
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">State</th>
+                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Source</th>
+                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Cluster</th>
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Partition</th>
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Time</th>
-                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Nodes</th>
-                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">CPUs</th>
-                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Memory</th>
+                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Resources</th>
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Submit Time</th>
-                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Start Time</th>
             </tr>
         </thead>
         <tbody class="bg-white divide-y divide-gray-200">
-            {% for job in jobs %}
-            <tr class="hover:bg-gray-50">
-                <td class="px-4 py-3 whitespace-nowrap text-sm font-mono text-gray-900">{{ job.job_id }}</td>
-                <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-900">{{ job.name }}</td>
+            {% for job in unified_jobs %}
+            <tr class="hover:bg-gray-50 {% if job.source.value == 'queue' %}bg-blue-50/30{% endif %}">
+                <td class="px-4 py-3 whitespace-nowrap text-sm font-mono text-gray-900">
+                    {% if job.slurm_job_id %}
+                        {{ job.slurm_job_id }}
+                    {% else %}
+                        <span class="text-gray-400 italic">pending</span>
+                    {% endif %}
+                </td>
+                <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-900">
+                    <span class="block max-w-[40ch] truncate" title="{{ job.name }}">
+                        {% if job.queue_id and job.task_id %}
+                        <a href="/queues/{{ job.queue_id }}" class="text-blue-600 hover:text-blue-800 hover:underline">
+                            {{ job.name }}
+                        </a>
+                        {% else %}
+                        {{ job.name }}
+                        {% endif %}
+                    </span>
+                </td>
                 <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-600">{{ job.user }}</td>
-                <td class="px-4 py-3 whitespace-nowrap text-sm font-medium {{ job.state_class }}">
-                    <span class="inline-flex items-center gap-1">
-                        {% if job.state.value == 'RUNNING' %}
+                <td class="px-4 py-3 whitespace-nowrap text-sm">
+                    <span class="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-full
+                        {% if job.state.value == 'running' %}bg-green-100 text-green-700
+                        {% elif job.state.value == 'pending' %}bg-gray-100 text-gray-600
+                        {% elif job.state.value == 'submitted' %}bg-yellow-100 text-yellow-700
+                        {% elif job.state.value == 'completed' %}bg-blue-100 text-blue-700
+                        {% elif job.state.value == 'failed' %}bg-red-100 text-red-700
+                        {% else %}bg-gray-100 text-gray-600{% endif %}">
+                        {% if job.state.value == 'running' %}
                         <span class="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span>
-                        {% elif job.state.value == 'PENDING' %}
+                        {% elif job.state.value == 'pending' %}
+                        <span class="w-2 h-2 bg-gray-400 rounded-full"></span>
+                        {% elif job.state.value == 'submitted' %}
                         <span class="w-2 h-2 bg-yellow-500 rounded-full"></span>
+                        {% elif job.state.value == 'completed' %}
+                        <span class="w-2 h-2 bg-blue-500 rounded-full"></span>
+                        {% elif job.state.value == 'failed' %}
+                        <span class="w-2 h-2 bg-red-500 rounded-full"></span>
                         {% endif %}
                         {{ job.state.value }}
                     </span>
                 </td>
-                <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-600">{{ job.partition }}</td>
-                <td class="px-4 py-3 whitespace-nowrap text-sm font-mono text-gray-600">{{ job.time_used }}</td>
-                <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-600">{{ job.nodes }}</td>
-                <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-600">{{ job.cpus }}</td>
-                <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-600">{{ job.memory }}</td>
+                <td class="px-4 py-3 whitespace-nowrap text-xs">
+                    {% if job.source.value == 'queue' %}
+                    <span class="px-2 py-0.5 bg-blue-100 text-blue-700 rounded">queue</span>
+                    {% else %}
+                    <span class="px-2 py-0.5 bg-gray-100 text-gray-600 rounded">external</span>
+                    {% endif %}
+                </td>
+                <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-600">{{ job.cluster_name }}</td>
+                <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-600">{{ job.partition or '-' }}</td>
+                <td class="px-4 py-3 whitespace-nowrap text-sm font-mono text-gray-600">{{ job.time_used or '-' }}</td>
+                <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-600">
+                    {{ job.cpus }} CPU{% if job.memory %}, {{ job.memory }}{% endif %}
+                </td>
                 <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
                     {% if job.submit_time %}
                     {{ job.submit_time.strftime('%Y-%m-%d %H:%M') }}
-                    {% else %}
-                    -
-                    {% endif %}
-                </td>
-                <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
-                    {% if job.start_time %}
-                    {{ job.start_time.strftime('%Y-%m-%d %H:%M') }}
+                    {% elif job.created_at %}
+                    {{ job.created_at.strftime('%Y-%m-%d %H:%M') }}
                     {% else %}
                     -
                     {% endif %}
@@ -94,7 +124,7 @@
         {% if filter_enabled and filter_user %}
         No jobs found for user "{{ filter_user }}". Try showing all users.
         {% elif status.connected %}
-        No jobs are currently running or pending on the cluster.
+        No jobs are currently tracked. Submit a queue or wait for polling to detect existing jobs.
         {% else %}
         Unable to connect to the cluster.
         {% endif %}

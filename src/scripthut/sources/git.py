@@ -6,7 +6,7 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
-from scriptrun.config_schema import GitSourceConfig
+from scripthut.config_schema import GitSourceConfig
 
 logger = logging.getLogger(__name__)
 
@@ -52,10 +52,12 @@ class GitSourceManager:
 
     def _build_ssh_command(self, deploy_key: Path | None) -> str:
         """Build the GIT_SSH_COMMAND for a deploy key."""
+        # Common options to disable interactive prompts
+        common_opts = "-o BatchMode=yes -o PasswordAuthentication=no -o StrictHostKeyChecking=accept-new"
         if deploy_key is None:
-            return "ssh"
+            return f"ssh {common_opts}"
         key_path = deploy_key.expanduser()
-        return f"ssh -i {key_path} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
+        return f"ssh -i {key_path} -o IdentitiesOnly=yes {common_opts}"
 
     async def _run_git(
         self,
@@ -73,7 +75,10 @@ class GitSourceManager:
         Returns:
             Tuple of (stdout, stderr, return_code).
         """
-        env = {"GIT_SSH_COMMAND": self._build_ssh_command(deploy_key)}
+        env = {
+            "GIT_SSH_COMMAND": self._build_ssh_command(deploy_key),
+            "GIT_TERMINAL_PROMPT": "0",  # Disable git credential prompts
+        }
 
         cmd = ["git"] + args
         logger.debug(f"Running: {' '.join(cmd)}")

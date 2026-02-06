@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ScriptRun - Task Queues</title>
+    <title>ScriptHut - Task Queues</title>
     <script src="https://unpkg.com/htmx.org@1.9.10"></script>
     <script src="https://cdn.tailwindcss.com"></script>
 </head>
@@ -37,20 +37,28 @@
                             {% endif %}
                             <p class="text-xs text-gray-400 mt-1">Max concurrent: {{ source.max_concurrent }}</p>
                         </div>
-                        <button
-                            hx-post="/task-sources/{{ source.name }}/run"
-                            hx-swap="none"
-                            hx-on::after-request="if(event.detail.successful) window.location.reload()"
-                            class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm font-medium"
-                        >
-                            Run
-                        </button>
+                        <div class="flex flex-col gap-2">
+                            <a
+                                href="/task-sources/{{ source.name }}/dry-run"
+                                class="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors text-sm font-medium text-center"
+                            >
+                                Dry Run
+                            </a>
+                            <button
+                                hx-post="/task-sources/{{ source.name }}/run"
+                                hx-swap="none"
+                                hx-on::after-request="if(event.detail.successful) window.location.reload()"
+                                class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm font-medium"
+                            >
+                                Run
+                            </button>
+                        </div>
                     </div>
                 </div>
                 {% endfor %}
             </div>
             {% else %}
-            <p class="text-gray-500">No task sources configured. Add <code>task_sources</code> to your scriptrun.yaml.</p>
+            <p class="text-gray-500">No task sources configured. Add <code>task_sources</code> to your scripthut.yaml.</p>
             {% endif %}
         </div>
 
@@ -96,9 +104,25 @@
                                     </span>
                                 </div>
                             </td>
-                            <td class="px-6 py-4 whitespace-nowrap">
-                                <span class="px-2 py-1 text-xs font-medium rounded-full {{ queue.status_class }}
-                                    {% if queue.status.value == 'running' %}bg-blue-100{% elif queue.status.value == 'completed' %}bg-green-100{% elif queue.status.value == 'failed' %}bg-red-100{% else %}bg-gray-100{% endif %}">
+                            <td class="px-6 py-4 whitespace-nowrap text-sm">
+                                <span class="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-full
+                                    {% if queue.status.value == 'running' %}bg-green-100 text-green-700
+                                    {% elif queue.status.value == 'pending' %}bg-gray-100 text-gray-600
+                                    {% elif queue.status.value == 'completed' %}bg-blue-100 text-blue-700
+                                    {% elif queue.status.value == 'failed' %}bg-red-100 text-red-700
+                                    {% elif queue.status.value == 'cancelled' %}bg-gray-100 text-gray-600
+                                    {% else %}bg-gray-100 text-gray-600{% endif %}">
+                                    {% if queue.status.value == 'running' %}
+                                    <span class="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span>
+                                    {% elif queue.status.value == 'pending' %}
+                                    <span class="w-2 h-2 bg-gray-400 rounded-full"></span>
+                                    {% elif queue.status.value == 'completed' %}
+                                    <span class="w-2 h-2 bg-blue-500 rounded-full"></span>
+                                    {% elif queue.status.value == 'failed' %}
+                                    <span class="w-2 h-2 bg-red-500 rounded-full"></span>
+                                    {% elif queue.status.value == 'cancelled' %}
+                                    <span class="w-2 h-2 bg-gray-400 rounded-full"></span>
+                                    {% endif %}
                                     {{ queue.status.value }}
                                 </span>
                             </td>

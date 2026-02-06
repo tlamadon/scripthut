@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ScriptHut - Dry Run{% if result %}: {{ result.source.name }}{% endif %}</title>
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 min-h-screen">
+    <div class="container mx-auto px-4 py-8">
+        <header class="mb-6">
+            <div class="flex items-center justify-between">
+                <div>
+                    <h1 class="text-2xl font-bold text-gray-800">
+                        Dry Run{% if result %}: {{ result.source.name }}{% endif %}
+                    </h1>
+                    <p class="text-gray-600">Preview tasks without submitting</p>
+                </div>
+                <div class="flex items-center gap-3">
+                    {% if result %}
+                    <form action="/task-sources/{{ result.source.name }}/run" method="post" class="inline">
+                        <button
+                            type="submit"
+                            hx-post="/task-sources/{{ result.source.name }}/run"
+                            hx-swap="none"
+                            hx-on::after-request="if(event.detail.successful) window.location.href='/queues'"
+                            class="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors font-medium"
+                        >
+                            Submit {{ result.task_count }} Tasks
+                        </button>
+                    </form>
+                    {% endif %}
+                    <a href="/queues" class="text-blue-600 hover:text-blue-800">
+                        &larr; Back to Queues
+                    </a>
+                </div>
+            </div>
+        </header>
+
+        {% if error %}
+        <div class="bg-red-100 border border-red-300 text-red-700 px-4 py-3 rounded mb-6">
+            <span class="font-medium">Error:</span> {{ error }}
+        </div>
+        {% endif %}
+
+        {% if result %}
+        <!-- Summary -->
+        <div class="bg-white rounded-lg shadow-md p-6 mb-6">
+            <h2 class="text-lg font-semibold text-gray-800 mb-4">Summary</h2>
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <div>
+                    <p class="text-sm text-gray-500">Source</p>
+                    <p class="text-lg font-semibold text-gray-800">{{ result.source.name }}</p>
+                </div>
+                <div>
+                    <p class="text-sm text-gray-500">Cluster</p>
+                    <p class="text-lg font-semibold text-gray-800">{{ result.cluster_name }}</p>
+                </div>
+                <div>
+                    <p class="text-sm text-gray-500">Tasks</p>
+                    <p class="text-lg font-semibold text-gray-800">{{ result.task_count }}</p>
+                </div>
+                <div>
+                    <p class="text-sm text-gray-500">Max Concurrent</p>
+                    <p class="text-lg font-semibold text-gray-800">{{ result.max_concurrent }}</p>
+                </div>
+            </div>
+            {% if result.source.description %}
+            <div class="mt-4">
+                <p class="text-sm text-gray-500">Description</p>
+                <p class="text-gray-700">{{ result.source.description }}</p>
+            </div>
+            {% endif %}
+            <div class="mt-4">
+                <p class="text-sm text-gray-500">Command</p>
+                <p class="text-gray-700 font-mono text-sm bg-gray-100 px-2 py-1 rounded">{{ result.source.command }}</p>
+            </div>
+        </div>
+
+        <!-- Tasks List -->
+        <div class="bg-white rounded-lg shadow-md overflow-hidden">
+            <div class="px-6 py-4 bg-gray-50 border-b">
+                <h2 class="text-lg font-semibold text-gray-800">Tasks ({{ result.task_count }})</h2>
+            </div>
+
+            <div class="divide-y divide-gray-200">
+                {% for item in result.tasks %}
+                <div class="p-4" x-data="{ showScript: false }">
+                    <!-- Task Header -->
+                    <div class="flex items-start justify-between">
+                        <div class="flex-1">
+                            <div class="flex items-center gap-3">
+                                <span class="font-mono text-sm text-gray-500">{{ item.task.id }}</span>
+                                <span class="font-semibold text-gray-800">{{ item.task.name }}</span>
+                            </div>
+                            <div class="mt-1 text-sm text-gray-600">
+                                <span class="inline-flex items-center gap-1">
+                                    <span class="text-gray-400">Partition:</span> {{ item.task.partition }}
+                                </span>
+                                <span class="mx-2 text-gray-300">|</span>
+                                <span class="inline-flex items-center gap-1">
+                                    <span class="text-gray-400">CPUs:</span> {{ item.task.cpus }}
+                                </span>
+                                <span class="mx-2 text-gray-300">|</span>
+                                <span class="inline-flex items-center gap-1">
+                                    <span class="text-gray-400">Memory:</span> {{ item.task.memory }}
+                                </span>
+                                <span class="mx-2 text-gray-300">|</span>
+                                <span class="inline-flex items-center gap-1">
+                                    <span class="text-gray-400">Time:</span> {{ item.task.time_limit }}
+                                </span>
+                            </div>
+                            <div class="mt-1">
+                                <span class="text-sm text-gray-400">Command:</span>
+                                <code class="ml-1 text-sm text-gray-700 bg-gray-100 px-1 rounded">{{ item.task.command }}</code>
+                            </div>
+                            <div class="mt-1">
+                                <span class="text-sm text-gray-400">Working dir:</span>
+                                <code class="ml-1 text-sm text-gray-600">{{ item.task.working_dir }}</code>
+                            </div>
+                        </div>
+                        <button
+                            onclick="toggleScript('script-{{ loop.index }}')"
+                            class="ml-4 px-3 py-1 text-sm bg-gray-200 hover:bg-gray-300 rounded text-gray-700"
+                        >
+                            Show Script
+                        </button>
+                    </div>
+
+                    <!-- Collapsible Script -->
+                    <div id="script-{{ loop.index }}" class="hidden mt-3">
+                        <div class="text-xs text-gray-500 mb-1">
+                            <span>Output: <code>{{ item.output_path }}</code></span>
+                            <span class="mx-2">|</span>
+                            <span>Error: <code>{{ item.error_path }}</code></span>
+                        </div>
+                        <pre class="text-xs font-mono bg-gray-900 text-gray-100 p-3 rounded overflow-x-auto">{{ item.sbatch_script }}</pre>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+
+        <!-- Bottom action bar -->
+        <div class="mt-6 flex justify-end gap-3">
+            <a href="/queues" class="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors">
+                Cancel
+            </a>
+            <button
+                hx-post="/task-sources/{{ result.source.name }}/run"
+                hx-swap="none"
+                hx-on::after-request="if(event.detail.successful) window.location.href='/queues'"
+                class="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors font-medium"
+            >
+                Submit {{ result.task_count }} Tasks
+            </button>
+        </div>
+        {% else %}
+        <div class="bg-white rounded-lg shadow-md p-8 text-center">
+            <p class="text-gray-500">No dry run results to display.</p>
+            <a href="/queues" class="mt-4 inline-block text-blue-600 hover:text-blue-800">
+                &larr; Back to Queues
+            </a>
+        </div>
+        {% endif %}
+    </div>
+
+    <script>
+        function toggleScript(id) {
+            const el = document.getElementById(id);
+            const btn = event.target;
+            if (el.classList.contains('hidden')) {
+                el.classList.remove('hidden');
+                btn.textContent = 'Hide Script';
+            } else {
+                el.classList.add('hidden');
+                btn.textContent = 'Show Script';
+            }
+        }
+    </script>
+</body>
+</html>

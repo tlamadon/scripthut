@@ -1,8 +1,9 @@
-"""FastAPI application for ScriptRun."""
+"""FastAPI application for ScriptHut."""
 
 import argparse
 import asyncio
 import logging
+import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -15,13 +16,14 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from sse_starlette.sse import EventSourceResponse
 
-from scriptrun.backends.slurm import SlurmBackend
-from scriptrun.config import load_config, set_config
-from scriptrun.config_schema import ScriptRunConfig, SlurmClusterConfig
-from scriptrun.models import ConnectionStatus, JobState, SlurmJob
-from scriptrun.queues import Queue, QueueManager
-from scriptrun.sources.git import GitSourceManager, SourceStatus
-from scriptrun.ssh.client import SSHClient
+from scripthut.backends.slurm import SlurmBackend
+from scripthut.config import load_config, set_config
+from scripthut.config_schema import ScriptHutConfig, SlurmClusterConfig
+from scripthut.history import JobHistoryManager
+from scripthut.models import ConnectionStatus, JobState, SlurmJob
+from scripthut.queues import Queue, QueueManager
+from scripthut.sources.git import GitSourceManager, SourceStatus
+from scripthut.ssh.client import SSHClient
 
 logging.basicConfig(
     level=logging.INFO,
@@ -48,11 +50,12 @@ class ClusterState:
 class AppState:
     """Application state container."""
 
-    config: ScriptRunConfig | None = None
+    config: ScriptHutConfig | None = None
     clusters: dict[str, ClusterState] = field(default_factory=dict)
     source_manager: GitSourceManager | None = None
     source_statuses: dict[str, SourceStatus] = field(default_factory=dict)
     queue_manager: QueueManager | None = None
+    history_manager: JobHistoryManager | None = None
     filter_enabled: bool = False
     filter_user: str | None = None
     _polling_task: asyncio.Task[None] | None = None
@@ -68,11 +71,10 @@ class AppState:
         return jobs
 
     def get_filtered_jobs(self) -> list[tuple[str, SlurmJob]]:
-        """Get jobs filtered by user if filter is enabled."""
-        jobs = self.all_jobs
-        if self.filter_enabled and self.filter_user:
-            jobs = [(cluster, job) for cluster, job in jobs if job.user == self.filter_user]
-        return jobs
+        """Get jobs - filtering now happens server-side during polling."""
+        # Server-side filtering in poll_cluster makes this more efficient
+        # Jobs are already filtered when filter_enabled is True
+        return self.all_jobs
 
     @property
     def any_connected(self) -> bool:
@@ -123,26 +125,42 @@ async def init_cluster(cluster_config: SlurmClusterConfig) -> ClusterState:
     return cluster_state
 
 
-async def poll_cluster(cluster_state: ClusterState, interval: int) -> None:
-    """Poll jobs for a single cluster."""
+async def poll_cluster(cluster_state: ClusterState, filter_user: str | None = None) -> None:
+    """Poll jobs for a single cluster.
+
+    Args:
+        cluster_state: The cluster to poll.
+        filter_user: If provided, only fetch jobs for this user (server-side filter).
+    """
     if cluster_state.backend is None:
         return
 
+    start_time = time.perf_counter()
     try:
-        jobs = await cluster_state.backend.get_jobs()
+        # Filter at the Slurm level for better performance
+        jobs = await cluster_state.backend.get_jobs(user=filter_user)
+        duration_ms = int((time.perf_counter() - start_time) * 1000)
         cluster_state.jobs = jobs
         cluster_state.status = ConnectionStatus(
             connected=True,
             host=cluster_state.status.host,
             last_poll=datetime.now(),
+            last_poll_duration_ms=duration_ms,
+            job_count=len(jobs),
         )
-        logger.debug(f"Polled {len(jobs)} jobs from '{cluster_state.name}'")
+        logger.debug(f"Polled {len(jobs)} jobs from '{cluster_state.name}' in {duration_ms}ms")
+
+        # Update job history with polled jobs
+        if state.history_manager:
+            state.history_manager.update_from_slurm_poll(jobs, cluster_state.name)
     except Exception as e:
+        duration_ms = int((time.perf_counter() - start_time) * 1000)
         logger.error(f"Job polling failed for '{cluster_state.name}': {e}")
         cluster_state.status = ConnectionStatus(
             connected=False,
             host=cluster_state.status.host,
             last_poll=cluster_state.status.last_poll,
+            last_poll_duration_ms=duration_ms,
             error=str(e),
         )
 
@@ -154,18 +172,22 @@ async def poll_jobs() -> None:
 
     interval = state.config.settings.poll_interval
     logger.info(f"Starting job polling (interval: {interval}s)")
+    poll_count = 0
 
     while not state._shutdown_event.is_set():
+        # Determine if we should filter by user (server-side for performance)
+        filter_user = state.filter_user if state.filter_enabled else None
+
         # Poll all clusters in parallel
         tasks = [
-            poll_cluster(cluster_state, interval)
+            poll_cluster(cluster_state, filter_user=filter_user)
             for cluster_state in state.clusters.values()
             if cluster_state.backend is not None
         ]
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
             total_jobs = sum(len(c.jobs) for c in state.clusters.values())
-            logger.info(f"Polled {total_jobs} total jobs from {len(tasks)} clusters")
+            logger.info(f"Polled {total_jobs} jobs from {len(tasks)} clusters (filter_user={filter_user})")
 
         # Update queue statuses based on polled jobs
         if state.queue_manager and state.queue_manager.get_active_queues():
@@ -173,6 +195,16 @@ async def poll_jobs() -> None:
             for name, cs in state.clusters.items():
                 cluster_jobs[name] = [(job.job_id, job.state) for job in cs.jobs]
             await state.queue_manager.update_all_queues(cluster_jobs)
+
+        # Save job history after each poll
+        if state.history_manager:
+            state.history_manager.save_if_dirty()
+
+        # Cleanup old jobs once per hour (every ~60 polls at 60s interval)
+        poll_count += 1
+        if poll_count >= 60 and state.history_manager:
+            state.history_manager.cleanup_old_jobs()
+            poll_count = 0
 
         try:
             await asyncio.wait_for(
@@ -216,14 +248,24 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     for ecs_config in config.ecs_clusters:
         logger.warning(f"ECS cluster '{ecs_config.name}' configured but ECS backend not yet implemented")
 
+    # Initialize job history manager
+    state.history_manager = JobHistoryManager()
+    state.history_manager.cleanup_old_jobs()  # Clean up on startup
+    logger.info("Initialized job history manager")
+
     # Initialize queue manager
     ssh_clients = {
         name: cs.ssh_client
         for name, cs in state.clusters.items()
         if cs.ssh_client is not None
     }
-    state.queue_manager = QueueManager(config, ssh_clients)
+    state.queue_manager = QueueManager(config, ssh_clients, history_manager=state.history_manager)
     logger.info(f"Initialized queue manager with {len(config.task_sources)} task sources")
+
+    # Restore queues from history
+    restored_count = state.queue_manager.restore_from_history()
+    if restored_count > 0:
+        logger.info(f"Restored {restored_count} queues from history")
 
     # Start background polling
     state._polling_task = asyncio.create_task(poll_jobs())
@@ -263,7 +305,7 @@ async def sync_sources_background() -> None:
 
 # Create FastAPI app
 app = FastAPI(
-    title="ScriptRun",
+    title="ScriptHut",
     description="Remote job management for Slurm, ECS, and AWS Batch",
     version="0.1.0",
     lifespan=lifespan,
@@ -276,18 +318,22 @@ templates = Jinja2Templates(directory=str(templates_path))
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request) -> HTMLResponse:
-    """Main page with job list."""
-    # Collect jobs (filtered if enabled)
-    jobs_with_cluster = state.get_filtered_jobs()
-    all_jobs_count = len(state.all_jobs)
+    """Main page with unified job list."""
+    # Get unified jobs from history
+    unified_jobs = []
+    if state.history_manager:
+        unified_jobs = state.history_manager.get_all_jobs()
+        # Apply user filter if enabled
+        if state.filter_enabled and state.filter_user:
+            unified_jobs = [j for j in unified_jobs if j.user == state.filter_user]
+
     poll_interval = state.config.settings.poll_interval if state.config else 60
 
     return templates.TemplateResponse(
         "base.html",
         {
             "request": request,
-            "jobs": [job for _, job in jobs_with_cluster],
-            "jobs_with_cluster": jobs_with_cluster,
+            "unified_jobs": unified_jobs,
             "clusters": state.clusters,
             "sources": state.source_statuses,
             "status": ConnectionStatus(
@@ -301,23 +347,24 @@ async def index(request: Request) -> HTMLResponse:
             "poll_interval": poll_interval,
             "filter_enabled": state.filter_enabled,
             "filter_user": state.filter_user,
-            "all_jobs_count": all_jobs_count,
         },
     )
 
 
 @app.get("/jobs", response_class=HTMLResponse)
 async def jobs_partial(request: Request) -> HTMLResponse:
-    """HTMX partial for job table."""
-    jobs_with_cluster = state.get_filtered_jobs()
-    all_jobs_count = len(state.all_jobs)
+    """HTMX partial for unified job table."""
+    unified_jobs = []
+    if state.history_manager:
+        unified_jobs = state.history_manager.get_all_jobs()
+        if state.filter_enabled and state.filter_user:
+            unified_jobs = [j for j in unified_jobs if j.user == state.filter_user]
 
     return templates.TemplateResponse(
         "jobs.html",
         {
             "request": request,
-            "jobs": [job for _, job in jobs_with_cluster],
-            "jobs_with_cluster": jobs_with_cluster,
+            "unified_jobs": unified_jobs,
             "clusters": state.clusters,
             "status": ConnectionStatus(
                 connected=state.any_connected,
@@ -325,7 +372,6 @@ async def jobs_partial(request: Request) -> HTMLResponse:
             ),
             "filter_enabled": state.filter_enabled,
             "filter_user": state.filter_user,
-            "all_jobs_count": all_jobs_count,
         },
     )
 
@@ -352,6 +398,12 @@ async def jobs_stream(request: Request) -> EventSourceResponse:
             await asyncio.sleep(1)
 
     return EventSourceResponse(event_generator())
+
+
+@app.get("/ping")
+async def ping() -> dict[str, str]:
+    """Simple ping endpoint for debugging - no dependencies."""
+    return {"status": "pong"}
 
 
 @app.get("/health")
@@ -422,8 +474,19 @@ async def sync_source(name: str) -> dict[str, Any]:
 
 @app.post("/filter/toggle", response_class=HTMLResponse)
 async def toggle_filter(request: Request) -> HTMLResponse:
-    """Toggle the user filter on/off and return updated jobs partial."""
+    """Toggle the user filter on/off and trigger immediate refresh."""
     state.filter_enabled = not state.filter_enabled
+
+    # Trigger immediate poll with new filter setting
+    filter_user = state.filter_user if state.filter_enabled else None
+    tasks = [
+        poll_cluster(cluster_state, filter_user=filter_user)
+        for cluster_state in state.clusters.values()
+        if cluster_state.backend is not None
+    ]
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
     # Return the updated jobs partial
     return await jobs_partial(request)
 
@@ -476,6 +539,28 @@ async def run_task_source(name: str) -> dict[str, Any]:
         }
     except ValueError as e:
         return {"error": str(e)}
+
+
+@app.get("/task-sources/{name}/dry-run", response_class=HTMLResponse)
+async def dry_run_task_source(request: Request, name: str) -> HTMLResponse:
+    """Dry run a task source - show what would be submitted without creating a queue."""
+    if state.queue_manager is None:
+        return templates.TemplateResponse(
+            "dry_run.html",
+            {"request": request, "error": "Queue manager not initialized", "result": None},
+        )
+
+    try:
+        result = await state.queue_manager.dry_run(name)
+        return templates.TemplateResponse(
+            "dry_run.html",
+            {"request": request, "result": result, "error": None},
+        )
+    except ValueError as e:
+        return templates.TemplateResponse(
+            "dry_run.html",
+            {"request": request, "error": str(e), "result": None},
+        )
 
 
 @app.get("/queues", response_class=HTMLResponse)
@@ -662,13 +747,13 @@ async def view_task_log(
 def parse_args() -> argparse.Namespace:
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
-        description="ScriptRun - Remote job management",
+        description="ScriptHut - Remote job management",
     )
     parser.add_argument(
         "--config",
         "-c",
         type=Path,
-        help="Path to configuration file (default: ./scriptrun.yaml)",
+        help="Path to configuration file (default: ./scripthut.yaml)",
     )
     parser.add_argument(
         "--host",
@@ -698,7 +783,7 @@ def run() -> None:
     port = args.port or config.settings.server_port
 
     uvicorn.run(
-        "scriptrun.main:app",
+        "scripthut.main:app",
         host=host,
         port=port,
         reload=False,

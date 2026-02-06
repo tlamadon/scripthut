@@ -1,19 +1,25 @@
 """Queue manager for task submission and tracking."""
 
+from __future__ import annotations
+
 import json
 import logging
 import uuid
 from datetime import datetime
+from typing import TYPE_CHECKING
 
-from scriptrun.config_schema import ScriptRunConfig, TaskSourceConfig
-from scriptrun.models import JobState
-from scriptrun.queues.models import (
+from scripthut.config_schema import ScriptHutConfig, SlurmClusterConfig, TaskSourceConfig
+from scripthut.models import JobState
+from scripthut.queues.models import (
     Queue,
     QueueItem,
     QueueItemStatus,
     TaskDefinition,
 )
-from scriptrun.ssh.client import SSHClient
+from scripthut.ssh.client import SSHClient
+
+if TYPE_CHECKING:
+    from scripthut.history import JobHistoryManager
 
 logger = logging.getLogger(__name__)
 
@@ -23,18 +29,21 @@ class QueueManager:
 
     def __init__(
         self,
-        config: ScriptRunConfig,
+        config: ScriptHutConfig,
         clusters: dict[str, SSHClient],
+        history_manager: JobHistoryManager | None = None,
     ) -> None:
         """Initialize the queue manager.
 
         Args:
             config: Application configuration.
             clusters: Dictionary mapping cluster names to SSH clients.
+            history_manager: Optional job history manager for persistence.
         """
         self.config = config
         self.clusters = clusters
         self.queues: dict[str, Queue] = {}
+        self.history_manager = history_manager
 
     def get_task_source(self, name: str) -> TaskSourceConfig | None:
         """Get a task source by name."""
@@ -85,6 +94,68 @@ class QueueManager:
 
         return tasks
 
+    async def dry_run(self, source_name: str) -> dict:
+        """Perform a dry run - fetch tasks and show what would be submitted.
+
+        Args:
+            source_name: Name of the task source to use.
+
+        Returns:
+            Dictionary with source info and list of tasks with generated scripts.
+
+        Raises:
+            ValueError: If source not found or fetch fails.
+        """
+        source = self.get_task_source(source_name)
+        if source is None:
+            raise ValueError(f"Task source '{source_name}' not found")
+
+        # Fetch tasks
+        tasks = await self.fetch_tasks(source)
+
+        # Generate a preview queue ID for script generation
+        preview_queue_id = "preview"
+        log_dir = "~/.cache/scripthut/logs"
+
+        # Resolve ~ to actual home directory (Slurm doesn't expand ~ in directives)
+        ssh_client = self.get_ssh_client(source.cluster)
+        if ssh_client and log_dir.startswith("~"):
+            stdout, _, _ = await ssh_client.run_command("echo $HOME")
+            home_dir = stdout.strip()
+            log_dir = log_dir.replace("~", home_dir, 1)
+
+        # Get account from cluster config
+        account = self.get_cluster_account(source.cluster)
+
+        # Build task details with generated scripts
+        task_details = []
+        for task in tasks:
+            script = task.to_sbatch_script(preview_queue_id, log_dir, account=account)
+            task_details.append({
+                "task": task,
+                "sbatch_script": script,
+                "output_path": task.get_output_path(preview_queue_id, log_dir),
+                "error_path": task.get_error_path(preview_queue_id, log_dir),
+            })
+
+        logger.info(f"Dry run for source '{source_name}': {len(tasks)} tasks")
+
+        return {
+            "source": source,
+            "cluster_name": source.cluster,
+            "task_count": len(tasks),
+            "max_concurrent": source.max_concurrent,
+            "account": account,
+            "tasks": task_details,
+        }
+
+    def get_cluster_account(self, cluster_name: str) -> str | None:
+        """Get the Slurm account for a cluster."""
+        cluster = self.config.get_cluster(cluster_name)
+        if cluster and isinstance(cluster, SlurmClusterConfig):
+            return cluster.account
+        return None
+
     async def create_queue(self, source_name: str) -> Queue:
         """Create a new queue from a task source.
 
@@ -107,6 +178,9 @@ class QueueManager:
         if not tasks:
             raise ValueError(f"No tasks returned from source '{source_name}'")
 
+        # Get account from cluster config
+        account = self.get_cluster_account(source.cluster)
+
         # Create queue
         queue_id = str(uuid.uuid4())[:8]
         queue = Queue(
@@ -116,10 +190,22 @@ class QueueManager:
             created_at=datetime.now(),
             items=[QueueItem(task=task) for task in tasks],
             max_concurrent=source.max_concurrent,
+            account=account,
         )
 
         self.queues[queue_id] = queue
         logger.info(f"Created queue '{queue_id}' with {len(tasks)} tasks")
+
+        # Register queue and items in history
+        if self.history_manager:
+            # Register queue metadata
+            self.history_manager.register_queue(queue)
+            # Register all queue items as jobs
+            user = self.config.settings.filter_user or "unknown"
+            for item in queue.items:
+                self.history_manager.register_queue_item(
+                    item, queue.id, queue.cluster_name, user
+                )
 
         # Start submitting tasks
         await self.process_queue(queue)
@@ -140,20 +226,30 @@ class QueueManager:
         if ssh_client is None:
             item.status = QueueItemStatus.FAILED
             item.error = f"Cluster '{queue.cluster_name}' not connected"
+            item.finished_at = datetime.now()
+            # Update job history with failure
+            if self.history_manager:
+                self.history_manager.update_from_queue_item(item, queue.id)
             return False
 
-        # Create log directory on remote
+        # Resolve ~ to actual home directory (Slurm doesn't expand ~ in directives)
         log_dir = queue.log_dir
-        await ssh_client.run_command(f"mkdir -p {log_dir}/{queue.id}")
+        if log_dir.startswith("~"):
+            stdout, _, _ = await ssh_client.run_command("echo $HOME")
+            home_dir = stdout.strip()
+            log_dir = log_dir.replace("~", home_dir, 1)
+
+        # Ensure log directory exists (home dir is shared across nodes)
+        await ssh_client.run_command(f"mkdir -p {log_dir}")
 
         # Generate sbatch script and store it
-        script = item.task.to_sbatch_script(queue.id, log_dir)
+        script = item.task.to_sbatch_script(queue.id, log_dir, account=queue.account)
         item.sbatch_script = script
 
         # Submit via sbatch using heredoc
         # Escape any single quotes in the script
         escaped_script = script.replace("'", "'\\''")
-        submit_cmd = f"sbatch <<'SCRIPTRUN_EOF'\n{escaped_script}\nSCRIPTRUN_EOF"
+        submit_cmd = f"sbatch <<'SCRIPTHUT_EOF'\n{escaped_script}\nSCRIPTHUT_EOF"
 
         stdout, stderr, exit_code = await ssh_client.run_command(submit_cmd)
 
@@ -171,12 +267,22 @@ class QueueManager:
             item.status = QueueItemStatus.SUBMITTED
             item.submitted_at = datetime.now()
             logger.info(f"Submitted task '{item.task.id}' as Slurm job {job_id}")
+
+            # Update job history with submission info
+            if self.history_manager:
+                self.history_manager.update_from_queue_item(item, queue.id)
+
             return True
         except (IndexError, ValueError) as e:
             item.status = QueueItemStatus.FAILED
             item.error = f"Could not parse job ID: {stdout}"
             item.finished_at = datetime.now()
             logger.error(f"Could not parse job ID from: {stdout}")
+
+            # Update job history with failure
+            if self.history_manager:
+                self.history_manager.update_from_queue_item(item, queue.id)
+
             return False
 
     async def process_queue(self, queue: Queue) -> None:
@@ -209,6 +315,7 @@ class QueueManager:
             slurm_jobs: Dictionary mapping Slurm job IDs to their states.
         """
         changed = False
+        changed_items: list[QueueItem] = []
 
         for item in queue.items:
             if item.slurm_job_id is None:
@@ -226,25 +333,50 @@ class QueueManager:
                     item.status = QueueItemStatus.COMPLETED
                     item.finished_at = datetime.now()
                     changed = True
+                    changed_items.append(item)
                     logger.info(f"Task '{item.task.id}' (job {item.slurm_job_id}) completed")
             else:
                 # Job is in squeue
-                if job_state == JobState.RUNNING:
+                if job_state in (JobState.RUNNING, JobState.COMPLETING):
                     if item.status != QueueItemStatus.RUNNING:
                         item.status = QueueItemStatus.RUNNING
-                        item.started_at = datetime.now()
+                        item.started_at = item.started_at or datetime.now()
                         changed = True
+                        changed_items.append(item)
                         logger.info(f"Task '{item.task.id}' (job {item.slurm_job_id}) started running")
                 elif job_state == JobState.PENDING:
                     if item.status != QueueItemStatus.SUBMITTED:
                         item.status = QueueItemStatus.SUBMITTED
                         changed = True
-                elif job_state in (JobState.FAILED, JobState.CANCELLED, JobState.TIMEOUT, JobState.NODE_FAIL):
+                        changed_items.append(item)
+                elif job_state == JobState.COMPLETED:
+                    # Job completed and still visible in squeue
+                    item.status = QueueItemStatus.COMPLETED
+                    item.finished_at = datetime.now()
+                    changed = True
+                    changed_items.append(item)
+                    logger.info(f"Task '{item.task.id}' (job {item.slurm_job_id}) completed")
+                elif job_state in (
+                    JobState.FAILED,
+                    JobState.CANCELLED,
+                    JobState.TIMEOUT,
+                    JobState.NODE_FAIL,
+                    JobState.PREEMPTED,
+                    JobState.BOOT_FAIL,
+                    JobState.DEADLINE,
+                    JobState.OUT_OF_MEMORY,
+                ):
                     item.status = QueueItemStatus.FAILED
                     item.error = f"Slurm job {job_state.value}"
                     item.finished_at = datetime.now()
                     changed = True
+                    changed_items.append(item)
                     logger.info(f"Task '{item.task.id}' (job {item.slurm_job_id}) failed: {job_state.value}")
+
+        # Update job history for changed items
+        if self.history_manager and changed_items:
+            for item in changed_items:
+                self.history_manager.update_from_queue_item(item, queue.id)
 
         # If any items completed/failed, try to submit more
         if changed:
@@ -280,12 +412,14 @@ class QueueManager:
             return False
 
         ssh_client = self.get_ssh_client(queue.cluster_name)
+        cancelled_items: list[QueueItem] = []
 
         for item in queue.items:
             if item.status == QueueItemStatus.PENDING:
                 item.status = QueueItemStatus.FAILED
                 item.error = "Cancelled"
                 item.finished_at = datetime.now()
+                cancelled_items.append(item)
             elif item.status in (QueueItemStatus.SUBMITTED, QueueItemStatus.RUNNING):
                 if item.slurm_job_id and ssh_client:
                     # Cancel the Slurm job
@@ -293,6 +427,12 @@ class QueueManager:
                 item.status = QueueItemStatus.FAILED
                 item.error = "Cancelled"
                 item.finished_at = datetime.now()
+                cancelled_items.append(item)
+
+        # Update job history for cancelled items
+        if self.history_manager and cancelled_items:
+            for item in cancelled_items:
+                self.history_manager.update_from_queue_item(item, queue.id)
 
         logger.info(f"Cancelled queue '{queue_id}'")
         return True
@@ -311,6 +451,25 @@ class QueueManager:
             q for q in self.queues.values()
             if q.status in (q.status.PENDING, q.status.RUNNING)
         ]
+
+    def restore_from_history(self) -> int:
+        """Restore queues from history manager.
+
+        Called on startup to restore previously created queues.
+
+        Returns:
+            Number of queues restored.
+        """
+        if self.history_manager is None:
+            return 0
+
+        restored_queues = self.history_manager.reconstruct_all_queues()
+        for queue_id, queue in restored_queues.items():
+            if queue_id not in self.queues:
+                self.queues[queue_id] = queue
+
+        logger.info(f"Restored {len(restored_queues)} queues from history")
+        return len(restored_queues)
 
     async def fetch_log_file(
         self,
@@ -342,11 +501,18 @@ class QueueManager:
         if ssh_client is None:
             return None, f"Cluster '{queue.cluster_name}' not connected"
 
+        # Resolve ~ to actual home directory
+        log_dir = queue.log_dir
+        if log_dir.startswith("~"):
+            stdout, _, _ = await ssh_client.run_command("echo $HOME")
+            home_dir = stdout.strip()
+            log_dir = log_dir.replace("~", home_dir, 1)
+
         # Get log file path
         if log_type == "output":
-            log_path = item.task.get_output_path(queue.id, queue.log_dir)
+            log_path = item.task.get_output_path(queue.id, log_dir)
         elif log_type == "error":
-            log_path = item.task.get_error_path(queue.id, queue.log_dir)
+            log_path = item.task.get_error_path(queue.id, log_dir)
         else:
             return None, f"Invalid log_type: {log_type}"
 

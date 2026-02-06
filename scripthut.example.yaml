@@ -1,5 +1,5 @@
-# ScriptRun Configuration
-# Copy this file to scriptrun.yaml and customize for your environment
+# ScriptHut Configuration
+# Copy this file to scripthut.yaml and customize for your environment
 
 # Remote clusters to monitor
 clusters:
@@ -13,6 +13,7 @@ clusters:
       key_path: ~/.ssh/id_rsa
       # cert_path: ~/.ssh/id_rsa-cert.pub  # Optional: for certificate-based auth
       # known_hosts: ~/.ssh/known_hosts    # Optional: enable host key checking
+    account: pi-faculty  # Slurm account for job submission (e.g., phd, pi-faculty)
 
   # Multiple clusters can be defined
   # - name: secondary-cluster
@@ -21,6 +22,7 @@ clusters:
   #     host: slurm2.cluster.edu
   #     user: your_username
   #     key_path: ~/.ssh/cluster2_key
+  #   account: phd  # Slurm account for this cluster
 
   # ECS cluster example (not yet implemented)
   # - name: production-ecs
@@ -81,8 +83,8 @@ task_sources:
 # }
 #
 # If output_file/error_file are not specified, logs will be written to:
-#   /tmp/scriptrun/{queue_id}/{task_id}.out
-#   /tmp/scriptrun/{queue_id}/{task_id}.err
+#   /tmp/scripthut/{queue_id}/{task_id}.out
+#   /tmp/scripthut/{queue_id}/{task_id}.err
 
 # Global settings
 settings:
@@ -94,7 +96,7 @@ settings:
   server_port: 8000
 
   # Directory to cache cloned repositories
-  sources_cache_dir: ~/.cache/scriptrun/sources
+  sources_cache_dir: ~/.cache/scripthut/sources
 
   # Filter jobs by username (shows toggle button in UI)
   # Set to your username to enable "My Jobs" filter
