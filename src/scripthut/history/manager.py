@@ -1,10 +1,11 @@
 """Job history management with JSON persistence."""
 
-import fcntl
 import json
 import logging
+import sys
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import IO
 
 from scripthut.history.models import QueueMetadata, UnifiedJob, UnifiedJobSource, UnifiedJobState
 from scripthut.models import JobState, SlurmJob
@@ -38,6 +39,30 @@ class JobHistoryManager:
         # Load existing history
         self._load()
 
+    @staticmethod
+    def _lock_file(f: IO, exclusive: bool = False) -> None:
+        """Acquire a file lock (cross-platform)."""
+        if sys.platform == "win32":
+            import msvcrt
+
+            msvcrt.locking(f.fileno(), msvcrt.LK_LOCK if exclusive else msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+
+    @staticmethod
+    def _unlock_file(f: IO) -> None:
+        """Release a file lock (cross-platform)."""
+        if sys.platform == "win32":
+            import msvcrt
+
+            msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+
     def _load(self) -> None:
         """Load history from JSON file."""
         if not self.history_path.exists():
@@ -46,7 +71,7 @@ class JobHistoryManager:
 
         try:
             with open(self.history_path, "r") as f:
-                fcntl.flock(f.fileno(), fcntl.LOCK_SH)
+                self._lock_file(f, exclusive=False)
                 try:
                     data = json.load(f)
                     for job_data in data.get("jobs", []):
@@ -59,7 +84,7 @@ class JobHistoryManager:
                         f"Loaded {len(self._jobs)} jobs and {len(self._queues)} queues from history"
                     )
                 finally:
-                    fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+                    self._unlock_file(f)
         except Exception as e:
             logger.error(f"Failed to load history: {e}")
 
@@ -79,11 +104,11 @@ class JobHistoryManager:
             }
 
             with open(temp_path, "w") as f:
-                fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+                self._lock_file(f, exclusive=True)
                 try:
                     json.dump(data, f, indent=2)
                 finally:
-                    fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+                    self._unlock_file(f)
 
             temp_path.rename(self.history_path)
             self._dirty = False
