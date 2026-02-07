@@ -9,6 +9,7 @@
             <tr>
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Task ID</th>
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Name</th>
+                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Deps</th>
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Slurm Job</th>
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Partition</th>
@@ -24,6 +25,15 @@
             <tr class="hover:bg-gray-50">
                 <td class="px-4 py-3 whitespace-nowrap text-sm font-mono text-gray-900">{{ item.task.id }}</td>
                 <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-900">{{ item.task.name }}</td>
+                <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-600">
+                    {% if item.task.dependencies %}
+                    {% for dep in item.task.dependencies %}
+                    <span class="inline-block px-1.5 py-0.5 text-xs bg-gray-100 text-gray-600 rounded mr-1">{{ dep }}</span>
+                    {% endfor %}
+                    {% else %}
+                    -
+                    {% endif %}
+                </td>
                 <td class="px-4 py-3 whitespace-nowrap text-sm">
                     <span class="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-full
                         {% if item.status.value == 'running' %}bg-green-100 text-green-700
@@ -31,6 +41,7 @@
                         {% elif item.status.value == 'submitted' %}bg-yellow-100 text-yellow-700
                         {% elif item.status.value == 'completed' %}bg-blue-100 text-blue-700
                         {% elif item.status.value == 'failed' %}bg-red-100 text-red-700
+                        {% elif item.status.value == 'dep_failed' %}bg-orange-100 text-orange-700
                         {% else %}bg-gray-100 text-gray-600{% endif %}">
                         {% if item.status.value == 'running' %}
                         <span class="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span>
@@ -42,8 +53,10 @@
                         <span class="w-2 h-2 bg-blue-500 rounded-full"></span>
                         {% elif item.status.value == 'failed' %}
                         <span class="w-2 h-2 bg-red-500 rounded-full"></span>
+                        {% elif item.status.value == 'dep_failed' %}
+                        <span class="w-2 h-2 bg-orange-500 rounded-full"></span>
                         {% endif %}
-                        {{ item.status.value }}
+                        {% if item.status.value == 'dep_failed' %}dep failed{% else %}{{ item.status.value }}{% endif %}
                     </span>
                 </td>
                 <td class="px-4 py-3 whitespace-nowrap text-sm font-mono text-gray-600">
@@ -99,7 +112,7 @@
             </tr>
             {% if item.error %}
             <tr class="bg-red-50">
-                <td colspan="10" class="px-4 py-2 text-sm text-red-700">
+                <td colspan="11" class="px-4 py-2 text-sm text-red-700">
                     <span class="font-medium">Error:</span> {{ item.error }}
                 </td>
             </tr>
