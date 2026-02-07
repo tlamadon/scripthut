@@ -6,6 +6,7 @@ import json
 import logging
 import uuid
 from datetime import datetime
+from fnmatch import fnmatch
 from typing import TYPE_CHECKING
 
 from scripthut.config_schema import ScriptHutConfig, SlurmClusterConfig, TaskSourceConfig
@@ -44,6 +45,31 @@ class QueueManager:
         self.clusters = clusters
         self.queues: dict[str, Queue] = {}
         self.history_manager = history_manager
+
+    @staticmethod
+    def _resolve_wildcard_deps(tasks: list[TaskDefinition]) -> None:
+        """Expand wildcard patterns in task dependencies to matching task IDs.
+
+        Modifies tasks in-place. A dependency like "build.*" will be replaced
+        with all task IDs matching that glob pattern.
+
+        Raises:
+            ValueError: If a wildcard pattern matches no tasks.
+        """
+        task_ids = [t.id for t in tasks]
+        for task in tasks:
+            expanded: list[str] = []
+            for dep in task.dependencies:
+                if any(c in dep for c in ("*", "?", "[")):
+                    matches = [tid for tid in task_ids if fnmatch(tid, dep) and tid != task.id]
+                    if not matches:
+                        raise ValueError(
+                            f"Task '{task.id}': wildcard dep '{dep}' matches no tasks"
+                        )
+                    expanded.extend(matches)
+                else:
+                    expanded.append(dep)
+            task.dependencies = expanded
 
     @staticmethod
     def _validate_dependencies(tasks: list[TaskDefinition]) -> None:
@@ -168,7 +194,8 @@ class QueueManager:
         # Fetch tasks (and raw output for display)
         tasks, raw_output = await self.fetch_tasks(source, return_raw=True)
 
-        # Validate dependencies
+        # Resolve wildcard deps, then validate
+        self._resolve_wildcard_deps(tasks)
         self._validate_dependencies(tasks)
 
         # Generate a preview queue ID for script generation
@@ -243,7 +270,8 @@ class QueueManager:
         if not tasks:
             raise ValueError(f"No tasks returned from source '{source_name}'")
 
-        # Validate dependencies
+        # Resolve wildcard deps, then validate
+        self._resolve_wildcard_deps(tasks)
         self._validate_dependencies(tasks)
 
         # Get account from cluster config

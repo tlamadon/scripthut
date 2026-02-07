@@ -12,19 +12,17 @@
     <div class="container mx-auto px-4 py-8">
         <header class="mb-8">
             <div class="flex items-center justify-between">
-                <div>
-                    <h1 class="text-3xl font-bold text-gray-800">
-                        Queue {% if queue %}{{ queue.id }}{% else %}Not Found{% endif %}
-                    </h1>
-                    {% if queue %}
-                    <p class="text-gray-600">{{ queue.source_name }} on {{ queue.cluster_name }}</p>
-                    {% endif %}
-                </div>
-                <a href="/queues" class="text-blue-600 hover:text-blue-800">
-                    &larr; Back to Queues
-                </a>
+                {% include "nav.html" %}
             </div>
         </header>
+        <div class="mb-6">
+            <h2 class="text-xl font-semibold text-gray-800">
+                Queue {% if queue %}{{ queue.id }}{% else %}Not Found{% endif %}
+            </h2>
+            {% if queue %}
+            <p class="text-gray-600 text-sm">{{ queue.source_name }} on {{ queue.cluster_name }}</p>
+            {% endif %}
+        </div>
 
         {% if error %}
         <div class="bg-red-100 border border-red-300 text-red-700 px-4 py-3 rounded mb-6">
@@ -34,77 +32,12 @@
 
         {% if queue %}
         <!-- Queue Info -->
-        <div class="bg-white rounded-lg shadow-md p-6 mb-6">
-            <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
-                <div>
-                    <p class="text-sm text-gray-500">Status</p>
-                    <span class="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-full
-                        {% if queue.status.value == 'running' %}bg-green-100 text-green-700
-                        {% elif queue.status.value == 'pending' %}bg-gray-100 text-gray-600
-                        {% elif queue.status.value == 'completed' %}bg-blue-100 text-blue-700
-                        {% elif queue.status.value == 'failed' %}bg-red-100 text-red-700
-                        {% elif queue.status.value == 'cancelled' %}bg-gray-100 text-gray-600
-                        {% else %}bg-gray-100 text-gray-600{% endif %}">
-                        {% if queue.status.value == 'running' %}
-                        <span class="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span>
-                        {% elif queue.status.value == 'pending' %}
-                        <span class="w-2 h-2 bg-gray-400 rounded-full"></span>
-                        {% elif queue.status.value == 'completed' %}
-                        <span class="w-2 h-2 bg-blue-500 rounded-full"></span>
-                        {% elif queue.status.value == 'failed' %}
-                        <span class="w-2 h-2 bg-red-500 rounded-full"></span>
-                        {% elif queue.status.value == 'cancelled' %}
-                        <span class="w-2 h-2 bg-gray-400 rounded-full"></span>
-                        {% endif %}
-                        {{ queue.status.value }}
-                    </span>
-                </div>
-                <div>
-                    <p class="text-sm text-gray-500">Progress</p>
-                    <p class="text-lg font-semibold text-gray-800">{{ queue.progress[0] }} / {{ queue.progress[1] }}</p>
-                </div>
-                <div>
-                    <p class="text-sm text-gray-500">Created</p>
-                    <p class="text-lg font-semibold text-gray-800">{{ queue.created_at.strftime('%Y-%m-%d %H:%M:%S') }}</p>
-                </div>
-                <div>
-                    <p class="text-sm text-gray-500">Max Concurrent</p>
-                    <p class="text-lg font-semibold text-gray-800">{{ queue.max_concurrent }}</p>
-                </div>
-            </div>
-
-            <!-- Progress Bar -->
-            <div class="mt-4">
-                <div class="w-full bg-gray-200 rounded-full h-3">
-                    <div class="bg-blue-600 h-3 rounded-full transition-all" style="width: {{ queue.progress_percent }}%"></div>
-                </div>
-                <div class="flex justify-between text-sm text-gray-500 mt-1">
-                    <span>{{ queue.completed_count }} completed</span>
-                    <span>{{ queue.running_count }} running</span>
-                    <span>{{ queue.pending_count }} pending</span>
-                    {% if queue.failed_count > 0 %}
-                    <span class="text-red-600">{{ queue.failed_count }} failed</span>
-                    {% endif %}
-                    {% if queue.dep_failed_count > 0 %}
-                    <span class="text-orange-600">{{ queue.dep_failed_count }} dep failed</span>
-                    {% endif %}
-                </div>
-            </div>
-
-            <!-- Cancel Button -->
-            {% if queue.status.value in ['pending', 'running'] %}
-            <div class="mt-4">
-                <button
-                    hx-post="/queues/{{ queue.id }}/cancel"
-                    hx-swap="none"
-                    hx-confirm="Cancel all pending and running tasks?"
-                    hx-on::after-request="if(event.detail.successful) window.location.reload()"
-                    class="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors text-sm font-medium"
-                >
-                    Cancel Queue
-                </button>
-            </div>
-            {% endif %}
+        <div class="bg-white rounded-lg shadow-md p-6 mb-6"
+             id="queue-info"
+             hx-get="/queues/{{ queue.id }}/info"
+             hx-trigger="every 5s"
+             hx-swap="innerHTML">
+            {% include "queue_info.html" %}
         </div>
 
         <!-- Queue Items -->
@@ -117,5 +50,75 @@
         </div>
         {% endif %}
     </div>
+
+    {% if queue %}
+    <style id="folded-groups-style"></style>
+    <script>
+    (function() {
+        var STORAGE_KEY = 'scripthut-folded-groups-{{ queue.id }}';
+
+        function getFolded() {
+            try { return JSON.parse(localStorage.getItem(STORAGE_KEY)) || {}; }
+            catch(e) { return {}; }
+        }
+
+        function setFolded(folded) {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(folded));
+        }
+
+        function getGroupSummary(group) {
+            var rows = document.querySelectorAll('tr.task-row[data-group="' + group + '"]:not([data-error-row])');
+            var total = rows.length, completed = 0, running = 0, failed = 0;
+            rows.forEach(function(r) {
+                var s = r.getAttribute('data-status');
+                if (s === 'completed') completed++;
+                else if (s === 'running' || s === 'submitted') running++;
+                else if (s === 'failed' || s === 'dep_failed') failed++;
+            });
+            var parts = [completed + '/' + total];
+            if (running) parts.push(running + ' running');
+            if (failed) parts.push(failed + ' failed');
+            return parts.join(', ');
+        }
+
+        function syncUI() {
+            var folded = getFolded();
+
+            // Update the persistent style tag for hiding rows
+            var rules = [];
+            for (var group in folded) {
+                if (folded[group]) {
+                    rules.push('tr.task-row[data-group="' + group + '"] { display: none; }');
+                }
+            }
+            document.getElementById('folded-groups-style').textContent = rules.join('\n');
+
+            // Update chevrons and summaries
+            document.querySelectorAll('tr.group-header').forEach(function(header) {
+                var group = header.getAttribute('data-group');
+                var chevron = header.querySelector('.group-chevron');
+                var summary = header.querySelector('.group-summary');
+                var collapsed = !!folded[group];
+
+                summary.textContent = getGroupSummary(group);
+                chevron.style.transform = collapsed ? 'rotate(0deg)' : 'rotate(90deg)';
+            });
+        }
+
+        window.toggleGroup = function(group) {
+            var folded = getFolded();
+            folded[group] = !folded[group];
+            setFolded(folded);
+            syncUI();
+        };
+
+        // Apply on initial load
+        syncUI();
+
+        // Re-apply after every htmx swap of the queue-items div
+        document.getElementById('queue-items').addEventListener('htmx:afterSwap', syncUI);
+    })();
+    </script>
+    {% endif %}
 </body>
 </html>

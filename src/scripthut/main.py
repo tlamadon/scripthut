@@ -618,6 +618,17 @@ async def queue_detail_page(request: Request, queue_id: str) -> HTMLResponse:
     )
 
 
+@app.get("/queues/{queue_id}/info", response_class=HTMLResponse)
+async def queue_info_partial(request: Request, queue_id: str) -> HTMLResponse:
+    """HTMX partial for queue info (progress bar, status, counts)."""
+    queue = state.queue_manager.get_queue(queue_id) if state.queue_manager else None
+
+    return templates.TemplateResponse(
+        "queue_info.html",
+        {"request": request, "queue": queue},
+    )
+
+
 @app.get("/queues/{queue_id}/items", response_class=HTMLResponse)
 async def queue_items_partial(request: Request, queue_id: str) -> HTMLResponse:
     """HTMX partial for queue items table."""

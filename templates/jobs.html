@@ -33,6 +33,7 @@
             <tr>
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Job ID</th>
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Name</th>
+                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Queue</th>
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">User</th>
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">State</th>
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Source</th>
@@ -63,6 +64,15 @@
                         {{ job.name }}
                         {% endif %}
                     </span>
+                </td>
+                <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-600">
+                    {% if job.queue_id %}
+                    <a href="/queues/{{ job.queue_id }}" class="text-blue-600 hover:text-blue-800 hover:underline font-mono">
+                        {{ job.queue_id }}
+                    </a>
+                    {% else %}
+                    -
+                    {% endif %}
                 </td>
                 <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-600">{{ job.user }}</td>
                 <td class="px-4 py-3 whitespace-nowrap text-sm">

@@ -1,0 +1,7 @@
+<div class="flex items-center gap-6">
+    <a href="/" class="text-2xl font-bold text-gray-800 hover:text-gray-600 transition-colors">ScriptHut</a>
+    <div class="flex items-center gap-1 text-sm font-medium">
+        <a href="/" class="px-3 py-1.5 rounded-md transition-colors {% if not request.url.path.startswith('/queues') and not request.url.path.startswith('/task-sources') %}bg-blue-100 text-blue-700{% else %}text-gray-600 hover:bg-gray-100 hover:text-gray-800{% endif %}">Jobs</a>
+        <a href="/queues" class="px-3 py-1.5 rounded-md transition-colors {% if request.url.path.startswith('/queues') or request.url.path.startswith('/task-sources') %}bg-blue-100 text-blue-700{% else %}text-gray-600 hover:bg-gray-100 hover:text-gray-800{% endif %}">Queues</a>
+    </div>
+</div>

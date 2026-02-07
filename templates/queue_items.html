@@ -21,9 +21,35 @@
             </tr>
         </thead>
         <tbody class="bg-white divide-y divide-gray-200">
+            {% set ns = namespace(current_group='') %}
             {% for item in queue.items %}
-            <tr class="hover:bg-gray-50">
-                <td class="px-4 py-3 whitespace-nowrap text-sm font-mono text-gray-900">{{ item.task.id }}</td>
+            {% set group = item.task.id.rsplit('.', 1)[0] if '.' in item.task.id else '' %}
+            {% if group != ns.current_group and group != '' %}
+            {% set ns.current_group = group %}
+            <tr class="bg-gray-50 cursor-pointer select-none group-header hover:bg-gray-100" data-group="{{ group }}" onclick="toggleGroup('{{ group }}')">
+                <td colspan="11" class="px-4 py-1.5">
+                    <div class="flex items-center justify-between">
+                        <div class="flex items-center gap-2">
+                            <svg class="w-3.5 h-3.5 text-gray-400 transition-transform group-chevron" viewBox="0 0 20 20" fill="currentColor">
+                                <path fill-rule="evenodd" d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z" clip-rule="evenodd" />
+                            </svg>
+                            <span class="text-xs font-semibold text-gray-500 uppercase tracking-wider">{{ group }}</span>
+                        </div>
+                        <span class="group-summary text-xs text-gray-400"></span>
+                    </div>
+                </td>
+            </tr>
+            {% elif group == '' and ns.current_group != '' %}
+            {% set ns.current_group = '' %}
+            {% endif %}
+            <tr class="hover:bg-gray-50 task-row" data-group="{{ group }}" data-status="{{ item.status.value }}">
+                <td class="px-4 py-3 whitespace-nowrap text-sm font-mono text-gray-900">
+                    {% if '.' in item.task.id %}
+                    <span class="text-gray-400">{{ item.task.id.rsplit('.', 1)[0] }}.</span>{{ item.task.id.rsplit('.', 1)[1] }}
+                    {% else %}
+                    {{ item.task.id }}
+                    {% endif %}
+                </td>
                 <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-900">{{ item.task.name }}</td>
                 <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-600">
                     {% if item.task.dependencies %}
@@ -111,7 +137,7 @@
                 </td>
             </tr>
             {% if item.error %}
-            <tr class="bg-red-50">
+            <tr class="bg-red-50 task-row" data-group="{{ group }}" data-error-row>
                 <td colspan="11" class="px-4 py-2 text-sm text-red-700">
                     <span class="font-medium">Error:</span> {{ item.error }}
                 </td>

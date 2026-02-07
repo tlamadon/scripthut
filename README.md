@@ -10,7 +10,7 @@ A Python web interface to start and track jobs on remote systems like Slurm, ECS
 - **Multi-cluster support** - Monitor multiple Slurm/ECS clusters from a single dashboard
 - **Real-time job monitoring** - View running and pending jobs with auto-refresh
 - **Job persistence** - Jobs survive server restarts with automatic 7-day history retention
-- **Task queues** - Submit batches of jobs with configurable concurrency limits
+- **Task queues** - Submit batches of jobs with configurable concurrency limits and dependencies
 - **Unified job view** - See queue-submitted and external jobs in one dashboard
 - **Git source integration** - Clone job repositories with deploy key support
 - **Persistent SSH connections** - Maintains connections with keepalive and auto-reconnect
@@ -198,6 +198,7 @@ Jobs are the primary resource displayed on the dashboard. ScriptHut tracks jobs 
 | `running` | Job is actively executing on compute nodes |
 | `completed` | Job finished successfully (disappeared from `squeue`) |
 | `failed` | Job failed, was cancelled, timed out, or encountered an error |
+| `dep_failed` | Job was skipped because a dependency failed |
 
 #### Job Persistence
 
@@ -282,11 +283,57 @@ The command must return JSON in one of these formats:
 | `id` | Yes | Unique identifier for the task |
 | `name` | Yes | Display name for the task |
 | `command` | Yes | Shell command to execute |
+| `deps` | No | List of task IDs this task depends on (supports wildcards) |
 | `working_dir` | No | Working directory (default: `~`) |
 | `partition` | No | SLURM partition (default: `normal`) |
 | `cpus` | No | CPUs per task (default: `1`) |
 | `memory` | No | Memory allocation (default: `4G`) |
 | `time_limit` | No | Time limit (default: `1:00:00`) |
+| `output_file` | No | Custom stdout log path |
+| `error_file` | No | Custom stderr log path |
+
+#### Task Dependencies
+
+Tasks can declare dependencies on other tasks via the `deps` field. A task will only be submitted once all its dependencies have completed successfully. If a dependency fails, the task is marked as `dep_failed` and skipped.
+
+```json
+{
+  "tasks": [
+    {"id": "setup", "name": "Setup", "command": "bash setup.sh"},
+    {"id": "build", "name": "Build", "command": "make", "deps": ["setup"]},
+    {"id": "test",  "name": "Test",  "command": "make test", "deps": ["build"]}
+  ]
+}
+```
+
+#### Wildcard Dependencies
+
+Dependencies support glob-style wildcard patterns (`*`, `?`, `[...]`), which makes it easy to express "depend on all tasks in a group" without listing them individually.
+
+Use **dot-notation** in task IDs to create logical groups, then use wildcards to depend on entire groups:
+
+```json
+{
+  "tasks": [
+    {"id": "setup.init",   "name": "Setup",     "command": "bash setup.sh"},
+    {"id": "build.x",      "name": "Build X",   "command": "make x",    "deps": ["setup.*"]},
+    {"id": "build.y",      "name": "Build Y",   "command": "make y",    "deps": ["setup.*"]},
+    {"id": "final.merge",  "name": "Finalize",  "command": "make dist", "deps": ["build.*"]}
+  ]
+}
+```
+
+In this example, `final.merge` depends on `"build.*"` which automatically expands to `["build.x", "build.y"]`. This is equivalent to listing them explicitly but stays correct as you add or remove tasks in the `build` group.
+
+Supported patterns:
+
+| Pattern | Matches |
+|---------|---------|
+| `build.*` | All tasks starting with `build.` |
+| `step.?` | `step.1`, `step.2`, but not `step.10` |
+| `data.[ab]` | `data.a` and `data.b` |
+
+Tasks with dot-notation IDs are also displayed hierarchically in the queue detail UI, grouped by their prefix.
 
 ### Data Flow
 

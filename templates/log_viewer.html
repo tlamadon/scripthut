@@ -12,15 +12,9 @@
     <div class="container mx-auto px-4 py-8">
         <header class="mb-6">
             <div class="flex items-center justify-between">
-                <div>
-                    <h1 class="text-2xl font-bold text-gray-800">{{ title }}</h1>
-                    {% if log_path %}
-                    <p class="text-sm text-gray-500 font-mono">{{ log_path }}</p>
-                    {% endif %}
-                </div>
+                {% include "nav.html" %}
                 <div class="flex items-center gap-3">
                     {% if content_type == 'log' %}
-                    <!-- Refresh and tail controls -->
                     <div class="flex items-center gap-2">
                         <label class="text-sm text-gray-600">Tail:</label>
                         <select
@@ -41,12 +35,15 @@
                         Refresh
                     </button>
                     {% endif %}
-                    <a href="/queues/{{ queue_id }}" class="text-blue-600 hover:text-blue-800">
-                        &larr; Back to Queue
-                    </a>
                 </div>
             </div>
         </header>
+        <div class="mb-6">
+            <h2 class="text-xl font-semibold text-gray-800">{{ title }}</h2>
+            {% if log_path %}
+            <p class="text-sm text-gray-500 font-mono">{{ log_path }}</p>
+            {% endif %}
+        </div>
 
         {% if error %}
         <div class="bg-red-100 border border-red-300 text-red-700 px-4 py-3 rounded mb-6">

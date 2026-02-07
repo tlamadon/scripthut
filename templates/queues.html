@@ -11,15 +11,7 @@
 <body class="bg-gray-100 min-h-screen">
     <div class="container mx-auto px-4 py-8">
         <header class="mb-8">
-            <div class="flex items-center justify-between">
-                <div>
-                    <h1 class="text-3xl font-bold text-gray-800">Task Queues</h1>
-                    <p class="text-gray-600">Submit and track batch jobs</p>
-                </div>
-                <a href="/" class="text-blue-600 hover:text-blue-800">
-                    &larr; Back to Jobs
-                </a>
-            </div>
+            {% include "nav.html" %}
         </header>
 
         <!-- Task Sources -->
@@ -38,22 +30,12 @@
                             {% endif %}
                             <p class="text-xs text-gray-400 mt-1">Max concurrent: {{ source.max_concurrent }}</p>
                         </div>
-                        <div class="flex flex-col gap-2">
-                            <a
-                                href="/task-sources/{{ source.name }}/dry-run"
-                                class="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors text-sm font-medium text-center"
-                            >
-                                Dry Run
-                            </a>
-                            <button
-                                hx-post="/task-sources/{{ source.name }}/run"
-                                hx-swap="none"
-                                hx-on::after-request="if(event.detail.successful) window.location.reload()"
-                                class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm font-medium"
-                            >
-                                Run
-                            </button>
-                        </div>
+                        <a
+                            href="/task-sources/{{ source.name }}/dry-run"
+                            class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm font-medium text-center"
+                        >
+                            New Run
+                        </a>
                     </div>
                 </div>
                 {% endfor %}
