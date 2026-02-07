@@ -45,6 +45,55 @@ class QueueManager:
         self.queues: dict[str, Queue] = {}
         self.history_manager = history_manager
 
+    @staticmethod
+    def _validate_dependencies(tasks: list[TaskDefinition]) -> None:
+        """Validate task dependencies.
+
+        Checks that all dependency IDs reference existing tasks and that
+        there are no circular dependencies.
+
+        Raises:
+            ValueError: If validation fails.
+        """
+        task_ids = {t.id for t in tasks}
+
+        # Check all deps reference existing tasks
+        for task in tasks:
+            for dep_id in task.dependencies:
+                if dep_id not in task_ids:
+                    raise ValueError(
+                        f"Task '{task.id}' depends on '{dep_id}', which does not exist"
+                    )
+                if dep_id == task.id:
+                    raise ValueError(
+                        f"Task '{task.id}' depends on itself"
+                    )
+
+        # Detect circular dependencies via DFS
+        WHITE, GRAY, BLACK = 0, 1, 2
+        color = {t.id: WHITE for t in tasks}
+        deps_map = {t.id: t.dependencies for t in tasks}
+
+        def dfs(node: str, path: list[str]) -> None:
+            color[node] = GRAY
+            path.append(node)
+            for dep in deps_map[node]:
+                if color[dep] == GRAY:
+                    # Found a cycle — extract the cycle from path
+                    cycle_start = path.index(dep)
+                    cycle = path[cycle_start:] + [dep]
+                    raise ValueError(
+                        f"Circular dependency detected: {' -> '.join(cycle)}"
+                    )
+                if color[dep] == WHITE:
+                    dfs(dep, path)
+            path.pop()
+            color[node] = BLACK
+
+        for task in tasks:
+            if color[task.id] == WHITE:
+                dfs(task.id, [])
+
     def get_task_source(self, name: str) -> TaskSourceConfig | None:
         """Get a task source by name."""
         return self.config.get_task_source(name)
@@ -53,14 +102,18 @@ class QueueManager:
         """Get SSH client for a cluster."""
         return self.clusters.get(cluster_name)
 
-    async def fetch_tasks(self, source: TaskSourceConfig) -> list[TaskDefinition]:
+    async def fetch_tasks(
+        self, source: TaskSourceConfig, *, return_raw: bool = False
+    ) -> list[TaskDefinition] | tuple[list[TaskDefinition], str]:
         """Fetch task list from a task source via SSH.
 
         Args:
             source: Task source configuration.
+            return_raw: If True, also return the raw stdout from the command.
 
         Returns:
-            List of TaskDefinition objects.
+            List of TaskDefinition objects, or a tuple of (tasks, raw_output)
+            if return_raw is True.
 
         Raises:
             ValueError: If cluster not found or command fails.
@@ -92,6 +145,8 @@ class QueueManager:
         tasks = [TaskDefinition.from_dict(t) for t in tasks_data]
         logger.info(f"Fetched {len(tasks)} tasks from source '{source.name}'")
 
+        if return_raw:
+            return tasks, stdout
         return tasks
 
     async def dry_run(self, source_name: str) -> dict:
@@ -110,8 +165,11 @@ class QueueManager:
         if source is None:
             raise ValueError(f"Task source '{source_name}' not found")
 
-        # Fetch tasks
-        tasks = await self.fetch_tasks(source)
+        # Fetch tasks (and raw output for display)
+        tasks, raw_output = await self.fetch_tasks(source, return_raw=True)
+
+        # Validate dependencies
+        self._validate_dependencies(tasks)
 
         # Generate a preview queue ID for script generation
         preview_queue_id = "preview"
@@ -140,6 +198,12 @@ class QueueManager:
 
         logger.info(f"Dry run for source '{source_name}': {len(tasks)} tasks")
 
+        # Pretty-print the raw JSON for display
+        try:
+            raw_output_formatted = json.dumps(json.loads(raw_output), indent=2)
+        except (json.JSONDecodeError, TypeError):
+            raw_output_formatted = raw_output
+
         return {
             "source": source,
             "cluster_name": source.cluster,
@@ -147,6 +211,7 @@ class QueueManager:
             "max_concurrent": source.max_concurrent,
             "account": account,
             "tasks": task_details,
+            "raw_output": raw_output_formatted,
         }
 
     def get_cluster_account(self, cluster_name: str) -> str | None:
@@ -177,6 +242,9 @@ class QueueManager:
 
         if not tasks:
             raise ValueError(f"No tasks returned from source '{source_name}'")
+
+        # Validate dependencies
+        self._validate_dependencies(tasks)
 
         # Get account from cluster config
         account = self.get_cluster_account(source.cluster)
@@ -288,21 +356,43 @@ class QueueManager:
     async def process_queue(self, queue: Queue) -> None:
         """Process a queue - submit tasks up to max_concurrent.
 
+        Respects task dependencies: only submits tasks whose dependencies
+        have all completed. Cascades failure to tasks whose dependencies
+        have failed.
+
         Args:
             queue: The queue to process.
         """
+        # Cascade failures: mark pending items with failed deps as DEP_FAILED.
+        # Loop until no more items are marked, to handle transitive deps.
+        changed = True
+        while changed:
+            changed = False
+            for item in queue.items:
+                if item.status != QueueItemStatus.PENDING:
+                    continue
+                failed_deps = queue.get_failed_deps(item)
+                if failed_deps:
+                    item.status = QueueItemStatus.DEP_FAILED
+                    item.error = f"Dependency '{failed_deps[0]}' failed"
+                    item.finished_at = datetime.now()
+                    if self.history_manager:
+                        self.history_manager.update_from_queue_item(item, queue.id)
+                    changed = True
+
         # Count currently running/submitted
         active_count = queue.running_count
 
-        # Find pending items to submit
-        pending_items = [
+        # Find pending items whose dependencies are all satisfied
+        ready_items = [
             item for item in queue.items
             if item.status == QueueItemStatus.PENDING
+            and queue.are_deps_satisfied(item)
         ]
 
         # Submit up to max_concurrent
         slots_available = queue.max_concurrent - active_count
-        to_submit = pending_items[:slots_available]
+        to_submit = ready_items[:slots_available]
 
         for item in to_submit:
             await self.submit_task(queue, item)

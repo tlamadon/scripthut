@@ -311,6 +311,7 @@ class JobHistoryManager:
             QueueItemStatus.RUNNING: UnifiedJobState.RUNNING,
             QueueItemStatus.COMPLETED: UnifiedJobState.COMPLETED,
             QueueItemStatus.FAILED: UnifiedJobState.FAILED,
+            QueueItemStatus.DEP_FAILED: UnifiedJobState.FAILED,
         }
         return mapping.get(status, UnifiedJobState.UNKNOWN)
 

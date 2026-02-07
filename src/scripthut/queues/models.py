@@ -14,6 +14,7 @@ class QueueItemStatus(str, Enum):
     RUNNING = "running"  # Currently running
     COMPLETED = "completed"  # Finished successfully
     FAILED = "failed"  # Failed or cancelled
+    DEP_FAILED = "dep_failed"  # Skipped because a dependency failed
 
 
 @dataclass
@@ -44,7 +45,7 @@ class TaskDefinition:
             cpus=data.get("cpus", 1),
             memory=data.get("memory", "4G"),
             time_limit=data.get("time_limit", "1:00:00"),
-            dependencies=data.get("dependencies", []),
+            dependencies=data.get("deps", data.get("dependencies", [])),
             output_file=data.get("output_file"),
             error_file=data.get("error_file"),
         )
@@ -127,6 +128,7 @@ class QueueItem:
             QueueItemStatus.RUNNING: "text-blue-600",
             QueueItemStatus.COMPLETED: "text-green-600",
             QueueItemStatus.FAILED: "text-red-600",
+            QueueItemStatus.DEP_FAILED: "text-orange-600",
         }
         return status_classes.get(self.status, "text-gray-500")
 
@@ -162,10 +164,12 @@ class Queue:
 
         statuses = [item.status for item in self.items]
 
+        terminal_failures = (QueueItemStatus.FAILED, QueueItemStatus.DEP_FAILED)
+
         # Check for failures
-        if any(s == QueueItemStatus.FAILED for s in statuses):
+        if any(s in terminal_failures for s in statuses):
             # If all non-failed are completed, queue is failed
-            if all(s in (QueueItemStatus.FAILED, QueueItemStatus.COMPLETED) for s in statuses):
+            if all(s in (*terminal_failures, QueueItemStatus.COMPLETED) for s in statuses):
                 return QueueStatus.FAILED
 
         # Check if all completed
@@ -184,7 +188,7 @@ class Queue:
         """Return (completed_count, total_count)."""
         completed = sum(
             1 for item in self.items
-            if item.status in (QueueItemStatus.COMPLETED, QueueItemStatus.FAILED)
+            if item.status in (QueueItemStatus.COMPLETED, QueueItemStatus.FAILED, QueueItemStatus.DEP_FAILED)
         )
         return (completed, len(self.items))
 
@@ -218,6 +222,32 @@ class Queue:
     def failed_count(self) -> int:
         """Count of failed items."""
         return sum(1 for item in self.items if item.status == QueueItemStatus.FAILED)
+
+    @property
+    def dep_failed_count(self) -> int:
+        """Count of items that failed due to dependency failure."""
+        return sum(1 for item in self.items if item.status == QueueItemStatus.DEP_FAILED)
+
+    def are_deps_satisfied(self, item: QueueItem) -> bool:
+        """Check if all dependencies of an item are completed."""
+        if not item.task.dependencies:
+            return True
+        for dep_id in item.task.dependencies:
+            dep_item = self.get_item_by_task_id(dep_id)
+            if dep_item is None or dep_item.status != QueueItemStatus.COMPLETED:
+                return False
+        return True
+
+    def get_failed_deps(self, item: QueueItem) -> list[str]:
+        """Return list of dependency IDs that have failed or dep_failed."""
+        failed = []
+        for dep_id in item.task.dependencies:
+            dep_item = self.get_item_by_task_id(dep_id)
+            if dep_item is not None and dep_item.status in (
+                QueueItemStatus.FAILED, QueueItemStatus.DEP_FAILED
+            ):
+                failed.append(dep_id)
+        return failed
 
     def get_item_by_task_id(self, task_id: str) -> QueueItem | None:
         """Get a queue item by its task ID."""

@@ -23,12 +23,12 @@ import os
 from pathlib import Path
 
 
-def generate_tasks(count: int, working_dir: str, partition: str) -> dict:
+def generate_tasks(count: int, working_dir: str, partition: str, with_deps: bool = False) -> dict:
     """Generate a list of test tasks."""
     tasks = []
 
     for i in range(1, count + 1):
-        tasks.append({
+        task = {
             "id": f"test-{i:03d}",
             "name": f"test-task-{i}",
             # Run the simple_task.sh script with a task number
@@ -38,7 +38,11 @@ def generate_tasks(count: int, working_dir: str, partition: str) -> dict:
             "cpus": 1,
             "memory": "1G",
             "time_limit": "00:05:00",  # 5 minutes max
-        })
+        }
+        # With --with-deps, each task depends on the previous one (chain)
+        if with_deps and i > 1:
+            task["deps"] = [f"test-{i-1:03d}"]
+        tasks.append(task)
 
     return {"tasks": tasks}
 
@@ -63,10 +67,16 @@ def main():
         default="normal",
         help="Slurm partition to use (default: normal)"
     )
+    parser.add_argument(
+        "--with-deps",
+        action="store_true",
+        default=False,
+        help="Generate tasks with dependency chains (each task depends on the previous)"
+    )
 
     args = parser.parse_args()
 
-    tasks = generate_tasks(args.count, args.working_dir, args.partition)
+    tasks = generate_tasks(args.count, args.working_dir, args.partition, args.with_deps)
 
     # Output JSON to stdout
     print(json.dumps(tasks, indent=2))
