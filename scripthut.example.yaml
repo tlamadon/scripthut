@@ -14,6 +14,7 @@ clusters:
       # cert_path: ~/.ssh/id_rsa-cert.pub  # Optional: for certificate-based auth
       # known_hosts: ~/.ssh/known_hosts    # Optional: enable host key checking
     account: pi-faculty  # Slurm account for job submission (e.g., phd, pi-faculty)
+    # login_shell: true  # Use #!/bin/bash -l to source .bash_profile in jobs
 
   # Multiple clusters can be defined
   # - name: secondary-cluster

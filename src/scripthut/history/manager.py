@@ -349,6 +349,7 @@ class JobHistoryManager:
             max_concurrent=queue.max_concurrent,
             log_dir=queue.log_dir,
             account=queue.account,
+            login_shell=queue.login_shell,
         )
         self._queues[queue.id] = metadata
         self._dirty = True
@@ -398,6 +399,7 @@ class JobHistoryManager:
                 max_concurrent=metadata.max_concurrent,
                 log_dir=metadata.log_dir,
                 account=metadata.account,
+                login_shell=metadata.login_shell,
             )
 
         # Rebuild QueueItems from jobs
@@ -444,6 +446,7 @@ class JobHistoryManager:
             max_concurrent=metadata.max_concurrent,
             log_dir=metadata.log_dir,
             account=metadata.account,
+            login_shell=metadata.login_shell,
         )
 
     def reconstruct_all_queues(self) -> dict[str, Queue]:

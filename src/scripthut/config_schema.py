@@ -62,6 +62,10 @@ class SlurmClusterConfig(BaseModel):
         default=None,
         description="Slurm account to charge jobs to (e.g., phd, pi-faculty)",
     )
+    login_shell: bool = Field(
+        default=False,
+        description="Use login shell (#!/bin/bash -l) in sbatch scripts to source profile",
+    )
 
 
 class ECSClusterConfig(BaseModel):

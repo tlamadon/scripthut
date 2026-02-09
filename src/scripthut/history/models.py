@@ -17,6 +17,7 @@ class QueueMetadata:
     max_concurrent: int
     log_dir: str = "~/.cache/scripthut/logs"
     account: str | None = None
+    login_shell: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to dictionary for JSON storage."""
@@ -28,6 +29,7 @@ class QueueMetadata:
             "max_concurrent": self.max_concurrent,
             "log_dir": self.log_dir,
             "account": self.account,
+            "login_shell": self.login_shell,
         }
 
     @classmethod
@@ -41,6 +43,7 @@ class QueueMetadata:
             max_concurrent=data["max_concurrent"],
             log_dir=data.get("log_dir", "~/.cache/scripthut/logs"),
             account=data.get("account"),
+            login_shell=data.get("login_shell", False),
         )
 
 

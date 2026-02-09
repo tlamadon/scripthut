@@ -209,13 +209,14 @@ class QueueManager:
             home_dir = stdout.strip()
             log_dir = log_dir.replace("~", home_dir, 1)
 
-        # Get account from cluster config
+        # Get account and login_shell from cluster config
         account = self.get_cluster_account(source.cluster)
+        login_shell = self.get_cluster_login_shell(source.cluster)
 
         # Build task details with generated scripts
         task_details = []
         for task in tasks:
-            script = task.to_sbatch_script(preview_queue_id, log_dir, account=account)
+            script = task.to_sbatch_script(preview_queue_id, log_dir, account=account, login_shell=login_shell)
             task_details.append({
                 "task": task,
                 "sbatch_script": script,
@@ -248,6 +249,13 @@ class QueueManager:
             return cluster.account
         return None
 
+    def get_cluster_login_shell(self, cluster_name: str) -> bool:
+        """Get whether the cluster uses login shell in sbatch scripts."""
+        cluster = self.config.get_cluster(cluster_name)
+        if cluster and isinstance(cluster, SlurmClusterConfig):
+            return cluster.login_shell
+        return False
+
     async def create_queue(self, source_name: str) -> Queue:
         """Create a new queue from a task source.
 
@@ -274,8 +282,9 @@ class QueueManager:
         self._resolve_wildcard_deps(tasks)
         self._validate_dependencies(tasks)
 
-        # Get account from cluster config
+        # Get account and login_shell from cluster config
         account = self.get_cluster_account(source.cluster)
+        login_shell = self.get_cluster_login_shell(source.cluster)
 
         # Create queue
         queue_id = str(uuid.uuid4())[:8]
@@ -287,6 +296,7 @@ class QueueManager:
             items=[QueueItem(task=task) for task in tasks],
             max_concurrent=source.max_concurrent,
             account=account,
+            login_shell=login_shell,
         )
 
         self.queues[queue_id] = queue
@@ -339,7 +349,7 @@ class QueueManager:
         await ssh_client.run_command(f"mkdir -p {log_dir}")
 
         # Generate sbatch script and store it
-        script = item.task.to_sbatch_script(queue.id, log_dir, account=queue.account)
+        script = item.task.to_sbatch_script(queue.id, log_dir, account=queue.account, login_shell=queue.login_shell)
         item.sbatch_script = script
 
         # Submit via sbatch using heredoc

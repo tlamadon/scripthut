@@ -69,6 +69,7 @@ class TaskDefinition:
         queue_id: str,
         log_dir: str = "~/.cache/scripthut/logs",
         account: str | None = None,
+        login_shell: bool = False,
     ) -> str:
         """Generate sbatch script for this task."""
         output_path = self.get_output_path(queue_id, log_dir)
@@ -77,7 +78,9 @@ class TaskDefinition:
         # Build account line if specified
         account_line = f"#SBATCH --account={account}\n" if account else ""
 
-        return f"""#!/bin/bash
+        shebang = "#!/bin/bash -l" if login_shell else "#!/bin/bash"
+
+        return f"""{shebang}
 #SBATCH --job-name={self.name}
 #SBATCH --partition={self.partition}
 {account_line}#SBATCH --cpus-per-task={self.cpus}
@@ -155,6 +158,7 @@ class Queue:
     max_concurrent: int
     log_dir: str = "~/.cache/scripthut/logs"  # Directory for log files on the remote cluster
     account: str | None = None  # Slurm account to charge jobs to
+    login_shell: bool = False  # Use #!/bin/bash -l shebang
 
     @property
     def status(self) -> QueueStatus:
