@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import logging
 import time
+
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -60,6 +61,35 @@ class AppState:
     filter_user: str | None = None
     _polling_task: asyncio.Task[None] | None = None
     _shutdown_event: asyncio.Event = field(default_factory=asyncio.Event)
+    # SSE: global poll event for dashboard/queues pages
+    _poll_event: asyncio.Event = field(default_factory=asyncio.Event)
+    _last_poll_time: float = 0.0  # time.monotonic() of last poll completion
+
+    @property
+    def seconds_until_next_poll(self) -> int:
+        """Seconds remaining until the next squeue poll."""
+        if self._last_poll_time == 0.0:
+            # No poll yet — first poll runs immediately, show full interval
+            interval = self.config.settings.poll_interval if self.config else 60
+            return interval
+        interval = self.config.settings.poll_interval if self.config else 60
+        elapsed = time.monotonic() - self._last_poll_time
+        remaining = max(0, interval - elapsed)
+        return int(remaining)
+
+    def notify_poll(self) -> None:
+        """Wake all global SSE listeners (dashboard, queues list)."""
+        old = self._poll_event
+        self._poll_event = asyncio.Event()
+        old.set()
+
+    async def wait_for_poll(self, timeout: float = 65.0) -> bool:
+        """Wait for the next squeue poll to complete."""
+        try:
+            await asyncio.wait_for(self._poll_event.wait(), timeout=timeout)
+            return True
+        except asyncio.TimeoutError:
+            return False
 
     @property
     def all_jobs(self) -> list[tuple[str, SlurmJob]]:
@@ -200,6 +230,10 @@ async def poll_jobs() -> None:
         if state.history_manager:
             state.history_manager.save_if_dirty()
 
+        # Record poll time and notify SSE listeners
+        state._last_poll_time = time.monotonic()
+        state.notify_poll()
+
         # Cleanup old jobs once per hour (every ~60 polls at 60s interval)
         poll_count += 1
         if poll_count >= 60 and state.history_manager:
@@ -276,6 +310,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("Shutting down...")
     state._shutdown_event.set()
 
+    # Wake all SSE listeners so they can exit cleanly
+    state.notify_poll()
+    if state.queue_manager:
+        for queue_id in list(state.queue_manager._queue_events.keys()):
+            state.queue_manager.notify_queue(queue_id)
+
     if state._polling_task:
         state._polling_task.cancel()
         try:
@@ -316,6 +356,18 @@ templates_path = Path(__file__).parent.parent.parent / "templates"
 templates = Jinja2Templates(directory=str(templates_path))
 
 
+def _cluster_job_counts() -> dict[str, int]:
+    """Count active (pending/submitted/running) jobs per cluster."""
+    counts: dict[str, int] = {}
+    if state.history_manager:
+        all_jobs = state.history_manager.get_all_jobs()
+        for job in all_jobs:
+            if job.is_terminal:
+                continue
+            counts[job.cluster_name] = counts.get(job.cluster_name, 0) + 1
+    return counts
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request) -> HTMLResponse:
     """Main page with unified job list."""
@@ -335,6 +387,7 @@ async def index(request: Request) -> HTMLResponse:
             "request": request,
             "unified_jobs": unified_jobs,
             "clusters": state.clusters,
+            "cluster_job_counts": _cluster_job_counts(),
             "sources": state.source_statuses,
             "status": ConnectionStatus(
                 connected=state.any_connected,
@@ -345,6 +398,7 @@ async def index(request: Request) -> HTMLResponse:
                 ),
             ),
             "poll_interval": poll_interval,
+            "poll_remaining": state.seconds_until_next_poll,
             "filter_enabled": state.filter_enabled,
             "filter_user": state.filter_user,
         },
@@ -378,24 +432,66 @@ async def jobs_partial(request: Request) -> HTMLResponse:
 
 @app.get("/jobs/stream")
 async def jobs_stream(request: Request) -> EventSourceResponse:
-    """SSE endpoint for live job updates."""
+    """SSE endpoint for live job updates on the dashboard."""
 
     async def event_generator() -> AsyncGenerator[dict[str, Any], None]:
-        last_count = -1
         while True:
-            if await request.is_disconnected():
+            changed = await state.wait_for_poll()
+            if state._shutdown_event.is_set() or await request.is_disconnected():
                 break
 
-            # Send update when job count changes
-            current_count = sum(len(c.jobs) for c in state.clusters.values())
-            if current_count != last_count:
-                last_count = current_count
-                yield {
-                    "event": "jobs-updated",
-                    "data": str(current_count),
-                }
+            if changed:
+                # Render the jobs partial HTML
+                unified_jobs = []
+                if state.history_manager:
+                    unified_jobs = state.history_manager.get_all_jobs()
+                    if state.filter_enabled and state.filter_user:
+                        unified_jobs = [j for j in unified_jobs if j.user == state.filter_user]
 
-            await asyncio.sleep(1)
+                html = templates.get_template("jobs.html").render(
+                    {
+                        "request": request,
+                        "unified_jobs": unified_jobs,
+                        "clusters": state.clusters,
+                        "status": ConnectionStatus(
+                            connected=state.any_connected,
+                            host=", ".join(c.status.host for c in state.clusters.values() if c.status.connected),
+                        ),
+                        "filter_enabled": state.filter_enabled,
+                        "filter_user": state.filter_user,
+                    }
+                )
+                yield {"event": "jobs-update", "data": html}
+
+                # Also push updated clusters status
+                clusters_html = templates.get_template("clusters_status.html").render(
+                    {"request": request, "clusters": state.clusters, "cluster_job_counts": _cluster_job_counts()}
+                )
+                yield {"event": "clusters-update", "data": clusters_html}
+            else:
+                yield {"comment": "keepalive"}
+
+    return EventSourceResponse(event_generator())
+
+
+@app.get("/queues/stream")
+async def queues_stream(request: Request) -> EventSourceResponse:
+    """SSE endpoint for live queue list updates."""
+
+    async def event_generator() -> AsyncGenerator[dict[str, Any], None]:
+        while True:
+            changed = await state.wait_for_poll()
+            if state._shutdown_event.is_set() or await request.is_disconnected():
+                break
+
+            if changed:
+                queues = state.queue_manager.get_all_queues() if state.queue_manager else []
+                html = templates.get_template("queues_list.html").render(
+                    {"request": request, "queues": queues}
+                )
+                yield {"event": "queues-update", "data": html}
+            else:
+                yield {"comment": "keepalive"}
 
     return EventSourceResponse(event_generator())
 
@@ -689,6 +785,42 @@ async def queue_items_partial(request: Request, queue_id: str) -> HTMLResponse:
         "queue_items.html",
         {"request": request, "queue": queue},
     )
+
+
+@app.get("/queues/{queue_id}/events")
+async def queue_events(request: Request, queue_id: str) -> EventSourceResponse:
+    """SSE stream for real-time queue updates."""
+
+    async def event_generator():
+        if not state.queue_manager:
+            return
+
+        while True:
+            # Wait for a state change (or timeout for keepalive)
+            changed = await state.queue_manager.wait_for_update(queue_id)
+
+            if state._shutdown_event.is_set():
+                return
+
+            queue = state.queue_manager.get_queue(queue_id)
+            if queue is None:
+                return
+
+            if changed:
+                # Render partials and send as SSE events
+                info_html = templates.get_template("queue_info.html").render(
+                    {"request": request, "queue": queue}
+                )
+                items_html = templates.get_template("queue_items.html").render(
+                    {"request": request, "queue": queue}
+                )
+                yield {"event": "info-update", "data": info_html}
+                yield {"event": "items-update", "data": items_html}
+            else:
+                # Keepalive — send a comment to keep connection alive
+                yield {"comment": "keepalive"}
+
+    return EventSourceResponse(event_generator())
 
 
 @app.post("/queues/{queue_id}/cancel")

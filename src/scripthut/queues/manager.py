@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import uuid
@@ -50,6 +51,9 @@ class QueueManager:
         self.clusters = clusters
         self.queues: dict[str, Queue] = {}
         self.history_manager = history_manager
+        # SSE event bus: version counter + Event per queue
+        self._queue_versions: dict[str, int] = {}
+        self._queue_events: dict[str, asyncio.Event] = {}
 
     @staticmethod
     def _resolve_wildcard_deps(tasks: list[TaskDefinition]) -> None:
@@ -732,6 +736,28 @@ class QueueManager:
         for item in to_submit:
             await self.submit_task(queue, item)
 
+        if to_submit:
+            self.notify_queue(queue.id)
+
+    def notify_queue(self, queue_id: str) -> None:
+        """Wake all SSE listeners for a queue."""
+        self._queue_versions[queue_id] = self._queue_versions.get(queue_id, 0) + 1
+        old_event = self._queue_events.get(queue_id)
+        self._queue_events[queue_id] = asyncio.Event()  # Fresh event for next cycle
+        if old_event:
+            old_event.set()  # Wake anyone waiting on the old event
+
+    async def wait_for_update(self, queue_id: str, timeout: float = 30.0) -> bool:
+        """Wait for a queue state change. Returns True if notified, False on timeout."""
+        if queue_id not in self._queue_events:
+            self._queue_events[queue_id] = asyncio.Event()
+        event = self._queue_events[queue_id]
+        try:
+            await asyncio.wait_for(event.wait(), timeout=timeout)
+            return True
+        except asyncio.TimeoutError:
+            return False
+
     async def update_queue_status(self, queue: Queue, slurm_jobs: dict[str, JobState]) -> None:
         """Update queue item statuses based on Slurm job states.
 
@@ -812,6 +838,7 @@ class QueueManager:
         # If any items completed/failed, try to submit more
         if changed:
             await self.process_queue(queue)
+            self.notify_queue(queue.id)
 
     async def update_all_queues(self, cluster_jobs: dict[str, list[tuple[str, JobState]]]) -> None:
         """Update all active queues based on Slurm job states.
