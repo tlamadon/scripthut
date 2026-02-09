@@ -562,12 +562,61 @@ async def dry_run_task_source(request: Request, name: str) -> HTMLResponse:
             {"request": request, "error": str(e), "result": None},
         )
 
+# Project Routes
+
+
+@app.get("/projects/{name}/workflows")
+async def list_project_workflows(name: str) -> dict[str, Any]:
+    """Discover sflow.json files in a project repo."""
+    if state.queue_manager is None:
+        return {"error": "Queue manager not initialized"}
+
+    try:
+        paths = await state.queue_manager.discover_workflows(name)
+        return {"project": name, "workflows": paths}
+    except ValueError as e:
+        return {"error": str(e)}
+
+
+@app.post("/projects/{name}/run")
+async def run_project_workflow(name: str, workflow: str) -> dict[str, Any]:
+    """Run a sflow.json workflow from a project."""
+    if state.queue_manager is None:
+        return {"error": "Queue manager not initialized"}
+
+    try:
+        queue = await state.queue_manager.create_queue_from_project(
+            name, workflow
+        )
+        return {
+            "queue_id": queue.id,
+            "source_name": queue.source_name,
+            "cluster_name": queue.cluster_name,
+            "task_count": len(queue.items),
+            "status": queue.status.value,
+        }
+    except ValueError as e:
+        return {"error": str(e)}
+
 
 @app.get("/queues", response_class=HTMLResponse)
 async def queues_page(request: Request) -> HTMLResponse:
     """Page listing all queues."""
     queues = state.queue_manager.get_all_queues() if state.queue_manager else []
     task_sources = state.config.task_sources if state.config else []
+    projects = state.config.projects if state.config else []
+
+    # Discover workflows for each project
+    project_workflows: dict[str, list[str]] = {}
+    if state.queue_manager:
+        for project in projects:
+            try:
+                paths = await state.queue_manager.discover_workflows(
+                    project.name
+                )
+                project_workflows[project.name] = paths
+            except ValueError:
+                project_workflows[project.name] = []
 
     return templates.TemplateResponse(
         "queues.html",
@@ -575,6 +624,8 @@ async def queues_page(request: Request) -> HTMLResponse:
             "request": request,
             "queues": queues,
             "task_sources": task_sources,
+            "projects": projects,
+            "project_workflows": project_workflows,
         },
     )
 

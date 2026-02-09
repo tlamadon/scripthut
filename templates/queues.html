@@ -14,7 +14,61 @@
             {% include "nav.html" %}
         </header>
 
-        <!-- Task Sources -->
+        <!-- Projects -->
+        {% if projects %}
+        {% for project in projects %}
+        <div class="bg-white rounded-lg shadow-md p-6 mb-6">
+            <div class="flex items-center justify-between mb-4">
+                <div class="flex items-center gap-2">
+                    <span class="text-lg">📦</span>
+                    <h2 class="text-xl font-semibold text-gray-800">{{ project.name }}</h2>
+                    <span class="text-sm text-gray-500">({{ project.cluster }})</span>
+                </div>
+                <button
+                    hx-get="/projects/{{ project.name }}/workflows"
+                    hx-swap="none"
+                    onclick="window.location.reload()"
+                    class="px-3 py-1.5 text-sm text-gray-600 hover:text-gray-800 border rounded-lg hover:bg-gray-50 transition-colors"
+                    title="Refresh workflows"
+                >
+                    🔄 Refresh
+                </button>
+            </div>
+            {% if project.description %}
+            <p class="text-sm text-gray-600 mb-3">{{ project.description }}</p>
+            {% endif %}
+
+            {% set workflows = project_workflows.get(project.name, []) %}
+            {% if workflows %}
+            <div class="border rounded-lg divide-y">
+                {% for wf in workflows %}
+                {% set wf_dir = wf.rsplit('/', 2)[-2] if '/' in wf else '.' %}
+                <div class="flex items-center justify-between px-4 py-3 hover:bg-gray-50">
+                    <div class="flex items-center gap-2 text-sm">
+                        <span class="text-gray-400">📁</span>
+                        <span class="font-medium text-gray-700">{{ wf_dir }}</span>
+                        <span class="text-gray-400">/</span>
+                        <span class="text-gray-500">sflow.json</span>
+                    </div>
+                    <button
+                        hx-post="/projects/{{ project.name }}/run?workflow={{ wf }}"
+                        hx-swap="none"
+                        hx-on::after-request="window.location.reload()"
+                        class="px-4 py-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm font-medium"
+                    >
+                        Run
+                    </button>
+                </div>
+                {% endfor %}
+            </div>
+            {% else %}
+            <p class="text-gray-500 text-sm">No sflow.json files found. Push a workflow to the repo and refresh.</p>
+            {% endif %}
+        </div>
+        {% endfor %}
+        {% endif %}
+
+        <!-- Legacy Task Sources -->
         <div class="bg-white rounded-lg shadow-md p-6 mb-6">
             <h2 class="text-xl font-semibold text-gray-800 mb-4">Task Sources</h2>
             {% if task_sources %}
