@@ -46,7 +46,7 @@ def parse_slurm_duration(time_str: str) -> float:
 
 
 def parse_rss_to_bytes(rss_str: str) -> int:
-    """Parse sacct/sstat RSS string (e.g. '4556K', '1024M') to bytes. Returns 0 on failure."""
+    """Parse sacct RSS string (e.g. '4556K', '1024M') to bytes. Returns 0 on failure."""
     if not rss_str or rss_str.strip() in ("", "0", "N/A"):
         return 0
     match = re.match(r"^([\d.]+)([KMGTP]?)$", rss_str.strip(), re.IGNORECASE)
@@ -162,14 +162,14 @@ class SlurmBackend(JobBackend):
         return jobs
 
     async def get_job_stats(
-        self, job_ids: list[str], running_ids: list[str] | None = None,
+        self, job_ids: list[str],
     ) -> dict[str, JobStats]:
-        """Fetch resource utilization stats for jobs using sacct + sstat.
+        """Fetch resource utilization stats for completed jobs using sacct.
+
+        Post-mortem analysis only using sacct accounting data.
 
         Args:
-            job_ids: List of all Slurm job IDs to query via sacct.
-            running_ids: Subset of job_ids currently running (queried via sstat
-                         for real-time memory that sacct may not have yet).
+            job_ids: List of Slurm job IDs to query via sacct.
 
         Returns:
             Dict mapping job_id to JobStats.
@@ -198,9 +198,9 @@ class SlurmBackend(JobBackend):
         logger.debug(f"sacct raw output ({len(stdout)} chars): {stdout[:500]}")
 
         # Parse sacct output. Each job produces multiple lines (main, .batch, .extern).
-        # Collect Elapsed/AllocCPUS from main entry, TotalCPU from .batch,
+        # Collect Elapsed/AllocCPUS/TotalCPU from main entry, TotalCPU from .batch,
         # and MaxRSS from ALL steps (taking the maximum).
-        main_data: dict[str, tuple[float, int]] = {}  # job_id -> (elapsed_s, alloc_cpus)
+        main_data: dict[str, tuple[float, int, float]] = {}  # job_id -> (elapsed_s, alloc_cpus, total_cpu_s)
         batch_cpu: dict[str, float] = {}  # job_id -> total_cpu_s from .batch
         max_rss_bytes: dict[str, int] = {}  # job_id -> best MaxRSS in bytes across all steps
 
@@ -224,37 +224,14 @@ class SlurmBackend(JobBackend):
             if ".batch" in raw_id:
                 batch_cpu[base_id] = parse_slurm_duration(total_cpu)
             elif "." not in raw_id:
-                # Main entry
+                # Main entry — has aggregate TotalCPU (used as fallback when .batch is 0)
                 elapsed_s = parse_slurm_duration(elapsed)
+                main_cpu_s = parse_slurm_duration(total_cpu)
                 try:
                     alloc_cpus = int(alloc_cpus_str) if alloc_cpus_str else 1
                 except ValueError:
                     alloc_cpus = 1
-                main_data[raw_id] = (elapsed_s, alloc_cpus)
-
-        # --- sstat for real-time memory of running jobs ---
-        if running_ids:
-            sstat_ids = ",".join(f"{jid}.batch" for jid in running_ids)
-            sstat_cmd = f"sstat --noheader --parsable2 --format=JobID,MaxRSS --jobs={sstat_ids}"
-            try:
-                sstat_out, sstat_err, sstat_rc = await self._ssh.run_command(sstat_cmd, timeout=15)
-                if sstat_rc == 0:
-                    logger.debug(f"sstat raw output ({len(sstat_out)} chars): {sstat_out[:500]}")
-                    for line in sstat_out.strip().split("\n"):
-                        if not line.strip():
-                            continue
-                        sparts = line.split("|")
-                        if len(sparts) < 2:
-                            continue
-                        sid, srss = sparts[0], sparts[1]
-                        base = sid.split(".")[0]
-                        rss_b = parse_rss_to_bytes(srss)
-                        if rss_b > max_rss_bytes.get(base, 0):
-                            max_rss_bytes[base] = rss_b
-                else:
-                    logger.debug(f"sstat returned exit {sstat_rc}: {sstat_err}")
-            except Exception as e:
-                logger.debug(f"sstat failed (non-critical): {e}")
+                main_data[raw_id] = (elapsed_s, alloc_cpus, main_cpu_s)
 
         # --- Compute final stats ---
         stats: dict[str, JobStats] = {}
@@ -262,8 +239,9 @@ class SlurmBackend(JobBackend):
             if job_id not in main_data:
                 continue
 
-            elapsed_s, alloc_cpus = main_data[job_id]
-            total_cpu_s = batch_cpu.get(job_id, 0.0)
+            elapsed_s, alloc_cpus, main_cpu_s = main_data[job_id]
+            # Prefer .batch TotalCPU, fall back to main entry's aggregate TotalCPU
+            total_cpu_s = batch_cpu.get(job_id, 0.0) or main_cpu_s
 
             # CPU efficiency: total_cpu / (elapsed * alloc_cpus) * 100
             denominator = elapsed_s * max(alloc_cpus, 1)
@@ -277,7 +255,7 @@ class SlurmBackend(JobBackend):
                 total_cpu=f"{total_cpu_s:.0f}s",
             )
 
-        logger.debug(f"Fetched stats for {len(stats)}/{len(job_ids)} jobs via sacct/sstat")
+        logger.debug(f"Fetched stats for {len(stats)}/{len(job_ids)} jobs via sacct")
         return stats
 
     async def is_available(self) -> bool:

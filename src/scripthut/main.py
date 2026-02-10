@@ -13,7 +13,7 @@ from typing import Any, AsyncGenerator
 
 import uvicorn
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 from fastapi.templating import Jinja2Templates
 from sse_starlette.sse import EventSourceResponse
 
@@ -180,26 +180,18 @@ async def poll_cluster(cluster_state: ClusterState, filter_user: str | None = No
         )
         logger.debug(f"Polled {len(jobs)} jobs from '{cluster_state.name}' in {duration_ms}ms")
 
-        # Fetch resource utilization via sacct + sstat
+        # Fetch resource utilization via sacct (post-mortem only)
+        # Only query completed jobs that don't have stats yet — no need to
+        # poll sacct for running jobs every cycle.
         job_stats: dict[str, JobStats] = {}
-        job_ids = [j.job_id for j in jobs]
-        running_ids = [j.job_id for j in jobs if j.state == JobState.RUNNING]
-        # Also include recently-completed jobs that lack stats
+        sacct_ids: list[str] = []
         if state.history_manager:
-            for hj in state.history_manager.get_active_jobs(cluster_name=cluster_state.name):
+            for hj in state.history_manager.get_all_jobs(cluster_name=cluster_state.name):
                 if hj.slurm_job_id and hj.is_terminal and hj.cpu_efficiency is None:
-                    job_ids.append(hj.slurm_job_id)
-        if job_ids:
+                    sacct_ids.append(hj.slurm_job_id)
+        if sacct_ids:
             try:
-                job_stats = await cluster_state.backend.get_job_stats(
-                    job_ids, running_ids=running_ids,
-                )
-                # Merge stats into SlurmJob objects
-                for job in jobs:
-                    if job.job_id in job_stats:
-                        s = job_stats[job.job_id]
-                        job.cpu_efficiency = s.cpu_efficiency
-                        job.max_rss = s.max_rss
+                job_stats = await cluster_state.backend.get_job_stats(sacct_ids)
             except Exception as e:
                 logger.warning(f"sacct stats fetch failed for '{cluster_state.name}': {e}")
 
@@ -885,6 +877,19 @@ async def cancel_queue(queue_id: str) -> dict[str, Any]:
         return {"status": "cancelled", "queue_id": queue_id}
     else:
         return {"error": "Queue not found"}
+
+
+@app.delete("/queues/{queue_id}")
+async def delete_queue(queue_id: str) -> Response:
+    """Delete a terminal queue (completed, failed, or cancelled) from history."""
+    if state.queue_manager is None:
+        return Response(status_code=400)
+
+    success = state.queue_manager.delete_queue(queue_id)
+    if success:
+        return Response(status_code=200)
+    else:
+        return Response(status_code=404)
 
 
 @app.get("/queues/{queue_id}/tasks/{task_id}/script", response_class=HTMLResponse)

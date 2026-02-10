@@ -376,6 +376,32 @@ class JobHistoryManager:
         self._dirty = True
         logger.info(f"Registered queue '{queue.id}' in history")
 
+    def delete_queue(self, queue_id: str) -> bool:
+        """Delete a queue and all its associated jobs from history.
+
+        Args:
+            queue_id: The queue ID to delete.
+
+        Returns:
+            True if the queue was found and deleted, False otherwise.
+        """
+        if queue_id not in self._queues:
+            return False
+
+        # Remove all jobs belonging to this queue
+        jobs_to_remove = [
+            job_id for job_id, job in self._jobs.items()
+            if job.queue_id == queue_id
+        ]
+        for job_id in jobs_to_remove:
+            del self._jobs[job_id]
+
+        # Remove the queue metadata
+        del self._queues[queue_id]
+        self._dirty = True
+        logger.info(f"Deleted queue '{queue_id}' and {len(jobs_to_remove)} associated jobs from history")
+        return True
+
     def get_queue_metadata(self, queue_id: str) -> QueueMetadata | None:
         """Get queue metadata by ID."""
         return self._queues.get(queue_id)

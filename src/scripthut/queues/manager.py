@@ -21,6 +21,7 @@ from scripthut.queues.models import (
     Queue,
     QueueItem,
     QueueItemStatus,
+    QueueStatus,
     TaskDefinition,
 )
 from scripthut.ssh.client import SSHClient
@@ -893,6 +894,37 @@ class QueueManager:
                 self.history_manager.update_from_queue_item(item, queue.id)
 
         logger.info(f"Cancelled queue '{queue_id}'")
+        return True
+
+    def delete_queue(self, queue_id: str) -> bool:
+        """Delete a terminal queue (completed, failed, or cancelled).
+
+        Args:
+            queue_id: ID of the queue to delete.
+
+        Returns:
+            True if the queue was deleted, False if not found or still active.
+        """
+        queue = self.queues.get(queue_id)
+        if queue is None:
+            return False
+
+        # Only allow deleting terminal queues
+        if queue.status in (QueueStatus.PENDING, QueueStatus.RUNNING):
+            return False
+
+        # Remove from history
+        if self.history_manager:
+            self.history_manager.delete_queue(queue_id)
+
+        # Remove from in-memory queues
+        del self.queues[queue_id]
+
+        # Clean up SSE tracking
+        self._queue_versions.pop(queue_id, None)
+        self._queue_events.pop(queue_id, None)
+
+        logger.info(f"Deleted queue '{queue_id}'")
         return True
 
     def get_queue(self, queue_id: str) -> Queue | None:
