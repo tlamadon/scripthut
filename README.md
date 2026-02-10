@@ -291,6 +291,7 @@ The command must return JSON in one of these formats:
 | `time_limit` | No | Time limit (default: `1:00:00`) |
 | `output_file` | No | Custom stdout log path |
 | `error_file` | No | Custom stderr log path |
+| `environment` | No | Name of an environment defined in `scripthut.yaml` |
 
 #### Task Dependencies
 
@@ -334,6 +335,68 @@ Supported patterns:
 | `data.[ab]` | `data.a` and `data.b` |
 
 Tasks with dot-notation IDs are also displayed hierarchically in the queue detail UI, grouped by their prefix.
+
+### Environments
+
+Environments let you define reusable sets of environment variables and initialization commands in `scripthut.yaml`. Tasks reference an environment by name, and the corresponding variables and init lines are injected into the generated sbatch script.
+
+#### Defining Environments
+
+Add an `environments` section to your `scripthut.yaml`:
+
+```yaml
+environments:
+  - name: julia-1.10
+    variables:
+      JULIA_DEPOT_PATH: "/scratch/user/julia_depot"
+      JULIA_NUM_THREADS: "8"
+    extra_init: "module load julia/1.10"
+
+  - name: python-ml
+    variables:
+      CUDA_VISIBLE_DEVICES: "0,1"
+      OMP_NUM_THREADS: "4"
+    extra_init: |
+      module load cuda/12.0
+      source ~/envs/ml/bin/activate
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `name` | Yes | Unique identifier referenced by tasks |
+| `variables` | No | Key-value pairs exported as `export KEY="VALUE"` |
+| `extra_init` | No | Raw bash lines inserted before the task command (e.g. `module load`, `source activate`) |
+
+#### Using Environments in Tasks
+
+Tasks declare which environment to use via the `environment` field in their JSON definition:
+
+```json
+[
+  {"id": "solve", "name": "Solve Model", "command": "julia solve.jl", "environment": "julia-1.10"}
+]
+```
+
+This produces an sbatch script like:
+
+```bash
+#!/bin/bash -l
+#SBATCH --job-name="Solve Model"
+#SBATCH ...
+
+echo "=== ScriptHut Task: Solve Model ==="
+...
+
+export JULIA_DEPOT_PATH="/scratch/user/julia_depot"
+export JULIA_NUM_THREADS="8"
+
+module load julia/1.10
+
+cd ~/projects/jmp
+julia solve.jl
+```
+
+If a task references an environment name that doesn't exist in the config, a warning is logged and the script is generated without any environment setup.
 
 ### Data Flow
 
