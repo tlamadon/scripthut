@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import IO
 
+from scripthut.backends.slurm import JobStats
 from scripthut.history.models import QueueMetadata, UnifiedJob, UnifiedJobSource, UnifiedJobState
 from scripthut.models import JobState, SlurmJob
 from scripthut.queues.models import Queue, QueueItem, QueueItemStatus, TaskDefinition
@@ -208,15 +209,18 @@ class JobHistoryManager:
         self,
         slurm_jobs: list[SlurmJob],
         cluster_name: str,
+        job_stats: dict[str, JobStats] | None = None,
     ) -> None:
         """Update history from SLURM polling results.
 
         - Updates existing jobs with new state
         - Adds new external jobs (not from queue)
         - Marks jobs not in poll as potentially completed
+        - Merges resource utilization from sacct stats
         """
         now = datetime.now()
         seen_slurm_ids: set[str] = set()
+        stats = job_stats or {}
 
         for slurm_job in slurm_jobs:
             seen_slurm_ids.add(slurm_job.job_id)
@@ -231,9 +235,14 @@ class JobHistoryManager:
                 existing.nodes = slurm_job.nodes
                 existing.start_time = slurm_job.start_time or existing.start_time
                 existing.last_seen = now
+                if slurm_job.job_id in stats:
+                    s = stats[slurm_job.job_id]
+                    existing.cpu_efficiency = s.cpu_efficiency
+                    existing.max_rss = s.max_rss
                 self._dirty = True
             else:
                 # New external job - add to history
+                s = stats.get(slurm_job.job_id)
                 job = UnifiedJob(
                     id=f"ext-{cluster_name}-{slurm_job.job_id}",
                     slurm_job_id=slurm_job.job_id,
@@ -250,9 +259,21 @@ class JobHistoryManager:
                     created_at=slurm_job.submit_time or now,
                     submit_time=slurm_job.submit_time,
                     start_time=slurm_job.start_time,
+                    cpu_efficiency=s.cpu_efficiency if s else None,
+                    max_rss=s.max_rss if s else None,
                     last_seen=now,
                 )
                 self.add_job(job)
+
+        # Update stats for recently-completed jobs that weren't in squeue
+        for job in self._jobs.values():
+            if job.cluster_name != cluster_name:
+                continue
+            if job.slurm_job_id and job.slurm_job_id in stats and job.cpu_efficiency is None:
+                s = stats[job.slurm_job_id]
+                job.cpu_efficiency = s.cpu_efficiency
+                job.max_rss = s.max_rss
+                self._dirty = True
 
         # Mark jobs not in poll as completed (if they were running/submitted)
         for job in self._jobs.values():

@@ -14,6 +14,7 @@
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Slurm Job</th>
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Partition</th>
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Resources</th>
+                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Utilization</th>
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Submitted</th>
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Started</th>
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Finished</th>
@@ -27,7 +28,7 @@
             {% if group != ns.current_group and group != '' %}
             {% set ns.current_group = group %}
             <tr class="bg-gray-50 cursor-pointer select-none group-header hover:bg-gray-100" data-group="{{ group }}" onclick="toggleGroup('{{ group }}')">
-                <td colspan="11" class="px-4 py-1.5">
+                <td colspan="12" class="px-4 py-1.5">
                     <div class="flex items-center justify-between">
                         <div class="flex items-center gap-2">
                             <svg class="w-3.5 h-3.5 text-gray-400 transition-transform group-chevron" viewBox="0 0 20 20" fill="currentColor">
@@ -92,6 +93,19 @@
                 <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-600">
                     {{ item.task.cpus }} CPU, {{ item.task.memory }}, {{ item.task.time_limit }}
                 </td>
+                <td class="px-4 py-3 whitespace-nowrap text-xs">
+                    {% if item.slurm_job_id and job_util is defined and item.slurm_job_id in job_util %}
+                    {% set u = job_util[item.slurm_job_id] %}
+                    <div class="flex flex-col gap-0.5">
+                        <span class="font-mono {% if u.cpu_efficiency >= 70 %}text-green-600{% elif u.cpu_efficiency >= 30 %}text-yellow-600{% else %}text-red-600{% endif %}">CPU {{ "%.0f"|format(u.cpu_efficiency) }}%</span>
+                        {% if u.max_rss %}
+                        <span class="font-mono text-gray-600">Mem {{ u.max_rss }}<span class="text-gray-400">/{{ item.task.memory }}</span></span>
+                        {% endif %}
+                    </div>
+                    {% else %}
+                    <span class="text-gray-400">-</span>
+                    {% endif %}
+                </td>
                 <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
                     {% if item.submitted_at %}
                     {{ item.submitted_at.strftime('%H:%M:%S') }}
@@ -138,7 +152,7 @@
             </tr>
             {% if item.error %}
             <tr class="bg-red-50 task-row" data-group="{{ group }}" data-error-row>
-                <td colspan="11" class="px-4 py-2 text-sm text-red-700">
+                <td colspan="12" class="px-4 py-2 text-sm text-red-700">
                     <span class="font-medium">Error:</span> {{ item.error }}
                 </td>
             </tr>
