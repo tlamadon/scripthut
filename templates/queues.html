@@ -18,6 +18,11 @@
             {% include "nav.html" %}
         </header>
 
+        <!-- Error banner (hidden by default) -->
+        <div id="run-error" class="hidden bg-red-100 border border-red-300 text-red-700 px-4 py-3 rounded mb-6">
+            <span class="font-medium">Error:</span> <span id="run-error-msg"></span>
+        </div>
+
         <!-- Projects -->
         {% if projects %}
         {% for project in projects %}
@@ -52,7 +57,7 @@
                         <span class="text-gray-500">sflow.json</span>
                     </div>
                     <button hx-post="/projects/{{ project.name }}/run?workflow={{ wf }}" hx-swap="none"
-                        hx-on::after-request="window.location.reload()"
+                        hx-on::after-request="handleRunResponse(event)"
                         class="px-4 py-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm font-medium">
                         Run
                     </button>
@@ -108,6 +113,25 @@
             </div>
         </div>
     </div>
+
+    <script>
+        function handleRunResponse(event) {
+            if (event.detail.successful) {
+                window.location.reload();
+            } else {
+                var errorBanner = document.getElementById('run-error');
+                var errorMsg = document.getElementById('run-error-msg');
+                try {
+                    var resp = JSON.parse(event.detail.xhr.responseText);
+                    errorMsg.textContent = resp.error || 'Unknown error';
+                } catch (e) {
+                    errorMsg.textContent = 'Request failed (HTTP ' + event.detail.xhr.status + ')';
+                }
+                errorBanner.classList.remove('hidden');
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+            }
+        }
+    </script>
 </body>
 
 </html>

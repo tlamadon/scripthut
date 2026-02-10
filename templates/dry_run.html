@@ -19,7 +19,7 @@
                         type="submit"
                         hx-post="/task-sources/{{ result.source.name }}/run"
                         hx-swap="none"
-                        hx-on::after-request="if(event.detail.successful) window.location.href='/queues'"
+                        hx-on::after-request="handleSubmitResponse(event)"
                         class="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors font-medium"
                     >
                         Submit {{ result.task_count }} Tasks
@@ -169,7 +169,7 @@
             <button
                 hx-post="/task-sources/{{ result.source.name }}/run"
                 hx-swap="none"
-                hx-on::after-request="if(event.detail.successful) window.location.href='/queues'"
+                hx-on::after-request="handleSubmitResponse(event)"
                 class="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors font-medium"
             >
                 Submit {{ result.task_count }} Tasks
@@ -185,7 +185,33 @@
         {% endif %}
     </div>
 
+    <!-- Submission error banner (hidden by default) -->
+    <div id="submit-error" class="hidden container mx-auto px-4">
+        <div class="bg-red-100 border border-red-300 text-red-700 px-4 py-3 rounded mb-6">
+            <span class="font-medium">Submission failed:</span> <span id="submit-error-msg"></span>
+        </div>
+    </div>
+
     <script>
+        function handleSubmitResponse(event) {
+            if (event.detail.successful) {
+                window.location.href = '/queues';
+            } else {
+                // Show error message
+                var errorBanner = document.getElementById('submit-error');
+                var errorMsg = document.getElementById('submit-error-msg');
+                try {
+                    var resp = JSON.parse(event.detail.xhr.responseText);
+                    errorMsg.textContent = resp.error || 'Unknown error';
+                } catch (e) {
+                    errorMsg.textContent = 'Request failed (HTTP ' + event.detail.xhr.status + ')';
+                }
+                errorBanner.classList.remove('hidden');
+                // Scroll to top so the error is visible
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+            }
+        }
+
         function toggleScript(id) {
             const el = document.getElementById(id);
             const btn = event.target;

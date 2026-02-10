@@ -13,7 +13,7 @@ from typing import Any, AsyncGenerator
 
 import uvicorn
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.templating import Jinja2Templates
 from sse_starlette.sse import EventSourceResponse
 
@@ -191,7 +191,9 @@ async def poll_cluster(cluster_state: ClusterState, filter_user: str | None = No
                     sacct_ids.append(hj.slurm_job_id)
         if sacct_ids:
             try:
-                job_stats = await cluster_state.backend.get_job_stats(sacct_ids)
+                job_stats = await cluster_state.backend.get_job_stats(
+                    sacct_ids, user=filter_user,
+                )
             except Exception as e:
                 logger.warning(f"sacct stats fetch failed for '{cluster_state.name}': {e}")
 
@@ -633,11 +635,14 @@ async def list_task_sources() -> dict[str, Any]:
     }
 
 
-@app.post("/task-sources/{name}/run")
-async def run_task_source(name: str) -> dict[str, Any]:
+@app.post("/task-sources/{name}/run", response_model=None)
+async def run_task_source(name: str):
     """Trigger a task source to create a new queue."""
     if state.queue_manager is None:
-        return {"error": "Queue manager not initialized"}
+        return JSONResponse(
+            status_code=500,
+            content={"error": "Queue manager not initialized"},
+        )
 
     try:
         queue = await state.queue_manager.create_queue(name)
@@ -648,8 +653,12 @@ async def run_task_source(name: str) -> dict[str, Any]:
             "task_count": len(queue.items),
             "status": queue.status.value,
         }
-    except ValueError as e:
-        return {"error": str(e)}
+    except Exception as e:
+        logger.error(f"Failed to create queue for source '{name}': {e}")
+        return JSONResponse(
+            status_code=422,
+            content={"error": str(e)},
+        )
 
 
 @app.get("/task-sources/{name}/dry-run", response_class=HTMLResponse)
@@ -689,11 +698,14 @@ async def list_project_workflows(name: str) -> dict[str, Any]:
         return {"error": str(e)}
 
 
-@app.post("/projects/{name}/run")
-async def run_project_workflow(name: str, workflow: str) -> dict[str, Any]:
+@app.post("/projects/{name}/run", response_model=None)
+async def run_project_workflow(name: str, workflow: str):
     """Run a sflow.json workflow from a project."""
     if state.queue_manager is None:
-        return {"error": "Queue manager not initialized"}
+        return JSONResponse(
+            status_code=500,
+            content={"error": "Queue manager not initialized"},
+        )
 
     try:
         queue = await state.queue_manager.create_queue_from_project(
@@ -706,8 +718,12 @@ async def run_project_workflow(name: str, workflow: str) -> dict[str, Any]:
             "task_count": len(queue.items),
             "status": queue.status.value,
         }
-    except ValueError as e:
-        return {"error": str(e)}
+    except Exception as e:
+        logger.error(f"Failed to create queue for project '{name}': {e}")
+        return JSONResponse(
+            status_code=422,
+            content={"error": str(e)},
+        )
 
 
 @app.get("/queues", response_class=HTMLResponse)
@@ -763,6 +779,99 @@ async def list_queues() -> dict[str, Any]:
     }
 
 
+def _compute_gantt_data(queue: Queue) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Compute layout data for Gantt chart bars.
+
+    Returns a list of dicts (one per queue item) with percentage-based
+    positions for the wait and run bar segments.
+    """
+    now = datetime.now()
+
+    # Determine time boundaries
+    time_origin = queue.created_at
+    time_end = now  # default for running queues
+
+    # Find the latest timestamp across all items
+    for item in queue.items:
+        for ts in (item.finished_at, item.started_at, item.submitted_at):
+            if ts and ts > time_end:
+                time_end = ts
+
+    total_span = (time_end - time_origin).total_seconds()
+    if total_span <= 0:
+        total_span = 1  # avoid division by zero
+
+    # Build time markers (nice intervals)
+    markers: list[dict[str, Any]] = []
+    # Choose a nice interval: 1s, 5s, 10s, 30s, 1m, 2m, 5m, 10m, 30m, 1h, 2h, ...
+    nice_intervals = [1, 5, 10, 30, 60, 120, 300, 600, 1800, 3600, 7200, 14400, 28800, 86400]
+    interval = nice_intervals[-1]
+    for ni in nice_intervals:
+        if total_span / ni <= 10:
+            interval = ni
+            break
+
+    t = 0.0
+    while t <= total_span:
+        pct = (t / total_span) * 100
+        if t < 60:
+            label = f"+{int(t)}s"
+        elif t < 3600:
+            label = f"+{int(t // 60)}m"
+        else:
+            h = int(t // 3600)
+            m = int((t % 3600) // 60)
+            label = f"+{h}h{m:02d}m" if m else f"+{h}h"
+        markers.append({"pct": pct, "label": label})
+        t += interval
+
+    gantt_items: list[dict[str, Any]] = []
+    for item in queue.items:
+        entry: dict[str, Any] = {
+            "task_id": item.task.id,
+            "name": item.task.name,
+            "status": item.status.value,
+            "deps": item.task.dependencies,
+            "has_bar": False,
+            "wait_left": 0,
+            "wait_width": 0,
+            "run_left": 0,
+            "run_width": 0,
+            "bar_start": 0,  # leftmost edge of any segment (for arrow target)
+            "bar_end": 0,  # rightmost edge of any segment (for arrow source)
+        }
+
+        if item.submitted_at:
+            submitted_offset = max(0, (item.submitted_at - time_origin).total_seconds())
+
+            if item.started_at:
+                started_offset = max(submitted_offset, (item.started_at - time_origin).total_seconds())
+                # Wait segment (submitted → started)
+                entry["wait_left"] = (submitted_offset / total_span) * 100
+                entry["wait_width"] = ((started_offset - submitted_offset) / total_span) * 100
+
+                # Run segment (started → finished or now)
+                end_ts = item.finished_at or now
+                end_offset = max(started_offset, (end_ts - time_origin).total_seconds())
+                entry["run_left"] = (started_offset / total_span) * 100
+                entry["run_width"] = ((end_offset - started_offset) / total_span) * 100
+                entry["has_bar"] = True
+                entry["bar_start"] = entry["wait_left"]
+                entry["bar_end"] = entry["run_left"] + entry["run_width"]
+            else:
+                # Submitted but not started yet — show wait bar up to now
+                wait_end = (now - time_origin).total_seconds()
+                entry["wait_left"] = (submitted_offset / total_span) * 100
+                entry["wait_width"] = ((wait_end - submitted_offset) / total_span) * 100
+                entry["has_bar"] = True
+                entry["bar_start"] = entry["wait_left"]
+                entry["bar_end"] = entry["wait_left"] + entry["wait_width"]
+
+        gantt_items.append(entry)
+
+    return gantt_items, markers
+
+
 @app.get("/queues/{queue_id}", response_class=HTMLResponse)
 async def queue_detail_page(request: Request, queue_id: str) -> HTMLResponse:
     """Page showing queue detail."""
@@ -771,7 +880,7 @@ async def queue_detail_page(request: Request, queue_id: str) -> HTMLResponse:
     if queue is None:
         return templates.TemplateResponse(
             "queue_detail.html",
-            {"request": request, "queue": None, "error": "Queue not found", "job_util": {}},
+            {"request": request, "queue": None, "error": "Queue not found", "job_util": {}, "gantt_items": [], "markers": []},
         )
 
     # Build lookup of slurm_job_id -> utilization for initial render
@@ -788,9 +897,22 @@ async def queue_detail_page(request: Request, queue_id: str) -> HTMLResponse:
                         "max_rss": uj.max_rss or "",
                     }
 
+    # Compute gantt chart data
+    gantt_items: list[dict[str, Any]] = []
+    markers: list[dict[str, Any]] = []
+    if queue:
+        gantt_items, markers = _compute_gantt_data(queue)
+
     return templates.TemplateResponse(
         "queue_detail.html",
-        {"request": request, "queue": queue, "error": None, "job_util": job_util},
+        {
+            "request": request,
+            "queue": queue,
+            "error": None,
+            "job_util": job_util,
+            "gantt_items": gantt_items,
+            "markers": markers,
+        },
     )
 
 
@@ -830,6 +952,22 @@ async def queue_items_partial(request: Request, queue_id: str) -> HTMLResponse:
     )
 
 
+@app.get("/queues/{queue_id}/gantt", response_class=HTMLResponse)
+async def queue_gantt_partial(request: Request, queue_id: str) -> HTMLResponse:
+    """HTMX partial for queue Gantt chart."""
+    queue = state.queue_manager.get_queue(queue_id) if state.queue_manager else None
+
+    gantt_items: list[dict[str, Any]] = []
+    markers: list[dict[str, Any]] = []
+    if queue:
+        gantt_items, markers = _compute_gantt_data(queue)
+
+    return templates.TemplateResponse(
+        "queue_gantt.html",
+        {"request": request, "queue": queue, "gantt_items": gantt_items, "markers": markers},
+    )
+
+
 @app.get("/queues/{queue_id}/events")
 async def queue_events(request: Request, queue_id: str) -> EventSourceResponse:
     """SSE stream for real-time queue updates."""
@@ -857,8 +995,13 @@ async def queue_events(request: Request, queue_id: str) -> EventSourceResponse:
                 items_html = templates.get_template("queue_items.html").render(
                     {"request": request, "queue": queue}
                 )
+                gantt_items, markers = _compute_gantt_data(queue)
+                gantt_html = templates.get_template("queue_gantt.html").render(
+                    {"request": request, "queue": queue, "gantt_items": gantt_items, "markers": markers}
+                )
                 yield {"event": "info-update", "data": info_html}
                 yield {"event": "items-update", "data": items_html}
+                yield {"event": "gantt-update", "data": gantt_html}
             else:
                 # Keepalive — send a comment to keep connection alive
                 yield {"comment": "keepalive"}

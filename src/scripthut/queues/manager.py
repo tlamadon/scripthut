@@ -465,11 +465,15 @@ class QueueManager:
         account = self.get_cluster_account(cluster_name)
         login_shell = self.get_cluster_login_shell(cluster_name)
 
-        # Detect git root — mandatory, all workflows must live in a git repo
+        # Detect git root for log directory — fall back to ~/.cache/scripthut if not in a git repo
         first_working_dir = tasks[0].working_dir
-        git_root = await self._get_git_root(ssh_client, first_working_dir)
-        log_dir = f"{git_root}/.scripthut/{source_name}/logs"
-        logger.info(f"Git root: {git_root} — logs at {log_dir}")
+        try:
+            git_root = await self._get_git_root(ssh_client, first_working_dir)
+            log_dir = f"{git_root}/.scripthut/{source_name}/logs"
+            logger.info(f"Git root: {git_root} — logs at {log_dir}")
+        except ValueError:
+            log_dir = f"~/.cache/scripthut/logs/{source_name}"
+            logger.info(f"No git root for '{first_working_dir}' — logs at {log_dir}")
 
         # Create queue
         queue_id = str(uuid.uuid4())[:8]

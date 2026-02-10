@@ -43,10 +43,30 @@
                 {% include "queue_info.html" %}
             </div>
 
-            <!-- Queue Items -->
-            <div class="bg-white rounded-lg shadow-md overflow-hidden" id="queue-items" sse-swap="items-update"
-                hx-swap="innerHTML">
-                {% include "queue_items.html" %}
+            <!-- View Tabs -->
+            <div class="flex gap-1 mb-4">
+                <button id="tab-table" onclick="switchTab('table')"
+                    class="px-4 py-2 text-sm font-medium rounded-t-lg border border-b-0 bg-white text-gray-800 border-gray-200">
+                    Table
+                </button>
+                <button id="tab-gantt" onclick="switchTab('gantt')"
+                    class="px-4 py-2 text-sm font-medium rounded-t-lg border border-b-0 bg-gray-100 text-gray-500 border-gray-200">
+                    Gantt
+                </button>
+            </div>
+
+            <!-- Queue Items (Table view) -->
+            <div id="view-table" class="bg-white rounded-lg shadow-md overflow-hidden">
+                <div id="queue-items" sse-swap="items-update" hx-swap="innerHTML">
+                    {% include "queue_items.html" %}
+                </div>
+            </div>
+
+            <!-- Queue Gantt (Gantt view) -->
+            <div id="view-gantt" class="bg-white rounded-lg shadow-md overflow-hidden" style="display: none;">
+                <div id="queue-gantt" sse-swap="gantt-update" hx-swap="innerHTML">
+                    {% include "queue_gantt.html" %}
+                </div>
             </div>
         </div>
         {% endif %}
@@ -54,6 +74,41 @@
 
     {% if queue %}
     <style id="folded-groups-style"></style>
+    <script>
+        function switchTab(tab) {
+            var tableView = document.getElementById('view-table');
+            var ganttView = document.getElementById('view-gantt');
+            var tabTable = document.getElementById('tab-table');
+            var tabGantt = document.getElementById('tab-gantt');
+            var active = 'px-4 py-2 text-sm font-medium rounded-t-lg border border-b-0 bg-white text-gray-800 border-gray-200';
+            var inactive = 'px-4 py-2 text-sm font-medium rounded-t-lg border border-b-0 bg-gray-100 text-gray-500 border-gray-200';
+
+            if (tab === 'gantt') {
+                tableView.style.display = 'none';
+                ganttView.style.display = '';
+                tabTable.className = inactive;
+                tabGantt.className = active;
+                // Draw dependency arrows after the view becomes visible
+                setTimeout(function() {
+                    if (typeof window._drawGanttDeps === 'function') window._drawGanttDeps();
+                }, 20);
+            } else {
+                tableView.style.display = '';
+                ganttView.style.display = 'none';
+                tabTable.className = active;
+                tabGantt.className = inactive;
+            }
+            try { localStorage.setItem('scripthut-queue-tab', tab); } catch(e) {}
+        }
+
+        // Restore last tab preference
+        (function() {
+            try {
+                var saved = localStorage.getItem('scripthut-queue-tab');
+                if (saved === 'gantt') switchTab('gantt');
+            } catch(e) {}
+        })();
+    </script>
     <script>
         (function () {
             var STORAGE_KEY = 'scripthut-folded-groups-{{ queue.id }}';

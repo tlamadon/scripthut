@@ -161,8 +161,39 @@ class SlurmBackend(JobBackend):
         logger.debug(f"Fetched {len(jobs)} jobs from Slurm")
         return jobs
 
+    async def _get_known_sacct_ids(
+        self, user: str | None = None,
+    ) -> set[str] | None:
+        """Return the set of job IDs that sacct knows about for *user*.
+
+        Runs a lightweight ``sacct --format=JobIDRaw`` scoped to the user
+        (last 60 days).  Returns ``None`` on failure so callers can fall back
+        to optimistic behaviour.
+        """
+        cmd = "sacct --noheader --parsable2 --format=JobIDRaw --starttime=now-60days"
+        if user:
+            cmd += f" --user={user}"
+        try:
+            stdout, _, exit_code = await self._ssh.run_command(cmd, timeout=30)
+        except Exception as e:
+            logger.warning(f"sacct ID pre-check failed: {e}")
+            return None
+
+        if exit_code != 0 or not stdout.strip():
+            return None
+
+        known: set[str] = set()
+        for line in stdout.strip().split("\n"):
+            raw_id = line.strip().split("|")[0]
+            base_id = raw_id.split(".")[0] if "." in raw_id else raw_id
+            if base_id:
+                known.add(base_id)
+        return known
+
     async def get_job_stats(
-        self, job_ids: list[str],
+        self,
+        job_ids: list[str],
+        user: str | None = None,
     ) -> dict[str, JobStats]:
         """Fetch resource utilization stats for completed jobs using sacct.
 
@@ -170,15 +201,41 @@ class SlurmBackend(JobBackend):
 
         Args:
             job_ids: List of Slurm job IDs to query via sacct.
+            user: Optional username to scope the pre-filter query.
 
         Returns:
-            Dict mapping job_id to JobStats.
+            Dict mapping job_id to JobStats.  IDs not found in sacct are
+            returned with sentinel values so callers stop re-querying them.
         """
         if not job_ids:
             return {}
 
+        # Pre-filter: ask sacct which IDs it still knows about so we never
+        # pass invalid/expired IDs to the main query (which would make it
+        # fail entirely).
+        stats: dict[str, JobStats] = {}
+        known_ids = await self._get_known_sacct_ids(user=user)
+        if known_ids is not None:
+            valid_ids = [jid for jid in job_ids if jid in known_ids]
+            stale_ids = [jid for jid in job_ids if jid not in known_ids]
+            if stale_ids:
+                logger.info(
+                    f"sacct pre-check: {len(stale_ids)} IDs not in accounting "
+                    f"DB, marking unavailable: {stale_ids[:10]}"
+                )
+                for jid in stale_ids:
+                    stats[jid] = JobStats(
+                        cpu_efficiency=0.0, max_rss="N/A", total_cpu="N/A",
+                    )
+        else:
+            # Pre-check failed — fall back to querying all IDs.
+            valid_ids = list(job_ids)
+
+        if not valid_ids:
+            return stats
+
         # --- sacct for CPU efficiency + post-completion memory ---
-        ids_str = ",".join(job_ids)
+        ids_str = ",".join(valid_ids)
         cmd = (
             f"sacct --noheader --parsable2"
             f" --format=JobIDRaw,TotalCPU,Elapsed,AllocCPUS,MaxRSS"
@@ -189,11 +246,11 @@ class SlurmBackend(JobBackend):
             stdout, stderr, exit_code = await self._ssh.run_command(cmd, timeout=30)
         except Exception as e:
             logger.warning(f"sacct command failed: {e}")
-            return {}
+            return stats  # still return stale markers
 
         if exit_code != 0:
             logger.warning(f"sacct failed (exit {exit_code}): {stderr}")
-            return {}
+            return stats
 
         logger.debug(f"sacct raw output ({len(stdout)} chars): {stdout[:500]}")
 
@@ -234,8 +291,7 @@ class SlurmBackend(JobBackend):
                 main_data[raw_id] = (elapsed_s, alloc_cpus, main_cpu_s)
 
         # --- Compute final stats ---
-        stats: dict[str, JobStats] = {}
-        for job_id in job_ids:
+        for job_id in valid_ids:
             if job_id not in main_data:
                 continue
 

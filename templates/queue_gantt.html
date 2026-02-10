@@ -1,0 +1,242 @@
+{% if queue and gantt_items %}
+<div class="px-6 py-4 bg-gray-50 border-b flex justify-between items-center">
+    <h2 class="text-xl font-semibold text-gray-800">Timeline</h2>
+    <span class="text-sm text-gray-600">{{ gantt_items|length }} tasks</span>
+</div>
+<div class="px-6 py-4">
+    <!-- Time axis -->
+    <div class="relative h-6 mb-1 ml-44">
+        {% for m in markers %}
+        <span class="absolute text-xs text-gray-400 -translate-x-1/2 select-none" style="left: {{ m.pct }}%">{{ m.label }}</span>
+        {% endfor %}
+    </div>
+
+    <!-- Task rows + dependency overlay container -->
+    <div class="relative" id="gantt-rows-container">
+        <!-- SVG overlay for dependency arrows -->
+        <svg id="gantt-dep-svg" class="absolute inset-0 w-full h-full pointer-events-none" style="z-index: 10; overflow: visible;"></svg>
+
+        <div class="flex flex-col">
+            {% set ns = namespace(current_group='') %}
+            {% for gi in gantt_items %}
+            {% set item = queue.items[loop.index0] %}
+            {% set group = item.task.id.rsplit('.', 1)[0] if '.' in item.task.id else '' %}
+
+            {# Group header #}
+            {% if group != ns.current_group and group != '' %}
+            {% set ns.current_group = group %}
+            <div class="flex items-center h-6 mt-2 mb-1">
+                <div class="w-44 flex-shrink-0">
+                    <span class="text-xs font-semibold text-gray-400 uppercase tracking-wider">{{ group }}</span>
+                </div>
+                <div class="flex-1"></div>
+            </div>
+            {% elif group == '' and ns.current_group != '' %}
+            {% set ns.current_group = '' %}
+            {% endif %}
+
+            {# Task bar row #}
+            <div class="flex items-center h-7 group hover:bg-gray-50 rounded gantt-task-row"
+                 data-task-id="{{ gi.task_id }}"
+                 data-deps="{{ gi.deps | join(',') }}"
+                 data-bar-start="{{ gi.bar_start }}"
+                 data-bar-end="{{ gi.bar_end }}"
+                 data-has-bar="{{ gi.has_bar | lower }}">
+                {# Label #}
+                <div class="w-44 flex-shrink-0 pr-3 truncate text-right" title="{{ item.task.id }} — {{ item.task.name }}">
+                    <span class="text-xs font-mono text-gray-600">
+                        {% if '.' in item.task.id %}{{ item.task.id.rsplit('.', 1)[1] }}{% else %}{{ item.task.id }}{% endif %}
+                    </span>
+                </div>
+                {# Bar area #}
+                <div class="gantt-bar-area flex-1 relative h-5 bg-gray-50 rounded-sm border border-gray-100">
+                    {# Vertical grid lines #}
+                    {% for m in markers %}
+                    {% if m.pct > 0 %}
+                    <div class="absolute top-0 bottom-0 w-px bg-gray-100" style="left: {{ m.pct }}%"></div>
+                    {% endif %}
+                    {% endfor %}
+
+                    {% if gi.has_bar %}
+                    {# Wait segment (submitted → started) #}
+                    {% if gi.wait_width > 0.1 %}
+                    <div class="absolute top-1 bottom-1 rounded-sm bg-amber-200 opacity-70"
+                         style="left: {{ gi.wait_left }}%; width: {{ gi.wait_width }}%"
+                         title="Waiting: {{ gi.wait_width|round(1) }}%"></div>
+                    {% endif %}
+
+                    {# Run segment #}
+                    {% if gi.run_width > 0 %}
+                    <div class="absolute top-0.5 bottom-0.5 rounded-sm
+                        {% if gi.status == 'completed' %}bg-blue-500
+                        {% elif gi.status == 'running' %}bg-green-500 animate-pulse
+                        {% elif gi.status == 'failed' %}bg-red-500
+                        {% elif gi.status == 'dep_failed' %}bg-orange-400
+                        {% else %}bg-yellow-400{% endif %}"
+                         style="left: {{ gi.run_left }}%; width: {{ gi.run_width }}%"
+                         title="{{ gi.name }} ({{ gi.status }})"></div>
+                    {% endif %}
+                    {% else %}
+                    {# Pending — show a small marker at 0 #}
+                    {% if gi.status == 'pending' %}
+                    <div class="absolute top-1.5 bottom-1.5 w-1.5 rounded-full bg-gray-300" style="left: 0"></div>
+                    {% elif gi.status == 'dep_failed' %}
+                    <div class="absolute top-1.5 bottom-1.5 w-1.5 rounded-full bg-orange-400" style="left: 0"></div>
+                    {% endif %}
+                    {% endif %}
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+
+    <!-- Legend -->
+    <div class="flex items-center gap-4 mt-4 text-xs text-gray-500">
+        <div class="flex items-center gap-1.5">
+            <div class="w-3 h-2 rounded-sm bg-amber-200 opacity-70"></div>
+            <span>Waiting</span>
+        </div>
+        <div class="flex items-center gap-1.5">
+            <div class="w-3 h-2 rounded-sm bg-green-500"></div>
+            <span>Running</span>
+        </div>
+        <div class="flex items-center gap-1.5">
+            <div class="w-3 h-2 rounded-sm bg-blue-500"></div>
+            <span>Completed</span>
+        </div>
+        <div class="flex items-center gap-1.5">
+            <div class="w-3 h-2 rounded-sm bg-red-500"></div>
+            <span>Failed</span>
+        </div>
+        <div class="flex items-center gap-1.5">
+            <div class="w-3 h-2 rounded-sm bg-gray-300"></div>
+            <span>Pending</span>
+        </div>
+        <div class="flex items-center gap-1.5">
+            <svg width="20" height="10"><path d="M0,5 L15,5" stroke="#9ca3af" stroke-width="1.5" fill="none"/><polygon points="15,2 20,5 15,8" fill="#9ca3af"/></svg>
+            <span>Dependency</span>
+        </div>
+    </div>
+</div>
+
+<script>
+(function() {
+    function drawDeps() {
+        var container = document.getElementById('gantt-rows-container');
+        var svg = document.getElementById('gantt-dep-svg');
+        if (!container || !svg) return;
+
+        // Clear previous arrows
+        svg.innerHTML = '';
+
+        var rows = container.querySelectorAll('.gantt-task-row');
+        if (!rows.length) return;
+
+        // Build lookup: task_id -> { row element, bar area element }
+        var taskMap = {};
+        rows.forEach(function(row) {
+            var tid = row.getAttribute('data-task-id');
+            var barArea = row.querySelector('.gantt-bar-area');
+            taskMap[tid] = { row: row, barArea: barArea };
+        });
+
+        var containerRect = container.getBoundingClientRect();
+
+        rows.forEach(function(row) {
+            var depsStr = row.getAttribute('data-deps');
+            if (!depsStr) return;
+            var deps = depsStr.split(',').filter(Boolean);
+            if (!deps.length) return;
+
+            var tid = row.getAttribute('data-task-id');
+            var target = taskMap[tid];
+            if (!target || !target.barArea) return;
+
+            var targetBarArea = target.barArea;
+            var targetBarStart = parseFloat(row.getAttribute('data-bar-start')) || 0;
+            var targetRect = targetBarArea.getBoundingClientRect();
+
+            // Target point: left edge of the bar (bar_start %) at vertical center of the row
+            var targetX = targetRect.left - containerRect.left + (targetBarStart / 100) * targetRect.width;
+            var targetY = target.row.getBoundingClientRect().top - containerRect.top + target.row.offsetHeight / 2;
+
+            deps.forEach(function(depId) {
+                var source = taskMap[depId];
+                if (!source || !source.barArea) return;
+
+                var sourceRow = source.row;
+                var sourceBarArea = source.barArea;
+                var sourceBarEnd = parseFloat(sourceRow.getAttribute('data-bar-end')) || 0;
+                var sourceRect = sourceBarArea.getBoundingClientRect();
+
+                // Source point: right edge of the bar (bar_end %) at vertical center
+                var sourceX = sourceRect.left - containerRect.left + (sourceBarEnd / 100) * sourceRect.width;
+                var sourceY = sourceRow.getBoundingClientRect().top - containerRect.top + sourceRow.offsetHeight / 2;
+
+                // Draw a path: horizontal out, vertical, horizontal in
+                var midX = Math.max(sourceX + 6, targetX - 6);
+                // If source is to the right of target (unusual), use a simple curve
+                if (sourceX >= targetX - 2) {
+                    midX = Math.max(sourceX, targetX) + 12;
+                }
+
+                var path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+                var d = 'M' + sourceX + ',' + sourceY
+                       + ' C' + midX + ',' + sourceY
+                       + ' ' + midX + ',' + targetY
+                       + ' ' + targetX + ',' + targetY;
+                path.setAttribute('d', d);
+                path.setAttribute('stroke', '#d1d5db');
+                path.setAttribute('stroke-width', '1.5');
+                path.setAttribute('fill', 'none');
+                svg.appendChild(path);
+
+                // Arrowhead at target
+                var arrow = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+                var ax = targetX;
+                var ay = targetY;
+                arrow.setAttribute('points',
+                    (ax - 5) + ',' + (ay - 3) + ' ' +
+                    ax + ',' + ay + ' ' +
+                    (ax - 5) + ',' + (ay + 3)
+                );
+                arrow.setAttribute('fill', '#d1d5db');
+                svg.appendChild(arrow);
+            });
+        });
+    }
+
+    // Expose globally so the tab switcher can trigger a redraw
+    window._drawGanttDeps = drawDeps;
+
+    // Draw on initial load — only if gantt view is visible
+    var ganttView = document.getElementById('view-gantt');
+    if (ganttView && ganttView.style.display !== 'none') {
+        setTimeout(drawDeps, 50);
+    }
+
+    // Re-draw on window resize
+    window.addEventListener('resize', function() {
+        if (ganttView && ganttView.style.display !== 'none') drawDeps();
+    });
+
+    // Re-draw after SSE updates
+    var ganttContainer = document.getElementById('queue-gantt');
+    if (ganttContainer) {
+        ganttContainer.addEventListener('htmx:afterSwap', function() {
+            if (ganttView && ganttView.style.display !== 'none') {
+                setTimeout(drawDeps, 50);
+            }
+        });
+    }
+})();
+</script>
+{% elif queue %}
+<div class="px-6 py-12 text-center">
+    <p class="text-gray-500">No tasks in this queue.</p>
+</div>
+{% else %}
+<div class="px-6 py-12 text-center">
+    <p class="text-gray-500">Queue not found.</p>
+</div>
+{% endif %}
