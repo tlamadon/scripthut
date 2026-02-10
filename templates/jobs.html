@@ -41,6 +41,7 @@
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Partition</th>
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Time</th>
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Resources</th>
+                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Utilization</th>
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Submit Time</th>
             </tr>
         </thead>
@@ -109,6 +110,20 @@
                 <td class="px-4 py-3 whitespace-nowrap text-sm font-mono text-gray-600">{{ job.time_used or '-' }}</td>
                 <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-600">
                     {{ job.cpus }} CPU{% if job.memory %}, {{ job.memory }}{% endif %}
+                </td>
+                <td class="px-4 py-3 whitespace-nowrap text-xs">
+                    {% if job.cpu_efficiency is not none or job.max_rss %}
+                    <div class="flex flex-col gap-0.5">
+                        {% if job.cpu_efficiency is not none %}
+                        <span class="font-mono {% if job.cpu_efficiency >= 70 %}text-green-600{% elif job.cpu_efficiency >= 30 %}text-yellow-600{% else %}text-red-600{% endif %}">CPU {{ "%.0f"|format(job.cpu_efficiency) }}%</span>
+                        {% endif %}
+                        {% if job.max_rss %}
+                        <span class="font-mono text-gray-600">Mem {{ job.max_rss }}{% if job.memory and job.memory != '-' %}<span class="text-gray-400">/{{ job.memory }}</span>{% endif %}</span>
+                        {% endif %}
+                    </div>
+                    {% else %}
+                    <span class="text-gray-400">-</span>
+                    {% endif %}
                 </td>
                 <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
                     {% if job.submit_time %}

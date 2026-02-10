@@ -66,6 +66,8 @@ class SlurmJob:
     memory: str  # Memory with unit (e.g., "4G")
     submit_time: datetime | None
     start_time: datetime | None
+    cpu_efficiency: float | None = None  # 0-100%, from sacct
+    max_rss: str | None = None  # Peak memory usage, e.g. "1.2G"
 
     @property
     def state_class(self) -> str:

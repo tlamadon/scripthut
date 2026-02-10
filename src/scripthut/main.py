@@ -16,7 +16,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from sse_starlette.sse import EventSourceResponse
 
-from scripthut.backends.slurm import SlurmBackend
+from scripthut.backends.slurm import JobStats, SlurmBackend
 from scripthut.config import load_config, set_config
 from scripthut.config_schema import ScriptHutConfig, SlurmClusterConfig
 from scripthut.history import JobHistoryManager
@@ -150,9 +150,32 @@ async def poll_cluster(cluster_state: ClusterState, filter_user: str | None = No
         )
         logger.debug(f"Polled {len(jobs)} jobs from '{cluster_state.name}' in {duration_ms}ms")
 
+        # Fetch resource utilization via sacct + sstat
+        job_stats: dict[str, JobStats] = {}
+        job_ids = [j.job_id for j in jobs]
+        running_ids = [j.job_id for j in jobs if j.state == JobState.RUNNING]
+        # Also include recently-completed jobs that lack stats
+        if state.history_manager:
+            for hj in state.history_manager.get_active_jobs(cluster_name=cluster_state.name):
+                if hj.slurm_job_id and hj.is_terminal and hj.cpu_efficiency is None:
+                    job_ids.append(hj.slurm_job_id)
+        if job_ids:
+            try:
+                job_stats = await cluster_state.backend.get_job_stats(
+                    job_ids, running_ids=running_ids,
+                )
+                # Merge stats into SlurmJob objects
+                for job in jobs:
+                    if job.job_id in job_stats:
+                        s = job_stats[job.job_id]
+                        job.cpu_efficiency = s.cpu_efficiency
+                        job.max_rss = s.max_rss
+            except Exception as e:
+                logger.warning(f"sacct stats fetch failed for '{cluster_state.name}': {e}")
+
         # Update job history with polled jobs
         if state.history_manager:
-            state.history_manager.update_from_slurm_poll(jobs, cluster_state.name)
+            state.history_manager.update_from_slurm_poll(jobs, cluster_state.name, job_stats=job_stats)
     except Exception as e:
         duration_ms = int((time.perf_counter() - start_time) * 1000)
         logger.error(f"Job polling failed for '{cluster_state.name}': {e}")
@@ -609,12 +632,26 @@ async def queue_detail_page(request: Request, queue_id: str) -> HTMLResponse:
     if queue is None:
         return templates.TemplateResponse(
             "queue_detail.html",
-            {"request": request, "queue": None, "error": "Queue not found"},
+            {"request": request, "queue": None, "error": "Queue not found", "job_util": {}},
         )
+
+    # Build lookup of slurm_job_id -> utilization for initial render
+    job_util: dict[str, dict[str, object]] = {}
+    if state.history_manager:
+        for item in queue.items:
+            if item.slurm_job_id:
+                uj = state.history_manager.get_job_by_slurm_id(
+                    item.slurm_job_id, queue.cluster_name
+                )
+                if uj and uj.cpu_efficiency is not None:
+                    job_util[item.slurm_job_id] = {
+                        "cpu_efficiency": uj.cpu_efficiency,
+                        "max_rss": uj.max_rss or "",
+                    }
 
     return templates.TemplateResponse(
         "queue_detail.html",
-        {"request": request, "queue": queue, "error": None},
+        {"request": request, "queue": queue, "error": None, "job_util": job_util},
     )
 
 
@@ -634,9 +671,23 @@ async def queue_items_partial(request: Request, queue_id: str) -> HTMLResponse:
     """HTMX partial for queue items table."""
     queue = state.queue_manager.get_queue(queue_id) if state.queue_manager else None
 
+    # Build lookup of slurm_job_id -> utilization for this queue's items
+    job_util: dict[str, dict[str, object]] = {}
+    if queue and state.history_manager:
+        for item in queue.items:
+            if item.slurm_job_id:
+                uj = state.history_manager.get_job_by_slurm_id(
+                    item.slurm_job_id, queue.cluster_name
+                )
+                if uj and uj.cpu_efficiency is not None:
+                    job_util[item.slurm_job_id] = {
+                        "cpu_efficiency": uj.cpu_efficiency,
+                        "max_rss": uj.max_rss or "",
+                    }
+
     return templates.TemplateResponse(
         "queue_items.html",
-        {"request": request, "queue": queue},
+        {"request": request, "queue": queue, "job_util": job_util},
     )
 
 

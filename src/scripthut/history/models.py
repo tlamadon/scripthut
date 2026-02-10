@@ -103,6 +103,10 @@ class UnifiedJob:
     # Error info
     error: str | None = None
 
+    # Resource utilization (from sacct)
+    cpu_efficiency: float | None = None  # 0-100%
+    max_rss: str | None = None  # Peak memory, e.g. "1.2G"
+
     # For tracking updates
     last_seen: datetime = field(default_factory=datetime.now)
 
@@ -129,6 +133,8 @@ class UnifiedJob:
             "queue_id": self.queue_id,
             "task_id": self.task_id,
             "error": self.error,
+            "cpu_efficiency": self.cpu_efficiency,
+            "max_rss": self.max_rss,
             "last_seen": self.last_seen.isoformat(),
         }
 
@@ -160,6 +166,8 @@ class UnifiedJob:
             queue_id=data.get("queue_id"),
             task_id=data.get("task_id"),
             error=data.get("error"),
+            cpu_efficiency=data.get("cpu_efficiency"),
+            max_rss=data.get("max_rss"),
             last_seen=parse_dt(data.get("last_seen")) or datetime.now(),
         )
 
