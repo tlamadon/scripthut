@@ -18,6 +18,7 @@ class QueueMetadata:
     log_dir: str = "~/.cache/scripthut/logs"
     account: str | None = None
     login_shell: bool = False
+    items: list[dict[str, Any]] = field(default_factory=list)  # Serialized QueueItems
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to dictionary for JSON storage."""
@@ -30,6 +31,7 @@ class QueueMetadata:
             "log_dir": self.log_dir,
             "account": self.account,
             "login_shell": self.login_shell,
+            "items": self.items,
         }
 
     @classmethod
@@ -44,6 +46,7 @@ class QueueMetadata:
             log_dir=data.get("log_dir", "~/.cache/scripthut/logs"),
             account=data.get("account"),
             login_shell=data.get("login_shell", False),
+            items=data.get("items", []),
         )
 
 

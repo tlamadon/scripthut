@@ -371,6 +371,7 @@ class JobHistoryManager:
             log_dir=queue.log_dir,
             account=queue.account,
             login_shell=queue.login_shell,
+            items=[item.to_dict() for item in queue.items],
         )
         self._queues[queue.id] = metadata
         self._dirty = True
@@ -420,8 +421,9 @@ class JobHistoryManager:
     def reconstruct_queue(self, queue_id: str) -> Queue | None:
         """Reconstruct a Queue object from history.
 
-        Creates a Queue with QueueItems rebuilt from persisted jobs.
-        Note: TaskDefinition will have minimal info (only what was stored in jobs).
+        Uses stored QueueItem data when available (includes full TaskDefinition
+        with command, dependencies, etc.). Falls back to rebuilding from
+        UnifiedJob records for queues saved before items were persisted.
 
         Args:
             queue_id: The queue ID to reconstruct.
@@ -433,10 +435,52 @@ class JobHistoryManager:
         if metadata is None:
             return None
 
-        # Get all jobs for this queue
+        # Prefer stored items (has full TaskDefinition data)
+        if metadata.items:
+            items = [QueueItem.from_dict(item_data) for item_data in metadata.items]
+
+            # Update runtime state from UnifiedJob records (they have the
+            # latest status, timestamps, and slurm_job_id from polling)
+            jobs = self.get_jobs_for_queue(queue_id)
+            job_by_task: dict[str, UnifiedJob] = {}
+            for job in jobs:
+                if job.task_id:
+                    job_by_task[job.task_id] = job
+
+            status_map = {
+                UnifiedJobState.PENDING: QueueItemStatus.PENDING,
+                UnifiedJobState.SUBMITTED: QueueItemStatus.SUBMITTED,
+                UnifiedJobState.RUNNING: QueueItemStatus.RUNNING,
+                UnifiedJobState.COMPLETED: QueueItemStatus.COMPLETED,
+                UnifiedJobState.FAILED: QueueItemStatus.FAILED,
+                UnifiedJobState.UNKNOWN: QueueItemStatus.PENDING,
+            }
+
+            for item in items:
+                job = job_by_task.get(item.task.id)
+                if job:
+                    item.status = status_map.get(job.state, item.status)
+                    item.slurm_job_id = job.slurm_job_id or item.slurm_job_id
+                    item.submitted_at = job.submit_time or item.submitted_at
+                    item.started_at = job.start_time or item.started_at
+                    item.finished_at = job.finish_time or item.finished_at
+                    item.error = job.error or item.error
+
+            return Queue(
+                id=metadata.id,
+                source_name=metadata.source_name,
+                cluster_name=metadata.cluster_name,
+                created_at=metadata.created_at,
+                items=items,
+                max_concurrent=metadata.max_concurrent,
+                log_dir=metadata.log_dir,
+                account=metadata.account,
+                login_shell=metadata.login_shell,
+            )
+
+        # Fallback: rebuild from UnifiedJob records (legacy queues without stored items)
         jobs = self.get_jobs_for_queue(queue_id)
         if not jobs:
-            # Queue exists but has no jobs - return empty queue
             return Queue(
                 id=metadata.id,
                 source_name=metadata.source_name,
@@ -449,30 +493,25 @@ class JobHistoryManager:
                 login_shell=metadata.login_shell,
             )
 
-        # Rebuild QueueItems from jobs
         items: list[QueueItem] = []
+        status_map = {
+            UnifiedJobState.PENDING: QueueItemStatus.PENDING,
+            UnifiedJobState.SUBMITTED: QueueItemStatus.SUBMITTED,
+            UnifiedJobState.RUNNING: QueueItemStatus.RUNNING,
+            UnifiedJobState.COMPLETED: QueueItemStatus.COMPLETED,
+            UnifiedJobState.FAILED: QueueItemStatus.FAILED,
+            UnifiedJobState.UNKNOWN: QueueItemStatus.PENDING,
+        }
         for job in jobs:
-            # Create minimal TaskDefinition from job info
             task = TaskDefinition(
                 id=job.task_id or job.id,
                 name=job.name,
-                command="",  # Not stored in job history
+                command="",  # Not stored in legacy job history
                 partition=job.partition,
                 cpus=job.cpus,
                 memory=job.memory,
                 time_limit=job.time_limit,
             )
-
-            # Map UnifiedJobState back to QueueItemStatus
-            status_map = {
-                UnifiedJobState.PENDING: QueueItemStatus.PENDING,
-                UnifiedJobState.SUBMITTED: QueueItemStatus.SUBMITTED,
-                UnifiedJobState.RUNNING: QueueItemStatus.RUNNING,
-                UnifiedJobState.COMPLETED: QueueItemStatus.COMPLETED,
-                UnifiedJobState.FAILED: QueueItemStatus.FAILED,
-                UnifiedJobState.UNKNOWN: QueueItemStatus.PENDING,
-            }
-
             item = QueueItem(
                 task=task,
                 status=status_map.get(job.state, QueueItemStatus.PENDING),

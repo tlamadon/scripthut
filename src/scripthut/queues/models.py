@@ -54,6 +54,24 @@ class TaskDefinition:
             environment=data.get("environment"),
         )
 
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize to dictionary for JSON storage."""
+        return {
+            "id": self.id,
+            "name": self.name,
+            "command": self.command,
+            "working_dir": self.working_dir,
+            "partition": self.partition,
+            "cpus": self.cpus,
+            "memory": self.memory,
+            "time_limit": self.time_limit,
+            "dependencies": self.dependencies,
+            "generates_source": self.generates_source,
+            "output_file": self.output_file,
+            "error_file": self.error_file,
+            "environment": self.environment,
+        }
+
     def get_output_path(self, queue_id: str, log_dir: str = "~/.cache/scripthut/logs") -> str:
         """Get the output log file path."""
         if self.output_file:
@@ -139,6 +157,37 @@ class QueueItem:
     finished_at: datetime | None = None
     error: str | None = None
     sbatch_script: str | None = None  # The generated sbatch script used for submission
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize to dictionary for JSON storage."""
+        return {
+            "task": self.task.to_dict(),
+            "status": self.status.value,
+            "slurm_job_id": self.slurm_job_id,
+            "submitted_at": self.submitted_at.isoformat() if self.submitted_at else None,
+            "started_at": self.started_at.isoformat() if self.started_at else None,
+            "finished_at": self.finished_at.isoformat() if self.finished_at else None,
+            "error": self.error,
+            "sbatch_script": self.sbatch_script,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "QueueItem":
+        """Deserialize from dictionary."""
+
+        def parse_dt(val: str | None) -> datetime | None:
+            return datetime.fromisoformat(val) if val else None
+
+        return cls(
+            task=TaskDefinition.from_dict(data["task"]),
+            status=QueueItemStatus(data["status"]),
+            slurm_job_id=data.get("slurm_job_id"),
+            submitted_at=parse_dt(data.get("submitted_at")),
+            started_at=parse_dt(data.get("started_at")),
+            finished_at=parse_dt(data.get("finished_at")),
+            error=data.get("error"),
+            sbatch_script=data.get("sbatch_script"),
+        )
 
     @property
     def status_class(self) -> str:

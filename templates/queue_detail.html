@@ -184,6 +184,14 @@
                     if (typeof window._drawGanttDeps === 'function') window._drawGanttDeps();
                 }, 20);
             }
+            if (tab === 'details' && !_detailTaskId) {
+                var first = document.querySelector('#detail-sidebar a');
+                if (first) {
+                    var id = first.id.replace('detail-sidebar-', '');
+                    showTaskDetail(id);
+                    return;
+                }
+            }
             try { localStorage.setItem('scripthut-queue-tab', tab); } catch(e) {}
         }
 
