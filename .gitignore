@@ -38,6 +38,9 @@ ENV/
 # Local config (may contain sensitive info)
 scripthut.yaml
 
+# Discussion notes (private)
+.discussion/
+
 # Type checking
 .mypy_cache/
 .pytype/

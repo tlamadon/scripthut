@@ -1,16 +1,19 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ScriptHut - Job Monitor</title>
-    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='25' cy='2' r='1.8' fill='%23ccc' opacity='.5'/%3E%3Ccircle cx='23' cy='5' r='2.2' fill='%23bbb' opacity='.45'/%3E%3Ccircle cx='25.5' cy='8' r='1.8' fill='%23aaa' opacity='.4'/%3E%3Crect x='22' y='7' width='2.5' height='8' fill='%23696969'/%3E%3Cpolygon points='16,3 0,22 32,22' fill='%23B8860B'/%3E%3Cline x1='16' y1='3' x2='3' y2='22' stroke='%23A07000' stroke-width='.7'/%3E%3Cline x1='16' y1='3' x2='9' y2='22' stroke='%23A07000' stroke-width='.7'/%3E%3Cline x1='16' y1='3' x2='16' y2='22' stroke='%23A07000' stroke-width='.7'/%3E%3Cline x1='16' y1='3' x2='23' y2='22' stroke='%23A07000' stroke-width='.7'/%3E%3Cline x1='16' y1='3' x2='29' y2='22' stroke='%23A07000' stroke-width='.7'/%3E%3Crect x='6' y='22' width='20' height='8' fill='%23D2B48C'/%3E%3Crect x='12' y='24' width='6' height='6' rx='3' ry='2' fill='%235C3317'/%3E%3Crect x='20' y='25' width='3' height='3' fill='%2387CEEB' stroke='%235C3317' stroke-width='.5'/%3E%3C/svg%3E">
+    <link rel="icon" type="image/svg+xml"
+        href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='25' cy='2' r='1.8' fill='%23ccc' opacity='.5'/%3E%3Ccircle cx='23' cy='5' r='2.2' fill='%23bbb' opacity='.45'/%3E%3Ccircle cx='25.5' cy='8' r='1.8' fill='%23aaa' opacity='.4'/%3E%3Crect x='22' y='7' width='2.5' height='8' fill='%23696969'/%3E%3Cpolygon points='16,3 0,22 32,22' fill='%23B8860B'/%3E%3Cline x1='16' y1='3' x2='3' y2='22' stroke='%23A07000' stroke-width='.7'/%3E%3Cline x1='16' y1='3' x2='9' y2='22' stroke='%23A07000' stroke-width='.7'/%3E%3Cline x1='16' y1='3' x2='16' y2='22' stroke='%23A07000' stroke-width='.7'/%3E%3Cline x1='16' y1='3' x2='23' y2='22' stroke='%23A07000' stroke-width='.7'/%3E%3Cline x1='16' y1='3' x2='29' y2='22' stroke='%23A07000' stroke-width='.7'/%3E%3Crect x='6' y='22' width='20' height='8' fill='%23D2B48C'/%3E%3Crect x='12' y='24' width='6' height='6' rx='3' ry='2' fill='%235C3317'/%3E%3Crect x='20' y='25' width='3' height='3' fill='%2387CEEB' stroke='%235C3317' stroke-width='.5'/%3E%3C/svg%3E">
     <script src="https://unpkg.com/htmx.org@1.9.10"></script>
     <script src="https://unpkg.com/htmx.org@1.9.10/dist/ext/sse.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
 </head>
+
 <body class="bg-gray-100 min-h-screen">
-    <div class="container mx-auto px-4 py-8">
+    <div class="container mx-auto px-4 py-8" hx-ext="sse" sse-connect="/jobs/stream">
         <header class="mb-8">
             {% include "nav.html" %}
         </header>
@@ -22,60 +25,25 @@
                 <div class="flex items-center justify-between mb-3">
                     <h3 class="text-sm font-semibold text-gray-500 uppercase tracking-wider">Clusters</h3>
                     <div class="flex items-center gap-2">
-                        <button
-                            id="refresh-now-btn"
-                            onclick="triggerEarlyRefresh()"
+                        <button id="refresh-now-btn" onclick="triggerEarlyRefresh()"
                             class="text-xs px-2 py-0.5 bg-gray-100 hover:bg-gray-200 rounded text-gray-600 transition-colors"
-                            title="Refresh now"
-                        >
+                            title="Refresh now">
                             Refresh
                         </button>
                         <div class="flex items-center gap-1.5" title="Time until next update">
                             <svg id="poll-pie" width="18" height="18" viewBox="0 0 20 20" class="transform -rotate-90">
-                                <circle cx="10" cy="10" r="8" fill="none" stroke="#e5e7eb" stroke-width="3"/>
-                                <circle id="poll-pie-fill" cx="10" cy="10" r="8" fill="none" stroke="#3b82f6" stroke-width="3"
-                                    stroke-dasharray="50.27" stroke-dashoffset="0" stroke-linecap="round"/>
+                                <circle cx="10" cy="10" r="8" fill="none" stroke="#e5e7eb" stroke-width="3" />
+                                <circle id="poll-pie-fill" cx="10" cy="10" r="8" fill="none" stroke="#3b82f6"
+                                    stroke-width="3" stroke-dasharray="50.27" stroke-dashoffset="0"
+                                    stroke-linecap="round" />
                             </svg>
                             <span id="poll-countdown" class="text-xs font-mono text-gray-500">--</span>
                         </div>
                     </div>
                 </div>
-                {% if clusters %}
-                <div class="space-y-2">
-                    {% for name, cluster in clusters.items() %}
-                    <div class="flex items-center justify-between p-2 rounded {% if cluster.status.connected %}bg-green-50{% else %}bg-red-50{% endif %}">
-                        <div class="flex items-center gap-2">
-                            <span class="w-2.5 h-2.5 rounded-full {% if cluster.status.connected %}bg-green-500{% else %}bg-red-500{% endif %}"></span>
-                            <span class="font-medium text-gray-800">{{ name }}</span>
-                            <span class="text-xs text-gray-500">({{ cluster.cluster_type }})</span>
-                        </div>
-                        <div class="text-right flex items-center gap-2">
-                            {% if cluster.status.connected %}
-                            <span class="text-xs text-gray-500">{{ cluster.status.job_count }} jobs</span>
-                            {% if cluster.status.last_poll_duration_ms is not none %}
-                            <span class="text-xs font-mono {% if cluster.status.last_poll_duration_ms > 5000 %}text-red-500{% elif cluster.status.last_poll_duration_ms > 2000 %}text-yellow-600{% else %}text-gray-400{% endif %}" title="Poll duration">{{ cluster.status.last_poll_duration_ms }}ms</span>
-                            {% endif %}
-                            {% if cluster.status.last_poll %}
-                            <span class="text-xs text-gray-400">{{ cluster.status.last_poll.strftime('%H:%M:%S') }}</span>
-                            {% endif %}
-                            {% else %}
-                            <span class="text-sm text-red-700">Disconnected</span>
-                            {% if cluster.status.last_poll_duration_ms is not none %}
-                            <span class="text-xs font-mono text-gray-400">{{ cluster.status.last_poll_duration_ms }}ms</span>
-                            {% endif %}
-                            {% endif %}
-                        </div>
-                    </div>
-                    {% if cluster.status.error %}
-                    <div class="ml-4 p-2 bg-red-100 rounded text-sm text-red-700 font-mono text-xs">
-                        {{ cluster.status.error }}
-                    </div>
-                    {% endif %}
-                    {% endfor %}
+                <div id="clusters-status" sse-swap="clusters-update" hx-swap="innerHTML">
+                {% include "clusters_status.html" %}
                 </div>
-                {% else %}
-                <p class="text-sm text-gray-500">No clusters configured</p>
-                {% endif %}
             </div>
 
             <!-- Sources Status -->
@@ -84,9 +52,11 @@
                 {% if sources %}
                 <div class="space-y-2">
                     {% for name, source in sources.items() %}
-                    <div class="flex items-center justify-between p-2 rounded {% if source.cloned %}bg-green-50{% elif source.error %}bg-red-50{% else %}bg-yellow-50{% endif %}">
+                    <div
+                        class="flex items-center justify-between p-2 rounded {% if source.cloned %}bg-green-50{% elif source.error %}bg-red-50{% else %}bg-yellow-50{% endif %}">
                         <div class="flex items-center gap-2">
-                            <span class="w-2.5 h-2.5 rounded-full {% if source.cloned %}bg-green-500{% elif source.error %}bg-red-500{% else %}bg-yellow-500{% endif %}"></span>
+                            <span
+                                class="w-2.5 h-2.5 rounded-full {% if source.cloned %}bg-green-500{% elif source.error %}bg-red-500{% else %}bg-yellow-500{% endif %}"></span>
                             <span class="font-medium text-gray-800">{{ name }}</span>
                             <span class="text-xs text-gray-500">({{ source.branch }})</span>
                         </div>
@@ -94,11 +64,8 @@
                             {% if source.last_commit %}
                             <span class="text-xs font-mono text-gray-500">{{ source.last_commit }}</span>
                             {% endif %}
-                            <button
-                                hx-post="/sources/{{ name }}/sync"
-                                hx-swap="none"
-                                class="text-xs px-2 py-1 bg-gray-200 hover:bg-gray-300 rounded text-gray-700"
-                            >
+                            <button hx-post="/sources/{{ name }}/sync" hx-swap="none"
+                                class="text-xs px-2 py-1 bg-gray-200 hover:bg-gray-300 rounded text-gray-700">
                                 Sync
                             </button>
                         </div>
@@ -116,84 +83,85 @@
             </div>
         </div>
 
-        <!-- Jobs Section -->
-        <div class="bg-white rounded-lg shadow-md overflow-hidden"
-             id="jobs-section"
-             hx-get="/jobs"
-             hx-trigger="every {{ poll_interval }}s"
-             hx-swap="innerHTML">
+        <!-- Jobs Section (SSE-connected) -->
+        <div class="bg-white rounded-lg shadow-md overflow-hidden" id="jobs-section" sse-swap="jobs-update"
+            hx-swap="innerHTML">
             {% include "jobs.html" %}
         </div>
     </div>
 
     <script>
         // Poll countdown timer with pie chart
-        const pollTimer = (function() {
+        const pollTimer = (function () {
             const pollInterval = {{ poll_interval }};
-            let secondsRemaining = pollInterval;
-            const countdownEl = document.getElementById('poll-countdown');
-            const pieFillEl = document.getElementById('poll-pie-fill');
-            const circumference = 2 * Math.PI * 8; // r=8
+        let secondsRemaining = {{ poll_remaining }};
+        const countdownEl = document.getElementById('poll-countdown');
+        const pieFillEl = document.getElementById('poll-pie-fill');
+        const circumference = 2 * Math.PI * 8; // r=8
 
-            function updateDisplay() {
-                // Update text
-                if (countdownEl) {
-                    countdownEl.textContent = secondsRemaining + 's';
+        function updateDisplay() {
+            // Update text
+            if (countdownEl) {
+                countdownEl.textContent = secondsRemaining + 's';
+            }
+
+            // Update pie chart (fills as time passes)
+            if (pieFillEl) {
+                const progress = 1 - (secondsRemaining / pollInterval);
+                const offset = circumference * (1 - progress);
+                pieFillEl.style.strokeDashoffset = offset;
+
+                // Change color when close to update
+                if (secondsRemaining <= 5) {
+                    pieFillEl.style.stroke = '#22c55e'; // green
+                } else {
+                    pieFillEl.style.stroke = '#3b82f6'; // blue
                 }
-
-                // Update pie chart (fills as time passes)
-                if (pieFillEl) {
-                    const progress = 1 - (secondsRemaining / pollInterval);
-                    const offset = circumference * (1 - progress);
-                    pieFillEl.style.strokeDashoffset = offset;
-
-                    // Change color when close to update
-                    if (secondsRemaining <= 5) {
-                        pieFillEl.style.stroke = '#22c55e'; // green
-                    } else {
-                        pieFillEl.style.stroke = '#3b82f6'; // blue
-                    }
-                }
             }
+        }
 
-            function tick() {
-                secondsRemaining--;
-                if (secondsRemaining < 0) {
-                    secondsRemaining = pollInterval;
-                }
-                updateDisplay();
+        function tick() {
+            secondsRemaining--;
+            if (secondsRemaining < 0) {
+                secondsRemaining = 0;  // Hold at 0 until SSE resets it
             }
-
-            function reset() {
-                secondsRemaining = pollInterval;
-                updateDisplay();
-            }
-
-            function setRemaining(seconds) {
-                secondsRemaining = Math.min(seconds, pollInterval);
-                updateDisplay();
-            }
-
-            // Update immediately and then every second
             updateDisplay();
-            setInterval(tick, 1000);
+        }
 
-            // Reset countdown when HTMX request completes (data was refreshed)
-            document.body.addEventListener('htmx:afterRequest', function(e) {
-                if (e.detail.pathInfo.requestPath === '/jobs') {
-                    reset();
-                }
-            });
+        function reset() {
+            secondsRemaining = pollInterval;
+            updateDisplay();
+        }
 
-            return { reset, setRemaining };
-        })();
+        function setRemaining(seconds) {
+            secondsRemaining = Math.min(seconds, pollInterval);
+            updateDisplay();
+        }
 
-        // Trigger early refresh (set timer to 5 seconds)
+        // Update immediately and then every second
+        updateDisplay();
+        setInterval(tick, 1000);
+
+        // Reset countdown when SSE pushes a jobs update
+        // MutationObserver is the most reliable way to detect SSE content swaps
+        var jobsEl = document.getElementById('jobs-section');
+        if (jobsEl) {
+            new MutationObserver(function() { reset(); }).observe(
+                jobsEl, { childList: true, subtree: true }
+            );
+        }
+
+        return { reset, setRemaining };
+        }) ();
+
+        // Trigger immediate refresh from server cache (doesn't trigger new squeue poll)
         function triggerEarlyRefresh() {
-            pollTimer.setRemaining(3);
-            // Also trigger immediate HTMX refresh
-            htmx.trigger('#jobs-section', 'htmx:trigger');
+            fetch('/jobs').then(function(r) { return r.text(); }).then(function(html) {
+                var el = document.getElementById('jobs-section');
+                if (el) el.innerHTML = html;
+            });
         }
     </script>
 </body>
+
 </html>

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import uuid
@@ -9,7 +10,12 @@ from datetime import datetime
 from fnmatch import fnmatch
 from typing import TYPE_CHECKING
 
-from scripthut.config_schema import ScriptHutConfig, SlurmClusterConfig, TaskSourceConfig
+from scripthut.config_schema import (
+    ProjectConfig,
+    ScriptHutConfig,
+    SlurmClusterConfig,
+    TaskSourceConfig,
+)
 from scripthut.models import JobState
 from scripthut.queues.models import (
     Queue,
@@ -45,6 +51,9 @@ class QueueManager:
         self.clusters = clusters
         self.queues: dict[str, Queue] = {}
         self.history_manager = history_manager
+        # SSE event bus: version counter + Event per queue
+        self._queue_versions: dict[str, int] = {}
+        self._queue_events: dict[str, asyncio.Event] = {}
 
     @staticmethod
     def _resolve_wildcard_deps(tasks: list[TaskDefinition]) -> None:
@@ -120,6 +129,127 @@ class QueueManager:
             if color[task.id] == WHITE:
                 dfs(task.id, [])
 
+
+    async def _handle_generates_source(
+        self, queue: Queue, item: QueueItem
+    ) -> None:
+        """Read a generated task source JSON and append tasks to the queue.
+
+        When a task with `generates_source` completes, this method reads
+        the JSON file it produced (via `cat` on the head node), parses
+        the tasks, and appends them flat into the same queue.
+
+        Args:
+            queue: The queue containing the completed item.
+            item: The completed queue item with generates_source set.
+        """
+        path = item.task.generates_source
+        if not path:
+            return
+
+        logger.info(
+            f"Task '{item.task.id}' completed with generates_source: {path}"
+        )
+
+        # Get SSH client for this queue's cluster
+        ssh_client = self.get_ssh_client(queue.cluster_name)
+        if ssh_client is None:
+            logger.error(
+                f"No SSH client for cluster '{queue.cluster_name}' — "
+                f"cannot read generates_source '{path}'"
+            )
+            return
+
+        # Resolve relative paths against the task's working_dir
+        if not path.startswith("/") and not path.startswith("~"):
+            path = f"{item.task.working_dir}/{path}"
+
+        # Read the generated JSON file via cat (safe head node command)
+        stdout, stderr, exit_code = await ssh_client.run_command(f"cat {path}")
+        if exit_code != 0:
+            logger.error(
+                f"Failed to read generates_source '{path}': {stderr}"
+            )
+            return
+
+        # Parse JSON
+        try:
+            data = json.loads(stdout)
+        except json.JSONDecodeError as e:
+            logger.error(
+                f"Invalid JSON in generates_source '{path}': {e}"
+            )
+            return
+
+        # Extract tasks list
+        if isinstance(data, dict) and "tasks" in data:
+            tasks_data = data["tasks"]
+        elif isinstance(data, list):
+            tasks_data = data
+        else:
+            logger.error(
+                f"Unexpected JSON structure in generates_source '{path}': "
+                f"expected dict with 'tasks' key or a list"
+            )
+            return
+
+        new_tasks = [TaskDefinition.from_dict(t) for t in tasks_data]
+
+        # Resolve wildcard deps against ALL tasks in the queue (existing + new)
+        # so that generated tasks can reference parent task IDs with wildcards
+        all_tasks = [qi.task for qi in queue.items] + new_tasks
+        all_task_ids = [t.id for t in all_tasks]
+
+        # Only resolve wildcards in the new tasks' dependencies
+        for task in new_tasks:
+            expanded: list[str] = []
+            for dep in task.dependencies:
+                if any(c in dep for c in ("*", "?", "[")):
+                    matches = [
+                        tid for tid in all_task_ids
+                        if fnmatch(tid, dep) and tid != task.id
+                    ]
+                    if not matches:
+                        logger.error(
+                            f"Task '{task.id}': wildcard dep '{dep}' "
+                            f"matches no tasks in generates_source '{path}'"
+                        )
+                        return
+                    expanded.extend(matches)
+                else:
+                    expanded.append(dep)
+            task.dependencies = expanded
+
+        # Validate that all deps reference real task IDs
+        for task in new_tasks:
+            for dep_id in task.dependencies:
+                if dep_id not in all_task_ids:
+                    logger.error(
+                        f"Task '{task.id}' has unknown dependency '{dep_id}' "
+                        f"in generates_source '{path}'"
+                    )
+                    return
+
+        # Append new items to the queue (flat append)
+        new_items = [QueueItem(task=t) for t in new_tasks]
+        queue.items.extend(new_items)
+
+        # Register new items in history
+        if self.history_manager:
+            user = self.config.settings.filter_user or "unknown"
+            for new_item in new_items:
+                self.history_manager.register_queue_item(
+                    new_item, queue.id, queue.cluster_name, user
+                )
+
+        logger.info(
+            f"Appended {len(new_tasks)} tasks from generates_source "
+            f"'{path}' to queue '{queue.id}'"
+        )
+
+        # Process queue to submit newly ready tasks
+        await self.process_queue(queue)
+
     def get_task_source(self, name: str) -> TaskSourceConfig | None:
         """Get a task source by name."""
         return self.config.get_task_source(name)
@@ -127,6 +257,30 @@ class QueueManager:
     def get_ssh_client(self, cluster_name: str) -> SSHClient | None:
         """Get SSH client for a cluster."""
         return self.clusters.get(cluster_name)
+
+    async def _get_git_root(self, ssh_client: SSHClient, working_dir: str) -> str:
+        """Detect the git repository root for a working directory on the cluster.
+
+        Args:
+            ssh_client: SSH client connected to the cluster.
+            working_dir: The working directory to check.
+
+        Returns:
+            The absolute path to the git repository root.
+
+        Raises:
+            ValueError: If the working directory is not inside a git repo.
+        """
+        stdout, stderr, exit_code = await ssh_client.run_command(
+            f"cd {working_dir} && git rev-parse --show-toplevel"
+        )
+        if exit_code != 0:
+            raise ValueError(
+                f"'{working_dir}' is not inside a git repository. "
+                f"ScriptHut requires workflows to live in git repos."
+            )
+        return stdout.strip()
+
 
     async def fetch_tasks(
         self, source: TaskSourceConfig, *, return_raw: bool = False
@@ -256,8 +410,80 @@ class QueueManager:
             return cluster.login_shell
         return False
 
+    async def _build_queue(
+        self,
+        tasks: list[TaskDefinition],
+        source_name: str,
+        cluster_name: str,
+        max_concurrent: int,
+        ssh_client: SSHClient,
+    ) -> Queue:
+        """Shared queue construction: resolve deps, validate, create Queue.
+
+        Args:
+            tasks: Parsed task definitions.
+            source_name: Identifier for this queue (e.g. "r-simulation" or
+                "scripthut-examples/r_simulation").
+            cluster_name: Name of the cluster to submit to.
+            max_concurrent: Max concurrent tasks.
+            ssh_client: SSH client for the cluster.
+
+        Returns:
+            Created Queue object, registered and processing.
+
+        Raises:
+            ValueError: If tasks are empty or validation fails.
+        """
+        if not tasks:
+            raise ValueError(f"No tasks for source '{source_name}'")
+
+        # Resolve wildcard deps, then validate
+        self._resolve_wildcard_deps(tasks)
+        self._validate_dependencies(tasks)
+
+        # Get account and login_shell from cluster config
+        account = self.get_cluster_account(cluster_name)
+        login_shell = self.get_cluster_login_shell(cluster_name)
+
+        # Detect git root — mandatory, all workflows must live in a git repo
+        first_working_dir = tasks[0].working_dir
+        git_root = await self._get_git_root(ssh_client, first_working_dir)
+        log_dir = f"{git_root}/.scripthut/{source_name}/logs"
+        logger.info(f"Git root: {git_root} — logs at {log_dir}")
+
+        # Create queue
+        queue_id = str(uuid.uuid4())[:8]
+        queue = Queue(
+            id=queue_id,
+            source_name=source_name,
+            cluster_name=cluster_name,
+            created_at=datetime.now(),
+            items=[QueueItem(task=task) for task in tasks],
+            max_concurrent=max_concurrent,
+            account=account,
+            login_shell=login_shell,
+            log_dir=log_dir,
+        )
+
+        self.queues[queue_id] = queue
+        logger.info(f"Created queue '{queue_id}' with {len(tasks)} tasks")
+
+        # Register queue and items in history
+        if self.history_manager:
+            self.history_manager.register_queue(queue)
+            user = self.config.settings.filter_user or "unknown"
+            for item in queue.items:
+                self.history_manager.register_queue_item(
+                    item, queue.id, queue.cluster_name, user
+                )
+
+        # Start submitting tasks
+        await self.process_queue(queue)
+
+        return queue
+
     async def create_queue(self, source_name: str) -> Queue:
-        """Create a new queue from a task source.
+        """Create a new queue from a legacy task source.
 
         Args:
             source_name: Name of the task source to use.
@@ -272,51 +498,126 @@ class QueueManager:
         if source is None:
             raise ValueError(f"Task source '{source_name}' not found")
 
-        # Fetch tasks
         tasks = await self.fetch_tasks(source)
 
-        if not tasks:
-            raise ValueError(f"No tasks returned from source '{source_name}'")
+        ssh_client = self.get_ssh_client(source.cluster)
+        if ssh_client is None:
+            raise ValueError(
+                f"No SSH connection to cluster '{source.cluster}'"
+            )
 
-        # Resolve wildcard deps, then validate
-        self._resolve_wildcard_deps(tasks)
-        self._validate_dependencies(tasks)
-
-        # Get account and login_shell from cluster config
-        account = self.get_cluster_account(source.cluster)
-        login_shell = self.get_cluster_login_shell(source.cluster)
-
-        # Create queue
-        queue_id = str(uuid.uuid4())[:8]
-        queue = Queue(
-            id=queue_id,
-            source_name=source_name,
-            cluster_name=source.cluster,
-            created_at=datetime.now(),
-            items=[QueueItem(task=task) for task in tasks],
-            max_concurrent=source.max_concurrent,
-            account=account,
-            login_shell=login_shell,
+        return await self._build_queue(
+            tasks, source_name, source.cluster, source.max_concurrent, ssh_client
         )
 
-        self.queues[queue_id] = queue
-        logger.info(f"Created queue '{queue_id}' with {len(tasks)} tasks")
+    async def discover_workflows(self, project_name: str) -> list[str]:
+        """Discover sflow.json files in a project repo via git ls-files.
 
-        # Register queue and items in history
-        if self.history_manager:
-            # Register queue metadata
-            self.history_manager.register_queue(queue)
-            # Register all queue items as jobs
-            user = self.config.settings.filter_user or "unknown"
-            for item in queue.items:
-                self.history_manager.register_queue_item(
-                    item, queue.id, queue.cluster_name, user
-                )
+        Args:
+            project_name: Name of the project config.
 
-        # Start submitting tasks
-        await self.process_queue(queue)
+        Returns:
+            List of relative paths, e.g. ["r_simulation/sflow.json"].
 
-        return queue
+        Raises:
+            ValueError: If project not found or git command fails.
+        """
+        project = self.config.get_project(project_name)
+        if project is None:
+            raise ValueError(f"Project '{project_name}' not found")
+
+        ssh_client = self.get_ssh_client(project.cluster)
+        if ssh_client is None:
+            raise ValueError(
+                f"No SSH connection to cluster '{project.cluster}'"
+            )
+
+        stdout, stderr, exit_code = await ssh_client.run_command(
+            f"cd {project.path} && git ls-files '*/sflow.json' 'sflow.json'"
+        )
+        if exit_code != 0:
+            raise ValueError(
+                f"git ls-files failed in {project.path}: {stderr}"
+            )
+
+        paths = [line.strip() for line in stdout.strip().splitlines() if line.strip()]
+        logger.info(
+            f"Discovered {len(paths)} workflows in project '{project_name}'"
+        )
+        return paths
+
+    async def create_queue_from_project(
+        self, project_name: str, workflow_path: str
+    ) -> Queue:
+        """Create a queue from a sflow.json in a project repo.
+
+        Args:
+            project_name: Name of the project config.
+            workflow_path: Relative path within the project,
+                e.g. "r_simulation/sflow.json".
+
+        Returns:
+            Created Queue object.
+
+        Raises:
+            ValueError: If project not found or sflow.json can't be read.
+        """
+        project = self.config.get_project(project_name)
+        if project is None:
+            raise ValueError(f"Project '{project_name}' not found")
+
+        ssh_client = self.get_ssh_client(project.cluster)
+        if ssh_client is None:
+            raise ValueError(
+                f"No SSH connection to cluster '{project.cluster}'"
+            )
+
+        # Read sflow.json
+        full_path = f"{project.path}/{workflow_path}"
+        stdout, stderr, exit_code = await ssh_client.run_command(
+            f"cat {full_path}"
+        )
+        if exit_code != 0:
+            raise ValueError(
+                f"Failed to read '{full_path}': {stderr}"
+            )
+
+        # Parse tasks
+        try:
+            data = json.loads(stdout)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Invalid JSON in '{full_path}': {e}")
+
+        if isinstance(data, dict) and "tasks" in data:
+            tasks_data = data["tasks"]
+        elif isinstance(data, list):
+            tasks_data = data
+        else:
+            raise ValueError(
+                f"JSON in '{full_path}' must be a list or dict with 'tasks' key"
+            )
+
+        tasks = [TaskDefinition.from_dict(t) for t in tasks_data]
+
+        # Set working_dir to the directory containing sflow.json
+        # (for discovered workflows; generated ones specify their own)
+        sflow_dir = workflow_path.rsplit("/", 1)[0] if "/" in workflow_path else ""
+        default_working_dir = (
+            f"{project.path}/{sflow_dir}" if sflow_dir else project.path
+        )
+        for task in tasks:
+            if task.working_dir == "~":  # default, not explicitly set
+                task.working_dir = default_working_dir
+
+        # source_name = "project_name/workflow_dir"
+        source_name = (
+            f"{project.name}/{sflow_dir}" if sflow_dir else project.name
+        )
+
+        return await self._build_queue(
+            tasks, source_name, project.cluster, project.max_concurrent,
+            ssh_client
+        )
 
     async def submit_task(self, queue: Queue, item: QueueItem) -> bool:
         """Submit a single task to Slurm.
@@ -435,6 +736,28 @@ class QueueManager:
         for item in to_submit:
             await self.submit_task(queue, item)
 
+        if to_submit:
+            self.notify_queue(queue.id)
+
+    def notify_queue(self, queue_id: str) -> None:
+        """Wake all SSE listeners for a queue."""
+        self._queue_versions[queue_id] = self._queue_versions.get(queue_id, 0) + 1
+        old_event = self._queue_events.get(queue_id)
+        self._queue_events[queue_id] = asyncio.Event()  # Fresh event for next cycle
+        if old_event:
+            old_event.set()  # Wake anyone waiting on the old event
+
+    async def wait_for_update(self, queue_id: str, timeout: float = 30.0) -> bool:
+        """Wait for a queue state change. Returns True if notified, False on timeout."""
+        if queue_id not in self._queue_events:
+            self._queue_events[queue_id] = asyncio.Event()
+        event = self._queue_events[queue_id]
+        try:
+            await asyncio.wait_for(event.wait(), timeout=timeout)
+            return True
+        except asyncio.TimeoutError:
+            return False
+
     async def update_queue_status(self, queue: Queue, slurm_jobs: dict[str, JobState]) -> None:
         """Update queue item statuses based on Slurm job states.
 
@@ -463,6 +786,9 @@ class QueueManager:
                     changed = True
                     changed_items.append(item)
                     logger.info(f"Task '{item.task.id}' (job {item.slurm_job_id}) completed")
+                    # Handle endogenous source generation
+                    if item.task.generates_source:
+                        await self._handle_generates_source(queue, item)
             else:
                 # Job is in squeue
                 if job_state in (JobState.RUNNING, JobState.COMPLETING):
@@ -484,6 +810,9 @@ class QueueManager:
                     changed = True
                     changed_items.append(item)
                     logger.info(f"Task '{item.task.id}' (job {item.slurm_job_id}) completed")
+                    # Handle endogenous source generation
+                    if item.task.generates_source:
+                        await self._handle_generates_source(queue, item)
                 elif job_state in (
                     JobState.FAILED,
                     JobState.CANCELLED,
@@ -509,6 +838,7 @@ class QueueManager:
         # If any items completed/failed, try to submit more
         if changed:
             await self.process_queue(queue)
+            self.notify_queue(queue.id)
 
     async def update_all_queues(self, cluster_jobs: dict[str, list[tuple[str, JobState]]]) -> None:
         """Update all active queues based on Slurm job states.

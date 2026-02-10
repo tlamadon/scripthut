@@ -116,6 +116,23 @@ class TaskSourceConfig(BaseModel):
     )
 
 
+class ProjectConfig(BaseModel):
+    """A git repository on a cluster containing sflow.json workflow files."""
+
+    name: str = Field(description="Unique identifier for this project")
+    cluster: str = Field(description="Name of the cluster this project lives on")
+    path: str = Field(description="Path to the git repo on the cluster")
+    max_concurrent: int = Field(
+        default=5,
+        ge=1,
+        description="Default max concurrent tasks for workflows in this project",
+    )
+    description: str = Field(
+        default="",
+        description="Human-readable description of this project",
+    )
+
+
 class GlobalSettings(BaseModel):
     """Global application settings."""
 
@@ -162,6 +179,10 @@ class ScriptHutConfig(BaseModel):
         default_factory=list,
         description="List of task sources (SSH commands returning JSON task lists)",
     )
+    projects: list[ProjectConfig] = Field(
+        default_factory=list,
+        description="List of git projects containing sflow.json workflow files",
+    )
     settings: GlobalSettings = Field(
         default_factory=GlobalSettings,
         description="Global application settings",
@@ -186,6 +207,13 @@ class ScriptHutConfig(BaseModel):
         for source in self.task_sources:
             if source.name == name:
                 return source
+        return None
+
+    def get_project(self, name: str) -> ProjectConfig | None:
+        """Get a project by name."""
+        for project in self.projects:
+            if project.name == name:
+                return project
         return None
 
     @property

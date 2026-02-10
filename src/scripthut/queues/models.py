@@ -30,6 +30,7 @@ class TaskDefinition:
     memory: str = "4G"
     time_limit: str = "1:00:00"
     dependencies: list[str] = field(default_factory=list)
+    generates_source: str | None = None  # Path to JSON file this task creates on the cluster
     output_file: str | None = None  # Custom stdout log path
     error_file: str | None = None  # Custom stderr log path
 
@@ -46,6 +47,7 @@ class TaskDefinition:
             memory=data.get("memory", "4G"),
             time_limit=data.get("time_limit", "1:00:00"),
             dependencies=data.get("deps", data.get("dependencies", [])),
+            generates_source=data.get("generates_source"),
             output_file=data.get("output_file"),
             error_file=data.get("error_file"),
         )
@@ -81,7 +83,7 @@ class TaskDefinition:
         shebang = "#!/bin/bash -l" if login_shell else "#!/bin/bash"
 
         return f"""{shebang}
-#SBATCH --job-name={self.name}
+#SBATCH --job-name="{self.name}"
 #SBATCH --partition={self.partition}
 {account_line}#SBATCH --cpus-per-task={self.cpus}
 #SBATCH --mem={self.memory}
