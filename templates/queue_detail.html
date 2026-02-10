@@ -44,14 +44,18 @@
             </div>
 
             <!-- View Tabs -->
-            <div class="flex gap-1 mb-4">
+            <div class="flex gap-1 mb-4 text-sm font-medium">
                 <button id="tab-table" onclick="switchTab('table')"
-                    class="px-4 py-2 text-sm font-medium rounded-t-lg border border-b-0 bg-white text-gray-800 border-gray-200">
+                    class="px-3 py-1.5 rounded-md transition-colors bg-blue-100 text-blue-700">
                     Table
                 </button>
                 <button id="tab-gantt" onclick="switchTab('gantt')"
-                    class="px-4 py-2 text-sm font-medium rounded-t-lg border border-b-0 bg-gray-100 text-gray-500 border-gray-200">
+                    class="px-3 py-1.5 rounded-md transition-colors text-gray-600 hover:bg-gray-100 hover:text-gray-800">
                     Gantt
+                </button>
+                <button id="tab-details" onclick="switchTab('details')"
+                    class="px-3 py-1.5 rounded-md transition-colors text-gray-600 hover:bg-gray-100 hover:text-gray-800">
+                    Details
                 </button>
             </div>
 
@@ -68,6 +72,91 @@
                     {% include "queue_gantt.html" %}
                 </div>
             </div>
+
+            <!-- Task Details view -->
+            <div id="view-details" class="flex gap-4" style="display: none; height: 70vh;">
+                <!-- Left sidebar: task list -->
+                <div class="w-64 flex-shrink-0 bg-white rounded-lg shadow-md flex flex-col overflow-hidden">
+                    <div class="px-3 py-2 bg-gray-50 border-b">
+                        <h3 class="text-xs font-semibold text-gray-500 uppercase tracking-wider">Tasks</h3>
+                    </div>
+                    <div class="overflow-y-auto flex-1" id="detail-sidebar">
+                        {% for item in queue.items %}
+                        <a href="#" onclick="showTaskDetail('{{ item.task.id }}'); return false;"
+                           id="detail-sidebar-{{ item.task.id }}"
+                           class="flex items-center gap-2 px-3 py-2 text-sm border-b border-gray-100 hover:bg-gray-50 transition-colors"
+                           title="{{ item.task.name }} ({{ item.status.value }})">
+                            <span class="w-2 h-2 rounded-full flex-shrink-0
+                                {% if item.status.value == 'running' %}bg-green-500 animate-pulse
+                                {% elif item.status.value == 'pending' %}bg-gray-400
+                                {% elif item.status.value == 'submitted' %}bg-yellow-500
+                                {% elif item.status.value == 'completed' %}bg-blue-500
+                                {% elif item.status.value == 'failed' %}bg-red-500
+                                {% elif item.status.value == 'dep_failed' %}bg-orange-500
+                                {% endif %}"></span>
+                            <span class="truncate text-gray-700">{{ item.task.name }}</span>
+                        </a>
+                        {% endfor %}
+                    </div>
+                </div>
+
+                <!-- Main content area -->
+                <div class="flex-1 flex flex-col min-w-0 overflow-hidden bg-white rounded-lg shadow-md">
+                    <!-- Sub-tabs bar -->
+                    <div class="border-b flex items-center justify-between px-2">
+                        <div class="flex">
+                            <button onclick="loadDetailContent('output')" id="dtab-output"
+                                class="px-4 py-2.5 text-sm font-medium border-b-2 border-blue-500 text-blue-600">
+                                Output
+                            </button>
+                            <button onclick="loadDetailContent('error')" id="dtab-error"
+                                class="px-4 py-2.5 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300">
+                                Error
+                            </button>
+                            <button onclick="loadDetailContent('script')" id="dtab-script"
+                                class="px-4 py-2.5 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300">
+                                Script
+                            </button>
+                            <button onclick="loadDetailContent('json')" id="dtab-json"
+                                class="px-4 py-2.5 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300">
+                                JSON
+                            </button>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <div id="detail-tail-controls" class="flex items-center gap-1.5">
+                                <label class="text-xs text-gray-500">Tail:</label>
+                                <select id="detail-tail-select" class="text-xs border rounded px-1.5 py-1" onchange="refreshDetail()">
+                                    <option value="">All</option>
+                                    <option value="50">50</option>
+                                    <option value="100" selected>100</option>
+                                    <option value="500">500</option>
+                                </select>
+                            </div>
+                            <button onclick="refreshDetail()"
+                                class="px-2.5 py-1 bg-blue-600 text-white rounded hover:bg-blue-700 text-xs">
+                                Refresh
+                            </button>
+                            <button onclick="copyDetailContent()"
+                                class="px-2.5 py-1 bg-gray-200 hover:bg-gray-300 rounded text-xs text-gray-700">
+                                Copy
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Task title and path -->
+                    <div class="px-4 py-2 border-b" id="detail-header">
+                        <p class="text-sm text-gray-500">Select a task to view details</p>
+                    </div>
+
+                    <!-- Error area -->
+                    <div id="detail-error" class="bg-red-100 border border-red-300 text-red-700 px-4 py-3 text-sm" style="display:none;"></div>
+
+                    <!-- Content display -->
+                    <div class="flex-1 overflow-hidden">
+                        <pre id="detail-content" class="h-full p-4 overflow-auto text-sm font-mono bg-gray-900 text-gray-100"></pre>
+                    </div>
+                </div>
+            </div>
         </div>
         {% endif %}
     </div>
@@ -75,37 +164,130 @@
     {% if queue %}
     <style id="folded-groups-style"></style>
     <script>
+        var _detailTaskId = null;
+        var _detailType = 'output';
+        var _detailQueueId = '{{ queue.id }}';
+
         function switchTab(tab) {
-            var tableView = document.getElementById('view-table');
-            var ganttView = document.getElementById('view-gantt');
-            var tabTable = document.getElementById('tab-table');
-            var tabGantt = document.getElementById('tab-gantt');
-            var active = 'px-4 py-2 text-sm font-medium rounded-t-lg border border-b-0 bg-white text-gray-800 border-gray-200';
-            var inactive = 'px-4 py-2 text-sm font-medium rounded-t-lg border border-b-0 bg-gray-100 text-gray-500 border-gray-200';
+            var views = {table: 'view-table', gantt: 'view-gantt', details: 'view-details'};
+            var tabs = {table: 'tab-table', gantt: 'tab-gantt', details: 'tab-details'};
+            var active = 'px-3 py-1.5 rounded-md transition-colors bg-blue-100 text-blue-700';
+            var inactive = 'px-3 py-1.5 rounded-md transition-colors text-gray-600 hover:bg-gray-100 hover:text-gray-800';
+
+            for (var key in views) {
+                document.getElementById(views[key]).style.display = (key === tab) ? '' : 'none';
+                document.getElementById(tabs[key]).className = (key === tab) ? active : inactive;
+            }
 
             if (tab === 'gantt') {
-                tableView.style.display = 'none';
-                ganttView.style.display = '';
-                tabTable.className = inactive;
-                tabGantt.className = active;
-                // Draw dependency arrows after the view becomes visible
                 setTimeout(function() {
                     if (typeof window._drawGanttDeps === 'function') window._drawGanttDeps();
                 }, 20);
-            } else {
-                tableView.style.display = '';
-                ganttView.style.display = 'none';
-                tabTable.className = active;
-                tabGantt.className = inactive;
             }
             try { localStorage.setItem('scripthut-queue-tab', tab); } catch(e) {}
+        }
+
+        function showTaskDetail(taskId, type) {
+            _detailTaskId = taskId;
+            _detailType = type || _detailType || 'output';
+            switchTab('details');
+            updateSidebarHighlight();
+            fetchDetail();
+        }
+
+        function updateSidebarHighlight() {
+            var sidebar = document.getElementById('detail-sidebar');
+            if (!sidebar) return;
+            sidebar.querySelectorAll('a').forEach(function(a) {
+                var isActive = a.id === 'detail-sidebar-' + _detailTaskId;
+                var nameSpan = a.querySelector('span:last-child');
+                if (isActive) {
+                    a.classList.add('bg-blue-50', 'border-l-2', 'border-l-blue-500');
+                    if (nameSpan) { nameSpan.classList.add('font-semibold', 'text-gray-900'); nameSpan.classList.remove('text-gray-700'); }
+                } else {
+                    a.classList.remove('bg-blue-50', 'border-l-2', 'border-l-blue-500');
+                    if (nameSpan) { nameSpan.classList.remove('font-semibold', 'text-gray-900'); nameSpan.classList.add('text-gray-700'); }
+                }
+            });
+        }
+
+        function loadDetailContent(type) {
+            _detailType = type;
+            updateDetailTabs();
+            fetchDetail();
+        }
+
+        function refreshDetail() {
+            fetchDetail();
+        }
+
+        function fetchDetail() {
+            if (!_detailTaskId) return;
+            updateDetailTabs();
+
+            var url = '/queues/' + _detailQueueId + '/tasks/' + encodeURIComponent(_detailTaskId) + '/detail/' + _detailType;
+            if (_detailType === 'output' || _detailType === 'error') {
+                var tail = document.getElementById('detail-tail-select').value;
+                if (tail) url += '?tail=' + tail;
+            }
+
+            document.getElementById('detail-content').textContent = 'Loading...';
+            document.getElementById('detail-error').style.display = 'none';
+
+            fetch(url)
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    if (data.error) {
+                        document.getElementById('detail-error').textContent = data.error;
+                        document.getElementById('detail-error').style.display = '';
+                    } else {
+                        document.getElementById('detail-error').style.display = 'none';
+                    }
+                    document.getElementById('detail-content').textContent = data.content || 'No content available.';
+                    var header = document.getElementById('detail-header');
+                    var h = '<h2 class="text-sm font-semibold text-gray-800">' + escapeHtml(data.task_name) + '</h2>';
+                    if (data.path) {
+                        h += '<p class="text-xs text-gray-400 font-mono truncate">' + escapeHtml(data.path) + '</p>';
+                    }
+                    header.innerHTML = h;
+                })
+                .catch(function(err) {
+                    document.getElementById('detail-content').textContent = 'Error loading content: ' + err;
+                });
+        }
+
+        function updateDetailTabs() {
+            var activeClass = 'px-4 py-2.5 text-sm font-medium border-b-2 border-blue-500 text-blue-600';
+            var inactiveClass = 'px-4 py-2.5 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300';
+            ['output', 'error', 'script', 'json'].forEach(function(t) {
+                document.getElementById('dtab-' + t).className = (t === _detailType) ? activeClass : inactiveClass;
+            });
+            document.getElementById('detail-tail-controls').style.display =
+                (_detailType === 'output' || _detailType === 'error') ? '' : 'none';
+        }
+
+        function copyDetailContent() {
+            var content = document.getElementById('detail-content');
+            if (!content) return;
+            navigator.clipboard.writeText(content.textContent).then(function() {
+                var btn = event.target;
+                var orig = btn.textContent;
+                btn.textContent = 'Copied!';
+                setTimeout(function() { btn.textContent = orig; }, 1500);
+            });
+        }
+
+        function escapeHtml(text) {
+            var div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
         }
 
         // Restore last tab preference
         (function() {
             try {
                 var saved = localStorage.getItem('scripthut-queue-tab');
-                if (saved === 'gantt') switchTab('gantt');
+                if (saved === 'gantt' || saved === 'details') switchTab(saved);
             } catch(e) {}
         })();
     </script>

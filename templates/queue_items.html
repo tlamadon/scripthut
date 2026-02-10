@@ -128,26 +128,13 @@
                     {% endif %}
                 </td>
                 <td class="px-4 py-3 whitespace-nowrap text-sm">
-                    <div class="flex items-center gap-2">
-                        <a href="/queues/{{ queue.id }}/tasks/{{ item.task.id }}/script"
-                           class="text-blue-600 hover:text-blue-800"
-                           title="View sbatch script">
-                            Script
-                        </a>
-                        {% if item.status.value in ['running', 'completed', 'failed'] %}
-                        <span class="text-gray-300">|</span>
-                        <a href="/queues/{{ queue.id }}/tasks/{{ item.task.id }}/logs/output"
-                           class="text-blue-600 hover:text-blue-800"
-                           title="View stdout log">
-                            Out
-                        </a>
-                        <a href="/queues/{{ queue.id }}/tasks/{{ item.task.id }}/logs/error"
-                           class="text-blue-600 hover:text-blue-800"
-                           title="View stderr log">
-                            Err
-                        </a>
-                        {% endif %}
-                    </div>
+                    <a href="#" onclick="showTaskDetail('{{ item.task.id }}'); return false;"
+                       class="text-gray-400 hover:text-blue-600 transition-colors"
+                       title="View details">
+                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 15.803a7.5 7.5 0 0010.607 0z" />
+                        </svg>
+                    </a>
                 </td>
             </tr>
             {% if item.error %}

@@ -2,6 +2,7 @@
 
 import argparse
 import asyncio
+import json
 import logging
 import time
 
@@ -1087,6 +1088,154 @@ async def view_task_script(request: Request, queue_id: str, task_id: str) -> HTM
             "task_id": task_id,
             "task_name": item.task.name,
             "content_type": "script",
+            "queue_items": queue.items,
+        },
+    )
+
+
+@app.get("/queues/{queue_id}/tasks/{task_id}/detail/{detail_type}")
+async def get_task_detail(
+    queue_id: str, task_id: str, detail_type: str, tail: int | None = None
+) -> JSONResponse:
+    """Get task detail content as JSON for inline display in the queue detail page."""
+    if state.queue_manager is None:
+        return JSONResponse({"error": "Queue manager not initialized", "content": None, "task_name": "", "path": None})
+
+    queue = state.queue_manager.get_queue(queue_id)
+    if queue is None:
+        return JSONResponse({"error": f"Queue '{queue_id}' not found", "content": None, "task_name": "", "path": None})
+
+    item = queue.get_item_by_task_id(task_id)
+    if item is None:
+        return JSONResponse({"error": f"Task '{task_id}' not found", "content": None, "task_name": "", "path": None})
+
+    content: str | None = None
+    error: str | None = None
+    path: str | None = None
+
+    if detail_type in ("output", "error"):
+        content, error = await state.queue_manager.fetch_log_file(
+            queue_id, task_id, detail_type, tail_lines=tail
+        )
+        if detail_type == "output":
+            path = item.task.get_output_path(queue.id, queue.log_dir)
+        else:
+            path = item.task.get_error_path(queue.id, queue.log_dir)
+    elif detail_type == "script":
+        content = item.sbatch_script
+        if content is None:
+            log_dir = queue.log_dir
+            cluster_state = state.clusters.get(queue.cluster_name)
+            if cluster_state and cluster_state.ssh_client and log_dir.startswith("~"):
+                try:
+                    stdout, _, _ = await cluster_state.ssh_client.run_command("echo $HOME")
+                    log_dir = log_dir.replace("~", stdout.strip(), 1)
+                except Exception:
+                    pass
+            env_vars, extra_init = state.queue_manager._resolve_environment(item.task)
+            content = item.task.to_sbatch_script(
+                queue.id, log_dir, account=queue.account, login_shell=queue.login_shell,
+                env_vars=env_vars, extra_init=extra_init,
+            )
+    elif detail_type == "json":
+        task_data: dict[str, Any] = {
+            "id": item.task.id,
+            "name": item.task.name,
+            "command": item.task.command,
+            "working_dir": item.task.working_dir,
+            "partition": item.task.partition,
+            "cpus": item.task.cpus,
+            "memory": item.task.memory,
+            "time_limit": item.task.time_limit,
+            "dependencies": item.task.dependencies,
+            "environment": item.task.environment,
+            "generates_source": item.task.generates_source,
+            "output_file": item.task.output_file,
+            "error_file": item.task.error_file,
+        }
+        item_data: dict[str, Any] = {
+            "task": task_data,
+            "status": item.status.value,
+            "slurm_job_id": item.slurm_job_id,
+            "submitted_at": item.submitted_at.isoformat() if item.submitted_at else None,
+            "started_at": item.started_at.isoformat() if item.started_at else None,
+            "finished_at": item.finished_at.isoformat() if item.finished_at else None,
+            "error": item.error,
+        }
+        content = json.dumps(item_data, indent=2)
+    else:
+        error = f"Unknown detail type: {detail_type}"
+
+    return JSONResponse({
+        "content": content,
+        "error": error,
+        "task_name": item.task.name,
+        "task_id": task_id,
+        "path": path,
+    })
+
+
+@app.get("/queues/{queue_id}/tasks/{task_id}/json", response_class=HTMLResponse)
+async def view_task_json(request: Request, queue_id: str, task_id: str) -> HTMLResponse:
+    """View the JSON definition of a task."""
+    if state.queue_manager is None:
+        return templates.TemplateResponse(
+            "log_viewer.html",
+            {"request": request, "title": "JSON", "content": None, "error": "Queue manager not initialized"},
+        )
+
+    queue = state.queue_manager.get_queue(queue_id)
+    if queue is None:
+        return templates.TemplateResponse(
+            "log_viewer.html",
+            {"request": request, "title": "JSON", "content": None, "error": f"Queue '{queue_id}' not found"},
+        )
+
+    item = queue.get_item_by_task_id(task_id)
+    if item is None:
+        return templates.TemplateResponse(
+            "log_viewer.html",
+            {"request": request, "title": "JSON", "content": None, "error": f"Task '{task_id}' not found"},
+        )
+
+    # Build a JSON representation of the queue item
+    task_data: dict[str, Any] = {
+        "id": item.task.id,
+        "name": item.task.name,
+        "command": item.task.command,
+        "working_dir": item.task.working_dir,
+        "partition": item.task.partition,
+        "cpus": item.task.cpus,
+        "memory": item.task.memory,
+        "time_limit": item.task.time_limit,
+        "dependencies": item.task.dependencies,
+        "environment": item.task.environment,
+        "generates_source": item.task.generates_source,
+        "output_file": item.task.output_file,
+        "error_file": item.task.error_file,
+    }
+    item_data: dict[str, Any] = {
+        "task": task_data,
+        "status": item.status.value,
+        "slurm_job_id": item.slurm_job_id,
+        "submitted_at": item.submitted_at.isoformat() if item.submitted_at else None,
+        "started_at": item.started_at.isoformat() if item.started_at else None,
+        "finished_at": item.finished_at.isoformat() if item.finished_at else None,
+        "error": item.error,
+    }
+    content = json.dumps(item_data, indent=2)
+
+    return templates.TemplateResponse(
+        "log_viewer.html",
+        {
+            "request": request,
+            "title": f"JSON: {item.task.name}",
+            "content": content,
+            "error": None,
+            "queue_id": queue_id,
+            "task_id": task_id,
+            "task_name": item.task.name,
+            "content_type": "json",
             "queue_items": queue.items,
         },
     )
