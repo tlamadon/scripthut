@@ -56,6 +56,24 @@ class QueueManager:
         self._queue_versions: dict[str, int] = {}
         self._queue_events: dict[str, asyncio.Event] = {}
 
+    def _resolve_environment(
+        self, task: TaskDefinition
+    ) -> tuple[dict[str, str] | None, str]:
+        """Resolve environment config for a task.
+
+        Returns:
+            Tuple of (env_vars dict or None, extra_init string).
+        """
+        if not task.environment:
+            return None, ""
+        env_config = self.config.get_environment(task.environment)
+        if env_config is None:
+            logger.warning(
+                f"Task '{task.id}' references unknown environment '{task.environment}'"
+            )
+            return None, ""
+        return dict(env_config.variables) or None, env_config.extra_init
+
     @staticmethod
     def _resolve_wildcard_deps(tasks: list[TaskDefinition]) -> None:
         """Expand wildcard patterns in task dependencies to matching task IDs.
@@ -371,7 +389,8 @@ class QueueManager:
         # Build task details with generated scripts
         task_details = []
         for task in tasks:
-            script = task.to_sbatch_script(preview_queue_id, log_dir, account=account, login_shell=login_shell)
+            env_vars, extra_init = self._resolve_environment(task)
+            script = task.to_sbatch_script(preview_queue_id, log_dir, account=account, login_shell=login_shell, env_vars=env_vars, extra_init=extra_init)
             task_details.append({
                 "task": task,
                 "sbatch_script": script,
@@ -651,7 +670,8 @@ class QueueManager:
         await ssh_client.run_command(f"mkdir -p {log_dir}")
 
         # Generate sbatch script and store it
-        script = item.task.to_sbatch_script(queue.id, log_dir, account=queue.account, login_shell=queue.login_shell)
+        env_vars, extra_init = self._resolve_environment(item.task)
+        script = item.task.to_sbatch_script(queue.id, log_dir, account=queue.account, login_shell=queue.login_shell, env_vars=env_vars, extra_init=extra_init)
         item.sbatch_script = script
 
         # Submit via sbatch using heredoc

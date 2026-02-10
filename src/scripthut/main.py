@@ -918,7 +918,8 @@ async def view_task_script(request: Request, queue_id: str, task_id: str) -> HTM
     script = item.sbatch_script
     if script is None:
         # Generate the script if not stored (task hasn't been submitted yet)
-        script = item.task.to_sbatch_script(queue.id, queue.log_dir)
+        env_vars, extra_init = state.queue_manager._resolve_environment(item.task)
+        script = item.task.to_sbatch_script(queue.id, queue.log_dir, env_vars=env_vars, extra_init=extra_init)
 
     return templates.TemplateResponse(
         "log_viewer.html",
@@ -931,6 +932,7 @@ async def view_task_script(request: Request, queue_id: str, task_id: str) -> HTM
             "task_id": task_id,
             "task_name": item.task.name,
             "content_type": "script",
+            "queue_items": queue.items,
         },
     )
 
@@ -990,6 +992,7 @@ async def view_task_log(
             "log_path": log_path,
             "content_type": "log",
             "tail": tail,
+            "queue_items": queue.items if queue else [],
         },
     )
 

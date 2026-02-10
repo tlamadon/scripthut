@@ -9,125 +9,167 @@
     <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="bg-gray-100 min-h-screen">
-    <div class="container mx-auto px-4 py-8">
-        <header class="mb-6">
-            <div class="flex items-center justify-between">
-                {% include "nav.html" %}
-                <div class="flex items-center gap-3">
-                    {% if content_type == 'log' %}
-                    <div class="flex items-center gap-2">
-                        <label class="text-sm text-gray-600">Tail:</label>
-                        <select
-                            id="tail-select"
-                            class="text-sm border rounded px-2 py-1"
-                            onchange="updateTail(this.value)"
-                        >
-                            <option value="" {% if not tail %}selected{% endif %}>All</option>
-                            <option value="50" {% if tail == 50 %}selected{% endif %}>50 lines</option>
-                            <option value="100" {% if tail == 100 %}selected{% endif %}>100 lines</option>
-                            <option value="500" {% if tail == 500 %}selected{% endif %}>500 lines</option>
-                        </select>
-                    </div>
-                    <button
-                        onclick="window.location.reload()"
-                        class="px-3 py-1 bg-blue-600 text-white rounded hover:bg-blue-700 text-sm"
-                    >
-                        Refresh
-                    </button>
+    <div class="container mx-auto px-4 py-4">
+        <header class="mb-4">
+            {% include "nav.html" %}
+        </header>
+
+        <div class="flex gap-4" style="height: calc(100vh - 100px);">
+            <!-- Left sidebar: task list -->
+            {% if queue_items is defined and queue_items %}
+            <div class="w-64 flex-shrink-0 bg-white rounded-lg shadow-md flex flex-col overflow-hidden">
+                <div class="px-3 py-2 bg-gray-50 border-b">
+                    <h3 class="text-xs font-semibold text-gray-500 uppercase tracking-wider">Tasks</h3>
+                </div>
+                <div class="overflow-y-auto flex-1">
+                    {% for item in queue_items %}
+                    {% set is_current = item.task.id == task_id %}
+                    {% if content_type == 'script' %}
+                        {% set task_url = '/queues/' ~ queue_id ~ '/tasks/' ~ item.task.id ~ '/script' %}
+                    {% elif content_type == 'log' and log_type is defined %}
+                        {% set task_url = '/queues/' ~ queue_id ~ '/tasks/' ~ item.task.id ~ '/logs/' ~ log_type %}
+                        {% if tail is defined and tail %}
+                            {% set task_url = task_url ~ '?tail=' ~ tail %}
+                        {% endif %}
+                    {% else %}
+                        {% set task_url = '/queues/' ~ queue_id ~ '/tasks/' ~ item.task.id ~ '/logs/output' %}
                     {% endif %}
+                    <a href="{{ task_url }}"
+                       class="flex items-center gap-2 px-3 py-2 text-sm border-b border-gray-100 hover:bg-gray-50 transition-colors
+                              {% if is_current %}bg-blue-50 border-l-2 border-l-blue-500{% endif %}"
+                       title="{{ item.task.name }} ({{ item.status.value }})">
+                        <!-- Status dot -->
+                        <span class="w-2 h-2 rounded-full flex-shrink-0
+                            {% if item.status.value == 'running' %}bg-green-500 animate-pulse
+                            {% elif item.status.value == 'pending' %}bg-gray-400
+                            {% elif item.status.value == 'submitted' %}bg-yellow-500
+                            {% elif item.status.value == 'completed' %}bg-blue-500
+                            {% elif item.status.value == 'failed' %}bg-red-500
+                            {% elif item.status.value == 'dep_failed' %}bg-orange-500
+                            {% endif %}"></span>
+                        <!-- Task name -->
+                        <span class="truncate {% if is_current %}font-semibold text-gray-900{% else %}text-gray-700{% endif %}">
+                            {{ item.task.name }}
+                        </span>
+                    </a>
+                    {% endfor %}
                 </div>
             </div>
-        </header>
-        <div class="mb-6">
-            <h2 class="text-xl font-semibold text-gray-800">{{ title }}</h2>
-            {% if log_path %}
-            <p class="text-sm text-gray-500 font-mono">{{ log_path }}</p>
             {% endif %}
-        </div>
 
-        {% if error %}
-        <div class="bg-red-100 border border-red-300 text-red-700 px-4 py-3 rounded mb-6">
-            {{ error }}
-        </div>
-        {% endif %}
+            <!-- Main content area -->
+            <div class="flex-1 flex flex-col min-w-0 overflow-hidden">
+                <!-- Tabs bar -->
+                <div class="bg-white rounded-t-lg shadow-md border-b flex items-center justify-between px-2">
+                    <div class="flex">
+                        {% if content_type == 'log' and log_type is defined %}
+                            {% set output_url = '/queues/' ~ queue_id ~ '/tasks/' ~ task_id ~ '/logs/output' %}
+                            {% set error_url = '/queues/' ~ queue_id ~ '/tasks/' ~ task_id ~ '/logs/error' %}
+                            {% set script_url = '/queues/' ~ queue_id ~ '/tasks/' ~ task_id ~ '/script' %}
+                            {% if tail is defined and tail %}
+                                {% set output_url = output_url ~ '?tail=' ~ tail %}
+                                {% set error_url = error_url ~ '?tail=' ~ tail %}
+                            {% endif %}
+                        {% else %}
+                            {% set output_url = '/queues/' ~ queue_id ~ '/tasks/' ~ task_id ~ '/logs/output' %}
+                            {% set error_url = '/queues/' ~ queue_id ~ '/tasks/' ~ task_id ~ '/logs/error' %}
+                            {% set script_url = '/queues/' ~ queue_id ~ '/tasks/' ~ task_id ~ '/script' %}
+                        {% endif %}
 
-        {% if content is not none %}
-        <div class="bg-white rounded-lg shadow-md overflow-hidden">
-            <!-- Content toolbar -->
-            <div class="px-4 py-2 bg-gray-50 border-b flex items-center justify-between">
-                <span class="text-sm text-gray-600">
-                    {% if content_type == 'script' %}
-                    sbatch script
-                    {% elif content_type == 'log' %}
-                    {% if log_type == 'output' %}stdout{% else %}stderr{% endif %}
+                        <a href="{{ output_url }}"
+                           class="px-4 py-2.5 text-sm font-medium border-b-2 transition-colors
+                                  {% if content_type == 'log' and log_type == 'output' %}
+                                  border-blue-500 text-blue-600
+                                  {% else %}
+                                  border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300
+                                  {% endif %}">
+                            Output
+                        </a>
+                        <a href="{{ error_url }}"
+                           class="px-4 py-2.5 text-sm font-medium border-b-2 transition-colors
+                                  {% if content_type == 'log' and log_type == 'error' %}
+                                  border-blue-500 text-blue-600
+                                  {% else %}
+                                  border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300
+                                  {% endif %}">
+                            Error
+                        </a>
+                        <a href="{{ script_url }}"
+                           class="px-4 py-2.5 text-sm font-medium border-b-2 transition-colors
+                                  {% if content_type == 'script' %}
+                                  border-blue-500 text-blue-600
+                                  {% else %}
+                                  border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300
+                                  {% endif %}">
+                            Script
+                        </a>
+                    </div>
+
+                    <!-- Right side controls -->
+                    <div class="flex items-center gap-2">
+                        {% if content_type == 'log' %}
+                        <div class="flex items-center gap-1.5">
+                            <label class="text-xs text-gray-500">Tail:</label>
+                            <select
+                                id="tail-select"
+                                class="text-xs border rounded px-1.5 py-1"
+                                onchange="updateTail(this.value)"
+                            >
+                                <option value="" {% if not tail %}selected{% endif %}>All</option>
+                                <option value="50" {% if tail == 50 %}selected{% endif %}>50</option>
+                                <option value="100" {% if tail == 100 %}selected{% endif %}>100</option>
+                                <option value="500" {% if tail == 500 %}selected{% endif %}>500</option>
+                            </select>
+                        </div>
+                        {% endif %}
+                        <button
+                            onclick="window.location.reload()"
+                            class="px-2.5 py-1 bg-blue-600 text-white rounded hover:bg-blue-700 text-xs"
+                        >
+                            Refresh
+                        </button>
+                        <button
+                            onclick="copyToClipboard()"
+                            class="px-2.5 py-1 bg-gray-200 hover:bg-gray-300 rounded text-xs text-gray-700"
+                        >
+                            Copy
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Task title and path -->
+                <div class="bg-white px-4 py-2 border-b shadow-md">
+                    <h2 class="text-sm font-semibold text-gray-800">{{ task_name }}</h2>
+                    {% if log_path %}
+                    <p class="text-xs text-gray-400 font-mono truncate">{{ log_path }}</p>
                     {% endif %}
-                </span>
-                <button
-                    onclick="copyToClipboard()"
-                    class="text-xs px-2 py-1 bg-gray-200 hover:bg-gray-300 rounded text-gray-700"
-                >
-                    Copy
-                </button>
+                </div>
+
+                {% if error %}
+                <div class="bg-red-100 border border-red-300 text-red-700 px-4 py-3 text-sm">
+                    {{ error }}
+                </div>
+                {% endif %}
+
+                <!-- Content display -->
+                {% if content is not none %}
+                <div class="flex-1 overflow-hidden bg-white rounded-b-lg shadow-md">
+                    <pre id="content" class="h-full p-4 overflow-auto text-sm font-mono bg-gray-900 text-gray-100">{{ content }}</pre>
+                </div>
+                {% else %}
+                <div class="flex-1 bg-white rounded-b-lg shadow-md flex items-center justify-center">
+                    <p class="text-gray-500">No content available.</p>
+                </div>
+                {% endif %}
             </div>
-
-            <!-- Content display -->
-            <pre id="content" class="p-4 overflow-x-auto text-sm font-mono bg-gray-900 text-gray-100 max-h-[70vh] overflow-y-auto">{{ content }}</pre>
         </div>
-
-        {% if content_type == 'log' %}
-        <!-- Log navigation -->
-        <div class="mt-4 flex items-center gap-4">
-            <span class="text-sm text-gray-600">View:</span>
-            <a
-                href="/queues/{{ queue_id }}/tasks/{{ task_id }}/logs/output{% if tail %}?tail={{ tail }}{% endif %}"
-                class="text-sm {% if log_type == 'output' %}font-semibold text-blue-700{% else %}text-blue-600 hover:text-blue-800{% endif %}"
-            >
-                Output (stdout)
-            </a>
-            <a
-                href="/queues/{{ queue_id }}/tasks/{{ task_id }}/logs/error{% if tail %}?tail={{ tail }}{% endif %}"
-                class="text-sm {% if log_type == 'error' %}font-semibold text-blue-700{% else %}text-blue-600 hover:text-blue-800{% endif %}"
-            >
-                Error (stderr)
-            </a>
-            <span class="text-gray-300">|</span>
-            <a
-                href="/queues/{{ queue_id }}/tasks/{{ task_id }}/script"
-                class="text-sm text-blue-600 hover:text-blue-800"
-            >
-                View Script
-            </a>
-        </div>
-        {% else %}
-        <!-- Script navigation -->
-        <div class="mt-4 flex items-center gap-4">
-            <span class="text-sm text-gray-600">View:</span>
-            <a
-                href="/queues/{{ queue_id }}/tasks/{{ task_id }}/logs/output"
-                class="text-sm text-blue-600 hover:text-blue-800"
-            >
-                Output Log
-            </a>
-            <a
-                href="/queues/{{ queue_id }}/tasks/{{ task_id }}/logs/error"
-                class="text-sm text-blue-600 hover:text-blue-800"
-            >
-                Error Log
-            </a>
-        </div>
-        {% endif %}
-        {% else %}
-        <div class="bg-white rounded-lg shadow-md p-8 text-center">
-            <p class="text-gray-500">No content available.</p>
-        </div>
-        {% endif %}
     </div>
 
     <script>
         function copyToClipboard() {
-            const content = document.getElementById('content').textContent;
-            navigator.clipboard.writeText(content).then(() => {
-                // Brief visual feedback
+            const content = document.getElementById('content');
+            if (!content) return;
+            navigator.clipboard.writeText(content.textContent).then(() => {
                 const btn = event.target;
                 const originalText = btn.textContent;
                 btn.textContent = 'Copied!';

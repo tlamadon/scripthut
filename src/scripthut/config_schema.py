@@ -133,6 +133,20 @@ class ProjectConfig(BaseModel):
     )
 
 
+class EnvironmentConfig(BaseModel):
+    """Named environment with key-value variables and optional init script."""
+
+    name: str = Field(description="Unique identifier for this environment")
+    variables: dict[str, str] = Field(
+        default_factory=dict,
+        description="Key-value pairs exported as environment variables",
+    )
+    extra_init: str = Field(
+        default="",
+        description="Raw bash lines to run before the task command (e.g. module load)",
+    )
+
+
 class GlobalSettings(BaseModel):
     """Global application settings."""
 
@@ -183,6 +197,10 @@ class ScriptHutConfig(BaseModel):
         default_factory=list,
         description="List of git projects containing sflow.json workflow files",
     )
+    environments: list[EnvironmentConfig] = Field(
+        default_factory=list,
+        description="Named environments with key-value variables for tasks",
+    )
     settings: GlobalSettings = Field(
         default_factory=GlobalSettings,
         description="Global application settings",
@@ -214,6 +232,13 @@ class ScriptHutConfig(BaseModel):
         for project in self.projects:
             if project.name == name:
                 return project
+        return None
+
+    def get_environment(self, name: str) -> EnvironmentConfig | None:
+        """Get an environment by name."""
+        for env in self.environments:
+            if env.name == name:
+                return env
         return None
 
     @property

@@ -33,6 +33,7 @@ class TaskDefinition:
     generates_source: str | None = None  # Path to JSON file this task creates on the cluster
     output_file: str | None = None  # Custom stdout log path
     error_file: str | None = None  # Custom stderr log path
+    environment: str | None = None  # Name of the environment to use (from config)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "TaskDefinition":
@@ -50,6 +51,7 @@ class TaskDefinition:
             generates_source=data.get("generates_source"),
             output_file=data.get("output_file"),
             error_file=data.get("error_file"),
+            environment=data.get("environment"),
         )
 
     def get_output_path(self, queue_id: str, log_dir: str = "~/.cache/scripthut/logs") -> str:
@@ -72,6 +74,8 @@ class TaskDefinition:
         log_dir: str = "~/.cache/scripthut/logs",
         account: str | None = None,
         login_shell: bool = False,
+        env_vars: dict[str, str] | None = None,
+        extra_init: str = "",
     ) -> str:
         """Generate sbatch script for this task."""
         output_path = self.get_output_path(queue_id, log_dir)
@@ -81,6 +85,18 @@ class TaskDefinition:
         account_line = f"#SBATCH --account={account}\n" if account else ""
 
         shebang = "#!/bin/bash -l" if login_shell else "#!/bin/bash"
+
+        # Build environment variable exports
+        env_lines = ""
+        if env_vars:
+            export_lines = [f"export {key}=\"{value}\"" for key, value in env_vars.items()]
+            if export_lines:
+                env_lines = "\n".join(export_lines) + "\n\n"
+
+        # Build extra init lines (e.g. module load)
+        extra_init_lines = ""
+        if extra_init:
+            extra_init_lines = extra_init + "\n\n"
 
         return f"""{shebang}
 #SBATCH --job-name="{self.name}"
@@ -99,7 +115,7 @@ echo "Working dir: {self.working_dir}"
 echo "=================================="
 echo ""
 
-cd {self.working_dir}
+{env_lines}{extra_init_lines}cd {self.working_dir}
 {self.command}
 EXIT_CODE=$?
 
