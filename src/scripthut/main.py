@@ -918,8 +918,20 @@ async def view_task_script(request: Request, queue_id: str, task_id: str) -> HTM
     script = item.sbatch_script
     if script is None:
         # Generate the script if not stored (task hasn't been submitted yet)
+        # Resolve ~ in log_dir and include account/login_shell to match actual submission
+        log_dir = queue.log_dir
+        cluster_state = state.clusters.get(queue.cluster_name)
+        if cluster_state and cluster_state.ssh_client and log_dir.startswith("~"):
+            try:
+                stdout, _, _ = await cluster_state.ssh_client.run_command("echo $HOME")
+                log_dir = log_dir.replace("~", stdout.strip(), 1)
+            except Exception:
+                pass
         env_vars, extra_init = state.queue_manager._resolve_environment(item.task)
-        script = item.task.to_sbatch_script(queue.id, queue.log_dir, env_vars=env_vars, extra_init=extra_init)
+        script = item.task.to_sbatch_script(
+            queue.id, log_dir, account=queue.account, login_shell=queue.login_shell,
+            env_vars=env_vars, extra_init=extra_init,
+        )
 
     return templates.TemplateResponse(
         "log_viewer.html",
