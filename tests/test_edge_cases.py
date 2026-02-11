@@ -58,10 +58,11 @@ class TestGanttWaitBarCapping:
         gantt_items, _ = _compute_gantt_data(run)
         gi = gantt_items[0]
 
-        # Wait bar should end at finished_at, not grow to now
+        # Wait bar should end at finished_at, not grow to now.
+        # Since this run is fully completed, the time axis ends at
+        # finished_at, so bar_end reaches 100% of the (shorter) axis.
         assert gi["has_bar"]
-        # The bar_end should be well under 100% since finished was 5min ago
-        assert gi["bar_end"] < 90
+        assert gi["bar_end"] == 100.0
 
     def test_wait_bar_grows_for_genuinely_waiting_item(self):
         """Submitted item still waiting should have wait bar grow to now."""

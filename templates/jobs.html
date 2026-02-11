@@ -2,6 +2,16 @@
 <div class="px-6 py-4 bg-gray-50 border-b flex justify-between items-center">
     <h2 class="text-xl font-semibold text-gray-800">Jobs</h2>
     <div class="flex items-center gap-4">
+        <button hx-post="/live-view/toggle" hx-target="#jobs-section" hx-swap="innerHTML"
+            class="px-3 py-1.5 text-sm font-medium rounded-full transition-colors flex items-center gap-2 {% if live_view %}bg-green-600 text-white hover:bg-green-700{% else %}bg-gray-200 text-gray-700 hover:bg-gray-300{% endif %}">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                    d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                    d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+            </svg>
+            {% if live_view %}Live{% else %}All{% endif %}
+        </button>
         {% if filter_user %}
         <button hx-post="/filter/toggle" hx-target="#jobs-section" hx-swap="innerHTML"
             class="px-3 py-1.5 text-sm font-medium rounded-full transition-colors flex items-center gap-2 {% if filter_enabled %}bg-blue-600 text-white hover:bg-blue-700{% else %}bg-gray-200 text-gray-700 hover:bg-gray-300{% endif %}">

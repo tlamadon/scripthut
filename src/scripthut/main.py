@@ -8,7 +8,7 @@ import time
 
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, AsyncGenerator
 
@@ -61,6 +61,7 @@ class AppState:
     run_storage: RunStorageManager | None = None
     filter_enabled: bool = False
     filter_user: str | None = None
+    live_view: bool = True
     _polling_task: asyncio.Task[None] | None = None
     _shutdown_event: asyncio.Event = field(default_factory=asyncio.Event)
     # SSE: global poll event for dashboard/runs pages
@@ -544,12 +545,23 @@ def _collect_all_job_views() -> list[JobView]:
     return views
 
 
+def _apply_job_filters(job_views: list[JobView]) -> list[JobView]:
+    """Apply active filters (user filter, live view) to job views."""
+    if state.filter_enabled and state.filter_user:
+        job_views = [j for j in job_views if j.user == state.filter_user]
+    if state.live_view:
+        cutoff = datetime.now() - timedelta(hours=12)
+        job_views = [
+            j for j in job_views
+            if not (j.is_terminal and j.finish_time and j.finish_time < cutoff)
+        ]
+    return job_views
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request) -> HTMLResponse:
     """Main page with unified job list."""
-    job_views = _collect_all_job_views()
-    if state.filter_enabled and state.filter_user:
-        job_views = [j for j in job_views if j.user == state.filter_user]
+    job_views = _apply_job_filters(_collect_all_job_views())
 
     poll_interval = state.config.settings.poll_interval if state.config else 60
 
@@ -573,6 +585,7 @@ async def index(request: Request) -> HTMLResponse:
             "poll_remaining": state.seconds_until_next_poll,
             "filter_enabled": state.filter_enabled,
             "filter_user": state.filter_user,
+            "live_view": state.live_view,
         },
     )
 
@@ -580,9 +593,7 @@ async def index(request: Request) -> HTMLResponse:
 @app.get("/jobs", response_class=HTMLResponse)
 async def jobs_partial(request: Request) -> HTMLResponse:
     """HTMX partial for unified job table."""
-    job_views = _collect_all_job_views()
-    if state.filter_enabled and state.filter_user:
-        job_views = [j for j in job_views if j.user == state.filter_user]
+    job_views = _apply_job_filters(_collect_all_job_views())
 
     return templates.TemplateResponse(
         "jobs.html",
@@ -596,6 +607,7 @@ async def jobs_partial(request: Request) -> HTMLResponse:
             ),
             "filter_enabled": state.filter_enabled,
             "filter_user": state.filter_user,
+            "live_view": state.live_view,
         },
     )
 
@@ -611,9 +623,7 @@ async def jobs_stream(request: Request) -> EventSourceResponse:
                 break
 
             if changed:
-                job_views = _collect_all_job_views()
-                if state.filter_enabled and state.filter_user:
-                    job_views = [j for j in job_views if j.user == state.filter_user]
+                job_views = _apply_job_filters(_collect_all_job_views())
 
                 html = templates.get_template("jobs.html").render(
                     {
@@ -626,6 +636,7 @@ async def jobs_stream(request: Request) -> EventSourceResponse:
                         ),
                         "filter_enabled": state.filter_enabled,
                         "filter_user": state.filter_user,
+                        "live_view": state.live_view,
                     }
                 )
                 yield {"event": "jobs-update", "data": html}
@@ -748,6 +759,13 @@ async def toggle_filter(request: Request) -> HTMLResponse:
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)
 
+    return await jobs_partial(request)
+
+
+@app.post("/live-view/toggle", response_class=HTMLResponse)
+async def toggle_live_view(request: Request) -> HTMLResponse:
+    """Toggle live view (hide old completed jobs)."""
+    state.live_view = not state.live_view
     return await jobs_partial(request)
 
 
@@ -931,7 +949,16 @@ def _compute_gantt_data(run: Run) -> tuple[list[dict[str, Any]], list[dict[str, 
     now = datetime.now()
 
     time_origin = run.created_at
-    time_end = now
+
+    # Determine the end of the time axis:
+    # - If any task is still running/submitted, use `now` so the chart stays live.
+    # - Otherwise, use the latest timestamp across all items so finished runs
+    #   don't show a long blank tail stretching to the current time.
+    has_active = any(
+        item.status in (RunItemStatus.RUNNING, RunItemStatus.SUBMITTED)
+        for item in run.items
+    )
+    time_end = now if has_active else time_origin
 
     for item in run.items:
         for ts in (item.finished_at, item.started_at, item.submitted_at):
