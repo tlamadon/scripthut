@@ -239,9 +239,17 @@ class Queue:
 
         # Check for failures
         if any(s in terminal_failures for s in statuses):
-            # If all non-failed are completed, queue is failed
+            # Queue is FAILED if every item is either terminal-failed or completed,
+            # OR if every non-terminal item is PENDING with all deps failed
+            # (i.e. nothing more can ever progress).
             if all(s in (*terminal_failures, QueueItemStatus.COMPLETED) for s in statuses):
                 return QueueStatus.FAILED
+            # Also FAILED if remaining items are only PENDING (blocked by failed deps)
+            if all(s in (*terminal_failures, QueueItemStatus.COMPLETED, QueueItemStatus.PENDING) for s in statuses):
+                # Check that every pending item has at least one failed dep
+                pending_items = [item for item in self.items if item.status == QueueItemStatus.PENDING]
+                if pending_items and all(self.get_failed_deps(item) for item in pending_items):
+                    return QueueStatus.FAILED
 
         # Check if all completed
         if all(s == QueueItemStatus.COMPLETED for s in statuses):

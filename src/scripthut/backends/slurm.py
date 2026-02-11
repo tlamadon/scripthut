@@ -19,6 +19,8 @@ class JobStats:
     cpu_efficiency: float  # 0-100%
     max_rss: str  # Human-readable, e.g. "1.2G"
     total_cpu: str  # Raw Slurm time string
+    start_time: datetime | None = None  # Actual start from sacct
+    end_time: datetime | None = None  # Actual end from sacct
 
 
 def parse_slurm_duration(time_str: str) -> float:
@@ -204,8 +206,8 @@ class SlurmBackend(JobBackend):
             user: Optional username to scope the pre-filter query.
 
         Returns:
-            Dict mapping job_id to JobStats.  IDs not found in sacct are
-            returned with sentinel values so callers stop re-querying them.
+            Dict mapping job_id to JobStats.  IDs not yet in sacct are
+            omitted so callers retry on the next poll cycle.
         """
         if not job_ids:
             return {}
@@ -220,13 +222,9 @@ class SlurmBackend(JobBackend):
             stale_ids = [jid for jid in job_ids if jid not in known_ids]
             if stale_ids:
                 logger.info(
-                    f"sacct pre-check: {len(stale_ids)} IDs not in accounting "
-                    f"DB, marking unavailable: {stale_ids[:10]}"
+                    f"sacct pre-check: {len(stale_ids)} IDs not yet in accounting "
+                    f"DB, will retry: {stale_ids[:10]}"
                 )
-                for jid in stale_ids:
-                    stats[jid] = JobStats(
-                        cpu_efficiency=0.0, max_rss="N/A", total_cpu="N/A",
-                    )
         else:
             # Pre-check failed — fall back to querying all IDs.
             valid_ids = list(job_ids)
@@ -234,11 +232,11 @@ class SlurmBackend(JobBackend):
         if not valid_ids:
             return stats
 
-        # --- sacct for CPU efficiency + post-completion memory ---
+        # --- sacct for CPU efficiency + post-completion memory + timing ---
         ids_str = ",".join(valid_ids)
         cmd = (
             f"sacct --noheader --parsable2"
-            f" --format=JobIDRaw,TotalCPU,Elapsed,AllocCPUS,MaxRSS"
+            f" --format=JobIDRaw,TotalCPU,Elapsed,AllocCPUS,MaxRSS,Start,End"
             f" --jobs={ids_str}"
         )
 
@@ -260,15 +258,17 @@ class SlurmBackend(JobBackend):
         main_data: dict[str, tuple[float, int, float]] = {}  # job_id -> (elapsed_s, alloc_cpus, total_cpu_s)
         batch_cpu: dict[str, float] = {}  # job_id -> total_cpu_s from .batch
         max_rss_bytes: dict[str, int] = {}  # job_id -> best MaxRSS in bytes across all steps
+        sacct_start: dict[str, datetime | None] = {}  # job_id -> actual start time
+        sacct_end: dict[str, datetime | None] = {}  # job_id -> actual end time
 
         for line in stdout.strip().split("\n"):
             if not line.strip():
                 continue
             parts = line.split("|")
-            if len(parts) < 5:
+            if len(parts) < 7:
                 continue
 
-            raw_id, total_cpu, elapsed, alloc_cpus_str, max_rss = parts[:5]
+            raw_id, total_cpu, elapsed, alloc_cpus_str, max_rss, start_str, end_str = parts[:7]
 
             # Extract base job ID (strip .batch, .extern, .0, etc.)
             base_id = raw_id.split(".")[0] if "." in raw_id else raw_id
@@ -290,6 +290,18 @@ class SlurmBackend(JobBackend):
                     alloc_cpus = 1
                 main_data[raw_id] = (elapsed_s, alloc_cpus, main_cpu_s)
 
+                # Parse actual start/end timestamps from sacct
+                try:
+                    if start_str and start_str not in ("Unknown", "None", "N/A", ""):
+                        sacct_start[raw_id] = datetime.strptime(start_str, "%Y-%m-%dT%H:%M:%S")
+                except ValueError:
+                    pass
+                try:
+                    if end_str and end_str not in ("Unknown", "None", "N/A", ""):
+                        sacct_end[raw_id] = datetime.strptime(end_str, "%Y-%m-%dT%H:%M:%S")
+                except ValueError:
+                    pass
+
         # --- Compute final stats ---
         for job_id in valid_ids:
             if job_id not in main_data:
@@ -309,6 +321,8 @@ class SlurmBackend(JobBackend):
                 cpu_efficiency=round(efficiency, 1),
                 max_rss=rss_formatted,
                 total_cpu=f"{total_cpu_s:.0f}s",
+                start_time=sacct_start.get(job_id),
+                end_time=sacct_end.get(job_id),
             )
 
         logger.debug(f"Fetched stats for {len(stats)}/{len(job_ids)} jobs via sacct")

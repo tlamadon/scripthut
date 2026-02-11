@@ -1,0 +1,15 @@
+{% for item in queue.items %}
+<a href="#" onclick="showTaskDetail('{{ item.task.id }}'); return false;" id="detail-sidebar-{{ item.task.id }}"
+    class="flex items-center gap-2 px-3 py-2 text-sm border-b border-gray-100 hover:bg-gray-50 transition-colors"
+    title="{{ item.task.name }} ({{ item.status.value }})">
+    <span class="w-2 h-2 rounded-full flex-shrink-0
+        {% if item.status.value == 'running' %}bg-green-500 animate-pulse
+        {% elif item.status.value == 'pending' %}bg-gray-400
+        {% elif item.status.value == 'submitted' %}bg-yellow-500
+        {% elif item.status.value == 'completed' %}bg-blue-500
+        {% elif item.status.value == 'failed' %}bg-red-500
+        {% elif item.status.value == 'dep_failed' %}bg-orange-500
+        {% endif %}"></span>
+    <span class="truncate text-gray-700">{{ item.task.name }}</span>
+</a>
+{% endfor %}
