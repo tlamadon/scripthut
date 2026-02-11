@@ -66,6 +66,7 @@ class AppState:
     _shutdown_event: asyncio.Event = field(default_factory=asyncio.Event)
     # SSE: global poll event for dashboard/runs pages
     _poll_event: asyncio.Event = field(default_factory=asyncio.Event)
+    _force_poll_event: asyncio.Event = field(default_factory=asyncio.Event)
     _last_poll_time: float = 0.0  # time.monotonic() of last poll completion
 
     @property
@@ -310,13 +311,24 @@ async def poll_jobs() -> None:
             poll_count = 0
 
         try:
-            await asyncio.wait_for(
-                state._shutdown_event.wait(),
+            # Sleep until next interval, but wake early on shutdown or force-poll
+            done, _ = await asyncio.wait(
+                [
+                    asyncio.ensure_future(state._shutdown_event.wait()),
+                    asyncio.ensure_future(state._force_poll_event.wait()),
+                ],
                 timeout=interval,
+                return_when=asyncio.FIRST_COMPLETED,
             )
+            if state._shutdown_event.is_set():
+                break
+            # Reset force-poll flag for next cycle
+            state._force_poll_event.clear()
+            # Cancel any pending futures from the wait set
+            for f in done:
+                f.cancel()
+        except asyncio.CancelledError:
             break
-        except asyncio.TimeoutError:
-            pass
 
 
 @asynccontextmanager
@@ -673,6 +685,13 @@ async def runs_stream(request: Request) -> EventSourceResponse:
     return EventSourceResponse(event_generator())
 
 
+@app.post("/poll")
+async def force_poll() -> dict[str, str]:
+    """Trigger an immediate poll of all backends."""
+    state._force_poll_event.set()
+    return {"status": "polling"}
+
+
 @app.get("/ping")
 async def ping() -> dict[str, str]:
     """Simple ping endpoint for debugging - no dependencies."""
@@ -776,6 +795,43 @@ async def filter_status() -> dict[str, Any]:
         "enabled": state.filter_enabled,
         "user": state.filter_user,
     }
+
+
+@app.post("/jobs/{slurm_job_id}/cancel", response_class=HTMLResponse)
+async def cancel_external_job(request: Request, slurm_job_id: str) -> HTMLResponse:
+    """Cancel an external Slurm job via scancel."""
+    for bs in state.backends.values():
+        for job in bs.jobs:
+            if job.job_id == slurm_job_id:
+                if bs.ssh_client:
+                    await bs.ssh_client.run_command(f"scancel {slurm_job_id}")
+                # Update in-memory state so the UI reflects the change immediately
+                job.state = JobState.CANCELLED
+                # Update storage
+                if state.run_storage:
+                    state.run_storage.add_external_job(
+                        backend_name=bs.name,
+                        slurm_job_id=slurm_job_id,
+                        name=job.name,
+                        user=job.user,
+                        state="failed",
+                        submit_time=job.submit_time,
+                        start_time=job.start_time,
+                        finish_time=datetime.now(),
+                    )
+                    state.run_storage.save_if_dirty(
+                        state.run_manager.runs if state.run_manager else {}
+                    )
+                return await jobs_partial(request)
+    return await jobs_partial(request)
+
+
+@app.delete("/jobs/{slurm_job_id}", response_class=HTMLResponse)
+async def delete_external_job(request: Request, slurm_job_id: str) -> HTMLResponse:
+    """Remove a completed external job from history."""
+    if state.run_storage:
+        state.run_storage.remove_external_job(slurm_job_id)
+    return await jobs_partial(request)
 
 
 # Workflows and Runs Routes

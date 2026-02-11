@@ -154,12 +154,10 @@
         return { reset, setRemaining };
         }) ();
 
-        // Trigger immediate refresh from server cache (doesn't trigger new squeue poll)
+        // Trigger an immediate squeue poll on all backends
         function triggerEarlyRefresh() {
-            fetch('/jobs').then(function(r) { return r.text(); }).then(function(html) {
-                var el = document.getElementById('jobs-section');
-                if (el) el.innerHTML = html;
-            });
+            fetch('/poll', { method: 'POST' });
+            // The SSE stream will push the updated data once polling completes
         }
     </script>
 </body>

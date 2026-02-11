@@ -97,7 +97,7 @@ class RunStorageManager:
         try:
             with open(temp_path, "w") as f:
                 json.dump(data, f, indent=2)
-            temp_path.rename(run_path)
+            os.replace(temp_path, run_path)
         except Exception as e:
             logger.error(f"Failed to save run '{run.id}': {e}")
             if temp_path.exists():
@@ -315,6 +315,27 @@ class RunStorageManager:
             run.items.append(item)
 
         self._dirty_runs.add(run.id)
+
+    def remove_external_job(self, slurm_job_id: str) -> bool:
+        """Remove an external job from its weekly bin. Returns True if found and removed."""
+        for backend_runs in self._weekly_cache.values():
+            for run in backend_runs.values():
+                item = run.get_item_by_slurm_id(slurm_job_id)
+                if item is not None:
+                    run.items.remove(item)
+                    self._dirty_runs.add(run.id)
+                    return True
+        # Not in cache — scan storage
+        for wf_name in self.list_workflows():
+            if not wf_name.startswith("_default_"):
+                continue
+            for run in self.load_runs_for_workflow(wf_name):
+                item = run.get_item_by_slurm_id(slurm_job_id)
+                if item is not None:
+                    run.items.remove(item)
+                    self.save_run(run)
+                    return True
+        return False
 
     # --- Cleanup ---
 
