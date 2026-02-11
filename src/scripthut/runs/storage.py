@@ -97,7 +97,7 @@ class RunStorageManager:
         try:
             with open(temp_path, "w") as f:
                 json.dump(data, f, indent=2)
-            temp_path.rename(run_path)
+            os.replace(temp_path, run_path)
         except Exception as e:
             logger.error(f"Failed to save run '{run.id}': {e}")
             if temp_path.exists():
