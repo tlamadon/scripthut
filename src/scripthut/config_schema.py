@@ -42,7 +42,7 @@ class SSHConfig(BaseModel):
 
 
 class AWSConfig(BaseModel):
-    """AWS configuration for ECS clusters."""
+    """AWS configuration for ECS backends."""
 
     profile: str | None = Field(
         default=None,
@@ -52,10 +52,10 @@ class AWSConfig(BaseModel):
     cluster_name: str = Field(description="ECS cluster name")
 
 
-class SlurmClusterConfig(BaseModel):
-    """Slurm cluster configuration."""
+class SlurmBackendConfig(BaseModel):
+    """Slurm backend configuration."""
 
-    name: str = Field(description="Unique identifier for this cluster")
+    name: str = Field(description="Unique identifier for this backend")
     type: Literal["slurm"] = "slurm"
     ssh: SSHConfig = Field(description="SSH connection settings")
     account: str | None = Field(
@@ -68,16 +68,16 @@ class SlurmClusterConfig(BaseModel):
     )
 
 
-class ECSClusterConfig(BaseModel):
-    """ECS cluster configuration."""
+class ECSBackendConfig(BaseModel):
+    """ECS backend configuration."""
 
-    name: str = Field(description="Unique identifier for this cluster")
+    name: str = Field(description="Unique identifier for this backend")
     type: Literal["ecs"] = "ecs"
     aws: AWSConfig = Field(description="AWS configuration")
 
 
-ClusterConfig = Annotated[
-    SlurmClusterConfig | ECSClusterConfig,
+BackendConfig = Annotated[
+    SlurmBackendConfig | ECSBackendConfig,
     Field(discriminator="type"),
 ]
 
@@ -99,11 +99,11 @@ class GitSourceConfig(BaseModel):
         return self.deploy_key.expanduser() if self.deploy_key else None
 
 
-class TaskSourceConfig(BaseModel):
-    """Task source configuration - SSH command that returns JSON task list."""
+class WorkflowConfig(BaseModel):
+    """Workflow configuration - SSH command that returns JSON task list."""
 
-    name: str = Field(description="Unique identifier for this task source")
-    cluster: str = Field(description="Name of the cluster to submit tasks to")
+    name: str = Field(description="Unique identifier for this workflow")
+    backend: str = Field(description="Name of the backend to submit tasks to")
     command: str = Field(description="SSH command that returns JSON task list")
     max_concurrent: int = Field(
         default=5,
@@ -112,16 +112,16 @@ class TaskSourceConfig(BaseModel):
     )
     description: str = Field(
         default="",
-        description="Human-readable description of this task source",
+        description="Human-readable description of this workflow",
     )
 
 
 class ProjectConfig(BaseModel):
-    """A git repository on a cluster containing sflow.json workflow files."""
+    """A git repository on a backend containing sflow.json workflow files."""
 
     name: str = Field(description="Unique identifier for this project")
-    cluster: str = Field(description="Name of the cluster this project lives on")
-    path: str = Field(description="Path to the git repo on the cluster")
+    backend: str = Field(description="Name of the backend this project lives on")
+    path: str = Field(description="Path to the git repo on the backend")
     max_concurrent: int = Field(
         default=5,
         ge=1,
@@ -181,17 +181,17 @@ class GlobalSettings(BaseModel):
 class ScriptHutConfig(BaseModel):
     """Root configuration model for scripthut.yaml."""
 
-    clusters: list[ClusterConfig] = Field(
+    backends: list[BackendConfig] = Field(
         default_factory=list,
-        description="List of remote clusters (Slurm, ECS)",
+        description="List of remote backends (Slurm, ECS)",
     )
     sources: list[GitSourceConfig] = Field(
         default_factory=list,
         description="List of git repository sources for job definitions",
     )
-    task_sources: list[TaskSourceConfig] = Field(
+    workflows: list[WorkflowConfig] = Field(
         default_factory=list,
-        description="List of task sources (SSH commands returning JSON task lists)",
+        description="List of workflows (SSH commands returning JSON task lists)",
     )
     projects: list[ProjectConfig] = Field(
         default_factory=list,
@@ -206,11 +206,11 @@ class ScriptHutConfig(BaseModel):
         description="Global application settings",
     )
 
-    def get_cluster(self, name: str) -> ClusterConfig | None:
-        """Get a cluster by name."""
-        for cluster in self.clusters:
-            if cluster.name == name:
-                return cluster
+    def get_backend(self, name: str) -> BackendConfig | None:
+        """Get a backend by name."""
+        for backend in self.backends:
+            if backend.name == name:
+                return backend
         return None
 
     def get_source(self, name: str) -> GitSourceConfig | None:
@@ -220,11 +220,11 @@ class ScriptHutConfig(BaseModel):
                 return source
         return None
 
-    def get_task_source(self, name: str) -> TaskSourceConfig | None:
-        """Get a task source by name."""
-        for source in self.task_sources:
-            if source.name == name:
-                return source
+    def get_workflow(self, name: str) -> WorkflowConfig | None:
+        """Get a workflow by name."""
+        for workflow in self.workflows:
+            if workflow.name == name:
+                return workflow
         return None
 
     def get_project(self, name: str) -> ProjectConfig | None:
@@ -242,11 +242,11 @@ class ScriptHutConfig(BaseModel):
         return None
 
     @property
-    def slurm_clusters(self) -> list[SlurmClusterConfig]:
-        """Get all Slurm clusters."""
-        return [c for c in self.clusters if isinstance(c, SlurmClusterConfig)]
+    def slurm_backends(self) -> list[SlurmBackendConfig]:
+        """Get all Slurm backends."""
+        return [c for c in self.backends if isinstance(c, SlurmBackendConfig)]
 
     @property
-    def ecs_clusters(self) -> list[ECSClusterConfig]:
-        """Get all ECS clusters."""
-        return [c for c in self.clusters if isinstance(c, ECSClusterConfig)]
+    def ecs_backends(self) -> list[ECSBackendConfig]:
+        """Get all ECS backends."""
+        return [c for c in self.backends if isinstance(c, ECSBackendConfig)]

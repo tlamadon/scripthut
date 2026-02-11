@@ -20,9 +20,9 @@ Usage:
     python generate_diamond_tasks.py [--working-dir DIR] [--partition PARTITION]
 
 Example scripthut.yaml config:
-    task_sources:
+    workflows:
       - name: diamond-tasks
-        cluster: hpc-cluster
+        backend: hpc-cluster
         command: "python /path/to/generate_diamond_tasks.py"
         max_concurrent: 4
         description: "Diamond dependency pattern with wildcard deps"

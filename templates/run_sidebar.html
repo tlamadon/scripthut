@@ -1,4 +1,4 @@
-{% for item in queue.items %}
+{% for item in run.items %}
 <a href="#" onclick="showTaskDetail('{{ item.task.id }}'); return false;" id="detail-sidebar-{{ item.task.id }}"
     class="flex items-center gap-2 px-3 py-2 text-sm border-b border-gray-100 hover:bg-gray-50 transition-colors"
     title="{{ item.task.name }} ({{ item.status.value }})">

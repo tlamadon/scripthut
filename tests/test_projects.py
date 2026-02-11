@@ -1,4 +1,4 @@
-"""Tests for project-based workflow discovery and queue creation."""
+"""Tests for project-based workflow discovery and run creation."""
 
 import json
 from datetime import datetime
@@ -7,11 +7,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from scripthut.config_schema import ProjectConfig
-from scripthut.queues.manager import QueueManager
-from scripthut.queues.models import (
-    Queue,
-    QueueItem,
-    QueueItemStatus,
+from scripthut.runs.manager import RunManager
+from scripthut.runs.models import (
+    Run,
+    RunItem,
+    RunItemStatus,
     TaskDefinition,
 )
 
@@ -21,10 +21,10 @@ from scripthut.queues.models import (
 
 def _make_manager(
     ssh_mock: AsyncMock | None = None,
-    cluster_name: str = "test-cluster",
+    backend_name: str = "test-cluster",
     projects: list[ProjectConfig] | None = None,
-) -> QueueManager:
-    """Create a QueueManager with a mocked SSH client and optional projects."""
+) -> RunManager:
+    """Create a RunManager with a mocked SSH client and optional projects."""
     config = MagicMock()
     config.settings.filter_user = "testuser"
     config.projects = projects or []
@@ -37,20 +37,20 @@ def _make_manager(
         return None
     config.get_project = get_project
 
-    clusters = {}
+    backends = {}
     if ssh_mock:
-        clusters[cluster_name] = ssh_mock
-    return QueueManager(config=config, clusters=clusters)
+        backends[backend_name] = ssh_mock
+    return RunManager(config=config, backends=backends)
 
 
 def _make_project(
     name: str = "test-project",
-    cluster: str = "test-cluster",
+    backend: str = "test-cluster",
     path: str = "~/my-project",
     max_concurrent: int = 5,
 ) -> ProjectConfig:
     return ProjectConfig(
-        name=name, cluster=cluster, path=path, max_concurrent=max_concurrent
+        name=name, backend=backend, path=path, max_concurrent=max_concurrent
     )
 
 
@@ -140,16 +140,16 @@ class TestDiscoverWorkflows:
             await manager.discover_workflows("test-project")
 
 
-# -- create_queue_from_project tests -----------------------------------------
+# -- create_run_from_project tests -------------------------------------------
 
 
-class TestCreateQueueFromProject:
-    """Tests for the create_queue_from_project method."""
+class TestCreateRunFromProject:
+    """Tests for the create_run_from_project method."""
 
     @pytest.mark.asyncio
-    @patch.object(QueueManager, "_build_queue", new_callable=AsyncMock)
-    async def test_reads_sflow_and_builds_queue(self, mock_build):
-        """sflow.json is read via cat and tasks are passed to _build_queue."""
+    @patch.object(RunManager, "_build_run", new_callable=AsyncMock)
+    async def test_reads_sflow_and_builds_run(self, mock_build):
+        """sflow.json is read via cat and tasks are passed to _build_run."""
         sflow_json = json.dumps({
             "tasks": [
                 {"id": "t1", "name": "Task 1", "command": "echo 1"},
@@ -160,12 +160,12 @@ class TestCreateQueueFromProject:
         ssh_mock = AsyncMock()
         ssh_mock.run_command = AsyncMock(return_value=(sflow_json, "", 0))
 
-        mock_build.return_value = MagicMock(spec=Queue)
+        mock_build.return_value = MagicMock(spec=Run)
 
         project = _make_project()
         manager = _make_manager(ssh_mock, projects=[project])
 
-        await manager.create_queue_from_project(
+        await manager.create_run_from_project(
             "test-project", "r_simulation/sflow.json"
         )
 
@@ -174,7 +174,7 @@ class TestCreateQueueFromProject:
             "cat ~/my-project/r_simulation/sflow.json"
         )
 
-        # Verify _build_queue was called
+        # Verify _build_run was called
         mock_build.assert_called_once()
         args = mock_build.call_args
         tasks = args[0][0]  # first positional arg
@@ -182,7 +182,7 @@ class TestCreateQueueFromProject:
         assert tasks[0].id == "t1"
 
     @pytest.mark.asyncio
-    @patch.object(QueueManager, "_build_queue", new_callable=AsyncMock)
+    @patch.object(RunManager, "_build_run", new_callable=AsyncMock)
     async def test_infers_working_dir(self, mock_build):
         """working_dir is set to the directory containing sflow.json."""
         sflow_json = json.dumps({
@@ -193,12 +193,12 @@ class TestCreateQueueFromProject:
 
         ssh_mock = AsyncMock()
         ssh_mock.run_command = AsyncMock(return_value=(sflow_json, "", 0))
-        mock_build.return_value = MagicMock(spec=Queue)
+        mock_build.return_value = MagicMock(spec=Run)
 
         project = _make_project()
         manager = _make_manager(ssh_mock, projects=[project])
 
-        await manager.create_queue_from_project(
+        await manager.create_run_from_project(
             "test-project", "r_simulation/sflow.json"
         )
 
@@ -206,7 +206,7 @@ class TestCreateQueueFromProject:
         assert tasks[0].working_dir == "~/my-project/r_simulation"
 
     @pytest.mark.asyncio
-    @patch.object(QueueManager, "_build_queue", new_callable=AsyncMock)
+    @patch.object(RunManager, "_build_run", new_callable=AsyncMock)
     async def test_explicit_working_dir_not_overridden(self, mock_build):
         """Tasks with explicit working_dir are not overridden."""
         sflow_json = json.dumps({
@@ -220,12 +220,12 @@ class TestCreateQueueFromProject:
 
         ssh_mock = AsyncMock()
         ssh_mock.run_command = AsyncMock(return_value=(sflow_json, "", 0))
-        mock_build.return_value = MagicMock(spec=Queue)
+        mock_build.return_value = MagicMock(spec=Run)
 
         project = _make_project()
         manager = _make_manager(ssh_mock, projects=[project])
 
-        await manager.create_queue_from_project(
+        await manager.create_run_from_project(
             "test-project", "r_simulation/sflow.json"
         )
 
@@ -233,48 +233,48 @@ class TestCreateQueueFromProject:
         assert tasks[0].working_dir == "/custom/path"
 
     @pytest.mark.asyncio
-    @patch.object(QueueManager, "_build_queue", new_callable=AsyncMock)
-    async def test_source_name_format(self, mock_build):
-        """source_name = 'project_name/workflow_dir'."""
+    @patch.object(RunManager, "_build_run", new_callable=AsyncMock)
+    async def test_workflow_name_format(self, mock_build):
+        """workflow_name = 'project_name/workflow_dir'."""
         sflow_json = json.dumps({
             "tasks": [{"id": "t", "name": "T", "command": "echo"}]
         })
 
         ssh_mock = AsyncMock()
         ssh_mock.run_command = AsyncMock(return_value=(sflow_json, "", 0))
-        mock_build.return_value = MagicMock(spec=Queue)
+        mock_build.return_value = MagicMock(spec=Run)
 
         project = _make_project()
         manager = _make_manager(ssh_mock, projects=[project])
 
-        await manager.create_queue_from_project(
+        await manager.create_run_from_project(
             "test-project", "r_simulation/sflow.json"
         )
 
-        source_name = mock_build.call_args[0][1]
-        assert source_name == "test-project/r_simulation"
+        workflow_name = mock_build.call_args[0][1]
+        assert workflow_name == "test-project/r_simulation"
 
     @pytest.mark.asyncio
-    @patch.object(QueueManager, "_build_queue", new_callable=AsyncMock)
-    async def test_root_sflow_source_name(self, mock_build):
-        """Root sflow.json source_name = just project name."""
+    @patch.object(RunManager, "_build_run", new_callable=AsyncMock)
+    async def test_root_sflow_workflow_name(self, mock_build):
+        """Root sflow.json workflow_name = just project name."""
         sflow_json = json.dumps({
             "tasks": [{"id": "t", "name": "T", "command": "echo"}]
         })
 
         ssh_mock = AsyncMock()
         ssh_mock.run_command = AsyncMock(return_value=(sflow_json, "", 0))
-        mock_build.return_value = MagicMock(spec=Queue)
+        mock_build.return_value = MagicMock(spec=Run)
 
         project = _make_project()
         manager = _make_manager(ssh_mock, projects=[project])
 
-        await manager.create_queue_from_project(
+        await manager.create_run_from_project(
             "test-project", "sflow.json"
         )
 
-        source_name = mock_build.call_args[0][1]
-        assert source_name == "test-project"
+        workflow_name = mock_build.call_args[0][1]
+        assert workflow_name == "test-project"
 
     @pytest.mark.asyncio
     async def test_unknown_project_raises(self):
@@ -282,7 +282,7 @@ class TestCreateQueueFromProject:
         manager = _make_manager()
 
         with pytest.raises(ValueError, match="not found"):
-            await manager.create_queue_from_project("nonexistent", "sflow.json")
+            await manager.create_run_from_project("nonexistent", "sflow.json")
 
     @pytest.mark.asyncio
     async def test_cat_failure_raises(self):
@@ -296,7 +296,7 @@ class TestCreateQueueFromProject:
         manager = _make_manager(ssh_mock, projects=[project])
 
         with pytest.raises(ValueError, match="Failed to read"):
-            await manager.create_queue_from_project(
+            await manager.create_run_from_project(
                 "test-project", "missing/sflow.json"
             )
 
@@ -312,6 +312,6 @@ class TestCreateQueueFromProject:
         manager = _make_manager(ssh_mock, projects=[project])
 
         with pytest.raises(ValueError, match="Invalid JSON"):
-            await manager.create_queue_from_project(
+            await manager.create_run_from_project(
                 "test-project", "bad/sflow.json"
             )

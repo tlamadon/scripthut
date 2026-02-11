@@ -7,7 +7,7 @@ A Python web interface to start and track jobs on remote systems like Slurm, ECS
 
 ## Features
 
-- **Multi-cluster support** - Monitor multiple Slurm/ECS clusters from a single dashboard
+- **Multi-backend support** - Monitor multiple Slurm/ECS backends from a single dashboard
 - **Real-time job monitoring** - View running and pending jobs with auto-refresh
 - **Job persistence** - Jobs survive server restarts with automatic 7-day history retention
 - **Task queues** - Submit batches of jobs with configurable concurrency limits and dependencies
@@ -49,7 +49,7 @@ cp scripthut.example.yaml scripthut.yaml
 ```yaml
 # scripthut.yaml
 
-clusters:
+backends:
   # Slurm cluster
   - name: hpc-cluster
     type: slurm
@@ -59,7 +59,7 @@ clusters:
       user: researcher
       key_path: ~/.ssh/id_rsa
 
-  # ECS cluster (coming soon)
+  # ECS backend (coming soon)
   - name: production-ecs
     type: ecs
     aws:
@@ -83,12 +83,12 @@ settings:
 
 ### Configuration Options
 
-#### Clusters
+#### Backends
 
 | Field | Description |
 |-------|-------------|
-| `name` | Unique identifier for the cluster |
-| `type` | Cluster type: `slurm` or `ecs` |
+| `name` | Unique identifier for the backend |
+| `type` | Backend type: `slurm` or `ecs` |
 | `ssh.host` | SSH hostname (Slurm only) |
 | `ssh.port` | SSH port (default: 22) |
 | `ssh.user` | SSH username |
@@ -152,13 +152,13 @@ Open http://127.0.0.1:8000 in your browser.
 | `GET /queues/{id}/tasks/{task_id}/script` | View sbatch script |
 | `GET /queues/{id}/tasks/{task_id}/logs/{type}` | View task logs (output/error) |
 
-#### Task Sources
+#### Workflows
 
 | Endpoint | Description |
 |----------|-------------|
-| `GET /task-sources` | List configured task sources (JSON) |
-| `POST /task-sources/{name}/run` | Create a new queue from source |
-| `GET /task-sources/{name}/dry-run` | Preview tasks without submitting |
+| `GET /workflows` | List configured workflows (JSON) |
+| `POST /workflows/{name}/run` | Create a new run from workflow |
+| `GET /workflows/{name}/dry-run` | Preview tasks without submitting |
 
 #### System
 
@@ -211,15 +211,15 @@ Jobs are persisted to `~/.cache/scripthut/job_history.json`:
 
 ### Queues
 
-Queues are batches of tasks created from a Task Source. Each queue manages multiple jobs with configurable concurrency.
+Queues are batches of tasks created from a Workflow. Each queue manages multiple jobs with configurable concurrency.
 
 #### Queue Lifecycle
 
 ```
 ┌─────────────────┐
-│  Task Source    │  (SSH command returns JSON task list)
+│    Workflow     │  (SSH command returns JSON task list)
 └────────┬────────┘
-         │ POST /task-sources/{name}/run
+         │ POST /workflows/{name}/run
          ▼
 ┌─────────────────┐
 │  Queue Created  │  (All tasks registered as PENDING jobs)
@@ -246,14 +246,14 @@ Queues are batches of tasks created from a Task Source. Each queue manages multi
 | `failed` | Some tasks failed (others may have completed) |
 | `cancelled` | Queue was manually cancelled |
 
-### Task Sources
+### Workflows
 
-Task Sources define how to fetch a list of tasks to run. They execute an SSH command that returns JSON.
+Workflows define how to fetch a list of tasks to run. They execute an SSH command that returns JSON.
 
 ```yaml
-task_sources:
+workflows:
   - name: my-batch-jobs
-    cluster: hpc-cluster
+    backend: hpc-cluster
     command: "python ~/scripts/generate_tasks.py"
     max_concurrent: 10
     description: "Run my batch processing jobs"
@@ -422,7 +422,7 @@ If a task references an environment name that doesn't exist in the config, a war
        │ create queue
        │
 ┌──────┴───────┐
-│ Task Source  │  (SSH command → JSON tasks)
+│  Workflow    │  (SSH command → JSON tasks)
 └──────────────┘
 ```
 
@@ -489,7 +489,7 @@ pytest
 
 ## Roadmap
 
-- [x] **Phase 1**: Multi-cluster Slurm monitoring
+- [x] **Phase 1**: Multi-backend Slurm monitoring
 - [x] **Phase 1**: Git source integration with deploy keys
 - [x] **Phase 2**: Submit jobs to Slurm from UI (task queues)
 - [x] **Phase 2**: Job persistence and history

@@ -6,11 +6,11 @@ from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
 
 import pytest
 
-from scripthut.queues.manager import QueueManager
-from scripthut.queues.models import (
-    Queue,
-    QueueItem,
-    QueueItemStatus,
+from scripthut.runs.manager import RunManager
+from scripthut.runs.models import (
+    Run,
+    RunItem,
+    RunItemStatus,
     TaskDefinition,
 )
 
@@ -34,40 +34,40 @@ def _make_task(
     )
 
 
-def _make_queue_item(
+def _make_run_item(
     id: str,
-    status: QueueItemStatus = QueueItemStatus.PENDING,
+    status: RunItemStatus = RunItemStatus.PENDING,
     generates_source: str | None = None,
     working_dir: str = "~/project",
-) -> QueueItem:
-    return QueueItem(
+) -> RunItem:
+    return RunItem(
         task=_make_task(id, generates_source=generates_source, working_dir=working_dir),
         status=status,
     )
 
 
-def _make_queue(
-    items: list[QueueItem],
-    source_name: str = "test-source",
-) -> Queue:
-    return Queue(
-        id="test-q",
-        source_name=source_name,
-        cluster_name="test-cluster",
+def _make_run(
+    items: list[RunItem],
+    workflow_name: str = "test-source",
+) -> Run:
+    return Run(
+        id="test-r",
+        workflow_name=workflow_name,
+        backend_name="test-cluster",
         created_at=datetime.now(),
         items=items,
         max_concurrent=5,
     )
 
 
-def _make_manager(ssh_mock: AsyncMock | None = None) -> QueueManager:
-    """Create a QueueManager with a mocked SSH client."""
+def _make_manager(ssh_mock: AsyncMock | None = None) -> RunManager:
+    """Create a RunManager with a mocked SSH client."""
     config = MagicMock()
     config.settings.filter_user = "testuser"
-    clusters = {}
+    backends = {}
     if ssh_mock:
-        clusters["test-cluster"] = ssh_mock
-    return QueueManager(config=config, clusters=clusters)
+        backends["test-cluster"] = ssh_mock
+    return RunManager(config=config, backends=backends)
 
 
 # -- TaskDefinition tests ----------------------------------------------------
@@ -107,9 +107,9 @@ class TestHandleGeneratesSource:
     """Tests for the _handle_generates_source method."""
 
     @pytest.mark.asyncio
-    @patch.object(QueueManager, "process_queue", new_callable=AsyncMock)
+    @patch.object(RunManager, "process_run", new_callable=AsyncMock)
     async def test_appends_tasks_from_json(self, mock_process):
-        """Tasks from generates_source are flat-appended to the queue."""
+        """Tasks from generates_source are flat-appended to the run."""
         generated_json = json.dumps({
             "tasks": [
                 {"id": "sim-0", "name": "Sim 0", "command": "echo 0"},
@@ -121,21 +121,21 @@ class TestHandleGeneratesSource:
         ssh_mock.run_command = AsyncMock(return_value=(generated_json, "", 0))
 
         manager = _make_manager(ssh_mock)
-        item = _make_queue_item(
-            "gen", QueueItemStatus.COMPLETED,
+        item = _make_run_item(
+            "gen", RunItemStatus.COMPLETED,
             generates_source="/path/to/tasks.json",
         )
-        queue = _make_queue(items=[item])
+        run = _make_run(items=[item])
 
-        await manager._handle_generates_source(queue, item)
+        await manager._handle_generates_source(run, item)
 
-        assert len(queue.items) == 3  # original + 2 new
-        assert queue.items[1].task.id == "sim-0"
-        assert queue.items[2].task.id == "sim-1"
-        assert queue.items[1].status == QueueItemStatus.PENDING
+        assert len(run.items) == 3  # original + 2 new
+        assert run.items[1].task.id == "sim-0"
+        assert run.items[2].task.id == "sim-1"
+        assert run.items[1].status == RunItemStatus.PENDING
 
     @pytest.mark.asyncio
-    @patch.object(QueueManager, "process_queue", new_callable=AsyncMock)
+    @patch.object(RunManager, "process_run", new_callable=AsyncMock)
     async def test_accepts_bare_list_json(self, mock_process):
         """generates_source can return a bare list (no 'tasks' key)."""
         generated_json = json.dumps([
@@ -146,16 +146,16 @@ class TestHandleGeneratesSource:
         ssh_mock.run_command = AsyncMock(return_value=(generated_json, "", 0))
 
         manager = _make_manager(ssh_mock)
-        item = _make_queue_item("gen", QueueItemStatus.COMPLETED, generates_source="/p.json")
-        queue = _make_queue(items=[item])
+        item = _make_run_item("gen", RunItemStatus.COMPLETED, generates_source="/p.json")
+        run = _make_run(items=[item])
 
-        await manager._handle_generates_source(queue, item)
+        await manager._handle_generates_source(run, item)
 
-        assert len(queue.items) == 2
-        assert queue.items[1].task.id == "a"
+        assert len(run.items) == 2
+        assert run.items[1].task.id == "a"
 
     @pytest.mark.asyncio
-    @patch.object(QueueManager, "process_queue", new_callable=AsyncMock)
+    @patch.object(RunManager, "process_run", new_callable=AsyncMock)
     async def test_resolves_relative_path(self, mock_process):
         """Relative generates_source paths are resolved against working_dir."""
         generated_json = json.dumps({"tasks": [
@@ -166,14 +166,14 @@ class TestHandleGeneratesSource:
         ssh_mock.run_command = AsyncMock(return_value=(generated_json, "", 0))
 
         manager = _make_manager(ssh_mock)
-        item = _make_queue_item(
-            "gen", QueueItemStatus.COMPLETED,
+        item = _make_run_item(
+            "gen", RunItemStatus.COMPLETED,
             generates_source=".scripthut/tasks.json",
             working_dir="~/project/sub",
         )
-        queue = _make_queue(items=[item])
+        run = _make_run(items=[item])
 
-        await manager._handle_generates_source(queue, item)
+        await manager._handle_generates_source(run, item)
 
         # Verify cat was called with the resolved path
         ssh_mock.run_command.assert_called_once_with(
@@ -181,7 +181,7 @@ class TestHandleGeneratesSource:
         )
 
     @pytest.mark.asyncio
-    @patch.object(QueueManager, "process_queue", new_callable=AsyncMock)
+    @patch.object(RunManager, "process_run", new_callable=AsyncMock)
     async def test_absolute_path_not_resolved(self, mock_process):
         """Absolute generates_source paths are used as-is."""
         generated_json = json.dumps({"tasks": [
@@ -192,18 +192,18 @@ class TestHandleGeneratesSource:
         ssh_mock.run_command = AsyncMock(return_value=(generated_json, "", 0))
 
         manager = _make_manager(ssh_mock)
-        item = _make_queue_item(
-            "gen", QueueItemStatus.COMPLETED,
+        item = _make_run_item(
+            "gen", RunItemStatus.COMPLETED,
             generates_source="/absolute/path/tasks.json",
         )
-        queue = _make_queue(items=[item])
+        run = _make_run(items=[item])
 
-        await manager._handle_generates_source(queue, item)
+        await manager._handle_generates_source(run, item)
 
         ssh_mock.run_command.assert_called_once_with("cat /absolute/path/tasks.json")
 
     @pytest.mark.asyncio
-    @patch.object(QueueManager, "process_queue", new_callable=AsyncMock)
+    @patch.object(RunManager, "process_run", new_callable=AsyncMock)
     async def test_tilde_path_not_resolved(self, mock_process):
         """Paths starting with ~ are used as-is (shell handles expansion)."""
         generated_json = json.dumps({"tasks": [
@@ -214,13 +214,13 @@ class TestHandleGeneratesSource:
         ssh_mock.run_command = AsyncMock(return_value=(generated_json, "", 0))
 
         manager = _make_manager(ssh_mock)
-        item = _make_queue_item(
-            "gen", QueueItemStatus.COMPLETED,
+        item = _make_run_item(
+            "gen", RunItemStatus.COMPLETED,
             generates_source="~/.scripthut/tasks.json",
         )
-        queue = _make_queue(items=[item])
+        run = _make_run(items=[item])
 
-        await manager._handle_generates_source(queue, item)
+        await manager._handle_generates_source(run, item)
 
         ssh_mock.run_command.assert_called_once_with("cat ~/.scripthut/tasks.json")
 
@@ -233,12 +233,12 @@ class TestHandleGeneratesSource:
         )
 
         manager = _make_manager(ssh_mock)
-        item = _make_queue_item("gen", QueueItemStatus.COMPLETED, generates_source="/bad.json")
-        queue = _make_queue(items=[item])
+        item = _make_run_item("gen", RunItemStatus.COMPLETED, generates_source="/bad.json")
+        run = _make_run(items=[item])
 
-        await manager._handle_generates_source(queue, item)
+        await manager._handle_generates_source(run, item)
 
-        assert len(queue.items) == 1  # No tasks appended
+        assert len(run.items) == 1  # No tasks appended
 
     @pytest.mark.asyncio
     async def test_invalid_json_does_not_crash(self):
@@ -247,17 +247,17 @@ class TestHandleGeneratesSource:
         ssh_mock.run_command = AsyncMock(return_value=("not json {{{", "", 0))
 
         manager = _make_manager(ssh_mock)
-        item = _make_queue_item("gen", QueueItemStatus.COMPLETED, generates_source="/p.json")
-        queue = _make_queue(items=[item])
+        item = _make_run_item("gen", RunItemStatus.COMPLETED, generates_source="/p.json")
+        run = _make_run(items=[item])
 
-        await manager._handle_generates_source(queue, item)
+        await manager._handle_generates_source(run, item)
 
-        assert len(queue.items) == 1
+        assert len(run.items) == 1
 
     @pytest.mark.asyncio
-    @patch.object(QueueManager, "process_queue", new_callable=AsyncMock)
+    @patch.object(RunManager, "process_run", new_callable=AsyncMock)
     async def test_generated_tasks_can_have_deps_on_parent_tasks(self, mock_process):
-        """Generated tasks can depend on tasks already in the queue."""
+        """Generated tasks can depend on tasks already in the run."""
         generated_json = json.dumps({"tasks": [
             {"id": "child", "name": "Child", "command": "echo", "deps": ["gen"]},
         ]})
@@ -266,18 +266,18 @@ class TestHandleGeneratesSource:
         ssh_mock.run_command = AsyncMock(return_value=(generated_json, "", 0))
 
         manager = _make_manager(ssh_mock)
-        item = _make_queue_item("gen", QueueItemStatus.COMPLETED, generates_source="/p.json")
-        queue = _make_queue(items=[item])
+        item = _make_run_item("gen", RunItemStatus.COMPLETED, generates_source="/p.json")
+        run = _make_run(items=[item])
 
-        await manager._handle_generates_source(queue, item)
+        await manager._handle_generates_source(run, item)
 
-        assert len(queue.items) == 2
-        assert queue.items[1].task.dependencies == ["gen"]
+        assert len(run.items) == 2
+        assert run.items[1].task.dependencies == ["gen"]
 
     @pytest.mark.asyncio
-    @patch.object(QueueManager, "process_queue", new_callable=AsyncMock)
+    @patch.object(RunManager, "process_run", new_callable=AsyncMock)
     async def test_generated_tasks_wildcard_deps(self, mock_process):
-        """Generated tasks can use wildcard deps matching parent queue tasks."""
+        """Generated tasks can use wildcard deps matching parent run tasks."""
         generated_json = json.dumps({"tasks": [
             {"id": "agg", "name": "Aggregate", "command": "echo", "deps": ["sim-*"]},
         ]})
@@ -287,16 +287,16 @@ class TestHandleGeneratesSource:
 
         manager = _make_manager(ssh_mock)
         items = [
-            _make_queue_item("sim-0", QueueItemStatus.COMPLETED),
-            _make_queue_item("sim-1", QueueItemStatus.COMPLETED),
-            _make_queue_item("gen", QueueItemStatus.COMPLETED, generates_source="/p.json"),
+            _make_run_item("sim-0", RunItemStatus.COMPLETED),
+            _make_run_item("sim-1", RunItemStatus.COMPLETED),
+            _make_run_item("gen", RunItemStatus.COMPLETED, generates_source="/p.json"),
         ]
-        queue = _make_queue(items=items)
+        run = _make_run(items=items)
 
-        await manager._handle_generates_source(queue, items[2])
+        await manager._handle_generates_source(run, items[2])
 
         # agg should depend on both sim-0 and sim-1
-        agg = queue.items[3]
+        agg = run.items[3]
         assert sorted(agg.task.dependencies) == ["sim-0", "sim-1"]
 
     @pytest.mark.asyncio
@@ -310,33 +310,33 @@ class TestHandleGeneratesSource:
         ssh_mock.run_command = AsyncMock(return_value=(generated_json, "", 0))
 
         manager = _make_manager(ssh_mock)
-        item = _make_queue_item("gen", QueueItemStatus.COMPLETED, generates_source="/p.json")
-        queue = _make_queue(items=[item])
+        item = _make_run_item("gen", RunItemStatus.COMPLETED, generates_source="/p.json")
+        run = _make_run(items=[item])
 
-        await manager._handle_generates_source(queue, item)
+        await manager._handle_generates_source(run, item)
 
-        assert len(queue.items) == 1  # Rejected, nothing appended
+        assert len(run.items) == 1  # Rejected, nothing appended
 
     @pytest.mark.asyncio
     async def test_no_ssh_client_does_not_crash(self):
-        """If cluster has no SSH client, log error but don't crash."""
+        """If backend has no SSH client, log error but don't crash."""
         manager = _make_manager()  # No SSH client
-        item = _make_queue_item("gen", QueueItemStatus.COMPLETED, generates_source="/p.json")
-        queue = _make_queue(items=[item])
+        item = _make_run_item("gen", RunItemStatus.COMPLETED, generates_source="/p.json")
+        run = _make_run(items=[item])
 
-        await manager._handle_generates_source(queue, item)
+        await manager._handle_generates_source(run, item)
 
-        assert len(queue.items) == 1
+        assert len(run.items) == 1
 
     @pytest.mark.asyncio
     async def test_none_generates_source_returns_early(self):
         """If generates_source is None, return immediately."""
         ssh_mock = AsyncMock()
         manager = _make_manager(ssh_mock)
-        item = _make_queue_item("gen", QueueItemStatus.COMPLETED, generates_source=None)
-        queue = _make_queue(items=[item])
+        item = _make_run_item("gen", RunItemStatus.COMPLETED, generates_source=None)
+        run = _make_run(items=[item])
 
-        await manager._handle_generates_source(queue, item)
+        await manager._handle_generates_source(run, item)
 
         ssh_mock.run_command.assert_not_called()
 

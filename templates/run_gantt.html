@@ -1,4 +1,4 @@
-{% if queue and gantt_items %}
+{% if run and gantt_items %}
 <div class="px-6 py-4 bg-gray-50 border-b flex justify-between items-center">
     <h2 class="text-xl font-semibold text-gray-800">Timeline</h2>
     <span class="text-sm text-gray-600">{{ gantt_items|length }} tasks</span>
@@ -19,7 +19,7 @@
         <div class="flex flex-col">
             {% set ns = namespace(current_group='') %}
             {% for gi in gantt_items %}
-            {% set item = queue.items[loop.index0] %}
+            {% set item = run.items[loop.index0] %}
             {% set group = item.task.id.rsplit('.', 1)[0] if '.' in item.task.id else '' %}
 
             {# Group header #}
@@ -58,7 +58,7 @@
                     {% endfor %}
 
                     {% if gi.has_bar %}
-                    {# Wait segment (submitted → started) #}
+                    {# Wait segment (submitted -> started) #}
                     {% if gi.wait_width > 0.1 %}
                     <div class="absolute top-1 bottom-1 rounded-sm bg-amber-200 opacity-70"
                          style="left: {{ gi.wait_left }}%; width: {{ gi.wait_width }}%"
@@ -77,7 +77,7 @@
                          title="{{ gi.name }} ({{ gi.status }})"></div>
                     {% endif %}
                     {% else %}
-                    {# Pending — show a small marker at 0 #}
+                    {# Pending -- show a small marker at 0 #}
                     {% if gi.status == 'pending' %}
                     <div class="absolute top-1.5 bottom-1.5 w-1.5 rounded-full bg-gray-300" style="left: 0"></div>
                     {% elif gi.status == 'dep_failed' %}
@@ -209,7 +209,7 @@
     // Expose globally so the tab switcher can trigger a redraw
     window._drawGanttDeps = drawDeps;
 
-    // Draw on initial load — only if gantt view is visible
+    // Draw on initial load -- only if gantt view is visible
     var ganttView = document.getElementById('view-gantt');
     if (ganttView && ganttView.style.display !== 'none') {
         setTimeout(drawDeps, 50);
@@ -221,7 +221,7 @@
     });
 
     // Re-draw after SSE updates
-    var ganttContainer = document.getElementById('queue-gantt');
+    var ganttContainer = document.getElementById('run-gantt');
     if (ganttContainer) {
         ganttContainer.addEventListener('htmx:afterSwap', function() {
             if (ganttView && ganttView.style.display !== 'none') {
@@ -231,12 +231,12 @@
     }
 })();
 </script>
-{% elif queue %}
+{% elif run %}
 <div class="px-6 py-12 text-center">
-    <p class="text-gray-500">No tasks in this queue.</p>
+    <p class="text-gray-500">No tasks in this run.</p>
 </div>
 {% else %}
 <div class="px-6 py-12 text-center">
-    <p class="text-gray-500">Queue not found.</p>
+    <p class="text-gray-500">Run not found.</p>
 </div>
 {% endif %}
