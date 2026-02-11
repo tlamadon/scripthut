@@ -17,20 +17,20 @@
         </button>
         {% endif %}
         <span class="text-sm text-gray-600">
-            {{ unified_jobs|length }} jobs
+            {{ job_views|length }} jobs
         </span>
     </div>
 </div>
 
 <!-- Jobs Table -->
-{% if unified_jobs %}
+{% if job_views %}
 <div class="overflow-x-auto">
     <table class="min-w-full divide-y divide-gray-200">
         <thead class="bg-gray-50">
             <tr>
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Job ID</th>
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Name</th>
-                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Queue</th>
+                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Run</th>
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">User</th>
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">State</th>
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Source</th>
@@ -47,8 +47,8 @@
             </tr>
         </thead>
         <tbody class="bg-white divide-y divide-gray-200">
-            {% for job in unified_jobs %}
-            <tr class="hover:bg-gray-50 {% if job.source.value == 'queue' %}bg-blue-50/30{% endif %}">
+            {% for job in job_views %}
+            <tr class="hover:bg-gray-50 {% if job.source == 'run' %}bg-blue-50/30{% endif %}">
                 <td class="px-4 py-3 whitespace-nowrap text-sm font-mono text-gray-900">
                     {% if job.slurm_job_id %}
                     {{ job.slurm_job_id }}
@@ -58,8 +58,8 @@
                 </td>
                 <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-900">
                     <span class="block max-w-[40ch] truncate" title="{{ job.name }}">
-                        {% if job.queue_id and job.task_id %}
-                        <a href="/queues/{{ job.queue_id }}" class="text-blue-600 hover:text-blue-800 hover:underline">
+                        {% if job.run_id and job.task_id %}
+                        <a href="/runs/{{ job.run_id }}" class="text-blue-600 hover:text-blue-800 hover:underline">
                             {{ job.name }}
                         </a>
                         {% else %}
@@ -68,10 +68,10 @@
                     </span>
                 </td>
                 <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-600">
-                    {% if job.queue_id %}
-                    <a href="/queues/{{ job.queue_id }}"
+                    {% if job.run_id %}
+                    <a href="/runs/{{ job.run_id }}"
                         class="text-blue-600 hover:text-blue-800 hover:underline font-mono">
-                        {{ job.queue_id }}
+                        {{ job.run_id }}
                     </a>
                     {% else %}
                     -
@@ -80,29 +80,29 @@
                 <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-600">{{ job.user }}</td>
                 <td class="px-4 py-3 whitespace-nowrap text-sm">
                     <span class="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-full
-                        {% if job.state.value == 'running' %}bg-green-100 text-green-700
-                        {% elif job.state.value == 'pending' %}bg-gray-100 text-gray-600
-                        {% elif job.state.value == 'submitted' %}bg-yellow-100 text-yellow-700
-                        {% elif job.state.value == 'completed' %}bg-blue-100 text-blue-700
-                        {% elif job.state.value == 'failed' %}bg-red-100 text-red-700
+                        {% if job.state == 'running' %}bg-green-100 text-green-700
+                        {% elif job.state == 'pending' %}bg-gray-100 text-gray-600
+                        {% elif job.state == 'submitted' %}bg-yellow-100 text-yellow-700
+                        {% elif job.state == 'completed' %}bg-blue-100 text-blue-700
+                        {% elif job.state == 'failed' %}bg-red-100 text-red-700
                         {% else %}bg-gray-100 text-gray-600{% endif %}">
-                        {% if job.state.value == 'running' %}
+                        {% if job.state == 'running' %}
                         <span class="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span>
-                        {% elif job.state.value == 'pending' %}
+                        {% elif job.state == 'pending' %}
                         <span class="w-2 h-2 bg-gray-400 rounded-full"></span>
-                        {% elif job.state.value == 'submitted' %}
+                        {% elif job.state == 'submitted' %}
                         <span class="w-2 h-2 bg-yellow-500 rounded-full"></span>
-                        {% elif job.state.value == 'completed' %}
+                        {% elif job.state == 'completed' %}
                         <span class="w-2 h-2 bg-blue-500 rounded-full"></span>
-                        {% elif job.state.value == 'failed' %}
+                        {% elif job.state == 'failed' %}
                         <span class="w-2 h-2 bg-red-500 rounded-full"></span>
                         {% endif %}
-                        {{ job.state.value }}
+                        {{ job.state }}
                     </span>
                 </td>
                 <td class="px-4 py-3 whitespace-nowrap text-xs">
-                    {% if job.source.value == 'queue' %}
-                    <span class="px-2 py-0.5 bg-blue-100 text-blue-700 rounded">queue</span>
+                    {% if job.source == 'run' %}
+                    <span class="px-2 py-0.5 bg-blue-100 text-blue-700 rounded">run</span>
                     {% else %}
                     <span class="px-2 py-0.5 bg-gray-100 text-gray-600 rounded">external</span>
                     {% endif %}
@@ -133,8 +133,6 @@
                 <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
                     {% if job.submit_time %}
                     {{ job.submit_time.strftime('%Y-%m-%d %H:%M') }}
-                    {% elif job.created_at %}
-                    {{ job.created_at.strftime('%Y-%m-%d %H:%M') }}
                     {% else %}
                     -
                     {% endif %}
@@ -155,7 +153,7 @@
         {% if filter_enabled and filter_user %}
         No jobs found for user "{{ filter_user }}". Try showing all users.
         {% elif status.connected %}
-        No jobs are currently tracked. Submit a queue or wait for polling to detect existing jobs.
+        No jobs are currently tracked. Submit a run or wait for polling to detect existing jobs.
         {% else %}
         Unable to connect to the cluster.
         {% endif %}

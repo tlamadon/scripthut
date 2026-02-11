@@ -21,9 +21,10 @@ from sse_starlette.sse import EventSourceResponse
 from scripthut.backends.slurm import JobStats, SlurmBackend
 from scripthut.config import load_config, set_config
 from scripthut.config_schema import ScriptHutConfig, SlurmClusterConfig
-from scripthut.history import JobHistoryManager
 from scripthut.models import ConnectionStatus, JobState, SlurmJob
-from scripthut.queues import Queue, QueueManager
+from scripthut.runs import Run, RunManager
+from scripthut.runs.models import RunItemStatus
+from scripthut.runs.storage import RunStorageManager
 from scripthut.sources.git import GitSourceManager, SourceStatus
 from scripthut.ssh.client import SSHClient
 
@@ -56,13 +57,13 @@ class AppState:
     clusters: dict[str, ClusterState] = field(default_factory=dict)
     source_manager: GitSourceManager | None = None
     source_statuses: dict[str, SourceStatus] = field(default_factory=dict)
-    queue_manager: QueueManager | None = None
-    history_manager: JobHistoryManager | None = None
+    run_manager: RunManager | None = None
+    run_storage: RunStorageManager | None = None
     filter_enabled: bool = False
     filter_user: str | None = None
     _polling_task: asyncio.Task[None] | None = None
     _shutdown_event: asyncio.Event = field(default_factory=asyncio.Event)
-    # SSE: global poll event for dashboard/queues pages
+    # SSE: global poll event for dashboard/runs pages
     _poll_event: asyncio.Event = field(default_factory=asyncio.Event)
     _last_poll_time: float = 0.0  # time.monotonic() of last poll completion
 
@@ -70,7 +71,6 @@ class AppState:
     def seconds_until_next_poll(self) -> int:
         """Seconds remaining until the next squeue poll."""
         if self._last_poll_time == 0.0:
-            # No poll yet — first poll runs immediately, show full interval
             interval = self.config.settings.poll_interval if self.config else 60
             return interval
         interval = self.config.settings.poll_interval if self.config else 60
@@ -79,7 +79,7 @@ class AppState:
         return int(remaining)
 
     def notify_poll(self) -> None:
-        """Wake all global SSE listeners (dashboard, queues list)."""
+        """Wake all global SSE listeners (dashboard, runs list)."""
         old = self._poll_event
         self._poll_event = asyncio.Event()
         old.set()
@@ -103,8 +103,6 @@ class AppState:
 
     def get_filtered_jobs(self) -> list[tuple[str, SlurmJob]]:
         """Get jobs - filtering now happens server-side during polling."""
-        # Server-side filtering in poll_cluster makes this more efficient
-        # Jobs are already filtered when filter_enabled is True
         return self.all_jobs
 
     @property
@@ -157,18 +155,12 @@ async def init_cluster(cluster_config: SlurmClusterConfig) -> ClusterState:
 
 
 async def poll_cluster(cluster_state: ClusterState, filter_user: str | None = None) -> None:
-    """Poll jobs for a single cluster.
-
-    Args:
-        cluster_state: The cluster to poll.
-        filter_user: If provided, only fetch jobs for this user (server-side filter).
-    """
+    """Poll jobs for a single cluster."""
     if cluster_state.backend is None:
         return
 
     start_time = time.perf_counter()
     try:
-        # Filter at the Slurm level for better performance
         jobs = await cluster_state.backend.get_jobs(user=filter_user)
         duration_ms = int((time.perf_counter() - start_time) * 1000)
         cluster_state.jobs = jobs
@@ -181,23 +173,20 @@ async def poll_cluster(cluster_state: ClusterState, filter_user: str | None = No
         )
         logger.debug(f"Polled {len(jobs)} jobs from '{cluster_state.name}' in {duration_ms}ms")
 
-        # Fetch resource utilization via sacct (post-mortem only)
-        # Only query completed jobs that don't have stats yet — no need to
-        # poll sacct for running jobs every cycle.
-        #
-        # Step 1: Update history from squeue first so newly-completed jobs
-        # become terminal in history immediately.
-        if state.history_manager:
-            state.history_manager.update_from_slurm_poll(jobs, cluster_state.name)
-
-        # Step 2: Now query sacct for ALL terminal jobs missing stats
-        # (including ones that just became terminal above).
-        job_stats: dict[str, JobStats] = {}
+        # Collect slurm_job_ids missing utilization stats across all runs
         sacct_ids: list[str] = []
-        if state.history_manager:
-            for hj in state.history_manager.get_all_jobs(cluster_name=cluster_state.name):
-                if hj.slurm_job_id and hj.is_terminal and hj.cpu_efficiency is None:
-                    sacct_ids.append(hj.slurm_job_id)
+        if state.run_manager:
+            for run in state.run_manager.runs.values():
+                if run.cluster_name != cluster_state.name:
+                    continue
+                for item in run.items:
+                    if (item.slurm_job_id
+                        and item.status in (RunItemStatus.COMPLETED, RunItemStatus.FAILED)
+                        and item.cpu_efficiency is None):
+                        sacct_ids.append(item.slurm_job_id)
+
+        # Query sacct for resource utilization
+        job_stats: dict[str, JobStats] = {}
         if sacct_ids:
             try:
                 job_stats = await cluster_state.backend.get_job_stats(
@@ -206,9 +195,64 @@ async def poll_cluster(cluster_state: ClusterState, filter_user: str | None = No
             except Exception as e:
                 logger.warning(f"sacct stats fetch failed for '{cluster_state.name}': {e}")
 
-        # Step 3: Merge sacct stats back into history
-        if state.history_manager and job_stats:
-            state.history_manager.update_from_slurm_poll(jobs, cluster_state.name, job_stats=job_stats)
+        # Write stats back to RunItems
+        if state.run_manager and job_stats:
+            for run in state.run_manager.runs.values():
+                if run.cluster_name != cluster_state.name:
+                    continue
+                for item in run.items:
+                    if item.slurm_job_id and item.slurm_job_id in job_stats:
+                        s = job_stats[item.slurm_job_id]
+                        item.cpu_efficiency = s.cpu_efficiency
+                        item.max_rss = s.max_rss
+                        if s.start_time:
+                            item.started_at = s.start_time
+                        if s.end_time:
+                            item.finished_at = s.end_time
+                        state.run_manager._persist_run(run)
+
+        # Handle external jobs (not in any active run)
+        if state.run_manager and state.run_storage:
+            known_slurm_ids: set[str] = set()
+            for run in state.run_manager.runs.values():
+                for item in run.items:
+                    if item.slurm_job_id:
+                        known_slurm_ids.add(item.slurm_job_id)
+
+            slurm_state_to_run_status = {
+                JobState.PENDING: "submitted",
+                JobState.RUNNING: "running",
+                JobState.COMPLETING: "running",
+                JobState.COMPLETED: "completed",
+                JobState.CANCELLED: "failed",
+                JobState.FAILED: "failed",
+                JobState.TIMEOUT: "failed",
+                JobState.NODE_FAIL: "failed",
+                JobState.PREEMPTED: "failed",
+                JobState.BOOT_FAIL: "failed",
+                JobState.DEADLINE: "failed",
+                JobState.OUT_OF_MEMORY: "failed",
+            }
+
+            for slurm_job in jobs:
+                if slurm_job.job_id not in known_slurm_ids:
+                    run_status = slurm_state_to_run_status.get(slurm_job.state, "running")
+                    stats = job_stats.get(slurm_job.job_id)
+                    state.run_storage.add_external_job(
+                        cluster_name=cluster_state.name,
+                        slurm_job_id=slurm_job.job_id,
+                        name=slurm_job.name,
+                        user=slurm_job.user,
+                        state=run_status,
+                        partition=slurm_job.partition,
+                        cpus=slurm_job.cpus,
+                        memory=slurm_job.memory,
+                        submit_time=slurm_job.submit_time,
+                        start_time=slurm_job.start_time,
+                        cpu_efficiency=stats.cpu_efficiency if stats else None,
+                        max_rss=stats.max_rss if stats else None,
+                    )
+
     except Exception as e:
         duration_ms = int((time.perf_counter() - start_time) * 1000)
         logger.error(f"Job polling failed for '{cluster_state.name}': {e}")
@@ -231,10 +275,8 @@ async def poll_jobs() -> None:
     poll_count = 0
 
     while not state._shutdown_event.is_set():
-        # Determine if we should filter by user (server-side for performance)
         filter_user = state.filter_user if state.filter_enabled else None
 
-        # Poll all clusters in parallel
         tasks = [
             poll_cluster(cluster_state, filter_user=filter_user)
             for cluster_state in state.clusters.values()
@@ -245,25 +287,25 @@ async def poll_jobs() -> None:
             total_jobs = sum(len(c.jobs) for c in state.clusters.values())
             logger.info(f"Polled {total_jobs} jobs from {len(tasks)} clusters (filter_user={filter_user})")
 
-        # Update queue statuses based on polled jobs
-        if state.queue_manager and state.queue_manager.get_active_queues():
+        # Update run statuses based on polled jobs
+        if state.run_manager and state.run_manager.get_active_runs():
             cluster_jobs: dict[str, list[tuple[str, JobState]]] = {}
             for name, cs in state.clusters.items():
                 cluster_jobs[name] = [(job.job_id, job.state) for job in cs.jobs]
-            await state.queue_manager.update_all_queues(cluster_jobs)
+            await state.run_manager.update_all_runs(cluster_jobs)
 
-        # Save job history after each poll
-        if state.history_manager:
-            state.history_manager.save_if_dirty()
+        # Save dirty runs
+        if state.run_manager:
+            state.run_manager.save_dirty()
 
         # Record poll time and notify SSE listeners
         state._last_poll_time = time.monotonic()
         state.notify_poll()
 
-        # Cleanup old jobs once per hour (every ~60 polls at 60s interval)
+        # Cleanup old runs once per hour
         poll_count += 1
-        if poll_count >= 60 and state.history_manager:
-            state.history_manager.cleanup_old_jobs()
+        if poll_count >= 60 and state.run_storage:
+            state.run_storage.cleanup_old_runs()
             poll_count = 0
 
         try:
@@ -271,15 +313,14 @@ async def poll_jobs() -> None:
                 state._shutdown_event.wait(),
                 timeout=interval,
             )
-            break  # Shutdown requested
+            break
         except asyncio.TimeoutError:
-            pass  # Continue polling
+            pass
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan manager - handles startup and shutdown."""
-    # Load configuration
     config = load_config(_config_path)
     set_config(config)
     state.config = config
@@ -295,7 +336,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     for source in config.sources:
         state.source_manager.add_source(source)
 
-    # Sync sources in background (don't block startup)
     if config.sources:
         asyncio.create_task(sync_sources_background())
 
@@ -304,28 +344,23 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         cluster_state = await init_cluster(cluster_config)
         state.clusters[cluster_config.name] = cluster_state
 
-    # TODO: Initialize ECS clusters when implemented
     for ecs_config in config.ecs_clusters:
         logger.warning(f"ECS cluster '{ecs_config.name}' configured but ECS backend not yet implemented")
 
-    # Initialize job history manager
-    state.history_manager = JobHistoryManager()
-    state.history_manager.cleanup_old_jobs()  # Clean up on startup
-    logger.info("Initialized job history manager")
-
-    # Initialize queue manager
+    # Initialize run storage and manager
+    state.run_storage = RunStorageManager()
     ssh_clients = {
         name: cs.ssh_client
         for name, cs in state.clusters.items()
         if cs.ssh_client is not None
     }
-    state.queue_manager = QueueManager(config, ssh_clients, history_manager=state.history_manager)
-    logger.info(f"Initialized queue manager with {len(config.task_sources)} task sources")
+    state.run_manager = RunManager(config, ssh_clients, storage=state.run_storage)
+    logger.info(f"Initialized run manager with {len(config.task_sources)} task sources")
 
-    # Restore queues from history
-    restored_count = await state.queue_manager.restore_from_history()
+    # Restore runs from storage
+    restored_count = await state.run_manager.restore_from_storage()
     if restored_count > 0:
-        logger.info(f"Restored {restored_count} queues from history")
+        logger.info(f"Restored {restored_count} runs from storage")
 
     # Start background polling
     state._polling_task = asyncio.create_task(poll_jobs())
@@ -338,9 +373,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # Wake all SSE listeners so they can exit cleanly
     state.notify_poll()
-    if state.queue_manager:
-        for queue_id in list(state.queue_manager._queue_events.keys()):
-            state.queue_manager.notify_queue(queue_id)
+    if state.run_manager:
+        for run_id in list(state.run_manager._run_events.keys()):
+            state.run_manager.notify_run(run_id)
 
     if state._polling_task:
         state._polling_task.cancel()
@@ -349,10 +384,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         except asyncio.CancelledError:
             pass
 
-    # Save any unsaved history changes before disconnecting
-    if state.history_manager:
-        state.history_manager.save_if_dirty()
-        logger.info("Saved job history on shutdown")
+    # Save any unsaved run changes before disconnecting
+    if state.run_manager:
+        state.run_manager.save_dirty()
+        logger.info("Saved run data on shutdown")
 
     # Disconnect all clusters
     for cluster_state in state.clusters.values():
@@ -388,27 +423,133 @@ templates = Jinja2Templates(directory=str(templates_path))
 
 
 def _cluster_job_counts() -> dict[str, int]:
-    """Count active (pending/submitted/running) jobs per cluster."""
+    """Count active (pending/submitted/running) jobs per cluster from active runs."""
     counts: dict[str, int] = {}
-    if state.history_manager:
-        all_jobs = state.history_manager.get_all_jobs()
-        for job in all_jobs:
-            if job.is_terminal:
-                continue
-            counts[job.cluster_name] = counts.get(job.cluster_name, 0) + 1
+    if state.run_manager:
+        for run in state.run_manager.runs.values():
+            for item in run.items:
+                if item.status not in (RunItemStatus.COMPLETED, RunItemStatus.FAILED, RunItemStatus.DEP_FAILED):
+                    counts[run.cluster_name] = counts.get(run.cluster_name, 0) + 1
     return counts
+
+
+@dataclass
+class JobView:
+    """Lightweight view model for the jobs dashboard table."""
+    slurm_job_id: str | None
+    name: str
+    user: str
+    cluster_name: str
+    state: str
+    source: str  # "run" or "external"
+    partition: str
+    cpus: int
+    memory: str
+    time_used: str
+    time_limit: str
+    submit_time: datetime | None
+    start_time: datetime | None
+    finish_time: datetime | None
+    run_id: str | None
+    task_id: str | None
+    error: str | None
+    cpu_efficiency: float | None
+    max_rss: str | None
+    workflow_name: str | None
+
+    @property
+    def state_class(self) -> str:
+        """Return CSS class for state styling."""
+        state_classes = {
+            "running": "text-green-600",
+            "pending": "text-gray-500",
+            "submitted": "text-yellow-600",
+            "completed": "text-blue-600",
+            "failed": "text-red-600",
+            "dep_failed": "text-orange-600",
+        }
+        return state_classes.get(self.state, "text-gray-500")
+
+    @property
+    def is_terminal(self) -> bool:
+        """Check if job is in a terminal state."""
+        return self.state in ("completed", "failed", "dep_failed")
+
+
+def _collect_all_job_views() -> list[JobView]:
+    """Collect all RunItems from all runs into JobViews for the dashboard."""
+    views: list[JobView] = []
+    if state.run_manager is None:
+        return views
+
+    user = state.filter_user or "unknown"
+
+    # Active runs (managed by RunManager)
+    for run in state.run_manager.runs.values():
+        for item in run.items:
+            views.append(JobView(
+                slurm_job_id=item.slurm_job_id,
+                name=item.task.name,
+                user=user,
+                cluster_name=run.cluster_name,
+                state=item.status.value,
+                source="run" if run.workflow_name != "_default" else "external",
+                partition=item.task.partition,
+                cpus=item.task.cpus,
+                memory=item.task.memory,
+                time_used="",
+                time_limit=item.task.time_limit,
+                submit_time=item.submitted_at,
+                start_time=item.started_at,
+                finish_time=item.finished_at,
+                run_id=run.id,
+                task_id=item.task.id,
+                error=item.error,
+                cpu_efficiency=item.cpu_efficiency,
+                max_rss=item.max_rss,
+                workflow_name=run.workflow_name,
+            ))
+
+    # Weekly default runs (external jobs from storage)
+    if state.run_storage:
+        for wf_name in state.run_storage.list_workflows():
+            if not wf_name.startswith("_default_"):
+                continue
+            for run in state.run_storage.load_runs_for_workflow(wf_name):
+                for item in run.items:
+                    views.append(JobView(
+                        slurm_job_id=item.slurm_job_id,
+                        name=item.task.name,
+                        user=user,
+                        cluster_name=run.cluster_name,
+                        state=item.status.value,
+                        source="external",
+                        partition=item.task.partition,
+                        cpus=item.task.cpus,
+                        memory=item.task.memory,
+                        time_used="",
+                        time_limit=item.task.time_limit,
+                        submit_time=item.submitted_at,
+                        start_time=item.started_at,
+                        finish_time=item.finished_at,
+                        run_id=run.id,
+                        task_id=item.task.id,
+                        error=item.error,
+                        cpu_efficiency=item.cpu_efficiency,
+                        max_rss=item.max_rss,
+                        workflow_name="_default",
+                    ))
+
+    views.sort(key=lambda v: v.submit_time or datetime.min, reverse=True)
+    return views
 
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request) -> HTMLResponse:
     """Main page with unified job list."""
-    # Get unified jobs from history
-    unified_jobs = []
-    if state.history_manager:
-        unified_jobs = state.history_manager.get_all_jobs()
-        # Apply user filter if enabled
-        if state.filter_enabled and state.filter_user:
-            unified_jobs = [j for j in unified_jobs if j.user == state.filter_user]
+    job_views = _collect_all_job_views()
+    if state.filter_enabled and state.filter_user:
+        job_views = [j for j in job_views if j.user == state.filter_user]
 
     poll_interval = state.config.settings.poll_interval if state.config else 60
 
@@ -416,7 +557,7 @@ async def index(request: Request) -> HTMLResponse:
         "base.html",
         {
             "request": request,
-            "unified_jobs": unified_jobs,
+            "job_views": job_views,
             "clusters": state.clusters,
             "cluster_job_counts": _cluster_job_counts(),
             "sources": state.source_statuses,
@@ -439,17 +580,15 @@ async def index(request: Request) -> HTMLResponse:
 @app.get("/jobs", response_class=HTMLResponse)
 async def jobs_partial(request: Request) -> HTMLResponse:
     """HTMX partial for unified job table."""
-    unified_jobs = []
-    if state.history_manager:
-        unified_jobs = state.history_manager.get_all_jobs()
-        if state.filter_enabled and state.filter_user:
-            unified_jobs = [j for j in unified_jobs if j.user == state.filter_user]
+    job_views = _collect_all_job_views()
+    if state.filter_enabled and state.filter_user:
+        job_views = [j for j in job_views if j.user == state.filter_user]
 
     return templates.TemplateResponse(
         "jobs.html",
         {
             "request": request,
-            "unified_jobs": unified_jobs,
+            "job_views": job_views,
             "clusters": state.clusters,
             "status": ConnectionStatus(
                 connected=state.any_connected,
@@ -472,17 +611,14 @@ async def jobs_stream(request: Request) -> EventSourceResponse:
                 break
 
             if changed:
-                # Render the jobs partial HTML
-                unified_jobs = []
-                if state.history_manager:
-                    unified_jobs = state.history_manager.get_all_jobs()
-                    if state.filter_enabled and state.filter_user:
-                        unified_jobs = [j for j in unified_jobs if j.user == state.filter_user]
+                job_views = _collect_all_job_views()
+                if state.filter_enabled and state.filter_user:
+                    job_views = [j for j in job_views if j.user == state.filter_user]
 
                 html = templates.get_template("jobs.html").render(
                     {
                         "request": request,
-                        "unified_jobs": unified_jobs,
+                        "job_views": job_views,
                         "clusters": state.clusters,
                         "status": ConnectionStatus(
                             connected=state.any_connected,
@@ -494,7 +630,6 @@ async def jobs_stream(request: Request) -> EventSourceResponse:
                 )
                 yield {"event": "jobs-update", "data": html}
 
-                # Also push updated clusters status
                 clusters_html = templates.get_template("clusters_status.html").render(
                     {"request": request, "clusters": state.clusters, "cluster_job_counts": _cluster_job_counts()}
                 )
@@ -505,9 +640,9 @@ async def jobs_stream(request: Request) -> EventSourceResponse:
     return EventSourceResponse(event_generator())
 
 
-@app.get("/queues/stream")
-async def queues_stream(request: Request) -> EventSourceResponse:
-    """SSE endpoint for live queue list updates."""
+@app.get("/runs/stream")
+async def runs_stream(request: Request) -> EventSourceResponse:
+    """SSE endpoint for live run list updates."""
 
     async def event_generator() -> AsyncGenerator[dict[str, Any], None]:
         while True:
@@ -516,11 +651,11 @@ async def queues_stream(request: Request) -> EventSourceResponse:
                 break
 
             if changed:
-                queues = state.queue_manager.get_all_queues() if state.queue_manager else []
-                html = templates.get_template("queues_list.html").render(
-                    {"request": request, "queues": queues}
+                runs = state.run_manager.get_all_runs() if state.run_manager else []
+                html = templates.get_template("runs_list.html").render(
+                    {"request": request, "runs": runs}
                 )
-                yield {"event": "queues-update", "data": html}
+                yield {"event": "runs-update", "data": html}
             else:
                 yield {"comment": "keepalive"}
 
@@ -604,7 +739,6 @@ async def toggle_filter(request: Request) -> HTMLResponse:
     """Toggle the user filter on/off and trigger immediate refresh."""
     state.filter_enabled = not state.filter_enabled
 
-    # Trigger immediate poll with new filter setting
     filter_user = state.filter_user if state.filter_enabled else None
     tasks = [
         poll_cluster(cluster_state, filter_user=filter_user)
@@ -614,7 +748,6 @@ async def toggle_filter(request: Request) -> HTMLResponse:
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)
 
-    # Return the updated jobs partial
     return await jobs_partial(request)
 
 
@@ -627,7 +760,7 @@ async def filter_status() -> dict[str, Any]:
     }
 
 
-# Task Sources and Queues Routes
+# Task Sources and Runs Routes
 
 
 @app.get("/task-sources")
@@ -651,24 +784,24 @@ async def list_task_sources() -> dict[str, Any]:
 
 @app.post("/task-sources/{name}/run", response_model=None)
 async def run_task_source(name: str):
-    """Trigger a task source to create a new queue."""
-    if state.queue_manager is None:
+    """Trigger a task source to create a new run."""
+    if state.run_manager is None:
         return JSONResponse(
             status_code=500,
-            content={"error": "Queue manager not initialized"},
+            content={"error": "Run manager not initialized"},
         )
 
     try:
-        queue = await state.queue_manager.create_queue(name)
+        run = await state.run_manager.create_run(name)
         return {
-            "queue_id": queue.id,
-            "source_name": queue.source_name,
-            "cluster_name": queue.cluster_name,
-            "task_count": len(queue.items),
-            "status": queue.status.value,
+            "run_id": run.id,
+            "workflow_name": run.workflow_name,
+            "cluster_name": run.cluster_name,
+            "task_count": len(run.items),
+            "status": run.status.value,
         }
     except Exception as e:
-        logger.error(f"Failed to create queue for source '{name}': {e}")
+        logger.error(f"Failed to create run for source '{name}': {e}")
         return JSONResponse(
             status_code=422,
             content={"error": str(e)},
@@ -677,15 +810,15 @@ async def run_task_source(name: str):
 
 @app.get("/task-sources/{name}/dry-run", response_class=HTMLResponse)
 async def dry_run_task_source(request: Request, name: str) -> HTMLResponse:
-    """Dry run a task source - show what would be submitted without creating a queue."""
-    if state.queue_manager is None:
+    """Dry run a task source - show what would be submitted without creating a run."""
+    if state.run_manager is None:
         return templates.TemplateResponse(
             "dry_run.html",
-            {"request": request, "error": "Queue manager not initialized", "result": None},
+            {"request": request, "error": "Run manager not initialized", "result": None},
         )
 
     try:
-        result = await state.queue_manager.dry_run(name)
+        result = await state.run_manager.dry_run(name)
         return templates.TemplateResponse(
             "dry_run.html",
             {"request": request, "result": result, "error": None},
@@ -702,11 +835,11 @@ async def dry_run_task_source(request: Request, name: str) -> HTMLResponse:
 @app.get("/projects/{name}/workflows")
 async def list_project_workflows(name: str) -> dict[str, Any]:
     """Discover sflow.json files in a project repo."""
-    if state.queue_manager is None:
-        return {"error": "Queue manager not initialized"}
+    if state.run_manager is None:
+        return {"error": "Run manager not initialized"}
 
     try:
-        paths = await state.queue_manager.discover_workflows(name)
+        paths = await state.run_manager.discover_workflows(name)
         return {"project": name, "workflows": paths}
     except ValueError as e:
         return {"error": str(e)}
@@ -715,44 +848,44 @@ async def list_project_workflows(name: str) -> dict[str, Any]:
 @app.post("/projects/{name}/run", response_model=None)
 async def run_project_workflow(name: str, workflow: str):
     """Run a sflow.json workflow from a project."""
-    if state.queue_manager is None:
+    if state.run_manager is None:
         return JSONResponse(
             status_code=500,
-            content={"error": "Queue manager not initialized"},
+            content={"error": "Run manager not initialized"},
         )
 
     try:
-        queue = await state.queue_manager.create_queue_from_project(
+        run = await state.run_manager.create_run_from_project(
             name, workflow
         )
         return {
-            "queue_id": queue.id,
-            "source_name": queue.source_name,
-            "cluster_name": queue.cluster_name,
-            "task_count": len(queue.items),
-            "status": queue.status.value,
+            "run_id": run.id,
+            "workflow_name": run.workflow_name,
+            "cluster_name": run.cluster_name,
+            "task_count": len(run.items),
+            "status": run.status.value,
         }
     except Exception as e:
-        logger.error(f"Failed to create queue for project '{name}': {e}")
+        logger.error(f"Failed to create run for project '{name}': {e}")
         return JSONResponse(
             status_code=422,
             content={"error": str(e)},
         )
 
 
-@app.get("/queues", response_class=HTMLResponse)
-async def queues_page(request: Request) -> HTMLResponse:
-    """Page listing all queues."""
-    queues = state.queue_manager.get_all_queues() if state.queue_manager else []
+@app.get("/runs", response_class=HTMLResponse)
+async def runs_page(request: Request) -> HTMLResponse:
+    """Page listing all runs."""
+    runs = state.run_manager.get_all_runs() if state.run_manager else []
     task_sources = state.config.task_sources if state.config else []
     projects = state.config.projects if state.config else []
 
     # Discover workflows for each project
     project_workflows: dict[str, list[str]] = {}
-    if state.queue_manager:
+    if state.run_manager:
         for project in projects:
             try:
-                paths = await state.queue_manager.discover_workflows(
+                paths = await state.run_manager.discover_workflows(
                     project.name
                 )
                 project_workflows[project.name] = paths
@@ -760,10 +893,10 @@ async def queues_page(request: Request) -> HTMLResponse:
                 project_workflows[project.name] = []
 
     return templates.TemplateResponse(
-        "queues.html",
+        "runs.html",
         {
             "request": request,
-            "queues": queues,
+            "runs": runs,
             "task_sources": task_sources,
             "projects": projects,
             "project_workflows": project_workflows,
@@ -771,53 +904,45 @@ async def queues_page(request: Request) -> HTMLResponse:
     )
 
 
-@app.get("/queues/list")
-async def list_queues() -> dict[str, Any]:
-    """List all queues (JSON)."""
-    if state.queue_manager is None:
-        return {"queues": []}
+@app.get("/runs/list")
+async def list_runs() -> dict[str, Any]:
+    """List all runs (JSON)."""
+    if state.run_manager is None:
+        return {"runs": []}
 
     return {
-        "queues": [
+        "runs": [
             {
-                "id": q.id,
-                "source_name": q.source_name,
-                "cluster_name": q.cluster_name,
-                "created_at": q.created_at.isoformat(),
-                "status": q.status.value,
-                "progress": q.progress,
-                "task_count": len(q.items),
+                "id": r.id,
+                "workflow_name": r.workflow_name,
+                "cluster_name": r.cluster_name,
+                "created_at": r.created_at.isoformat(),
+                "status": r.status.value,
+                "progress": r.progress,
+                "task_count": len(r.items),
             }
-            for q in state.queue_manager.get_all_queues()
+            for r in state.run_manager.get_all_runs()
         ]
     }
 
 
-def _compute_gantt_data(queue: Queue) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Compute layout data for Gantt chart bars.
-
-    Returns a list of dicts (one per queue item) with percentage-based
-    positions for the wait and run bar segments.
-    """
+def _compute_gantt_data(run: Run) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Compute layout data for Gantt chart bars."""
     now = datetime.now()
 
-    # Determine time boundaries
-    time_origin = queue.created_at
-    time_end = now  # default for running queues
+    time_origin = run.created_at
+    time_end = now
 
-    # Find the latest timestamp across all items
-    for item in queue.items:
+    for item in run.items:
         for ts in (item.finished_at, item.started_at, item.submitted_at):
             if ts and ts > time_end:
                 time_end = ts
 
     total_span = (time_end - time_origin).total_seconds()
     if total_span <= 0:
-        total_span = 1  # avoid division by zero
+        total_span = 1
 
-    # Build time markers (nice intervals)
     markers: list[dict[str, Any]] = []
-    # Choose a nice interval: 1s, 5s, 10s, 30s, 1m, 2m, 5m, 10m, 30m, 1h, 2h, ...
     nice_intervals = [1, 5, 10, 30, 60, 120, 300, 600, 1800, 3600, 7200, 14400, 28800, 86400]
     interval = nice_intervals[-1]
     for ni in nice_intervals:
@@ -840,7 +965,7 @@ def _compute_gantt_data(queue: Queue) -> tuple[list[dict[str, Any]], list[dict[s
         t += interval
 
     gantt_items: list[dict[str, Any]] = []
-    for item in queue.items:
+    for item in run.items:
         entry: dict[str, Any] = {
             "task_id": item.task.id,
             "name": item.task.name,
@@ -851,8 +976,8 @@ def _compute_gantt_data(queue: Queue) -> tuple[list[dict[str, Any]], list[dict[s
             "wait_width": 0,
             "run_left": 0,
             "run_width": 0,
-            "bar_start": 0,  # leftmost edge of any segment (for arrow target)
-            "bar_end": 0,  # rightmost edge of any segment (for arrow source)
+            "bar_start": 0,
+            "bar_end": 0,
         }
 
         if item.submitted_at:
@@ -860,11 +985,9 @@ def _compute_gantt_data(queue: Queue) -> tuple[list[dict[str, Any]], list[dict[s
 
             if item.started_at:
                 started_offset = max(submitted_offset, (item.started_at - time_origin).total_seconds())
-                # Wait segment (submitted → started)
                 entry["wait_left"] = (submitted_offset / total_span) * 100
                 entry["wait_width"] = ((started_offset - submitted_offset) / total_span) * 100
 
-                # Run segment (started → finished or now)
                 end_ts = item.finished_at or now
                 end_offset = max(started_offset, (end_ts - time_origin).total_seconds())
                 entry["run_left"] = (started_offset / total_span) * 100
@@ -873,8 +996,6 @@ def _compute_gantt_data(queue: Queue) -> tuple[list[dict[str, Any]], list[dict[s
                 entry["bar_start"] = entry["wait_left"]
                 entry["bar_end"] = entry["run_left"] + entry["run_width"]
             else:
-                # Submitted but started_at missing — cap at finished_at if available,
-                # otherwise grow to now (still genuinely waiting)
                 wait_end_ts = item.finished_at or now
                 wait_end = (wait_end_ts - time_origin).total_seconds()
                 entry["wait_left"] = (submitted_offset / total_span) * 100
@@ -888,214 +1009,154 @@ def _compute_gantt_data(queue: Queue) -> tuple[list[dict[str, Any]], list[dict[s
     return gantt_items, markers
 
 
-@app.get("/queues/{queue_id}", response_class=HTMLResponse)
-async def queue_detail_page(request: Request, queue_id: str) -> HTMLResponse:
-    """Page showing queue detail."""
-    queue = state.queue_manager.get_queue(queue_id) if state.queue_manager else None
+@app.get("/runs/{run_id}", response_class=HTMLResponse)
+async def run_detail_page(request: Request, run_id: str) -> HTMLResponse:
+    """Page showing run detail."""
+    run = state.run_manager.get_run(run_id) if state.run_manager else None
 
-    if queue is None:
+    if run is None:
         return templates.TemplateResponse(
-            "queue_detail.html",
-            {"request": request, "queue": None, "error": "Queue not found", "job_util": {}, "gantt_items": [], "markers": []},
+            "run_detail.html",
+            {"request": request, "run": None, "error": "Run not found", "gantt_items": [], "markers": []},
         )
 
-    # Build lookup of slurm_job_id -> utilization for initial render
-    job_util: dict[str, dict[str, object]] = {}
-    if state.history_manager:
-        for item in queue.items:
-            if item.slurm_job_id:
-                uj = state.history_manager.get_job_by_slurm_id(
-                    item.slurm_job_id, queue.cluster_name
-                )
-                if uj and uj.cpu_efficiency is not None:
-                    job_util[item.slurm_job_id] = {
-                        "cpu_efficiency": uj.cpu_efficiency,
-                        "max_rss": uj.max_rss or "",
-                    }
-                # Backfill queue item timestamps from sacct for Gantt accuracy
-                if uj:
-                    if uj.start_time:
-                        item.started_at = uj.start_time
-                    if uj.finish_time:
-                        item.finished_at = uj.finish_time
-
-    # Compute gantt chart data
-    gantt_items: list[dict[str, Any]] = []
-    markers: list[dict[str, Any]] = []
-    if queue:
-        gantt_items, markers = _compute_gantt_data(queue)
+    gantt_items, markers = _compute_gantt_data(run)
 
     return templates.TemplateResponse(
-        "queue_detail.html",
+        "run_detail.html",
         {
             "request": request,
-            "queue": queue,
+            "run": run,
             "error": None,
-            "job_util": job_util,
             "gantt_items": gantt_items,
             "markers": markers,
         },
     )
 
 
-@app.get("/queues/{queue_id}/info", response_class=HTMLResponse)
-async def queue_info_partial(request: Request, queue_id: str) -> HTMLResponse:
-    """HTMX partial for queue info (progress bar, status, counts)."""
-    queue = state.queue_manager.get_queue(queue_id) if state.queue_manager else None
+@app.get("/runs/{run_id}/info", response_class=HTMLResponse)
+async def run_info_partial(request: Request, run_id: str) -> HTMLResponse:
+    """HTMX partial for run info (progress bar, status, counts)."""
+    run = state.run_manager.get_run(run_id) if state.run_manager else None
 
     return templates.TemplateResponse(
-        "queue_info.html",
-        {"request": request, "queue": queue},
+        "run_info.html",
+        {"request": request, "run": run},
     )
 
 
-@app.get("/queues/{queue_id}/items", response_class=HTMLResponse)
-async def queue_items_partial(request: Request, queue_id: str) -> HTMLResponse:
-    """HTMX partial for queue items table."""
-    queue = state.queue_manager.get_queue(queue_id) if state.queue_manager else None
-
-    # Build lookup of slurm_job_id -> utilization for this queue's items
-    job_util: dict[str, dict[str, object]] = {}
-    if queue and state.history_manager:
-        for item in queue.items:
-            if item.slurm_job_id:
-                uj = state.history_manager.get_job_by_slurm_id(
-                    item.slurm_job_id, queue.cluster_name
-                )
-                if uj and uj.cpu_efficiency is not None:
-                    job_util[item.slurm_job_id] = {
-                        "cpu_efficiency": uj.cpu_efficiency,
-                        "max_rss": uj.max_rss or "",
-                    }
-                # Backfill queue item timestamps from sacct
-                if uj:
-                    if uj.start_time:
-                        item.started_at = uj.start_time
-                    if uj.finish_time:
-                        item.finished_at = uj.finish_time
+@app.get("/runs/{run_id}/items", response_class=HTMLResponse)
+async def run_items_partial(request: Request, run_id: str) -> HTMLResponse:
+    """HTMX partial for run items table."""
+    run = state.run_manager.get_run(run_id) if state.run_manager else None
 
     return templates.TemplateResponse(
-        "queue_items.html",
-        {"request": request, "queue": queue, "job_util": job_util},
+        "run_items.html",
+        {"request": request, "run": run},
     )
 
 
-@app.get("/queues/{queue_id}/gantt", response_class=HTMLResponse)
-async def queue_gantt_partial(request: Request, queue_id: str) -> HTMLResponse:
-    """HTMX partial for queue Gantt chart."""
-    queue = state.queue_manager.get_queue(queue_id) if state.queue_manager else None
+@app.get("/runs/{run_id}/gantt", response_class=HTMLResponse)
+async def run_gantt_partial(request: Request, run_id: str) -> HTMLResponse:
+    """HTMX partial for run Gantt chart."""
+    run = state.run_manager.get_run(run_id) if state.run_manager else None
 
     gantt_items: list[dict[str, Any]] = []
     markers: list[dict[str, Any]] = []
-    if queue:
-        # Backfill queue item timestamps from sacct for Gantt accuracy
-        if state.history_manager:
-            for item in queue.items:
-                if item.slurm_job_id:
-                    uj = state.history_manager.get_job_by_slurm_id(
-                        item.slurm_job_id, queue.cluster_name
-                    )
-                    if uj:
-                        if uj.start_time:
-                            item.started_at = uj.start_time
-                        if uj.finish_time:
-                            item.finished_at = uj.finish_time
-        gantt_items, markers = _compute_gantt_data(queue)
+    if run:
+        gantt_items, markers = _compute_gantt_data(run)
 
     return templates.TemplateResponse(
-        "queue_gantt.html",
-        {"request": request, "queue": queue, "gantt_items": gantt_items, "markers": markers},
+        "run_gantt.html",
+        {"request": request, "run": run, "gantt_items": gantt_items, "markers": markers},
     )
 
 
-@app.get("/queues/{queue_id}/events")
-async def queue_events(request: Request, queue_id: str) -> EventSourceResponse:
-    """SSE stream for real-time queue updates."""
+@app.get("/runs/{run_id}/events")
+async def run_events(request: Request, run_id: str) -> EventSourceResponse:
+    """SSE stream for real-time run updates."""
 
     async def event_generator():
-        if not state.queue_manager:
+        if not state.run_manager:
             return
 
         while True:
-            # Wait for a state change (or timeout for keepalive)
-            changed = await state.queue_manager.wait_for_update(queue_id)
+            changed = await state.run_manager.wait_for_update(run_id)
 
             if state._shutdown_event.is_set():
                 return
 
-            queue = state.queue_manager.get_queue(queue_id)
-            if queue is None:
+            run = state.run_manager.get_run(run_id)
+            if run is None:
                 return
 
             if changed:
-                # Render partials and send as SSE events
-                info_html = templates.get_template("queue_info.html").render(
-                    {"request": request, "queue": queue}
+                info_html = templates.get_template("run_info.html").render(
+                    {"request": request, "run": run}
                 )
-                items_html = templates.get_template("queue_items.html").render(
-                    {"request": request, "queue": queue}
+                items_html = templates.get_template("run_items.html").render(
+                    {"request": request, "run": run}
                 )
-                gantt_items, markers = _compute_gantt_data(queue)
-                gantt_html = templates.get_template("queue_gantt.html").render(
-                    {"request": request, "queue": queue, "gantt_items": gantt_items, "markers": markers}
+                gantt_items, markers = _compute_gantt_data(run)
+                gantt_html = templates.get_template("run_gantt.html").render(
+                    {"request": request, "run": run, "gantt_items": gantt_items, "markers": markers}
                 )
                 yield {"event": "info-update", "data": info_html}
                 yield {"event": "items-update", "data": items_html}
                 yield {"event": "gantt-update", "data": gantt_html}
-                sidebar_html = templates.get_template("queue_sidebar.html").render(
-                    {"request": request, "queue": queue}
+                sidebar_html = templates.get_template("run_sidebar.html").render(
+                    {"request": request, "run": run}
                 )
                 yield {"event": "sidebar-update", "data": sidebar_html}
             else:
-                # Keepalive — send a comment to keep connection alive
                 yield {"comment": "keepalive"}
 
     return EventSourceResponse(event_generator())
 
 
-@app.post("/queues/{queue_id}/cancel")
-async def cancel_queue(queue_id: str) -> dict[str, Any]:
-    """Cancel all pending and running items in a queue."""
-    if state.queue_manager is None:
-        return {"error": "Queue manager not initialized"}
+@app.post("/runs/{run_id}/cancel")
+async def cancel_run(run_id: str) -> dict[str, Any]:
+    """Cancel all pending and running items in a run."""
+    if state.run_manager is None:
+        return {"error": "Run manager not initialized"}
 
-    success = await state.queue_manager.cancel_queue(queue_id)
+    success = await state.run_manager.cancel_run(run_id)
     if success:
-        return {"status": "cancelled", "queue_id": queue_id}
+        return {"status": "cancelled", "run_id": run_id}
     else:
-        return {"error": "Queue not found"}
+        return {"error": "Run not found"}
 
 
-@app.delete("/queues/{queue_id}")
-async def delete_queue(queue_id: str) -> Response:
-    """Delete a terminal queue (completed, failed, or cancelled) from history."""
-    if state.queue_manager is None:
+@app.delete("/runs/{run_id}")
+async def delete_run(run_id: str) -> Response:
+    """Delete a terminal run (completed, failed, or cancelled)."""
+    if state.run_manager is None:
         return Response(status_code=400)
 
-    success = state.queue_manager.delete_queue(queue_id)
+    success = state.run_manager.delete_run(run_id)
     if success:
         return Response(status_code=200)
     else:
         return Response(status_code=404)
 
 
-@app.get("/queues/{queue_id}/tasks/{task_id}/script", response_class=HTMLResponse)
-async def view_task_script(request: Request, queue_id: str, task_id: str) -> HTMLResponse:
+@app.get("/runs/{run_id}/tasks/{task_id}/script", response_class=HTMLResponse)
+async def view_task_script(request: Request, run_id: str, task_id: str) -> HTMLResponse:
     """View the sbatch script used to submit a task."""
-    if state.queue_manager is None:
+    if state.run_manager is None:
         return templates.TemplateResponse(
             "log_viewer.html",
-            {"request": request, "title": "Script", "content": None, "error": "Queue manager not initialized"},
+            {"request": request, "title": "Script", "content": None, "error": "Run manager not initialized"},
         )
 
-    queue = state.queue_manager.get_queue(queue_id)
-    if queue is None:
+    run = state.run_manager.get_run(run_id)
+    if run is None:
         return templates.TemplateResponse(
             "log_viewer.html",
-            {"request": request, "title": "Script", "content": None, "error": f"Queue '{queue_id}' not found"},
+            {"request": request, "title": "Script", "content": None, "error": f"Run '{run_id}' not found"},
         )
 
-    item = queue.get_item_by_task_id(task_id)
+    item = run.get_item_by_task_id(task_id)
     if item is None:
         return templates.TemplateResponse(
             "log_viewer.html",
@@ -1104,19 +1165,17 @@ async def view_task_script(request: Request, queue_id: str, task_id: str) -> HTM
 
     script = item.sbatch_script
     if script is None:
-        # Generate the script if not stored (task hasn't been submitted yet)
-        # Resolve ~ in log_dir and include account/login_shell to match actual submission
-        log_dir = queue.log_dir
-        cluster_state = state.clusters.get(queue.cluster_name)
+        log_dir = run.log_dir
+        cluster_state = state.clusters.get(run.cluster_name)
         if cluster_state and cluster_state.ssh_client and log_dir.startswith("~"):
             try:
                 stdout, _, _ = await cluster_state.ssh_client.run_command("echo $HOME")
                 log_dir = log_dir.replace("~", stdout.strip(), 1)
             except Exception:
                 pass
-        env_vars, extra_init = state.queue_manager._resolve_environment(item.task)
+        env_vars, extra_init = state.run_manager._resolve_environment(item.task)
         script = item.task.to_sbatch_script(
-            queue.id, log_dir, account=queue.account, login_shell=queue.login_shell,
+            run.id, log_dir, account=run.account, login_shell=run.login_shell,
             env_vars=env_vars, extra_init=extra_init,
         )
 
@@ -1127,28 +1186,28 @@ async def view_task_script(request: Request, queue_id: str, task_id: str) -> HTM
             "title": f"Script: {item.task.name}",
             "content": script,
             "error": None,
-            "queue_id": queue_id,
+            "run_id": run_id,
             "task_id": task_id,
             "task_name": item.task.name,
             "content_type": "script",
-            "queue_items": queue.items,
+            "run_items": run.items,
         },
     )
 
 
-@app.get("/queues/{queue_id}/tasks/{task_id}/detail/{detail_type}")
+@app.get("/runs/{run_id}/tasks/{task_id}/detail/{detail_type}")
 async def get_task_detail(
-    queue_id: str, task_id: str, detail_type: str, tail: int | None = None
+    run_id: str, task_id: str, detail_type: str, tail: int | None = None
 ) -> JSONResponse:
-    """Get task detail content as JSON for inline display in the queue detail page."""
-    if state.queue_manager is None:
-        return JSONResponse({"error": "Queue manager not initialized", "content": None, "task_name": "", "path": None})
+    """Get task detail content as JSON for inline display in the run detail page."""
+    if state.run_manager is None:
+        return JSONResponse({"error": "Run manager not initialized", "content": None, "task_name": "", "path": None})
 
-    queue = state.queue_manager.get_queue(queue_id)
-    if queue is None:
-        return JSONResponse({"error": f"Queue '{queue_id}' not found", "content": None, "task_name": "", "path": None})
+    run = state.run_manager.get_run(run_id)
+    if run is None:
+        return JSONResponse({"error": f"Run '{run_id}' not found", "content": None, "task_name": "", "path": None})
 
-    item = queue.get_item_by_task_id(task_id)
+    item = run.get_item_by_task_id(task_id)
     if item is None:
         return JSONResponse({"error": f"Task '{task_id}' not found", "content": None, "task_name": "", "path": None})
 
@@ -1157,27 +1216,27 @@ async def get_task_detail(
     path: str | None = None
 
     if detail_type in ("output", "error"):
-        content, error = await state.queue_manager.fetch_log_file(
-            queue_id, task_id, detail_type, tail_lines=tail
+        content, error = await state.run_manager.fetch_log_file(
+            run_id, task_id, detail_type, tail_lines=tail
         )
         if detail_type == "output":
-            path = item.task.get_output_path(queue.id, queue.log_dir)
+            path = item.task.get_output_path(run.id, run.log_dir)
         else:
-            path = item.task.get_error_path(queue.id, queue.log_dir)
+            path = item.task.get_error_path(run.id, run.log_dir)
     elif detail_type == "script":
         content = item.sbatch_script
         if content is None:
-            log_dir = queue.log_dir
-            cluster_state = state.clusters.get(queue.cluster_name)
+            log_dir = run.log_dir
+            cluster_state = state.clusters.get(run.cluster_name)
             if cluster_state and cluster_state.ssh_client and log_dir.startswith("~"):
                 try:
                     stdout, _, _ = await cluster_state.ssh_client.run_command("echo $HOME")
                     log_dir = log_dir.replace("~", stdout.strip(), 1)
                 except Exception:
                     pass
-            env_vars, extra_init = state.queue_manager._resolve_environment(item.task)
+            env_vars, extra_init = state.run_manager._resolve_environment(item.task)
             content = item.task.to_sbatch_script(
-                queue.id, log_dir, account=queue.account, login_shell=queue.login_shell,
+                run.id, log_dir, account=run.account, login_shell=run.login_shell,
                 env_vars=env_vars, extra_init=extra_init,
             )
     elif detail_type == "json":
@@ -1204,6 +1263,8 @@ async def get_task_detail(
             "started_at": item.started_at.isoformat() if item.started_at else None,
             "finished_at": item.finished_at.isoformat() if item.finished_at else None,
             "error": item.error,
+            "cpu_efficiency": item.cpu_efficiency,
+            "max_rss": item.max_rss,
         }
         content = json.dumps(item_data, indent=2)
     else:
@@ -1218,30 +1279,29 @@ async def get_task_detail(
     })
 
 
-@app.get("/queues/{queue_id}/tasks/{task_id}/json", response_class=HTMLResponse)
-async def view_task_json(request: Request, queue_id: str, task_id: str) -> HTMLResponse:
+@app.get("/runs/{run_id}/tasks/{task_id}/json", response_class=HTMLResponse)
+async def view_task_json(request: Request, run_id: str, task_id: str) -> HTMLResponse:
     """View the JSON definition of a task."""
-    if state.queue_manager is None:
+    if state.run_manager is None:
         return templates.TemplateResponse(
             "log_viewer.html",
-            {"request": request, "title": "JSON", "content": None, "error": "Queue manager not initialized"},
+            {"request": request, "title": "JSON", "content": None, "error": "Run manager not initialized"},
         )
 
-    queue = state.queue_manager.get_queue(queue_id)
-    if queue is None:
+    run = state.run_manager.get_run(run_id)
+    if run is None:
         return templates.TemplateResponse(
             "log_viewer.html",
-            {"request": request, "title": "JSON", "content": None, "error": f"Queue '{queue_id}' not found"},
+            {"request": request, "title": "JSON", "content": None, "error": f"Run '{run_id}' not found"},
         )
 
-    item = queue.get_item_by_task_id(task_id)
+    item = run.get_item_by_task_id(task_id)
     if item is None:
         return templates.TemplateResponse(
             "log_viewer.html",
             {"request": request, "title": "JSON", "content": None, "error": f"Task '{task_id}' not found"},
         )
 
-    # Build a JSON representation of the queue item
     task_data: dict[str, Any] = {
         "id": item.task.id,
         "name": item.task.name,
@@ -1265,6 +1325,8 @@ async def view_task_json(request: Request, queue_id: str, task_id: str) -> HTMLR
         "started_at": item.started_at.isoformat() if item.started_at else None,
         "finished_at": item.finished_at.isoformat() if item.finished_at else None,
         "error": item.error,
+        "cpu_efficiency": item.cpu_efficiency,
+        "max_rss": item.max_rss,
     }
     content = json.dumps(item_data, indent=2)
 
@@ -1275,53 +1337,45 @@ async def view_task_json(request: Request, queue_id: str, task_id: str) -> HTMLR
             "title": f"JSON: {item.task.name}",
             "content": content,
             "error": None,
-            "queue_id": queue_id,
+            "run_id": run_id,
             "task_id": task_id,
             "task_name": item.task.name,
             "content_type": "json",
-            "queue_items": queue.items,
+            "run_items": run.items,
         },
     )
 
 
-@app.get("/queues/{queue_id}/tasks/{task_id}/logs/{log_type}", response_class=HTMLResponse)
+@app.get("/runs/{run_id}/tasks/{task_id}/logs/{log_type}", response_class=HTMLResponse)
 async def view_task_log(
     request: Request,
-    queue_id: str,
+    run_id: str,
     task_id: str,
     log_type: str,
     tail: int | None = None,
 ) -> HTMLResponse:
-    """View a log file for a task (fetched over SSH).
-
-    Args:
-        queue_id: The queue ID.
-        task_id: The task ID.
-        log_type: "output" for stdout, "error" for stderr.
-        tail: If provided, only show last N lines.
-    """
-    if state.queue_manager is None:
+    """View a log file for a task (fetched over SSH)."""
+    if state.run_manager is None:
         return templates.TemplateResponse(
             "log_viewer.html",
-            {"request": request, "title": "Log", "content": None, "error": "Queue manager not initialized"},
+            {"request": request, "title": "Log", "content": None, "error": "Run manager not initialized"},
         )
 
-    content, error = await state.queue_manager.fetch_log_file(
-        queue_id, task_id, log_type, tail_lines=tail
+    content, error = await state.run_manager.fetch_log_file(
+        run_id, task_id, log_type, tail_lines=tail
     )
 
-    # Get task info for display
-    queue = state.queue_manager.get_queue(queue_id)
+    run = state.run_manager.get_run(run_id)
     task_name = ""
     log_path = ""
-    if queue:
-        item = queue.get_item_by_task_id(task_id)
+    if run:
+        item = run.get_item_by_task_id(task_id)
         if item:
             task_name = item.task.name
             if log_type == "output":
-                log_path = item.task.get_output_path(queue.id, queue.log_dir)
+                log_path = item.task.get_output_path(run.id, run.log_dir)
             else:
-                log_path = item.task.get_error_path(queue.id, queue.log_dir)
+                log_path = item.task.get_error_path(run.id, run.log_dir)
 
     title = f"{'Output' if log_type == 'output' else 'Error'} Log: {task_name}"
 
@@ -1332,14 +1386,14 @@ async def view_task_log(
             "title": title,
             "content": content,
             "error": error,
-            "queue_id": queue_id,
+            "run_id": run_id,
             "task_id": task_id,
             "task_name": task_name,
             "log_type": log_type,
             "log_path": log_path,
             "content_type": "log",
             "tail": tail,
-            "queue_items": queue.items if queue else [],
+            "run_items": run.items if run else [],
         },
     )
 
@@ -1376,7 +1430,6 @@ def run() -> None:
     args = parse_args()
     _config_path = args.config
 
-    # Load config to get server settings
     config = load_config(_config_path)
 
     host = args.host or config.settings.server_host

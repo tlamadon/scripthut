@@ -163,7 +163,7 @@
 
         <!-- Bottom action bar -->
         <div class="mt-6 flex justify-end gap-3">
-            <a href="/queues" class="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors">
+            <a href="/runs" class="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors">
                 Cancel
             </a>
             <button
@@ -178,8 +178,8 @@
         {% else %}
         <div class="bg-white rounded-lg shadow-md p-8 text-center">
             <p class="text-gray-500">No results to display.</p>
-            <a href="/queues" class="mt-4 inline-block text-blue-600 hover:text-blue-800">
-                &larr; Back to Queues
+            <a href="/runs" class="mt-4 inline-block text-blue-600 hover:text-blue-800">
+                &larr; Back to Runs
             </a>
         </div>
         {% endif %}
@@ -195,7 +195,7 @@
     <script>
         function handleSubmitResponse(event) {
             if (event.detail.successful) {
-                window.location.href = '/queues';
+                window.location.href = '/runs';
             } else {
                 // Show error message
                 var errorBanner = document.getElementById('submit-error');

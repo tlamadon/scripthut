@@ -1,7 +1,7 @@
-{% if queue and queue.items %}
+{% if run and run.items %}
 <div class="px-6 py-4 bg-gray-50 border-b flex justify-between items-center">
     <h2 class="text-xl font-semibold text-gray-800">Tasks</h2>
-    <span class="text-sm text-gray-600">{{ queue.items|length }} total</span>
+    <span class="text-sm text-gray-600">{{ run.items|length }} total</span>
 </div>
 <div class="overflow-x-auto">
     <table class="min-w-full divide-y divide-gray-200">
@@ -28,7 +28,7 @@
         </thead>
         <tbody class="bg-white divide-y divide-gray-200">
             {% set ns = namespace(current_group='') %}
-            {% for item in queue.items %}
+            {% for item in run.items %}
             {% set group = item.task.id.rsplit('.', 1)[0] if '.' in item.task.id else '' %}
             {% if group != ns.current_group and group != '' %}
             {% set ns.current_group = group %}
@@ -106,14 +106,13 @@
                     {{ item.task.cpus }} CPU, {{ item.task.memory }}, {{ item.task.time_limit }}
                 </td>
                 <td class="px-4 py-3 whitespace-nowrap text-xs">
-                    {% if item.slurm_job_id and job_util is defined and item.slurm_job_id in job_util %}
-                    {% set u = job_util[item.slurm_job_id] %}
+                    {% if item.cpu_efficiency is not none %}
                     <div class="flex flex-col gap-0.5">
                         <span
-                            class="font-mono {% if u.cpu_efficiency >= 70 %}text-green-600{% elif u.cpu_efficiency >= 30 %}text-yellow-600{% else %}text-red-600{% endif %}">CPU
-                            {{ "%.0f"|format(u.cpu_efficiency) }}%</span>
-                        {% if u.max_rss and u.max_rss != "N/A" and u.max_rss != "0B" %}
-                        <span class="font-mono text-gray-600">Mem {{ u.max_rss }}<span class="text-gray-400">/{{
+                            class="font-mono {% if item.cpu_efficiency >= 70 %}text-green-600{% elif item.cpu_efficiency >= 30 %}text-yellow-600{% else %}text-red-600{% endif %}">CPU
+                            {{ "%.0f"|format(item.cpu_efficiency) }}%</span>
+                        {% if item.max_rss and item.max_rss != "N/A" and item.max_rss != "0B" %}
+                        <span class="font-mono text-gray-600">Mem {{ item.max_rss }}<span class="text-gray-400">/{{
                                 item.task.memory }}</span></span>
                         {% endif %}
                     </div>
@@ -163,12 +162,12 @@
         </tbody>
     </table>
 </div>
-{% elif queue %}
+{% elif run %}
 <div class="px-6 py-12 text-center">
-    <p class="text-gray-500">No tasks in this queue.</p>
+    <p class="text-gray-500">No tasks in this run.</p>
 </div>
 {% else %}
 <div class="px-6 py-12 text-center">
-    <p class="text-gray-500">Queue not found.</p>
+    <p class="text-gray-500">Run not found.</p>
 </div>
 {% endif %}

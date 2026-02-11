@@ -16,25 +16,25 @@
 
         <div class="flex gap-4" style="height: calc(100vh - 100px);">
             <!-- Left sidebar: task list -->
-            {% if queue_items is defined and queue_items %}
+            {% if run_items is defined and run_items %}
             <div class="w-64 flex-shrink-0 bg-white rounded-lg shadow-md flex flex-col overflow-hidden">
                 <div class="px-3 py-2 bg-gray-50 border-b">
                     <h3 class="text-xs font-semibold text-gray-500 uppercase tracking-wider">Tasks</h3>
                 </div>
                 <div class="overflow-y-auto flex-1">
-                    {% for item in queue_items %}
+                    {% for item in run_items %}
                     {% set is_current = item.task.id == task_id %}
                     {% if content_type == 'script' %}
-                        {% set task_url = '/queues/' ~ queue_id ~ '/tasks/' ~ item.task.id ~ '/script' %}
+                        {% set task_url = '/runs/' ~ run_id ~ '/tasks/' ~ item.task.id ~ '/script' %}
                     {% elif content_type == 'json' %}
-                        {% set task_url = '/queues/' ~ queue_id ~ '/tasks/' ~ item.task.id ~ '/json' %}
+                        {% set task_url = '/runs/' ~ run_id ~ '/tasks/' ~ item.task.id ~ '/json' %}
                     {% elif content_type == 'log' and log_type is defined %}
-                        {% set task_url = '/queues/' ~ queue_id ~ '/tasks/' ~ item.task.id ~ '/logs/' ~ log_type %}
+                        {% set task_url = '/runs/' ~ run_id ~ '/tasks/' ~ item.task.id ~ '/logs/' ~ log_type %}
                         {% if tail is defined and tail %}
                             {% set task_url = task_url ~ '?tail=' ~ tail %}
                         {% endif %}
                     {% else %}
-                        {% set task_url = '/queues/' ~ queue_id ~ '/tasks/' ~ item.task.id ~ '/logs/output' %}
+                        {% set task_url = '/runs/' ~ run_id ~ '/tasks/' ~ item.task.id ~ '/logs/output' %}
                     {% endif %}
                     <a href="{{ task_url }}"
                        class="flex items-center gap-2 px-3 py-2 text-sm border-b border-gray-100 hover:bg-gray-50 transition-colors
@@ -65,19 +65,19 @@
                 <div class="bg-white rounded-t-lg shadow-md border-b flex items-center justify-between px-2">
                     <div class="flex">
                         {% if content_type == 'log' and log_type is defined %}
-                            {% set output_url = '/queues/' ~ queue_id ~ '/tasks/' ~ task_id ~ '/logs/output' %}
-                            {% set error_url = '/queues/' ~ queue_id ~ '/tasks/' ~ task_id ~ '/logs/error' %}
-                            {% set script_url = '/queues/' ~ queue_id ~ '/tasks/' ~ task_id ~ '/script' %}
-                            {% set json_url = '/queues/' ~ queue_id ~ '/tasks/' ~ task_id ~ '/json' %}
+                            {% set output_url = '/runs/' ~ run_id ~ '/tasks/' ~ task_id ~ '/logs/output' %}
+                            {% set error_url = '/runs/' ~ run_id ~ '/tasks/' ~ task_id ~ '/logs/error' %}
+                            {% set script_url = '/runs/' ~ run_id ~ '/tasks/' ~ task_id ~ '/script' %}
+                            {% set json_url = '/runs/' ~ run_id ~ '/tasks/' ~ task_id ~ '/json' %}
                             {% if tail is defined and tail %}
                                 {% set output_url = output_url ~ '?tail=' ~ tail %}
                                 {% set error_url = error_url ~ '?tail=' ~ tail %}
                             {% endif %}
                         {% else %}
-                            {% set output_url = '/queues/' ~ queue_id ~ '/tasks/' ~ task_id ~ '/logs/output' %}
-                            {% set error_url = '/queues/' ~ queue_id ~ '/tasks/' ~ task_id ~ '/logs/error' %}
-                            {% set script_url = '/queues/' ~ queue_id ~ '/tasks/' ~ task_id ~ '/script' %}
-                            {% set json_url = '/queues/' ~ queue_id ~ '/tasks/' ~ task_id ~ '/json' %}
+                            {% set output_url = '/runs/' ~ run_id ~ '/tasks/' ~ task_id ~ '/logs/output' %}
+                            {% set error_url = '/runs/' ~ run_id ~ '/tasks/' ~ task_id ~ '/logs/error' %}
+                            {% set script_url = '/runs/' ~ run_id ~ '/tasks/' ~ task_id ~ '/script' %}
+                            {% set json_url = '/runs/' ~ run_id ~ '/tasks/' ~ task_id ~ '/json' %}
                         {% endif %}
 
                         <a href="{{ output_url }}"
