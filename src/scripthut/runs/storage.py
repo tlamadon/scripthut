@@ -91,6 +91,7 @@ class RunStorageManager:
             "log_dir": run.log_dir,
             "account": run.account,
             "login_shell": run.login_shell,
+            "commit_hash": run.commit_hash,
             "items": [item.to_dict() for item in run.items],
         }
 
@@ -125,6 +126,7 @@ class RunStorageManager:
                 log_dir=data.get("log_dir", "~/.cache/scripthut/logs"),
                 account=data.get("account"),
                 login_shell=data.get("login_shell", False),
+                commit_hash=data.get("commit_hash"),
             )
         except Exception as e:
             logger.error(f"Failed to load run from {run_dir}: {e}")

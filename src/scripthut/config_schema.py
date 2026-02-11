@@ -99,6 +99,26 @@ class GitSourceConfig(BaseModel):
         return self.deploy_key.expanduser() if self.deploy_key else None
 
 
+class WorkflowGitConfig(BaseModel):
+    """Git repository to clone on the backend before running the workflow command."""
+
+    repo: str = Field(description="Git repository URL (SSH format recommended)")
+    branch: str = Field(default="main", description="Branch to clone")
+    deploy_key: Path | None = Field(
+        default=None,
+        description="Path to deploy key on the local machine (will be uploaded to backend temporarily)",
+    )
+    clone_dir: str = Field(
+        default="~/scripthut-repos",
+        description="Parent directory on the backend where repos are cloned into (clone goes into <clone_dir>/<commit_hash>/)",
+    )
+
+    @property
+    def deploy_key_resolved(self) -> Path | None:
+        """Return the resolved deploy key path with ~ expansion."""
+        return self.deploy_key.expanduser() if self.deploy_key else None
+
+
 class WorkflowConfig(BaseModel):
     """Workflow configuration - SSH command that returns JSON task list."""
 
@@ -113,6 +133,10 @@ class WorkflowConfig(BaseModel):
     description: str = Field(
         default="",
         description="Human-readable description of this workflow",
+    )
+    git: WorkflowGitConfig | None = Field(
+        default=None,
+        description="Optional: clone a git repo on the backend before running the workflow command",
     )
 
 

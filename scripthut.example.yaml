@@ -58,6 +58,19 @@ workflows:
     max_concurrent: 5             # Max jobs running at once
     description: "ML model training pipeline"
 
+  # Example: Git workflow — clones a repo on the backend, then runs the command
+  # inside the cloned directory to generate the task list
+  # - name: ml-training-git
+  #   backend: hpc-cluster
+  #   git:
+  #     repo: git@github.com:your-org/ml-pipelines.git
+  #     branch: main
+  #     deploy_key: ~/.ssh/ml-deploy-key  # local path, uploaded to backend temporarily
+  #     clone_dir: ~/scripthut-repos      # parent dir on the backend (default: ~/scripthut-repos)
+  #   command: "python get_tasks.py"
+  #   max_concurrent: 5
+  #   description: "ML training from git repo (clones on backend)"
+
   # Example: Data processing batch
   # - name: data-processing
   #   backend: hpc-cluster
