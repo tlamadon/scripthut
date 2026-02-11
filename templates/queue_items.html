@@ -11,11 +11,16 @@
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Name</th>
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Deps</th>
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
-                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Slurm Job</th>
-                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Partition</th>
-                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Resources</th>
-                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Utilization</th>
-                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Submitted</th>
+                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Slurm Job
+                </th>
+                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Partition
+                </th>
+                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Resources
+                </th>
+                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Utilization
+                </th>
+                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Submitted
+                </th>
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Started</th>
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Finished</th>
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
@@ -27,14 +32,19 @@
             {% set group = item.task.id.rsplit('.', 1)[0] if '.' in item.task.id else '' %}
             {% if group != ns.current_group and group != '' %}
             {% set ns.current_group = group %}
-            <tr class="bg-gray-50 cursor-pointer select-none group-header hover:bg-gray-100" data-group="{{ group }}" onclick="toggleGroup('{{ group }}')">
+            <tr class="bg-gray-50 cursor-pointer select-none group-header hover:bg-gray-100" data-group="{{ group }}"
+                onclick="toggleGroup('{{ group }}')">
                 <td colspan="12" class="px-4 py-1.5">
                     <div class="flex items-center justify-between">
                         <div class="flex items-center gap-2">
-                            <svg class="w-3.5 h-3.5 text-gray-400 transition-transform group-chevron" viewBox="0 0 20 20" fill="currentColor">
-                                <path fill-rule="evenodd" d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z" clip-rule="evenodd" />
+                            <svg class="w-3.5 h-3.5 text-gray-400 transition-transform group-chevron"
+                                viewBox="0 0 20 20" fill="currentColor">
+                                <path fill-rule="evenodd"
+                                    d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z"
+                                    clip-rule="evenodd" />
                             </svg>
-                            <span class="text-xs font-semibold text-gray-500 uppercase tracking-wider">{{ group }}</span>
+                            <span class="text-xs font-semibold text-gray-500 uppercase tracking-wider">{{ group
+                                }}</span>
                         </div>
                         <span class="group-summary text-xs text-gray-400"></span>
                     </div>
@@ -46,7 +56,8 @@
             <tr class="hover:bg-gray-50 task-row" data-group="{{ group }}" data-status="{{ item.status.value }}">
                 <td class="px-4 py-3 whitespace-nowrap text-sm font-mono text-gray-900">
                     {% if '.' in item.task.id %}
-                    <span class="text-gray-400">{{ item.task.id.rsplit('.', 1)[0] }}.</span>{{ item.task.id.rsplit('.', 1)[1] }}
+                    <span class="text-gray-400">{{ item.task.id.rsplit('.', 1)[0] }}.</span>{{ item.task.id.rsplit('.',
+                    1)[1] }}
                     {% else %}
                     {{ item.task.id }}
                     {% endif %}
@@ -55,7 +66,8 @@
                 <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-600">
                     {% if item.task.dependencies %}
                     {% for dep in item.task.dependencies %}
-                    <span class="inline-block px-1.5 py-0.5 text-xs bg-gray-100 text-gray-600 rounded mr-1">{{ dep }}</span>
+                    <span class="inline-block px-1.5 py-0.5 text-xs bg-gray-100 text-gray-600 rounded mr-1">{{ dep
+                        }}</span>
                     {% endfor %}
                     {% else %}
                     -
@@ -97,9 +109,12 @@
                     {% if item.slurm_job_id and job_util is defined and item.slurm_job_id in job_util %}
                     {% set u = job_util[item.slurm_job_id] %}
                     <div class="flex flex-col gap-0.5">
-                        <span class="font-mono {% if u.cpu_efficiency >= 70 %}text-green-600{% elif u.cpu_efficiency >= 30 %}text-yellow-600{% else %}text-red-600{% endif %}">CPU {{ "%.0f"|format(u.cpu_efficiency) }}%</span>
-                        {% if u.max_rss %}
-                        <span class="font-mono text-gray-600">Mem {{ u.max_rss }}<span class="text-gray-400">/{{ item.task.memory }}</span></span>
+                        <span
+                            class="font-mono {% if u.cpu_efficiency >= 70 %}text-green-600{% elif u.cpu_efficiency >= 30 %}text-yellow-600{% else %}text-red-600{% endif %}">CPU
+                            {{ "%.0f"|format(u.cpu_efficiency) }}%</span>
+                        {% if u.max_rss and u.max_rss != "N/A" and u.max_rss != "0B" %}
+                        <span class="font-mono text-gray-600">Mem {{ u.max_rss }}<span class="text-gray-400">/{{
+                                item.task.memory }}</span></span>
                         {% endif %}
                     </div>
                     {% else %}
@@ -129,10 +144,10 @@
                 </td>
                 <td class="px-4 py-3 whitespace-nowrap text-sm">
                     <a href="#" onclick="showTaskDetail('{{ item.task.id }}'); return false;"
-                       class="text-gray-400 hover:text-blue-600 transition-colors"
-                       title="View details">
+                        class="text-gray-400 hover:text-blue-600 transition-colors" title="View details">
                         <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 15.803a7.5 7.5 0 0010.607 0z" />
+                            <path stroke-linecap="round" stroke-linejoin="round"
+                                d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 15.803a7.5 7.5 0 0010.607 0z" />
                         </svg>
                     </a>
                 </td>

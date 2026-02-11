@@ -3,19 +3,16 @@
     <h2 class="text-xl font-semibold text-gray-800">Jobs</h2>
     <div class="flex items-center gap-4">
         {% if filter_user %}
-        <button
-            hx-post="/filter/toggle"
-            hx-target="#jobs-section"
-            hx-swap="innerHTML"
-            class="px-3 py-1.5 text-sm font-medium rounded-full transition-colors flex items-center gap-2 {% if filter_enabled %}bg-blue-600 text-white hover:bg-blue-700{% else %}bg-gray-200 text-gray-700 hover:bg-gray-300{% endif %}"
-        >
+        <button hx-post="/filter/toggle" hx-target="#jobs-section" hx-swap="innerHTML"
+            class="px-3 py-1.5 text-sm font-medium rounded-full transition-colors flex items-center gap-2 {% if filter_enabled %}bg-blue-600 text-white hover:bg-blue-700{% else %}bg-gray-200 text-gray-700 hover:bg-gray-300{% endif %}">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" />
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                    d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" />
             </svg>
             {% if filter_enabled %}
-                My Jobs ({{ filter_user }})
+            My Jobs ({{ filter_user }})
             {% else %}
-                All Users
+            All Users
             {% endif %}
         </button>
         {% endif %}
@@ -38,11 +35,15 @@
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">State</th>
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Source</th>
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Cluster</th>
-                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Partition</th>
+                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Partition
+                </th>
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Time</th>
-                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Resources</th>
-                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Utilization</th>
-                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Submit Time</th>
+                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Resources
+                </th>
+                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Utilization
+                </th>
+                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Submit Time
+                </th>
             </tr>
         </thead>
         <tbody class="bg-white divide-y divide-gray-200">
@@ -50,9 +51,9 @@
             <tr class="hover:bg-gray-50 {% if job.source.value == 'queue' %}bg-blue-50/30{% endif %}">
                 <td class="px-4 py-3 whitespace-nowrap text-sm font-mono text-gray-900">
                     {% if job.slurm_job_id %}
-                        {{ job.slurm_job_id }}
+                    {{ job.slurm_job_id }}
                     {% else %}
-                        <span class="text-gray-400 italic">pending</span>
+                    <span class="text-gray-400 italic">pending</span>
                     {% endif %}
                 </td>
                 <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-900">
@@ -68,7 +69,8 @@
                 </td>
                 <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-600">
                     {% if job.queue_id %}
-                    <a href="/queues/{{ job.queue_id }}" class="text-blue-600 hover:text-blue-800 hover:underline font-mono">
+                    <a href="/queues/{{ job.queue_id }}"
+                        class="text-blue-600 hover:text-blue-800 hover:underline font-mono">
                         {{ job.queue_id }}
                     </a>
                     {% else %}
@@ -115,10 +117,13 @@
                     {% if job.cpu_efficiency is not none or job.max_rss %}
                     <div class="flex flex-col gap-0.5">
                         {% if job.cpu_efficiency is not none %}
-                        <span class="font-mono {% if job.cpu_efficiency >= 70 %}text-green-600{% elif job.cpu_efficiency >= 30 %}text-yellow-600{% else %}text-red-600{% endif %}">CPU {{ "%.0f"|format(job.cpu_efficiency) }}%</span>
+                        <span
+                            class="font-mono {% if job.cpu_efficiency >= 70 %}text-green-600{% elif job.cpu_efficiency >= 30 %}text-yellow-600{% else %}text-red-600{% endif %}">CPU
+                            {{ "%.0f"|format(job.cpu_efficiency) }}%</span>
                         {% endif %}
-                        {% if job.max_rss %}
-                        <span class="font-mono text-gray-600">Mem {{ job.max_rss }}{% if job.memory and job.memory != '-' %}<span class="text-gray-400">/{{ job.memory }}</span>{% endif %}</span>
+                        {% if job.max_rss and job.max_rss != "N/A" and job.max_rss != "0B" %}
+                        <span class="font-mono text-gray-600">Mem {{ job.max_rss }}{% if job.memory and job.memory !=
+                            '-' %}<span class="text-gray-400">/{{ job.memory }}</span>{% endif %}</span>
                         {% endif %}
                     </div>
                     {% else %}
@@ -142,7 +147,8 @@
 {% else %}
 <div class="px-6 py-12 text-center">
     <svg class="mx-auto h-12 w-12 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+            d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
     </svg>
     <h3 class="mt-2 text-sm font-medium text-gray-900">No jobs found</h3>
     <p class="mt-1 text-sm text-gray-500">

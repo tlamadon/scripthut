@@ -81,6 +81,8 @@ class JobHistoryManager:
                     for queue_data in data.get("queues", []):
                         queue = QueueMetadata.from_dict(queue_data)
                         self._queues[queue.id] = queue
+
+
                     logger.info(
                         f"Loaded {len(self._jobs)} jobs and {len(self._queues)} queues from history"
                     )
@@ -273,6 +275,11 @@ class JobHistoryManager:
                 s = stats[job.slurm_job_id]
                 job.cpu_efficiency = s.cpu_efficiency
                 job.max_rss = s.max_rss
+                # Backfill timing from sacct (more accurate than poll-based)
+                if s.start_time:
+                    job.start_time = s.start_time
+                if s.end_time:
+                    job.finish_time = s.end_time
                 self._dirty = True
 
         # Mark jobs not in poll as completed (if they were running/submitted)
@@ -298,12 +305,16 @@ class JobHistoryManager:
         jobs_to_remove = []
 
         for job_id, job in self._jobs.items():
-            # Only remove terminal jobs
             if job.is_terminal:
-                # Use finish_time if available, otherwise last_seen
+                # Terminal jobs: use finish_time if available, otherwise last_seen
                 reference_time = job.finish_time or job.last_seen
-                if reference_time < cutoff:
-                    jobs_to_remove.append(job_id)
+            else:
+                # Non-terminal orphans (e.g. PENDING/SUBMITTED from crashed server):
+                # clean up based on last_seen so they don't persist forever
+                reference_time = job.last_seen
+
+            if reference_time < cutoff:
+                jobs_to_remove.append(job_id)
 
         for job_id in jobs_to_remove:
             del self._jobs[job_id]

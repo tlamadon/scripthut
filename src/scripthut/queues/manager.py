@@ -806,6 +806,7 @@ class QueueManager:
                 # Job not in squeue - check if it was running before
                 if item.status in (QueueItemStatus.SUBMITTED, QueueItemStatus.RUNNING):
                     # Job finished (completed or failed - we assume completed if no error)
+                    item.started_at = item.started_at or item.submitted_at
                     item.status = QueueItemStatus.COMPLETED
                     item.finished_at = datetime.now()
                     changed = True
@@ -830,6 +831,7 @@ class QueueManager:
                         changed_items.append(item)
                 elif job_state == JobState.COMPLETED:
                     # Job completed and still visible in squeue
+                    item.started_at = item.started_at or item.submitted_at
                     item.status = QueueItemStatus.COMPLETED
                     item.finished_at = datetime.now()
                     changed = True
@@ -848,6 +850,7 @@ class QueueManager:
                     JobState.DEADLINE,
                     JobState.OUT_OF_MEMORY,
                 ):
+                    item.started_at = item.started_at or item.submitted_at
                     item.status = QueueItemStatus.FAILED
                     item.error = f"Slurm job {job_state.value}"
                     item.finished_at = datetime.now()
@@ -907,6 +910,7 @@ class QueueManager:
                 if item.slurm_job_id and ssh_client:
                     # Cancel the Slurm job
                     await ssh_client.run_command(f"scancel {item.slurm_job_id}")
+                item.started_at = item.started_at or item.submitted_at
                 item.status = QueueItemStatus.FAILED
                 item.error = "Cancelled"
                 item.finished_at = datetime.now()
@@ -966,10 +970,11 @@ class QueueManager:
             if q.status in (q.status.PENDING, q.status.RUNNING)
         ]
 
-    def restore_from_history(self) -> int:
+    async def restore_from_history(self) -> int:
         """Restore queues from history manager.
 
         Called on startup to restore previously created queues.
+        Resumes processing for any queues that still have pending items.
 
         Returns:
             Number of queues restored.
@@ -981,6 +986,9 @@ class QueueManager:
         for queue_id, queue in restored_queues.items():
             if queue_id not in self.queues:
                 self.queues[queue_id] = queue
+                # Resume processing for queues that still have pending items
+                if queue.status in (QueueStatus.PENDING, QueueStatus.RUNNING):
+                    await self.process_queue(queue)
 
         logger.info(f"Restored {len(restored_queues)} queues from history")
         return len(restored_queues)

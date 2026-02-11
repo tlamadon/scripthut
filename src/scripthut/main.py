@@ -184,6 +184,14 @@ async def poll_cluster(cluster_state: ClusterState, filter_user: str | None = No
         # Fetch resource utilization via sacct (post-mortem only)
         # Only query completed jobs that don't have stats yet — no need to
         # poll sacct for running jobs every cycle.
+        #
+        # Step 1: Update history from squeue first so newly-completed jobs
+        # become terminal in history immediately.
+        if state.history_manager:
+            state.history_manager.update_from_slurm_poll(jobs, cluster_state.name)
+
+        # Step 2: Now query sacct for ALL terminal jobs missing stats
+        # (including ones that just became terminal above).
         job_stats: dict[str, JobStats] = {}
         sacct_ids: list[str] = []
         if state.history_manager:
@@ -198,8 +206,8 @@ async def poll_cluster(cluster_state: ClusterState, filter_user: str | None = No
             except Exception as e:
                 logger.warning(f"sacct stats fetch failed for '{cluster_state.name}': {e}")
 
-        # Update job history with polled jobs
-        if state.history_manager:
+        # Step 3: Merge sacct stats back into history
+        if state.history_manager and job_stats:
             state.history_manager.update_from_slurm_poll(jobs, cluster_state.name, job_stats=job_stats)
     except Exception as e:
         duration_ms = int((time.perf_counter() - start_time) * 1000)
@@ -315,7 +323,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info(f"Initialized queue manager with {len(config.task_sources)} task sources")
 
     # Restore queues from history
-    restored_count = state.queue_manager.restore_from_history()
+    restored_count = await state.queue_manager.restore_from_history()
     if restored_count > 0:
         logger.info(f"Restored {restored_count} queues from history")
 
@@ -340,6 +348,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             await state._polling_task
         except asyncio.CancelledError:
             pass
+
+    # Save any unsaved history changes before disconnecting
+    if state.history_manager:
+        state.history_manager.save_if_dirty()
+        logger.info("Saved job history on shutdown")
 
     # Disconnect all clusters
     for cluster_state in state.clusters.values():
@@ -860,8 +873,10 @@ def _compute_gantt_data(queue: Queue) -> tuple[list[dict[str, Any]], list[dict[s
                 entry["bar_start"] = entry["wait_left"]
                 entry["bar_end"] = entry["run_left"] + entry["run_width"]
             else:
-                # Submitted but not started yet — show wait bar up to now
-                wait_end = (now - time_origin).total_seconds()
+                # Submitted but started_at missing — cap at finished_at if available,
+                # otherwise grow to now (still genuinely waiting)
+                wait_end_ts = item.finished_at or now
+                wait_end = (wait_end_ts - time_origin).total_seconds()
                 entry["wait_left"] = (submitted_offset / total_span) * 100
                 entry["wait_width"] = ((wait_end - submitted_offset) / total_span) * 100
                 entry["has_bar"] = True
@@ -897,6 +912,12 @@ async def queue_detail_page(request: Request, queue_id: str) -> HTMLResponse:
                         "cpu_efficiency": uj.cpu_efficiency,
                         "max_rss": uj.max_rss or "",
                     }
+                # Backfill queue item timestamps from sacct for Gantt accuracy
+                if uj:
+                    if uj.start_time:
+                        item.started_at = uj.start_time
+                    if uj.finish_time:
+                        item.finished_at = uj.finish_time
 
     # Compute gantt chart data
     gantt_items: list[dict[str, Any]] = []
@@ -946,6 +967,12 @@ async def queue_items_partial(request: Request, queue_id: str) -> HTMLResponse:
                         "cpu_efficiency": uj.cpu_efficiency,
                         "max_rss": uj.max_rss or "",
                     }
+                # Backfill queue item timestamps from sacct
+                if uj:
+                    if uj.start_time:
+                        item.started_at = uj.start_time
+                    if uj.finish_time:
+                        item.finished_at = uj.finish_time
 
     return templates.TemplateResponse(
         "queue_items.html",
@@ -961,6 +988,18 @@ async def queue_gantt_partial(request: Request, queue_id: str) -> HTMLResponse:
     gantt_items: list[dict[str, Any]] = []
     markers: list[dict[str, Any]] = []
     if queue:
+        # Backfill queue item timestamps from sacct for Gantt accuracy
+        if state.history_manager:
+            for item in queue.items:
+                if item.slurm_job_id:
+                    uj = state.history_manager.get_job_by_slurm_id(
+                        item.slurm_job_id, queue.cluster_name
+                    )
+                    if uj:
+                        if uj.start_time:
+                            item.started_at = uj.start_time
+                        if uj.finish_time:
+                            item.finished_at = uj.finish_time
         gantt_items, markers = _compute_gantt_data(queue)
 
     return templates.TemplateResponse(
@@ -1003,6 +1042,10 @@ async def queue_events(request: Request, queue_id: str) -> EventSourceResponse:
                 yield {"event": "info-update", "data": info_html}
                 yield {"event": "items-update", "data": items_html}
                 yield {"event": "gantt-update", "data": gantt_html}
+                sidebar_html = templates.get_template("queue_sidebar.html").render(
+                    {"request": request, "queue": queue}
+                )
+                yield {"event": "sidebar-update", "data": sidebar_html}
             else:
                 # Keepalive — send a comment to keep connection alive
                 yield {"comment": "keepalive"}
