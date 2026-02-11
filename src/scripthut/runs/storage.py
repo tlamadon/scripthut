@@ -24,7 +24,7 @@ class RunStorageManager:
           <workflow-name>/
             <YYYYMMDD_HHMMSS>_<run-id>/
               run.json
-          _default_<cluster>/
+          _default_<backend>/
             <YYYY-Wnn>/
               run.json
     """
@@ -37,7 +37,7 @@ class RunStorageManager:
         self.base_dir = base_dir
         self.base_dir.mkdir(parents=True, exist_ok=True)
         self._dirty_runs: set[str] = set()
-        # Cache for loaded weekly runs (cluster_name -> {week_id -> Run})
+        # Cache for loaded weekly runs (backend_name -> {week_id -> Run})
         self._weekly_cache: dict[str, dict[str, Run]] = {}
 
     # --- Path helpers ---
@@ -58,13 +58,13 @@ class RunStorageManager:
         wf_dir = self._workflow_dir(run.workflow_name)
         return wf_dir / self._run_dir_name(run.id, run.created_at)
 
-    def _default_workflow_dir(self, cluster_name: str) -> Path:
-        return self.base_dir / f"_default_{self._sanitize_name(cluster_name)}"
+    def _default_workflow_dir(self, backend_name: str) -> Path:
+        return self.base_dir / f"_default_{self._sanitize_name(backend_name)}"
 
-    def _weekly_run_dir(self, cluster_name: str, dt: datetime) -> Path:
+    def _weekly_run_dir(self, backend_name: str, dt: datetime) -> Path:
         year, week, _ = dt.isocalendar()
         week_id = f"{year}-W{week:02d}"
-        return self._default_workflow_dir(cluster_name) / week_id
+        return self._default_workflow_dir(backend_name) / week_id
 
     # --- Core CRUD ---
 
@@ -73,7 +73,7 @@ class RunStorageManager:
         if run.workflow_name == "_default":
             # Weekly bins use a different directory structure
             # Determine the week from created_at
-            run_dir = self._weekly_run_dir(run.cluster_name, run.created_at)
+            run_dir = self._weekly_run_dir(run.backend_name, run.created_at)
         else:
             run_dir = self._run_dir(run)
 
@@ -85,7 +85,7 @@ class RunStorageManager:
             "version": 2,
             "id": run.id,
             "workflow_name": run.workflow_name,
-            "cluster_name": run.cluster_name,
+            "backend_name": run.backend_name,
             "created_at": run.created_at.isoformat(),
             "max_concurrent": run.max_concurrent,
             "log_dir": run.log_dir,
@@ -118,7 +118,7 @@ class RunStorageManager:
             return Run(
                 id=data["id"],
                 workflow_name=data["workflow_name"],
-                cluster_name=data["cluster_name"],
+                backend_name=data.get("backend_name", data.get("cluster_name")),
                 created_at=datetime.fromisoformat(data["created_at"]),
                 items=items,
                 max_concurrent=data.get("max_concurrent", 5),
@@ -177,7 +177,7 @@ class RunStorageManager:
     def delete_run(self, run: Run) -> bool:
         """Delete a run's directory."""
         if run.workflow_name == "_default":
-            run_dir = self._weekly_run_dir(run.cluster_name, run.created_at)
+            run_dir = self._weekly_run_dir(run.backend_name, run.created_at)
         else:
             run_dir = self._run_dir(run)
 
@@ -201,8 +201,8 @@ class RunStorageManager:
             if run_id in runs:
                 self.save_run(runs[run_id])
         # Also save dirty weekly runs from cache
-        for cluster_runs in self._weekly_cache.values():
-            for week_id, run in cluster_runs.items():
+        for backend_runs in self._weekly_cache.values():
+            for week_id, run in backend_runs.items():
                 if run.id in self._dirty_runs:
                     self.save_run(run)
         self._dirty_runs.clear()
@@ -210,24 +210,24 @@ class RunStorageManager:
     # --- External job weekly binning ---
 
     def get_or_create_weekly_run(
-        self, cluster_name: str, dt: datetime
+        self, backend_name: str, dt: datetime
     ) -> Run:
         """Get existing weekly run for the ISO week containing dt, or create a new one."""
         year, week, _ = dt.isocalendar()
         week_id = f"{year}-W{week:02d}"
 
         # Check cache first
-        if cluster_name not in self._weekly_cache:
-            self._weekly_cache[cluster_name] = {}
+        if backend_name not in self._weekly_cache:
+            self._weekly_cache[backend_name] = {}
 
-        if week_id in self._weekly_cache[cluster_name]:
-            return self._weekly_cache[cluster_name][week_id]
+        if week_id in self._weekly_cache[backend_name]:
+            return self._weekly_cache[backend_name][week_id]
 
         # Try loading from disk
-        run_dir = self._weekly_run_dir(cluster_name, dt)
+        run_dir = self._weekly_run_dir(backend_name, dt)
         run = self.load_run(run_dir)
         if run is not None:
-            self._weekly_cache[cluster_name][week_id] = run
+            self._weekly_cache[backend_name][week_id] = run
             return run
 
         # Create new weekly run
@@ -239,18 +239,18 @@ class RunStorageManager:
         run = Run(
             id=week_id,
             workflow_name="_default",
-            cluster_name=cluster_name,
+            backend_name=backend_name,
             created_at=created_at,
             items=[],
             max_concurrent=0,
         )
 
-        self._weekly_cache[cluster_name][week_id] = run
+        self._weekly_cache[backend_name][week_id] = run
         return run
 
     def add_external_job(
         self,
-        cluster_name: str,
+        backend_name: str,
         slurm_job_id: str,
         name: str,
         user: str,
@@ -267,7 +267,7 @@ class RunStorageManager:
     ) -> None:
         """Add or update an external job in the appropriate weekly bin."""
         dt = submit_time or datetime.now()
-        run = self.get_or_create_weekly_run(cluster_name, dt)
+        run = self.get_or_create_weekly_run(backend_name, dt)
 
         # Check if job already exists
         existing = run.get_item_by_slurm_id(slurm_job_id)

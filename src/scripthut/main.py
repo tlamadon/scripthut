@@ -20,7 +20,7 @@ from sse_starlette.sse import EventSourceResponse
 
 from scripthut.backends.slurm import JobStats, SlurmBackend
 from scripthut.config import load_config, set_config
-from scripthut.config_schema import ScriptHutConfig, SlurmClusterConfig
+from scripthut.config_schema import ScriptHutConfig, SlurmBackendConfig
 from scripthut.models import ConnectionStatus, JobState, SlurmJob
 from scripthut.runs import Run, RunManager
 from scripthut.runs.models import RunItemStatus
@@ -36,11 +36,11 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class ClusterState:
-    """State for a single cluster."""
+class BackendState:
+    """State for a single backend."""
 
     name: str
-    cluster_type: str
+    backend_type: str
     ssh_client: SSHClient | None = None
     backend: SlurmBackend | None = None
     jobs: list[SlurmJob] = field(default_factory=list)
@@ -54,7 +54,7 @@ class AppState:
     """Application state container."""
 
     config: ScriptHutConfig | None = None
-    clusters: dict[str, ClusterState] = field(default_factory=dict)
+    backends: dict[str, BackendState] = field(default_factory=dict)
     source_manager: GitSourceManager | None = None
     source_statuses: dict[str, SourceStatus] = field(default_factory=dict)
     run_manager: RunManager | None = None
@@ -94,11 +94,11 @@ class AppState:
 
     @property
     def all_jobs(self) -> list[tuple[str, SlurmJob]]:
-        """Get all jobs from all clusters with cluster name."""
+        """Get all jobs from all backends with backend name."""
         jobs = []
-        for cluster_name, cluster_state in self.clusters.items():
-            for job in cluster_state.jobs:
-                jobs.append((cluster_name, job))
+        for backend_name, backend_state in self.backends.items():
+            for job in backend_state.jobs:
+                jobs.append((backend_name, job))
         return jobs
 
     def get_filtered_jobs(self) -> list[tuple[str, SlurmJob]]:
@@ -107,8 +107,8 @@ class AppState:
 
     @property
     def any_connected(self) -> bool:
-        """Check if any cluster is connected."""
-        return any(c.status.connected for c in self.clusters.values())
+        """Check if any backend is connected."""
+        return any(c.status.connected for c in self.backends.values())
 
 
 state = AppState()
@@ -117,67 +117,67 @@ state = AppState()
 _config_path: Path | None = None
 
 
-async def init_cluster(cluster_config: SlurmClusterConfig) -> ClusterState:
-    """Initialize a Slurm cluster connection."""
-    cluster_state = ClusterState(
-        name=cluster_config.name,
-        cluster_type="slurm",
-        status=ConnectionStatus(connected=False, host=cluster_config.ssh.host),
+async def init_backend(backend_config: SlurmBackendConfig) -> BackendState:
+    """Initialize a Slurm backend connection."""
+    backend_state = BackendState(
+        name=backend_config.name,
+        backend_type="slurm",
+        status=ConnectionStatus(connected=False, host=backend_config.ssh.host),
     )
 
     ssh_client = SSHClient(
-        host=cluster_config.ssh.host,
-        user=cluster_config.ssh.user,
-        key_path=cluster_config.ssh.key_path_resolved,
-        port=cluster_config.ssh.port,
-        cert_path=cluster_config.ssh.cert_path_resolved,
-        known_hosts=cluster_config.ssh.known_hosts_resolved,
+        host=backend_config.ssh.host,
+        user=backend_config.ssh.user,
+        key_path=backend_config.ssh.key_path_resolved,
+        port=backend_config.ssh.port,
+        cert_path=backend_config.ssh.cert_path_resolved,
+        known_hosts=backend_config.ssh.known_hosts_resolved,
     )
 
     try:
         await ssh_client.connect()
-        cluster_state.ssh_client = ssh_client
-        cluster_state.backend = SlurmBackend(ssh_client)
-        cluster_state.status = ConnectionStatus(
+        backend_state.ssh_client = ssh_client
+        backend_state.backend = SlurmBackend(ssh_client)
+        backend_state.status = ConnectionStatus(
             connected=True,
-            host=cluster_config.ssh.host,
+            host=backend_config.ssh.host,
         )
-        logger.info(f"Connected to cluster '{cluster_config.name}' ({cluster_config.ssh.host})")
+        logger.info(f"Connected to backend '{backend_config.name}' ({backend_config.ssh.host})")
     except Exception as e:
-        logger.error(f"Failed to connect to cluster '{cluster_config.name}': {e}")
-        cluster_state.status = ConnectionStatus(
+        logger.error(f"Failed to connect to backend '{backend_config.name}': {e}")
+        backend_state.status = ConnectionStatus(
             connected=False,
-            host=cluster_config.ssh.host,
+            host=backend_config.ssh.host,
             error=str(e),
         )
 
-    return cluster_state
+    return backend_state
 
 
-async def poll_cluster(cluster_state: ClusterState, filter_user: str | None = None) -> None:
-    """Poll jobs for a single cluster."""
-    if cluster_state.backend is None:
+async def poll_backend(backend_state: BackendState, filter_user: str | None = None) -> None:
+    """Poll jobs for a single backend."""
+    if backend_state.backend is None:
         return
 
     start_time = time.perf_counter()
     try:
-        jobs = await cluster_state.backend.get_jobs(user=filter_user)
+        jobs = await backend_state.backend.get_jobs(user=filter_user)
         duration_ms = int((time.perf_counter() - start_time) * 1000)
-        cluster_state.jobs = jobs
-        cluster_state.status = ConnectionStatus(
+        backend_state.jobs = jobs
+        backend_state.status = ConnectionStatus(
             connected=True,
-            host=cluster_state.status.host,
+            host=backend_state.status.host,
             last_poll=datetime.now(),
             last_poll_duration_ms=duration_ms,
             job_count=len(jobs),
         )
-        logger.debug(f"Polled {len(jobs)} jobs from '{cluster_state.name}' in {duration_ms}ms")
+        logger.debug(f"Polled {len(jobs)} jobs from '{backend_state.name}' in {duration_ms}ms")
 
         # Collect slurm_job_ids missing utilization stats across all runs
         sacct_ids: list[str] = []
         if state.run_manager:
             for run in state.run_manager.runs.values():
-                if run.cluster_name != cluster_state.name:
+                if run.backend_name != backend_state.name:
                     continue
                 for item in run.items:
                     if (item.slurm_job_id
@@ -189,16 +189,16 @@ async def poll_cluster(cluster_state: ClusterState, filter_user: str | None = No
         job_stats: dict[str, JobStats] = {}
         if sacct_ids:
             try:
-                job_stats = await cluster_state.backend.get_job_stats(
+                job_stats = await backend_state.backend.get_job_stats(
                     sacct_ids, user=filter_user,
                 )
             except Exception as e:
-                logger.warning(f"sacct stats fetch failed for '{cluster_state.name}': {e}")
+                logger.warning(f"sacct stats fetch failed for '{backend_state.name}': {e}")
 
         # Write stats back to RunItems
         if state.run_manager and job_stats:
             for run in state.run_manager.runs.values():
-                if run.cluster_name != cluster_state.name:
+                if run.backend_name != backend_state.name:
                     continue
                 for item in run.items:
                     if item.slurm_job_id and item.slurm_job_id in job_stats:
@@ -239,7 +239,7 @@ async def poll_cluster(cluster_state: ClusterState, filter_user: str | None = No
                     run_status = slurm_state_to_run_status.get(slurm_job.state, "running")
                     stats = job_stats.get(slurm_job.job_id)
                     state.run_storage.add_external_job(
-                        cluster_name=cluster_state.name,
+                        backend_name=backend_state.name,
                         slurm_job_id=slurm_job.job_id,
                         name=slurm_job.name,
                         user=slurm_job.user,
@@ -255,18 +255,18 @@ async def poll_cluster(cluster_state: ClusterState, filter_user: str | None = No
 
     except Exception as e:
         duration_ms = int((time.perf_counter() - start_time) * 1000)
-        logger.error(f"Job polling failed for '{cluster_state.name}': {e}")
-        cluster_state.status = ConnectionStatus(
+        logger.error(f"Job polling failed for '{backend_state.name}': {e}")
+        backend_state.status = ConnectionStatus(
             connected=False,
-            host=cluster_state.status.host,
-            last_poll=cluster_state.status.last_poll,
+            host=backend_state.status.host,
+            last_poll=backend_state.status.last_poll,
             last_poll_duration_ms=duration_ms,
             error=str(e),
         )
 
 
 async def poll_jobs() -> None:
-    """Background task to poll all clusters periodically."""
+    """Background task to poll all backends periodically."""
     if state.config is None:
         return
 
@@ -278,21 +278,21 @@ async def poll_jobs() -> None:
         filter_user = state.filter_user if state.filter_enabled else None
 
         tasks = [
-            poll_cluster(cluster_state, filter_user=filter_user)
-            for cluster_state in state.clusters.values()
-            if cluster_state.backend is not None
+            poll_backend(backend_state, filter_user=filter_user)
+            for backend_state in state.backends.values()
+            if backend_state.backend is not None
         ]
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
-            total_jobs = sum(len(c.jobs) for c in state.clusters.values())
-            logger.info(f"Polled {total_jobs} jobs from {len(tasks)} clusters (filter_user={filter_user})")
+            total_jobs = sum(len(c.jobs) for c in state.backends.values())
+            logger.info(f"Polled {total_jobs} jobs from {len(tasks)} backends (filter_user={filter_user})")
 
         # Update run statuses based on polled jobs
         if state.run_manager and state.run_manager.get_active_runs():
-            cluster_jobs: dict[str, list[tuple[str, JobState]]] = {}
-            for name, cs in state.clusters.items():
-                cluster_jobs[name] = [(job.job_id, job.state) for job in cs.jobs]
-            await state.run_manager.update_all_runs(cluster_jobs)
+            backend_jobs: dict[str, list[tuple[str, JobState]]] = {}
+            for name, bs in state.backends.items():
+                backend_jobs[name] = [(job.job_id, job.state) for job in bs.jobs]
+            await state.run_manager.update_all_runs(backend_jobs)
 
         # Save dirty runs
         if state.run_manager:
@@ -325,7 +325,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     set_config(config)
     state.config = config
 
-    logger.info(f"Loaded configuration with {len(config.clusters)} clusters, {len(config.sources)} sources")
+    logger.info(f"Loaded configuration with {len(config.backends)} backends, {len(config.sources)} sources")
 
     # Initialize filter settings
     state.filter_user = config.settings.filter_user
@@ -339,23 +339,23 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     if config.sources:
         asyncio.create_task(sync_sources_background())
 
-    # Initialize clusters
-    for cluster_config in config.slurm_clusters:
-        cluster_state = await init_cluster(cluster_config)
-        state.clusters[cluster_config.name] = cluster_state
+    # Initialize backends
+    for backend_config in config.slurm_backends:
+        backend_state = await init_backend(backend_config)
+        state.backends[backend_config.name] = backend_state
 
-    for ecs_config in config.ecs_clusters:
-        logger.warning(f"ECS cluster '{ecs_config.name}' configured but ECS backend not yet implemented")
+    for ecs_config in config.ecs_backends:
+        logger.warning(f"ECS backend '{ecs_config.name}' configured but ECS backend not yet implemented")
 
     # Initialize run storage and manager
     state.run_storage = RunStorageManager()
     ssh_clients = {
         name: cs.ssh_client
-        for name, cs in state.clusters.items()
+        for name, cs in state.backends.items()
         if cs.ssh_client is not None
     }
     state.run_manager = RunManager(config, ssh_clients, storage=state.run_storage)
-    logger.info(f"Initialized run manager with {len(config.task_sources)} task sources")
+    logger.info(f"Initialized run manager with {len(config.workflows)} workflows")
 
     # Restore runs from storage
     restored_count = await state.run_manager.restore_from_storage()
@@ -389,10 +389,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         state.run_manager.save_dirty()
         logger.info("Saved run data on shutdown")
 
-    # Disconnect all clusters
-    for cluster_state in state.clusters.values():
-        if cluster_state.ssh_client:
-            await cluster_state.ssh_client.disconnect()
+    # Disconnect all backends
+    for backend_state in state.backends.values():
+        if backend_state.ssh_client:
+            await backend_state.ssh_client.disconnect()
 
 
 async def sync_sources_background() -> None:
@@ -422,14 +422,14 @@ templates_path = Path(__file__).parent.parent.parent / "templates"
 templates = Jinja2Templates(directory=str(templates_path))
 
 
-def _cluster_job_counts() -> dict[str, int]:
-    """Count active (pending/submitted/running) jobs per cluster from active runs."""
+def _backend_job_counts() -> dict[str, int]:
+    """Count active (pending/submitted/running) jobs per backend from active runs."""
     counts: dict[str, int] = {}
     if state.run_manager:
         for run in state.run_manager.runs.values():
             for item in run.items:
                 if item.status not in (RunItemStatus.COMPLETED, RunItemStatus.FAILED, RunItemStatus.DEP_FAILED):
-                    counts[run.cluster_name] = counts.get(run.cluster_name, 0) + 1
+                    counts[run.backend_name] = counts.get(run.backend_name, 0) + 1
     return counts
 
 
@@ -439,7 +439,7 @@ class JobView:
     slurm_job_id: str | None
     name: str
     user: str
-    cluster_name: str
+    backend_name: str
     state: str
     source: str  # "run" or "external"
     partition: str
@@ -491,7 +491,7 @@ def _collect_all_job_views() -> list[JobView]:
                 slurm_job_id=item.slurm_job_id,
                 name=item.task.name,
                 user=user,
-                cluster_name=run.cluster_name,
+                backend_name=run.backend_name,
                 state=item.status.value,
                 source="run" if run.workflow_name != "_default" else "external",
                 partition=item.task.partition,
@@ -521,7 +521,7 @@ def _collect_all_job_views() -> list[JobView]:
                         slurm_job_id=item.slurm_job_id,
                         name=item.task.name,
                         user=user,
-                        cluster_name=run.cluster_name,
+                        backend_name=run.backend_name,
                         state=item.status.value,
                         source="external",
                         partition=item.task.partition,
@@ -558,14 +558,14 @@ async def index(request: Request) -> HTMLResponse:
         {
             "request": request,
             "job_views": job_views,
-            "clusters": state.clusters,
-            "cluster_job_counts": _cluster_job_counts(),
+            "backends": state.backends,
+            "backend_job_counts": _backend_job_counts(),
             "sources": state.source_statuses,
             "status": ConnectionStatus(
                 connected=state.any_connected,
-                host=", ".join(c.status.host for c in state.clusters.values() if c.status.connected),
+                host=", ".join(c.status.host for c in state.backends.values() if c.status.connected),
                 last_poll=max(
-                    (c.status.last_poll for c in state.clusters.values() if c.status.last_poll),
+                    (c.status.last_poll for c in state.backends.values() if c.status.last_poll),
                     default=None,
                 ),
             ),
@@ -589,10 +589,10 @@ async def jobs_partial(request: Request) -> HTMLResponse:
         {
             "request": request,
             "job_views": job_views,
-            "clusters": state.clusters,
+            "backends": state.backends,
             "status": ConnectionStatus(
                 connected=state.any_connected,
-                host=", ".join(c.status.host for c in state.clusters.values() if c.status.connected),
+                host=", ".join(c.status.host for c in state.backends.values() if c.status.connected),
             ),
             "filter_enabled": state.filter_enabled,
             "filter_user": state.filter_user,
@@ -619,10 +619,10 @@ async def jobs_stream(request: Request) -> EventSourceResponse:
                     {
                         "request": request,
                         "job_views": job_views,
-                        "clusters": state.clusters,
+                        "backends": state.backends,
                         "status": ConnectionStatus(
                             connected=state.any_connected,
-                            host=", ".join(c.status.host for c in state.clusters.values() if c.status.connected),
+                            host=", ".join(c.status.host for c in state.backends.values() if c.status.connected),
                         ),
                         "filter_enabled": state.filter_enabled,
                         "filter_user": state.filter_user,
@@ -630,10 +630,10 @@ async def jobs_stream(request: Request) -> EventSourceResponse:
                 )
                 yield {"event": "jobs-update", "data": html}
 
-                clusters_html = templates.get_template("clusters_status.html").render(
-                    {"request": request, "clusters": state.clusters, "cluster_job_counts": _cluster_job_counts()}
+                backends_html = templates.get_template("backends_status.html").render(
+                    {"request": request, "backends": state.backends, "backend_job_counts": _backend_job_counts()}
                 )
-                yield {"event": "clusters-update", "data": clusters_html}
+                yield {"event": "backends-update", "data": backends_html}
             else:
                 yield {"comment": "keepalive"}
 
@@ -671,7 +671,7 @@ async def ping() -> dict[str, str]:
 @app.get("/health")
 async def health() -> dict[str, Any]:
     """Health check endpoint."""
-    cluster_statuses = {
+    backend_statuses = {
         name: {
             "connected": cs.status.connected,
             "host": cs.status.host,
@@ -679,7 +679,7 @@ async def health() -> dict[str, Any]:
             "last_poll": cs.status.last_poll.isoformat() if cs.status.last_poll else None,
             "error": cs.status.error,
         }
-        for name, cs in state.clusters.items()
+        for name, cs in state.backends.items()
     }
 
     source_statuses = {
@@ -694,9 +694,9 @@ async def health() -> dict[str, Any]:
 
     return {
         "status": "ok" if state.any_connected else "degraded",
-        "clusters": cluster_statuses,
+        "backends": backend_statuses,
         "sources": source_statuses,
-        "total_jobs": sum(len(c.jobs) for c in state.clusters.values()),
+        "total_jobs": sum(len(c.jobs) for c in state.backends.values()),
     }
 
 
@@ -741,9 +741,9 @@ async def toggle_filter(request: Request) -> HTMLResponse:
 
     filter_user = state.filter_user if state.filter_enabled else None
     tasks = [
-        poll_cluster(cluster_state, filter_user=filter_user)
-        for cluster_state in state.clusters.values()
-        if cluster_state.backend is not None
+        poll_backend(backend_state, filter_user=filter_user)
+        for backend_state in state.backends.values()
+        if backend_state.backend is not None
     ]
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)
@@ -760,31 +760,31 @@ async def filter_status() -> dict[str, Any]:
     }
 
 
-# Task Sources and Runs Routes
+# Workflows and Runs Routes
 
 
-@app.get("/task-sources")
-async def list_task_sources() -> dict[str, Any]:
-    """List all configured task sources."""
+@app.get("/workflows")
+async def list_workflows() -> dict[str, Any]:
+    """List all configured workflows."""
     if state.config is None:
-        return {"task_sources": []}
+        return {"workflows": []}
 
     return {
-        "task_sources": [
+        "workflows": [
             {
-                "name": ts.name,
-                "cluster": ts.cluster,
-                "description": ts.description,
-                "max_concurrent": ts.max_concurrent,
+                "name": wf.name,
+                "backend": wf.backend,
+                "description": wf.description,
+                "max_concurrent": wf.max_concurrent,
             }
-            for ts in state.config.task_sources
+            for wf in state.config.workflows
         ]
     }
 
 
-@app.post("/task-sources/{name}/run", response_model=None)
-async def run_task_source(name: str):
-    """Trigger a task source to create a new run."""
+@app.post("/workflows/{name}/run", response_model=None)
+async def run_workflow(name: str):
+    """Trigger a workflow to create a new run."""
     if state.run_manager is None:
         return JSONResponse(
             status_code=500,
@@ -796,21 +796,21 @@ async def run_task_source(name: str):
         return {
             "run_id": run.id,
             "workflow_name": run.workflow_name,
-            "cluster_name": run.cluster_name,
+            "backend_name": run.backend_name,
             "task_count": len(run.items),
             "status": run.status.value,
         }
     except Exception as e:
-        logger.error(f"Failed to create run for source '{name}': {e}")
+        logger.error(f"Failed to create run for workflow '{name}': {e}")
         return JSONResponse(
             status_code=422,
             content={"error": str(e)},
         )
 
 
-@app.get("/task-sources/{name}/dry-run", response_class=HTMLResponse)
-async def dry_run_task_source(request: Request, name: str) -> HTMLResponse:
-    """Dry run a task source - show what would be submitted without creating a run."""
+@app.get("/workflows/{name}/dry-run", response_class=HTMLResponse)
+async def dry_run_workflow(request: Request, name: str) -> HTMLResponse:
+    """Dry run a workflow - show what would be submitted without creating a run."""
     if state.run_manager is None:
         return templates.TemplateResponse(
             "dry_run.html",
@@ -861,7 +861,7 @@ async def run_project_workflow(name: str, workflow: str):
         return {
             "run_id": run.id,
             "workflow_name": run.workflow_name,
-            "cluster_name": run.cluster_name,
+            "backend_name": run.backend_name,
             "task_count": len(run.items),
             "status": run.status.value,
         }
@@ -877,7 +877,7 @@ async def run_project_workflow(name: str, workflow: str):
 async def runs_page(request: Request) -> HTMLResponse:
     """Page listing all runs."""
     runs = state.run_manager.get_all_runs() if state.run_manager else []
-    task_sources = state.config.task_sources if state.config else []
+    workflows = state.config.workflows if state.config else []
     projects = state.config.projects if state.config else []
 
     # Discover workflows for each project
@@ -897,7 +897,7 @@ async def runs_page(request: Request) -> HTMLResponse:
         {
             "request": request,
             "runs": runs,
-            "task_sources": task_sources,
+            "workflows": workflows,
             "projects": projects,
             "project_workflows": project_workflows,
         },
@@ -915,7 +915,7 @@ async def list_runs() -> dict[str, Any]:
             {
                 "id": r.id,
                 "workflow_name": r.workflow_name,
-                "cluster_name": r.cluster_name,
+                "backend_name": r.backend_name,
                 "created_at": r.created_at.isoformat(),
                 "status": r.status.value,
                 "progress": r.progress,
@@ -1166,10 +1166,10 @@ async def view_task_script(request: Request, run_id: str, task_id: str) -> HTMLR
     script = item.sbatch_script
     if script is None:
         log_dir = run.log_dir
-        cluster_state = state.clusters.get(run.cluster_name)
-        if cluster_state and cluster_state.ssh_client and log_dir.startswith("~"):
+        backend_state = state.backends.get(run.backend_name)
+        if backend_state and backend_state.ssh_client and log_dir.startswith("~"):
             try:
-                stdout, _, _ = await cluster_state.ssh_client.run_command("echo $HOME")
+                stdout, _, _ = await backend_state.ssh_client.run_command("echo $HOME")
                 log_dir = log_dir.replace("~", stdout.strip(), 1)
             except Exception:
                 pass
@@ -1227,10 +1227,10 @@ async def get_task_detail(
         content = item.sbatch_script
         if content is None:
             log_dir = run.log_dir
-            cluster_state = state.clusters.get(run.cluster_name)
-            if cluster_state and cluster_state.ssh_client and log_dir.startswith("~"):
+            backend_state = state.backends.get(run.backend_name)
+            if backend_state and backend_state.ssh_client and log_dir.startswith("~"):
                 try:
-                    stdout, _, _ = await cluster_state.ssh_client.run_command("echo $HOME")
+                    stdout, _, _ = await backend_state.ssh_client.run_command("echo $HOME")
                     log_dir = log_dir.replace("~", stdout.strip(), 1)
                 except Exception:
                     pass

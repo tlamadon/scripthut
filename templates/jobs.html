@@ -34,7 +34,7 @@
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">User</th>
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">State</th>
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Source</th>
-                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Cluster</th>
+                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Backend</th>
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Partition
                 </th>
                 <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Time</th>
@@ -107,7 +107,7 @@
                     <span class="px-2 py-0.5 bg-gray-100 text-gray-600 rounded">external</span>
                     {% endif %}
                 </td>
-                <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-600">{{ job.cluster_name }}</td>
+                <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-600">{{ job.backend_name }}</td>
                 <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-600">{{ job.partition or '-' }}</td>
                 <td class="px-4 py-3 whitespace-nowrap text-sm font-mono text-gray-600">{{ job.time_used or '-' }}</td>
                 <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-600">
@@ -155,7 +155,7 @@
         {% elif status.connected %}
         No jobs are currently tracked. Submit a run or wait for polling to detect existing jobs.
         {% else %}
-        Unable to connect to the cluster.
+        Unable to connect to the backend.
         {% endif %}
     </p>
 </div>

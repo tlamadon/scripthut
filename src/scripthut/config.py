@@ -11,7 +11,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from scripthut.config_schema import (
     GlobalSettings,
     ScriptHutConfig,
-    SlurmClusterConfig,
+    SlurmBackendConfig,
     SSHConfig,
 )
 
@@ -136,7 +136,7 @@ def load_legacy_config() -> ScriptHutConfig:
         known_hosts=legacy.ssh_known_hosts,
     )
 
-    slurm_cluster = SlurmClusterConfig(
+    slurm_backend = SlurmBackendConfig(
         name="default",
         type="slurm",
         ssh=ssh_config,
@@ -149,7 +149,7 @@ def load_legacy_config() -> ScriptHutConfig:
     )
 
     return ScriptHutConfig(
-        clusters=[slurm_cluster],
+        backends=[slurm_backend],
         sources=[],
         settings=settings,
     )

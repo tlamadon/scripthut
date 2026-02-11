@@ -23,7 +23,7 @@ def _make_pending_run() -> Run:
     return Run(
         id="pending-r",
         workflow_name="test-workflow",
-        cluster_name="test-cluster",
+        backend_name="test-cluster",
         created_at=datetime.now(),
         items=[RunItem(task=_make_task("t1"), status=RunItemStatus.PENDING)],
         max_concurrent=5,
@@ -34,7 +34,7 @@ def _make_completed_run() -> Run:
     return Run(
         id="done-r",
         workflow_name="test-workflow",
-        cluster_name="test-cluster",
+        backend_name="test-cluster",
         created_at=datetime.now(),
         items=[RunItem(task=_make_task("t1"), status=RunItemStatus.COMPLETED)],
         max_concurrent=5,
@@ -55,7 +55,7 @@ class TestRestoreFromStorage:
 
         config = MagicMock()
         config.settings.filter_user = "testuser"
-        manager = RunManager(config=config, clusters={}, storage=storage)
+        manager = RunManager(config=config, backends={}, storage=storage)
 
         count = await manager.restore_from_storage()
 
@@ -74,7 +74,7 @@ class TestRestoreFromStorage:
 
         config = MagicMock()
         config.settings.filter_user = "testuser"
-        manager = RunManager(config=config, clusters={}, storage=storage)
+        manager = RunManager(config=config, backends={}, storage=storage)
 
         count = await manager.restore_from_storage()
 
@@ -87,7 +87,7 @@ class TestRestoreFromStorage:
         """Without a storage manager, restore should return 0."""
         config = MagicMock()
         config.settings.filter_user = "testuser"
-        manager = RunManager(config=config, clusters={})
+        manager = RunManager(config=config, backends={})
 
         count = await manager.restore_from_storage()
         assert count == 0
@@ -99,7 +99,7 @@ class TestRestoreFromStorage:
         default_run = Run(
             id="2026-W07",
             workflow_name="_default",
-            cluster_name="test-cluster",
+            backend_name="test-cluster",
             created_at=datetime.now(),
             items=[],
             max_concurrent=0,
@@ -110,7 +110,7 @@ class TestRestoreFromStorage:
 
         config = MagicMock()
         config.settings.filter_user = "testuser"
-        manager = RunManager(config=config, clusters={}, storage=storage)
+        manager = RunManager(config=config, backends={}, storage=storage)
 
         count = await manager.restore_from_storage()
 

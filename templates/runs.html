@@ -31,7 +31,7 @@
                 <div class="flex items-center gap-2">
                     <span class="text-lg">📦</span>
                     <h2 class="text-xl font-semibold text-gray-800">{{ project.name }}</h2>
-                    <span class="text-sm text-gray-500">({{ project.cluster }})</span>
+                    <span class="text-sm text-gray-500">({{ project.backend }})</span>
                 </div>
                 <button hx-get="/projects/{{ project.name }}/workflows" hx-swap="none"
                     onclick="window.location.reload()"
@@ -73,21 +73,21 @@
 
         <!-- Legacy Task Sources -->
         <div class="bg-white rounded-lg shadow-md p-6 mb-6">
-            <h2 class="text-xl font-semibold text-gray-800 mb-4">Task Sources</h2>
-            {% if task_sources %}
+            <h2 class="text-xl font-semibold text-gray-800 mb-4">Workflows</h2>
+            {% if workflows %}
             <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {% for source in task_sources %}
+                {% for wf in workflows %}
                 <div class="border rounded-lg p-4 hover:shadow-md transition-shadow">
                     <div class="flex items-start justify-between">
                         <div>
-                            <h3 class="font-semibold text-gray-800">{{ source.name }}</h3>
-                            <p class="text-sm text-gray-500">Cluster: {{ source.cluster }}</p>
-                            {% if source.description %}
-                            <p class="text-sm text-gray-600 mt-1">{{ source.description }}</p>
+                            <h3 class="font-semibold text-gray-800">{{ wf.name }}</h3>
+                            <p class="text-sm text-gray-500">Backend: {{ wf.backend }}</p>
+                            {% if wf.description %}
+                            <p class="text-sm text-gray-600 mt-1">{{ wf.description }}</p>
                             {% endif %}
-                            <p class="text-xs text-gray-400 mt-1">Max concurrent: {{ source.max_concurrent }}</p>
+                            <p class="text-xs text-gray-400 mt-1">Max concurrent: {{ wf.max_concurrent }}</p>
                         </div>
-                        <a href="/task-sources/{{ source.name }}/dry-run"
+                        <a href="/workflows/{{ wf.name }}/dry-run"
                             class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm font-medium text-center">
                             New Run
                         </a>
@@ -96,7 +96,7 @@
                 {% endfor %}
             </div>
             {% else %}
-            <p class="text-gray-500">No task sources configured. Add <code>task_sources</code> to your scripthut.yaml.
+            <p class="text-gray-500">No workflows configured. Add <code>workflows</code> to your scripthut.yaml.
             </p>
             {% endif %}
         </div>

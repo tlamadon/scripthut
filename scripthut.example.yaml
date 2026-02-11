@@ -1,8 +1,8 @@
 # ScriptHut Configuration
 # Copy this file to scripthut.yaml and customize for your environment
 
-# Remote clusters to monitor
-clusters:
+# Remote backends to monitor
+backends:
   # Slurm cluster example
   - name: hpc-cluster
     type: slurm
@@ -16,16 +16,16 @@ clusters:
     account: pi-faculty  # Slurm account for job submission (e.g., phd, pi-faculty)
     # login_shell: true  # Use #!/bin/bash -l to source .bash_profile in jobs
 
-  # Multiple clusters can be defined
+  # Multiple backends can be defined
   # - name: secondary-cluster
   #   type: slurm
   #   ssh:
   #     host: slurm2.cluster.edu
   #     user: your_username
   #     key_path: ~/.ssh/cluster2_key
-  #   account: phd  # Slurm account for this cluster
+  #   account: phd  # Slurm account for this backend
 
-  # ECS cluster example (not yet implemented)
+  # ECS backend example (not yet implemented)
   # - name: production-ecs
   #   type: ecs
   #   aws:
@@ -47,25 +47,25 @@ sources:
   #   branch: main
   #   deploy_key: ~/.ssh/data-deploy-key
 
-# Task sources for batch job submission
+# Workflows for batch job submission
 # These are SSH commands that return JSON task lists
 # Trigger them via the UI to create a queue of jobs
-task_sources:
+workflows:
   # Example: ML training pipeline
   - name: ml-training
-    cluster: hpc-cluster          # Which cluster to submit jobs to
+    backend: hpc-cluster          # Which backend to submit jobs to
     command: "python /shared/scripts/get_training_tasks.py"
     max_concurrent: 5             # Max jobs running at once
     description: "ML model training pipeline"
 
   # Example: Data processing batch
   # - name: data-processing
-  #   cluster: hpc-cluster
+  #   backend: hpc-cluster
   #   command: "cat /shared/tasks/data_pipeline.json"
   #   max_concurrent: 10
   #   description: "Daily data processing batch"
 
-# Task source commands must return JSON in this format:
+# Workflow commands must return JSON in this format:
 # {
 #   "tasks": [
 #     {

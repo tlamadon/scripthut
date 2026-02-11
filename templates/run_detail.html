@@ -24,7 +24,7 @@
                 Run {% if run %}{{ run.id }}{% else %}Not Found{% endif %}
             </h2>
             {% if run %}
-            <p class="text-gray-600 text-sm">{{ run.workflow_name }} on {{ run.cluster_name }}</p>
+            <p class="text-gray-600 text-sm">{{ run.workflow_name }} on {{ run.backend_name }}</p>
             {% endif %}
         </div>
 

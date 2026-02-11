@@ -9,9 +9,9 @@ Usage:
     python generate_tasks.py [--count N] [--working-dir DIR]
 
 Example scripthut.yaml config:
-    task_sources:
+    workflows:
       - name: test-tasks
-        cluster: hpc-cluster
+        backend: hpc-cluster
         command: "python /path/to/generate_tasks.py --count 5"
         max_concurrent: 2
         description: "Test tasks for ScriptHut"

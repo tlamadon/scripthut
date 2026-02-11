@@ -1,10 +1,10 @@
-# ScriptHut Task Source Example
+# ScriptHut Workflow Example
 
 This folder contains a simple example to test ScriptHut's task submission feature.
 
 ## Files
 
-- `generate_tasks.py` - Task source script that generates JSON task list
+- `generate_tasks.py` - Workflow script that generates JSON task list
 - `simple_task.sh` - Simple task script that simulates work
 
 ## Setup
@@ -21,18 +21,18 @@ scp -r examples/task_source user@cluster:/home/user/scripthut-test
 ssh user@cluster "chmod +x /home/user/scripthut-test/*.sh"
 ```
 
-3. Add a task source to your `scripthut.yaml`:
+3. Add a workflow to your `scripthut.yaml`:
 
 ```yaml
-task_sources:
+workflows:
   - name: test-tasks
-    cluster: hpc-cluster  # Your cluster name from clusters config
+    backend: hpc-cluster  # Your backend name from backends config
     command: "python /home/user/scripthut-test/generate_tasks.py --count 3 --working-dir /home/user/scripthut-test --partition normal"
     max_concurrent: 2
     description: "Test tasks for ScriptHut"
 ```
 
-Adjust the paths and partition name for your cluster.
+Adjust the paths and partition name for your environment.
 
 ## Usage
 

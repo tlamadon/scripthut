@@ -16,11 +16,11 @@ from scripthut.runs.models import Run, RunItem, RunItemStatus, TaskDefinition
 def _make_manager(ssh_mock: AsyncMock | None = None) -> RunManager:
     """Create a RunManager with a mocked SSH client."""
     config = MagicMock()
-    config.clusters = {"test-cluster": MagicMock()}
-    config.task_sources = []
+    config.backends = {"test-cluster": MagicMock()}
+    config.workflows = []
     config.settings.poll_interval = 60
-    clusters = {"test-cluster": ssh_mock or AsyncMock()}
-    return RunManager(config=config, clusters=clusters)
+    backends = {"test-cluster": ssh_mock or AsyncMock()}
+    return RunManager(config=config, backends=backends)
 
 
 # -- RunManager notify/wait tests ------------------------------------------

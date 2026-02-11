@@ -20,10 +20,10 @@
 
         <!-- Status Panel -->
         <div class="mb-6 grid grid-cols-1 md:grid-cols-2 gap-4">
-            <!-- Clusters Status -->
+            <!-- Backends Status -->
             <div class="bg-white rounded-lg shadow-md p-4">
                 <div class="flex items-center justify-between mb-3">
-                    <h3 class="text-sm font-semibold text-gray-500 uppercase tracking-wider">Clusters</h3>
+                    <h3 class="text-sm font-semibold text-gray-500 uppercase tracking-wider">Backends</h3>
                     <div class="flex items-center gap-2">
                         <button id="refresh-now-btn" onclick="triggerEarlyRefresh()"
                             class="text-xs px-2 py-0.5 bg-gray-100 hover:bg-gray-200 rounded text-gray-600 transition-colors"
@@ -41,8 +41,8 @@
                         </div>
                     </div>
                 </div>
-                <div id="clusters-status" sse-swap="clusters-update" hx-swap="innerHTML">
-                {% include "clusters_status.html" %}
+                <div id="backends-status" sse-swap="backends-update" hx-swap="innerHTML">
+                {% include "backends_status.html" %}
                 </div>
             </div>
 

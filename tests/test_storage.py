@@ -18,7 +18,7 @@ from scripthut.runs.storage import RunStorageManager
 def _make_run(
     run_id: str = "abc123",
     workflow_name: str = "test-workflow",
-    cluster_name: str = "test-cluster",
+    backend_name: str = "test-cluster",
     items: list[RunItem] | None = None,
     created_at: datetime | None = None,
 ) -> Run:
@@ -28,7 +28,7 @@ def _make_run(
     return Run(
         id=run_id,
         workflow_name=workflow_name,
-        cluster_name=cluster_name,
+        backend_name=backend_name,
         created_at=created_at or datetime.now(),
         items=items,
         max_concurrent=5,
@@ -48,7 +48,7 @@ class TestSaveAndLoad:
         assert run.id in loaded
         restored = loaded[run.id]
         assert restored.workflow_name == run.workflow_name
-        assert restored.cluster_name == run.cluster_name
+        assert restored.backend_name == run.backend_name
         assert len(restored.items) == 1
         assert restored.items[0].task.id == "t1"
 
@@ -159,7 +159,7 @@ class TestWeeklyBins:
         run = storage.get_or_create_weekly_run("midway", dt)
 
         assert run.workflow_name == "_default"
-        assert run.cluster_name == "midway"
+        assert run.backend_name == "midway"
         assert "W07" in run.id  # ISO week 7 of 2026
 
     def test_weekly_run_cached(self, tmp_path: Path):
@@ -176,7 +176,7 @@ class TestWeeklyBins:
         submit_time = datetime(2026, 2, 11, 10, 0, 0)
 
         storage.add_external_job(
-            cluster_name="midway",
+            backend_name="midway",
             slurm_job_id="99999",
             name="external-job",
             user="testuser",
@@ -194,7 +194,7 @@ class TestWeeklyBins:
         submit_time = datetime(2026, 2, 11, 10, 0, 0)
 
         storage.add_external_job(
-            cluster_name="midway",
+            backend_name="midway",
             slurm_job_id="99999",
             name="my-job",
             user="testuser",
@@ -202,7 +202,7 @@ class TestWeeklyBins:
             submit_time=submit_time,
         )
         storage.add_external_job(
-            cluster_name="midway",
+            backend_name="midway",
             slurm_job_id="99999",
             name="my-job",
             user="testuser",

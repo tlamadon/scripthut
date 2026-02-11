@@ -30,7 +30,7 @@ class TaskDefinition:
     memory: str = "4G"
     time_limit: str = "1:00:00"
     dependencies: list[str] = field(default_factory=list)
-    generates_source: str | None = None  # Path to JSON file this task creates on the cluster
+    generates_source: str | None = None  # Path to JSON file this task creates on the backend
     output_file: str | None = None  # Custom stdout log path
     error_file: str | None = None  # Custom stderr log path
     environment: str | None = None  # Name of the environment to use (from config)
@@ -224,11 +224,11 @@ class Run:
 
     id: str
     workflow_name: str
-    cluster_name: str
+    backend_name: str
     created_at: datetime
     items: list[RunItem]
     max_concurrent: int
-    log_dir: str = "~/.cache/scripthut/logs"  # Directory for log files on the remote cluster
+    log_dir: str = "~/.cache/scripthut/logs"  # Directory for log files on the remote backend
     account: str | None = None  # Slurm account to charge jobs to
     login_shell: bool = False  # Use #!/bin/bash -l shebang
 

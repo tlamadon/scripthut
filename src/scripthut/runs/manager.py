@@ -13,8 +13,8 @@ from typing import TYPE_CHECKING
 from scripthut.config_schema import (
     ProjectConfig,
     ScriptHutConfig,
-    SlurmClusterConfig,
-    TaskSourceConfig,
+    SlurmBackendConfig,
+    WorkflowConfig,
 )
 from scripthut.models import JobState
 from scripthut.runs.models import (
@@ -38,11 +38,11 @@ class RunManager:
     def __init__(
         self,
         config: ScriptHutConfig,
-        clusters: dict[str, SSHClient],
+        backends: dict[str, SSHClient],
         storage: RunStorageManager | None = None,
     ) -> None:
         self.config = config
-        self.clusters = clusters
+        self.backends = backends
         self.runs: dict[str, Run] = {}
         self.storage = storage
         # SSE event bus: version counter + Event per run
@@ -124,7 +124,7 @@ class RunManager:
     async def _handle_generates_source(
         self, run: Run, item: RunItem
     ) -> None:
-        """Read a generated task source JSON and append tasks to the run."""
+        """Read a generated workflow JSON and append tasks to the run."""
         path = item.task.generates_source
         if not path:
             return
@@ -133,10 +133,10 @@ class RunManager:
             f"Task '{item.task.id}' completed with generates_source: {path}"
         )
 
-        ssh_client = self.get_ssh_client(run.cluster_name)
+        ssh_client = self.get_ssh_client(run.backend_name)
         if ssh_client is None:
             logger.error(
-                f"No SSH client for cluster '{run.cluster_name}' — "
+                f"No SSH client for backend '{run.backend_name}' — "
                 f"cannot read generates_source '{path}'"
             )
             return
@@ -216,16 +216,16 @@ class RunManager:
 
         await self.process_run(run)
 
-    def get_task_source(self, name: str) -> TaskSourceConfig | None:
-        """Get a task source by name."""
-        return self.config.get_task_source(name)
+    def get_workflow(self, name: str) -> WorkflowConfig | None:
+        """Get a workflow by name."""
+        return self.config.get_workflow(name)
 
-    def get_ssh_client(self, cluster_name: str) -> SSHClient | None:
-        """Get SSH client for a cluster."""
-        return self.clusters.get(cluster_name)
+    def get_ssh_client(self, backend_name: str) -> SSHClient | None:
+        """Get SSH client for a backend."""
+        return self.backends.get(backend_name)
 
     async def _get_git_root(self, ssh_client: SSHClient, working_dir: str) -> str:
-        """Detect the git repository root for a working directory on the cluster."""
+        """Detect the git repository root for a working directory on the backend."""
         stdout, stderr, exit_code = await ssh_client.run_command(
             f"cd {working_dir} && git rev-parse --show-toplevel"
         )
@@ -237,16 +237,16 @@ class RunManager:
         return stdout.strip()
 
     async def fetch_tasks(
-        self, source: TaskSourceConfig, *, return_raw: bool = False
+        self, workflow: WorkflowConfig, *, return_raw: bool = False
     ) -> list[TaskDefinition] | tuple[list[TaskDefinition], str]:
-        """Fetch task list from a task source via SSH."""
-        ssh_client = self.get_ssh_client(source.cluster)
+        """Fetch task list from a workflow via SSH."""
+        ssh_client = self.get_ssh_client(workflow.backend)
         if ssh_client is None:
-            raise ValueError(f"Cluster '{source.cluster}' not found or not connected")
+            raise ValueError(f"Backend '{workflow.backend}' not found or not connected")
 
-        logger.info(f"Fetching tasks from source '{source.name}' on cluster '{source.cluster}'")
+        logger.info(f"Fetching tasks from workflow '{workflow.name}' on backend '{workflow.backend}'")
 
-        stdout, stderr, exit_code = await ssh_client.run_command(source.command)
+        stdout, stderr, exit_code = await ssh_client.run_command(workflow.command)
 
         if exit_code != 0:
             raise ValueError(f"Command failed (exit {exit_code}): {stderr}")
@@ -264,19 +264,19 @@ class RunManager:
             raise ValueError("JSON must be a list or object with 'tasks' key")
 
         tasks = [TaskDefinition.from_dict(t) for t in tasks_data]
-        logger.info(f"Fetched {len(tasks)} tasks from source '{source.name}'")
+        logger.info(f"Fetched {len(tasks)} tasks from workflow '{workflow.name}'")
 
         if return_raw:
             return tasks, stdout
         return tasks
 
-    async def dry_run(self, source_name: str) -> dict:
+    async def dry_run(self, workflow_name: str) -> dict:
         """Perform a dry run - fetch tasks and show what would be submitted."""
-        source = self.get_task_source(source_name)
-        if source is None:
-            raise ValueError(f"Task source '{source_name}' not found")
+        workflow = self.get_workflow(workflow_name)
+        if workflow is None:
+            raise ValueError(f"Workflow '{workflow_name}' not found")
 
-        tasks, raw_output = await self.fetch_tasks(source, return_raw=True)
+        tasks, raw_output = await self.fetch_tasks(workflow, return_raw=True)
 
         self._resolve_wildcard_deps(tasks)
         self._validate_dependencies(tasks)
@@ -284,14 +284,14 @@ class RunManager:
         preview_run_id = "preview"
         log_dir = "~/.cache/scripthut/logs"
 
-        ssh_client = self.get_ssh_client(source.cluster)
+        ssh_client = self.get_ssh_client(workflow.backend)
         if ssh_client and log_dir.startswith("~"):
             stdout, _, _ = await ssh_client.run_command("echo $HOME")
             home_dir = stdout.strip()
             log_dir = log_dir.replace("~", home_dir, 1)
 
-        account = self.get_cluster_account(source.cluster)
-        login_shell = self.get_cluster_login_shell(source.cluster)
+        account = self.get_backend_account(workflow.backend)
+        login_shell = self.get_backend_login_shell(workflow.backend)
 
         task_details = []
         for task in tasks:
@@ -304,7 +304,7 @@ class RunManager:
                 "error_path": task.get_error_path(preview_run_id, log_dir),
             })
 
-        logger.info(f"Dry run for source '{source_name}': {len(tasks)} tasks")
+        logger.info(f"Dry run for workflow '{workflow_name}': {len(tasks)} tasks")
 
         try:
             raw_output_formatted = json.dumps(json.loads(raw_output), indent=2)
@@ -312,34 +312,34 @@ class RunManager:
             raw_output_formatted = raw_output
 
         return {
-            "source": source,
-            "cluster_name": source.cluster,
+            "workflow": workflow,
+            "backend_name": workflow.backend,
             "task_count": len(tasks),
-            "max_concurrent": source.max_concurrent,
+            "max_concurrent": workflow.max_concurrent,
             "account": account,
             "tasks": task_details,
             "raw_output": raw_output_formatted,
         }
 
-    def get_cluster_account(self, cluster_name: str) -> str | None:
-        """Get the Slurm account for a cluster."""
-        cluster = self.config.get_cluster(cluster_name)
-        if cluster and isinstance(cluster, SlurmClusterConfig):
-            return cluster.account
+    def get_backend_account(self, backend_name: str) -> str | None:
+        """Get the Slurm account for a backend."""
+        backend = self.config.get_backend(backend_name)
+        if backend and isinstance(backend, SlurmBackendConfig):
+            return backend.account
         return None
 
-    def get_cluster_login_shell(self, cluster_name: str) -> bool:
-        """Get whether the cluster uses login shell in sbatch scripts."""
-        cluster = self.config.get_cluster(cluster_name)
-        if cluster and isinstance(cluster, SlurmClusterConfig):
-            return cluster.login_shell
+    def get_backend_login_shell(self, backend_name: str) -> bool:
+        """Get whether the backend uses login shell in sbatch scripts."""
+        backend = self.config.get_backend(backend_name)
+        if backend and isinstance(backend, SlurmBackendConfig):
+            return backend.login_shell
         return False
 
     async def _build_run(
         self,
         tasks: list[TaskDefinition],
         workflow_name: str,
-        cluster_name: str,
+        backend_name: str,
         max_concurrent: int,
         ssh_client: SSHClient,
     ) -> Run:
@@ -350,8 +350,8 @@ class RunManager:
         self._resolve_wildcard_deps(tasks)
         self._validate_dependencies(tasks)
 
-        account = self.get_cluster_account(cluster_name)
-        login_shell = self.get_cluster_login_shell(cluster_name)
+        account = self.get_backend_account(backend_name)
+        login_shell = self.get_backend_login_shell(backend_name)
 
         first_working_dir = tasks[0].working_dir
         try:
@@ -366,7 +366,7 @@ class RunManager:
         run = Run(
             id=run_id,
             workflow_name=workflow_name,
-            cluster_name=cluster_name,
+            backend_name=backend_name,
             created_at=datetime.now(),
             items=[RunItem(task=task) for task in tasks],
             max_concurrent=max_concurrent,
@@ -386,22 +386,22 @@ class RunManager:
 
         return run
 
-    async def create_run(self, source_name: str) -> Run:
-        """Create a new run from a legacy task source."""
-        source = self.get_task_source(source_name)
-        if source is None:
-            raise ValueError(f"Task source '{source_name}' not found")
+    async def create_run(self, workflow_name: str) -> Run:
+        """Create a new run from a workflow."""
+        workflow = self.get_workflow(workflow_name)
+        if workflow is None:
+            raise ValueError(f"Workflow '{workflow_name}' not found")
 
-        tasks = await self.fetch_tasks(source)
+        tasks = await self.fetch_tasks(workflow)
 
-        ssh_client = self.get_ssh_client(source.cluster)
+        ssh_client = self.get_ssh_client(workflow.backend)
         if ssh_client is None:
             raise ValueError(
-                f"No SSH connection to cluster '{source.cluster}'"
+                f"No SSH connection to backend '{workflow.backend}'"
             )
 
         return await self._build_run(
-            tasks, source_name, source.cluster, source.max_concurrent, ssh_client
+            tasks, workflow_name, workflow.backend, workflow.max_concurrent, ssh_client
         )
 
     async def discover_workflows(self, project_name: str) -> list[str]:
@@ -410,10 +410,10 @@ class RunManager:
         if project is None:
             raise ValueError(f"Project '{project_name}' not found")
 
-        ssh_client = self.get_ssh_client(project.cluster)
+        ssh_client = self.get_ssh_client(project.backend)
         if ssh_client is None:
             raise ValueError(
-                f"No SSH connection to cluster '{project.cluster}'"
+                f"No SSH connection to backend '{project.backend}'"
             )
 
         stdout, stderr, exit_code = await ssh_client.run_command(
@@ -438,10 +438,10 @@ class RunManager:
         if project is None:
             raise ValueError(f"Project '{project_name}' not found")
 
-        ssh_client = self.get_ssh_client(project.cluster)
+        ssh_client = self.get_ssh_client(project.backend)
         if ssh_client is None:
             raise ValueError(
-                f"No SSH connection to cluster '{project.cluster}'"
+                f"No SSH connection to backend '{project.backend}'"
             )
 
         full_path = f"{project.path}/{workflow_path}"
@@ -482,16 +482,16 @@ class RunManager:
         )
 
         return await self._build_run(
-            tasks, workflow_name, project.cluster, project.max_concurrent,
+            tasks, workflow_name, project.backend, project.max_concurrent,
             ssh_client
         )
 
     async def submit_task(self, run: Run, item: RunItem) -> bool:
         """Submit a single task to Slurm."""
-        ssh_client = self.get_ssh_client(run.cluster_name)
+        ssh_client = self.get_ssh_client(run.backend_name)
         if ssh_client is None:
             item.status = RunItemStatus.FAILED
-            item.error = f"Cluster '{run.cluster_name}' not connected"
+            item.error = f"Backend '{run.backend_name}' not connected"
             item.finished_at = datetime.now()
             self._persist_run(run)
             return False
@@ -665,13 +665,13 @@ class RunManager:
             await self.process_run(run)
             self.notify_run(run.id)
 
-    async def update_all_runs(self, cluster_jobs: dict[str, list[tuple[str, JobState]]]) -> None:
+    async def update_all_runs(self, backend_jobs: dict[str, list[tuple[str, JobState]]]) -> None:
         """Update all active runs based on Slurm job states."""
         for run in self.runs.values():
             if run.status in (RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED):
                 continue
 
-            jobs = cluster_jobs.get(run.cluster_name, [])
+            jobs = backend_jobs.get(run.backend_name, [])
             job_states = {job_id: state for job_id, state in jobs}
 
             await self.update_run_status(run, job_states)
@@ -682,7 +682,7 @@ class RunManager:
         if run is None:
             return False
 
-        ssh_client = self.get_ssh_client(run.cluster_name)
+        ssh_client = self.get_ssh_client(run.backend_name)
 
         for item in run.items:
             if item.status == RunItemStatus.PENDING:
@@ -766,7 +766,7 @@ class RunManager:
         log_type: str = "output",
         tail_lines: int | None = None,
     ) -> tuple[str | None, str | None]:
-        """Fetch a log file from the remote cluster."""
+        """Fetch a log file from the remote backend."""
         run = self.runs.get(run_id)
         if run is None:
             return None, f"Run '{run_id}' not found"
@@ -775,9 +775,9 @@ class RunManager:
         if item is None:
             return None, f"Task '{task_id}' not found in run"
 
-        ssh_client = self.get_ssh_client(run.cluster_name)
+        ssh_client = self.get_ssh_client(run.backend_name)
         if ssh_client is None:
-            return None, f"Cluster '{run.cluster_name}' not connected"
+            return None, f"Backend '{run.backend_name}' not connected"
 
         log_dir = run.log_dir
         if log_dir.startswith("~"):

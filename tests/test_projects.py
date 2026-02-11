@@ -21,7 +21,7 @@ from scripthut.runs.models import (
 
 def _make_manager(
     ssh_mock: AsyncMock | None = None,
-    cluster_name: str = "test-cluster",
+    backend_name: str = "test-cluster",
     projects: list[ProjectConfig] | None = None,
 ) -> RunManager:
     """Create a RunManager with a mocked SSH client and optional projects."""
@@ -37,20 +37,20 @@ def _make_manager(
         return None
     config.get_project = get_project
 
-    clusters = {}
+    backends = {}
     if ssh_mock:
-        clusters[cluster_name] = ssh_mock
-    return RunManager(config=config, clusters=clusters)
+        backends[backend_name] = ssh_mock
+    return RunManager(config=config, backends=backends)
 
 
 def _make_project(
     name: str = "test-project",
-    cluster: str = "test-cluster",
+    backend: str = "test-cluster",
     path: str = "~/my-project",
     max_concurrent: int = 5,
 ) -> ProjectConfig:
     return ProjectConfig(
-        name=name, cluster=cluster, path=path, max_concurrent=max_concurrent
+        name=name, backend=backend, path=path, max_concurrent=max_concurrent
     )
 
 

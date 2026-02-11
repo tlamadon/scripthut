@@ -53,7 +53,7 @@ def _make_run(
     return Run(
         id="test-r",
         workflow_name=workflow_name,
-        cluster_name="test-cluster",
+        backend_name="test-cluster",
         created_at=datetime.now(),
         items=items,
         max_concurrent=5,
@@ -64,10 +64,10 @@ def _make_manager(ssh_mock: AsyncMock | None = None) -> RunManager:
     """Create a RunManager with a mocked SSH client."""
     config = MagicMock()
     config.settings.filter_user = "testuser"
-    clusters = {}
+    backends = {}
     if ssh_mock:
-        clusters["test-cluster"] = ssh_mock
-    return RunManager(config=config, clusters=clusters)
+        backends["test-cluster"] = ssh_mock
+    return RunManager(config=config, backends=backends)
 
 
 # -- TaskDefinition tests ----------------------------------------------------
@@ -319,7 +319,7 @@ class TestHandleGeneratesSource:
 
     @pytest.mark.asyncio
     async def test_no_ssh_client_does_not_crash(self):
-        """If cluster has no SSH client, log error but don't crash."""
+        """If backend has no SSH client, log error but don't crash."""
         manager = _make_manager()  # No SSH client
         item = _make_run_item("gen", RunItemStatus.COMPLETED, generates_source="/p.json")
         run = _make_run(items=[item])

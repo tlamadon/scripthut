@@ -49,7 +49,7 @@ class TestGanttWaitBarCapping:
         run = Run(
             id="r1",
             workflow_name="test",
-            cluster_name="test",
+            backend_name="test",
             created_at=created,
             items=[item],
             max_concurrent=5,
@@ -79,7 +79,7 @@ class TestGanttWaitBarCapping:
         run = Run(
             id="r1",
             workflow_name="test",
-            cluster_name="test",
+            backend_name="test",
             created_at=created,
             items=[item],
             max_concurrent=5,
@@ -152,7 +152,7 @@ class TestRunStatusFailedWithBlockedPending:
         run = Run(
             id="r1",
             workflow_name="test",
-            cluster_name="test",
+            backend_name="test",
             created_at=datetime.now(),
             items=[item_a, item_b],
             max_concurrent=5,
@@ -169,7 +169,7 @@ class TestRunStatusFailedWithBlockedPending:
         run = Run(
             id="r2",
             workflow_name="test",
-            cluster_name="test",
+            backend_name="test",
             created_at=datetime.now(),
             items=[item_a, item_c],
             max_concurrent=5,
@@ -189,7 +189,7 @@ class TestRunStatusFailedWithBlockedPending:
         run = Run(
             id="r3",
             workflow_name="test",
-            cluster_name="test",
+            backend_name="test",
             created_at=datetime.now(),
             items=[item_a, item_b, item_c],
             max_concurrent=5,
