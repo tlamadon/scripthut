@@ -18,6 +18,10 @@ ScriptHut is a Python web interface for managing and tracking jobs on remote HPC
 
 3. **Language agnostic.** ScriptHut doesn't care what language generates the task JSON. Python, R, Julia, bash — that's the user's choice. ScriptHut only cares about the JSON output format.
 
+4. **Single polling loop.** One `poll_jobs()` loop drives all backend interaction — `squeue`, `sacct`, run status updates, external job tracking, and SSE notifications. There must never be competing polling loops or independent timers making SSH calls. Everything piggybacks on the single `poll_interval` cycle. Force-poll (`POST /poll`) wakes the same loop early rather than creating a parallel path.
+
+5. **Passive SSE.** All SSE endpoints (`/jobs/stream`, `/runs/stream`, `/runs/{id}/events`) wait on `asyncio.Event` objects set by the poll loop or run manager. They never poll independently or make SSH calls. The frontend receives pushed updates — it doesn't pull.
+
 ## Key Conventions
 
 - Type annotations on all functions

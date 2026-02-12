@@ -158,6 +158,7 @@ class RunItem:
     # Resource utilization (from sacct)
     cpu_efficiency: float | None = None  # 0-100%
     max_rss: str | None = None  # Peak memory, e.g. "1.2G"
+    sacct_state: str | None = None  # Confirmed final state from sacct
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to dictionary for JSON storage."""
@@ -172,6 +173,7 @@ class RunItem:
             "sbatch_script": self.sbatch_script,
             "cpu_efficiency": self.cpu_efficiency,
             "max_rss": self.max_rss,
+            "sacct_state": self.sacct_state,
         }
 
     @classmethod
@@ -192,6 +194,7 @@ class RunItem:
             sbatch_script=data.get("sbatch_script"),
             cpu_efficiency=data.get("cpu_efficiency"),
             max_rss=data.get("max_rss"),
+            sacct_state=data.get("sacct_state"),
         )
 
     @property
@@ -227,7 +230,7 @@ class Run:
     backend_name: str
     created_at: datetime
     items: list[RunItem]
-    max_concurrent: int
+    max_concurrent: int | None
     log_dir: str = "~/.cache/scripthut/logs"  # Directory for log files on the remote backend
     account: str | None = None  # Slurm account to charge jobs to
     login_shell: bool = False  # Use #!/bin/bash -l shebang

@@ -32,6 +32,7 @@ class RunStorageManager:
     RETENTION_DAYS = 30
 
     def __init__(self, base_dir: Path | None = None) -> None:
+        """Initialize with base directory for run JSON files."""
         if base_dir is None:
             base_dir = Path.home() / ".cache" / "scripthut" / "workflows"
         self.base_dir = base_dir
@@ -121,7 +122,7 @@ class RunStorageManager:
                 backend_name=data.get("backend_name", data.get("cluster_name")),
                 created_at=datetime.fromisoformat(data["created_at"]),
                 items=items,
-                max_concurrent=data.get("max_concurrent", 5),
+                max_concurrent=data.get("max_concurrent"),
                 log_dir=data.get("log_dir", "~/.cache/scripthut/logs"),
                 account=data.get("account"),
                 login_shell=data.get("login_shell", False),

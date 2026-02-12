@@ -66,6 +66,11 @@ class SlurmBackendConfig(BaseModel):
         default=False,
         description="Use login shell (#!/bin/bash -l) in sbatch scripts to source profile",
     )
+    max_concurrent: int = Field(
+        default=100,
+        ge=1,
+        description="Maximum total concurrent jobs across all runs on this backend",
+    )
 
 
 class ECSBackendConfig(BaseModel):
@@ -74,6 +79,11 @@ class ECSBackendConfig(BaseModel):
     name: str = Field(description="Unique identifier for this backend")
     type: Literal["ecs"] = "ecs"
     aws: AWSConfig = Field(description="AWS configuration")
+    max_concurrent: int = Field(
+        default=100,
+        ge=1,
+        description="Maximum total concurrent jobs across all runs on this backend",
+    )
 
 
 BackendConfig = Annotated[
@@ -105,10 +115,10 @@ class WorkflowConfig(BaseModel):
     name: str = Field(description="Unique identifier for this workflow")
     backend: str = Field(description="Name of the backend to submit tasks to")
     command: str = Field(description="SSH command that returns JSON task list")
-    max_concurrent: int = Field(
-        default=5,
+    max_concurrent: int | None = Field(
+        default=None,
         ge=1,
-        description="Maximum number of tasks to run concurrently",
+        description="Max concurrent tasks per run (None = backend limit only)",
     )
     description: str = Field(
         default="",
@@ -122,10 +132,10 @@ class ProjectConfig(BaseModel):
     name: str = Field(description="Unique identifier for this project")
     backend: str = Field(description="Name of the backend this project lives on")
     path: str = Field(description="Path to the git repo on the backend")
-    max_concurrent: int = Field(
-        default=5,
+    max_concurrent: int | None = Field(
+        default=None,
         ge=1,
-        description="Default max concurrent tasks for workflows in this project",
+        description="Default max concurrent tasks per run (None = backend limit only)",
     )
     description: str = Field(
         default="",

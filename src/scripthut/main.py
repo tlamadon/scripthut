@@ -18,7 +18,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.templating import Jinja2Templates
 from sse_starlette.sse import EventSourceResponse
 
-from scripthut.backends.slurm import JobStats, SlurmBackend
+from scripthut.backends.slurm import SLURM_FAILURE_STATES, JobStats, SlurmBackend
 from scripthut.config import load_config, set_config
 from scripthut.config_schema import ScriptHutConfig, SlurmBackendConfig
 from scripthut.models import ConnectionStatus, JobState, SlurmJob
@@ -27,6 +27,13 @@ from scripthut.runs.models import RunItemStatus
 from scripthut.runs.storage import RunStorageManager
 from scripthut.sources.git import GitSourceManager, SourceStatus
 from scripthut.ssh.client import SSHClient
+
+# Terminal sacct states that confirm a job has finished
+_SACCT_TERMINAL = frozenset({
+    "COMPLETED", "FAILED", "CANCELLED", "TIMEOUT",
+    "OUT_OF_MEMORY", "NODE_FAIL", "PREEMPTED",
+    "DEADLINE", "BOOT_FAIL",
+})
 
 logging.basicConfig(
     level=logging.INFO,
@@ -175,7 +182,8 @@ async def poll_backend(backend_state: BackendState, filter_user: str | None = No
         )
         logger.debug(f"Polled {len(jobs)} jobs from '{backend_state.name}' in {duration_ms}ms")
 
-        # Collect slurm_job_ids missing utilization stats across all runs
+        # Collect slurm_job_ids that need sacct data.
+        # Keep querying sacct until each item's sacct_state is confirmed.
         sacct_ids: list[str] = []
         if state.run_manager:
             for run in state.run_manager.runs.values():
@@ -184,7 +192,7 @@ async def poll_backend(backend_state: BackendState, filter_user: str | None = No
                 for item in run.items:
                     if (item.slurm_job_id
                         and item.status in (RunItemStatus.COMPLETED, RunItemStatus.FAILED)
-                        and item.cpu_efficiency is None):
+                        and item.sacct_state is None):
                         sacct_ids.append(item.slurm_job_id)
 
         # Query sacct for resource utilization
@@ -197,11 +205,12 @@ async def poll_backend(backend_state: BackendState, filter_user: str | None = No
             except Exception as e:
                 logger.warning(f"sacct stats fetch failed for '{backend_state.name}': {e}")
 
-        # Write stats back to RunItems
+        # Write stats back to RunItems and correct false completions
         if state.run_manager and job_stats:
             for run in state.run_manager.runs.values():
                 if run.backend_name != backend_state.name:
                     continue
+                run_updated = False
                 for item in run.items:
                     if item.slurm_job_id and item.slurm_job_id in job_stats:
                         s = job_stats[item.slurm_job_id]
@@ -211,7 +220,34 @@ async def poll_backend(backend_state: BackendState, filter_user: str | None = No
                             item.started_at = s.start_time
                         if s.end_time:
                             item.finished_at = s.end_time
-                        state.run_manager._persist_run(run)
+                        run_updated = True
+                        # Record confirmed sacct state (stops re-querying)
+                        # Only lock on terminal states — sacct can return
+                        # RUNNING/PENDING when the DB hasn't caught up yet.
+                        if s.state and s.state in _SACCT_TERMINAL:
+                            item.sacct_state = s.state
+                        # Correct false completions: sacct says failed but
+                        # item was marked COMPLETED because it vanished from squeue
+                        if (
+                            s.state
+                            and s.state in SLURM_FAILURE_STATES
+                            and item.status == RunItemStatus.COMPLETED
+                        ):
+                            reason = SLURM_FAILURE_STATES[s.state]
+                            item.status = RunItemStatus.FAILED
+                            item.error = f"Slurm: {reason}"
+                            logger.info(
+                                f"Corrected task '{item.task.id}' "
+                                f"(job {item.slurm_job_id}): {reason}"
+                            )
+                        elif s.state:
+                            logger.debug(
+                                f"sacct state for '{item.task.id}' "
+                                f"(job {item.slurm_job_id}): {s.state}"
+                            )
+                if run_updated:
+                    state.run_manager._persist_run(run)
+                    state.run_manager.notify_run(run.id)
 
         # Handle external jobs (not in any active run)
         if state.run_manager and state.run_storage:

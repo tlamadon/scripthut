@@ -41,6 +41,7 @@ class RunManager:
         backends: dict[str, SSHClient],
         storage: RunStorageManager | None = None,
     ) -> None:
+        """Initialize with config, SSH backends, and optional persistent storage."""
         self.config = config
         self.backends = backends
         self.runs: dict[str, Run] = {}
@@ -103,6 +104,7 @@ class RunManager:
         deps_map = {t.id: t.dependencies for t in tasks}
 
         def dfs(node: str, path: list[str]) -> None:
+            """DFS cycle detection using three-color marking."""
             color[node] = GRAY
             path.append(node)
             for dep in deps_map[node]:
@@ -340,7 +342,7 @@ class RunManager:
         tasks: list[TaskDefinition],
         workflow_name: str,
         backend_name: str,
-        max_concurrent: int,
+        max_concurrent: int | None,
         ssh_client: SSHClient,
     ) -> Run:
         """Build a Run: resolve deps, validate, create, persist, and start processing."""
@@ -563,14 +565,47 @@ class RunManager:
             and run.are_deps_satisfied(item)
         ]
 
-        slots_available = run.max_concurrent - active_count
+        # Per-run cap (if set)
+        if run.max_concurrent is not None:
+            run_slots = run.max_concurrent - active_count
+        else:
+            run_slots = len(ready_items)
+
+        # Backend-level cap
+        backend_max = self._get_backend_max_concurrent(run.backend_name)
+        backend_active = self._backend_running_count(run.backend_name)
+        backend_slots = backend_max - backend_active
+
+        slots_available = max(0, min(run_slots, backend_slots))
         to_submit = ready_items[:slots_available]
+
+        if to_submit:
+            task_ids = [item.task.id for item in to_submit]
+            logger.info(
+                f"Run '{run.id}': submitting {len(to_submit)} tasks: {task_ids} "
+                f"(run_slots={run_slots}, backend_slots={backend_slots})"
+            )
 
         for item in to_submit:
             await self.submit_task(run, item)
 
         if to_submit:
             self.notify_run(run.id)
+
+    def _backend_running_count(self, backend_name: str) -> int:
+        """Count all running/submitted tasks across all runs on a backend."""
+        count = 0
+        for run in self.runs.values():
+            if run.backend_name == backend_name:
+                count += run.running_count
+        return count
+
+    def _get_backend_max_concurrent(self, backend_name: str) -> int:
+        """Get the max_concurrent limit for a backend."""
+        backend = self.config.get_backend(backend_name)
+        if backend:
+            return backend.max_concurrent
+        return 100  # Default if backend not found
 
     def _persist_run(self, run: Run) -> None:
         """Mark run dirty for next save cycle."""
@@ -601,7 +636,14 @@ class RunManager:
         changed = False
         changed_items: list[RunItem] = []
 
-        for item in run.items:
+        # Snapshot items that existed before this update cycle.
+        # _handle_generates_source (called below) may append new items and
+        # submit them via process_run.  Those new jobs won't appear in the
+        # current slurm_jobs dict, so checking them would falsely mark them
+        # COMPLETED.  Only iterate over the pre-existing items.
+        items_snapshot = list(run.items)
+
+        for item in items_snapshot:
             if item.slurm_job_id is None:
                 continue
 
@@ -698,6 +740,7 @@ class RunManager:
                 item.finished_at = datetime.now()
 
         self._persist_run(run)
+        self.notify_run(run.id)
         logger.info(f"Cancelled run '{run_id}'")
         return True
 

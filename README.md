@@ -18,6 +18,10 @@ A Python web interface to start and track jobs on remote systems like Slurm, ECS
 - **Type-safe** - Full type annotations with mypy strict mode support
 - **Extensible** - Abstract backend system ready for ECS/AWS Batch support
 
+## Examples
+
+See [scripthut-examples](https://github.com/thomaswiemann/scripthut-examples) for complete, self-contained workflow examples in R, Python, Julia, and Apptainer.
+
 ## Installation
 
 ```bash

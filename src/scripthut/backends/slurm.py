@@ -12,6 +12,17 @@ from scripthut.ssh.client import SSHClient
 logger = logging.getLogger(__name__)
 
 
+# Sacct states that indicate a Slurm-killed job
+SLURM_FAILURE_STATES: dict[str, str] = {
+    "FAILED": "Non-zero exit code",
+    "TIMEOUT": "Exceeded walltime",
+    "OUT_OF_MEMORY": "Out of memory (OOM killed)",
+    "CANCELLED": "Cancelled",
+    "NODE_FAIL": "Node failure",
+    "PREEMPTED": "Preempted",
+}
+
+
 @dataclass
 class JobStats:
     """Resource utilization stats from sacct."""
@@ -21,6 +32,7 @@ class JobStats:
     total_cpu: str  # Raw Slurm time string
     start_time: datetime | None = None  # Actual start from sacct
     end_time: datetime | None = None  # Actual end from sacct
+    state: str | None = None  # Sacct State, e.g. "COMPLETED", "OUT_OF_MEMORY"
 
 
 def parse_slurm_duration(time_str: str) -> float:
@@ -125,6 +137,7 @@ class SlurmBackend(JobBackend):
     """Slurm job backend using SSH to run squeue."""
 
     def __init__(self, ssh_client: SSHClient) -> None:
+        """Initialize with an SSH client connected to the Slurm head node."""
         self._ssh = ssh_client
 
     @property
@@ -236,7 +249,7 @@ class SlurmBackend(JobBackend):
         ids_str = ",".join(valid_ids)
         cmd = (
             f"sacct --noheader --parsable2"
-            f" --format=JobIDRaw,TotalCPU,Elapsed,AllocCPUS,MaxRSS,Start,End"
+            f" --format=JobIDRaw,TotalCPU,Elapsed,AllocCPUS,MaxRSS,Start,End,State"
             f" --jobs={ids_str}"
         )
 
@@ -260,15 +273,16 @@ class SlurmBackend(JobBackend):
         max_rss_bytes: dict[str, int] = {}  # job_id -> best MaxRSS in bytes across all steps
         sacct_start: dict[str, datetime | None] = {}  # job_id -> actual start time
         sacct_end: dict[str, datetime | None] = {}  # job_id -> actual end time
+        sacct_state: dict[str, str] = {}  # job_id -> State from main entry
 
         for line in stdout.strip().split("\n"):
             if not line.strip():
                 continue
             parts = line.split("|")
-            if len(parts) < 7:
+            if len(parts) < 8:
                 continue
 
-            raw_id, total_cpu, elapsed, alloc_cpus_str, max_rss, start_str, end_str = parts[:7]
+            raw_id, total_cpu, elapsed, alloc_cpus_str, max_rss, start_str, end_str, job_state = parts[:8]
 
             # Extract base job ID (strip .batch, .extern, .0, etc.)
             base_id = raw_id.split(".")[0] if "." in raw_id else raw_id
@@ -280,6 +294,12 @@ class SlurmBackend(JobBackend):
 
             if ".batch" in raw_id:
                 batch_cpu[base_id] = parse_slurm_duration(total_cpu)
+                # .batch is where user code actually runs — if it failed
+                # (e.g. OOM), override the main entry's state which may
+                # misleadingly say COMPLETED.
+                batch_state = job_state.split()[0] if job_state else ""
+                if batch_state and batch_state in SLURM_FAILURE_STATES:
+                    sacct_state[base_id] = batch_state
             elif "." not in raw_id:
                 # Main entry — has aggregate TotalCPU (used as fallback when .batch is 0)
                 elapsed_s = parse_slurm_duration(elapsed)
@@ -289,6 +309,11 @@ class SlurmBackend(JobBackend):
                 except ValueError:
                     alloc_cpus = 1
                 main_data[raw_id] = (elapsed_s, alloc_cpus, main_cpu_s)
+                # Strip trailing modifiers like "CANCELLED by 12345"
+                main_state = job_state.split()[0] if job_state else ""
+                # Only set if .batch hasn't already overridden with a failure
+                if raw_id not in sacct_state:
+                    sacct_state[raw_id] = main_state
 
                 # Parse actual start/end timestamps from sacct
                 try:
@@ -323,6 +348,7 @@ class SlurmBackend(JobBackend):
                 total_cpu=f"{total_cpu_s:.0f}s",
                 start_time=sacct_start.get(job_id),
                 end_time=sacct_end.get(job_id),
+                state=sacct_state.get(job_id),
             )
 
         logger.debug(f"Fetched stats for {len(stats)}/{len(job_ids)} jobs via sacct")
