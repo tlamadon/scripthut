@@ -110,7 +110,7 @@ def _make_backend(sacct_id_stdout: str = "", sacct_stdout: str = "") -> SlurmBac
     """Create a SlurmBackend with mocked SSH returning given sacct output."""
     ssh = AsyncMock()
 
-    async def run_command(cmd: str, timeout: int = 30):
+    async def run_command(cmd: str, timeout: int = 30):  # noqa: ARG001
         if "format=JobIDRaw --starttime" in cmd:
             # _get_known_sacct_ids pre-check
             return (sacct_id_stdout, "", 0)

@@ -28,6 +28,13 @@ from scripthut.runs.storage import RunStorageManager
 from scripthut.sources.git import GitSourceManager, SourceStatus
 from scripthut.ssh.client import SSHClient
 
+# Terminal sacct states that confirm a job has finished
+_SACCT_TERMINAL = frozenset({
+    "COMPLETED", "FAILED", "CANCELLED", "TIMEOUT",
+    "OUT_OF_MEMORY", "NODE_FAIL", "PREEMPTED",
+    "DEADLINE", "BOOT_FAIL",
+})
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -217,11 +224,6 @@ async def poll_backend(backend_state: BackendState, filter_user: str | None = No
                         # Record confirmed sacct state (stops re-querying)
                         # Only lock on terminal states — sacct can return
                         # RUNNING/PENDING when the DB hasn't caught up yet.
-                        _SACCT_TERMINAL = {
-                            "COMPLETED", "FAILED", "CANCELLED", "TIMEOUT",
-                            "OUT_OF_MEMORY", "NODE_FAIL", "PREEMPTED",
-                            "DEADLINE", "BOOT_FAIL",
-                        }
                         if s.state and s.state in _SACCT_TERMINAL:
                             item.sacct_state = s.state
                         # Correct false completions: sacct says failed but

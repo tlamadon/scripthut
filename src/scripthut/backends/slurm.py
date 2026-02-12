@@ -137,6 +137,7 @@ class SlurmBackend(JobBackend):
     """Slurm job backend using SSH to run squeue."""
 
     def __init__(self, ssh_client: SSHClient) -> None:
+        """Initialize with an SSH client connected to the Slurm head node."""
         self._ssh = ssh_client
 
     @property

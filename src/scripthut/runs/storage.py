@@ -32,6 +32,7 @@ class RunStorageManager:
     RETENTION_DAYS = 30
 
     def __init__(self, base_dir: Path | None = None) -> None:
+        """Initialize with base directory for run JSON files."""
         if base_dir is None:
             base_dir = Path.home() / ".cache" / "scripthut" / "workflows"
         self.base_dir = base_dir

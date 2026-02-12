@@ -41,6 +41,7 @@ class RunManager:
         backends: dict[str, SSHClient],
         storage: RunStorageManager | None = None,
     ) -> None:
+        """Initialize with config, SSH backends, and optional persistent storage."""
         self.config = config
         self.backends = backends
         self.runs: dict[str, Run] = {}
@@ -103,6 +104,7 @@ class RunManager:
         deps_map = {t.id: t.dependencies for t in tasks}
 
         def dfs(node: str, path: list[str]) -> None:
+            """DFS cycle detection using three-color marking."""
             color[node] = GRAY
             path.append(node)
             for dep in deps_map[node]:
