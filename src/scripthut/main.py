@@ -886,6 +886,7 @@ async def list_workflows() -> dict[str, Any]:
                 "backend": wf.backend,
                 "description": wf.description,
                 "max_concurrent": wf.max_concurrent,
+                "has_git": wf.git is not None,
             }
             for wf in state.config.workflows
         ]

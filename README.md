@@ -263,6 +263,47 @@ workflows:
     description: "Run my batch processing jobs"
 ```
 
+#### Git Workflows
+
+Workflows can optionally clone a git repository on the backend before running the command. This is useful when your task-generating script lives in a repo rather than being pre-installed on the cluster.
+
+```yaml
+workflows:
+  - name: ml-training-git
+    backend: hpc-cluster
+    git:
+      repo: git@github.com:your-org/ml-pipelines.git
+      branch: main
+      deploy_key: ~/.ssh/ml-deploy-key    # local path, uploaded temporarily
+      clone_dir: ~/scripthut-repos        # parent dir on backend (default)
+    command: "python get_tasks.py"
+    max_concurrent: 5
+    description: "ML training from git repo"
+```
+
+When a workflow has a `git` section, ScriptHut will:
+
+1. Upload the deploy key (if any) to the backend temporarily
+2. Resolve the branch HEAD commit hash via `git ls-remote`
+3. Clone into `<clone_dir>/<commit_hash>/` (skipped if already present)
+4. Run the `command` inside the cloned directory
+5. Clean up the temporary deploy key
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `git.repo` | Yes | Git repository URL (SSH format recommended) |
+| `git.branch` | No | Branch to clone (default: `main`) |
+| `git.deploy_key` | No | Path to deploy key on local machine |
+| `git.clone_dir` | No | Parent directory on backend (default: `~/scripthut-repos`) |
+
+**Working directory resolution:** When a git workflow is active, each task's `working_dir` is resolved relative to the clone directory:
+
+- **Default** (`~` or omitted) — set to the clone directory
+- **Relative path** (e.g., `simulations`, `src/analysis`) — joined as `<clone_dir>/<working_dir>`
+- **Absolute path** (e.g., `/scratch/data`) or home-relative (e.g., `~/other`) — used as-is
+
+#### Task JSON Format
+
 The command must return JSON in one of these formats:
 
 ```json
@@ -288,7 +329,7 @@ The command must return JSON in one of these formats:
 | `name` | Yes | Display name for the task |
 | `command` | Yes | Shell command to execute |
 | `deps` | No | List of task IDs this task depends on (supports wildcards) |
-| `working_dir` | No | Working directory (default: `~`) |
+| `working_dir` | No | Working directory (default: `~`); relative paths are resolved against the git clone directory for git workflows |
 | `partition` | No | SLURM partition (default: `normal`) |
 | `cpus` | No | CPUs per task (default: `1`) |
 | `memory` | No | Memory allocation (default: `4G`) |

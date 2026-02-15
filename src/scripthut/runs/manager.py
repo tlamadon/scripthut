@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import uuid
 from datetime import datetime
 from fnmatch import fnmatch
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from scripthut.config_schema import (
@@ -238,8 +240,134 @@ class RunManager:
             )
         return stdout.strip()
 
+    # --- Git workflow support ---
+
+    @staticmethod
+    def _build_remote_git_ssh_command(remote_key_path: str | None) -> str:
+        """Build GIT_SSH_COMMAND prefix for remote execution.
+
+        Args:
+            remote_key_path: Path to deploy key on the backend (or None).
+
+        Returns:
+            Shell prefix string to prepend to git commands, e.g.
+            ``GIT_SSH_COMMAND="ssh -i /tmp/key ..." `` or empty string.
+        """
+        if not remote_key_path:
+            return ""
+        opts = "-o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=accept-new"
+        return f'GIT_SSH_COMMAND="ssh -i {remote_key_path} {opts}" '
+
+    async def _upload_deploy_key(
+        self, ssh_client: SSHClient, local_key_path: Path
+    ) -> str:
+        """Upload a local deploy key to a temp file on the backend.
+
+        The key content is base64-encoded before transmission over the
+        encrypted SSH channel, then decoded into a temp file with 600
+        permissions.
+
+        Returns:
+            The remote temp file path.
+        """
+        resolved = local_key_path.expanduser()
+        if not resolved.exists():
+            raise ValueError(f"Deploy key not found: {resolved}")
+        key_content = resolved.read_text()
+        key_b64 = base64.b64encode(key_content.encode()).decode()
+        cmd = (
+            "TMPKEY=$(mktemp /tmp/scripthut_key_XXXXXX) && "
+            f"echo '{key_b64}' | base64 -d > $TMPKEY && "
+            "chmod 600 $TMPKEY && echo $TMPKEY"
+        )
+        stdout, stderr, exit_code = await ssh_client.run_command(cmd)
+        if exit_code != 0:
+            raise ValueError(f"Failed to upload deploy key: {stderr}")
+        return stdout.strip()
+
+    async def _cleanup_deploy_key(
+        self, ssh_client: SSHClient, remote_key_path: str
+    ) -> None:
+        """Remove a temporary deploy key from the backend."""
+        await ssh_client.run_command(f"rm -f {remote_key_path}")
+
+    async def _ensure_repo_cloned(
+        self, ssh_client: SSHClient, workflow: WorkflowConfig
+    ) -> tuple[str, str]:
+        """Clone a git repo on the backend if not already present.
+
+        Steps:
+            1. Upload the local deploy key (if any) to a temp file on the backend.
+            2. ``git ls-remote`` to resolve the branch HEAD commit hash.
+            3. Clone into ``~/scripthut-repos/<workflow>/<short_hash>/`` if absent.
+            4. Clean up the temp deploy key.
+
+        Returns:
+            ``(clone_dir, short_hash)`` — the remote clone directory and the
+            12-char commit hash prefix.
+        """
+        git_cfg = workflow.git
+        if git_cfg is None:
+            raise ValueError("Workflow has no git configuration")
+
+        remote_key: str | None = None
+        try:
+            # 1. Upload deploy key if configured
+            if git_cfg.deploy_key is not None:
+                key_path = git_cfg.deploy_key.expanduser()
+                remote_key = await self._upload_deploy_key(
+                    ssh_client, key_path
+                )
+
+            git_ssh = self._build_remote_git_ssh_command(remote_key)
+
+            # 2. Resolve HEAD commit hash
+            cmd = f"{git_ssh}git ls-remote {git_cfg.repo} refs/heads/{git_cfg.branch}"
+            stdout, stderr, exit_code = await ssh_client.run_command(cmd, timeout=30)
+            if exit_code != 0 or not stdout.strip():
+                raise ValueError(
+                    f"Failed to resolve branch '{git_cfg.branch}' from "
+                    f"'{git_cfg.repo}': {stderr}"
+                )
+            commit_hash = stdout.split()[0]
+            short_hash = commit_hash[:12]
+
+            # 3. Clone if not already present
+            clone_dir = f"{git_cfg.clone_dir}/{short_hash}"
+            stdout, _, _ = await ssh_client.run_command(
+                f"test -d {clone_dir} && echo exists"
+            )
+            if "exists" not in stdout:
+                logger.info(
+                    f"Cloning {git_cfg.repo}@{git_cfg.branch} ({short_hash}) "
+                    f"to {clone_dir}"
+                )
+                cmd = (
+                    f"{git_ssh}git clone --branch {git_cfg.branch} "
+                    f"--single-branch --depth 1 {git_cfg.repo} {clone_dir}"
+                )
+                _, stderr, exit_code = await ssh_client.run_command(
+                    cmd, timeout=300
+                )
+                if exit_code != 0:
+                    raise ValueError(f"Git clone failed: {stderr}")
+            else:
+                logger.info(
+                    f"Reusing existing clone at {clone_dir} ({short_hash})"
+                )
+
+            return clone_dir, short_hash
+        finally:
+            # 4. Always clean up the temp deploy key
+            if remote_key is not None:
+                await self._cleanup_deploy_key(ssh_client, remote_key)
+
     async def fetch_tasks(
-        self, workflow: WorkflowConfig, *, return_raw: bool = False
+        self,
+        workflow: WorkflowConfig,
+        *,
+        return_raw: bool = False,
+        clone_dir: str | None = None,
     ) -> list[TaskDefinition] | tuple[list[TaskDefinition], str]:
         """Fetch task list from a workflow via SSH."""
         ssh_client = self.get_ssh_client(workflow.backend)
@@ -248,7 +376,11 @@ class RunManager:
 
         logger.info(f"Fetching tasks from workflow '{workflow.name}' on backend '{workflow.backend}'")
 
-        stdout, stderr, exit_code = await ssh_client.run_command(workflow.command)
+        command = workflow.command
+        if clone_dir:
+            command = f"cd {clone_dir} && {command}"
+
+        stdout, stderr, exit_code = await ssh_client.run_command(command)
 
         if exit_code != 0:
             raise ValueError(f"Command failed (exit {exit_code}): {stderr}")
@@ -278,7 +410,27 @@ class RunManager:
         if workflow is None:
             raise ValueError(f"Workflow '{workflow_name}' not found")
 
-        tasks, raw_output = await self.fetch_tasks(workflow, return_raw=True)
+        # Clone git repo on backend if configured
+        clone_dir: str | None = None
+        commit_hash: str | None = None
+        if workflow.git is not None:
+            ssh_client = self.get_ssh_client(workflow.backend)
+            if ssh_client is not None:
+                clone_dir, commit_hash = await self._ensure_repo_cloned(
+                    ssh_client, workflow
+                )
+
+        result = await self.fetch_tasks(workflow, return_raw=True, clone_dir=clone_dir)
+        tasks: list[TaskDefinition] = result[0]  # type: ignore[index]
+        raw_output: str = result[1]  # type: ignore[index]
+
+        # Resolve tasks' working_dir relative to clone directory
+        if clone_dir:
+            for task in tasks:
+                if task.working_dir == "~":
+                    task.working_dir = clone_dir
+                elif not task.working_dir.startswith(("/", "~")):
+                    task.working_dir = f"{clone_dir}/{task.working_dir}"
 
         self._resolve_wildcard_deps(tasks)
         self._validate_dependencies(tasks)
@@ -319,6 +471,7 @@ class RunManager:
             "task_count": len(tasks),
             "max_concurrent": workflow.max_concurrent,
             "account": account,
+            "commit_hash": commit_hash,
             "tasks": task_details,
             "raw_output": raw_output_formatted,
         }
@@ -394,17 +547,40 @@ class RunManager:
         if workflow is None:
             raise ValueError(f"Workflow '{workflow_name}' not found")
 
-        tasks = await self.fetch_tasks(workflow)
-
         ssh_client = self.get_ssh_client(workflow.backend)
         if ssh_client is None:
             raise ValueError(
                 f"No SSH connection to backend '{workflow.backend}'"
             )
 
-        return await self._build_run(
+        # Clone git repo on the backend if configured
+        clone_dir: str | None = None
+        commit_hash: str | None = None
+        if workflow.git is not None:
+            clone_dir, commit_hash = await self._ensure_repo_cloned(
+                ssh_client, workflow
+            )
+
+        tasks: list[TaskDefinition] = await self.fetch_tasks(  # type: ignore[assignment]
+            workflow, clone_dir=clone_dir
+        )
+
+        # Resolve tasks' working_dir relative to the clone directory
+        if clone_dir:
+            for task in tasks:
+                if task.working_dir == "~":
+                    task.working_dir = clone_dir
+                elif not task.working_dir.startswith(("/", "~")):
+                    task.working_dir = f"{clone_dir}/{task.working_dir}"
+
+        run = await self._build_run(
             tasks, workflow_name, workflow.backend, workflow.max_concurrent, ssh_client
         )
+        if commit_hash is not None:
+            run.commit_hash = commit_hash
+            self._persist_run(run)
+
+        return run
 
     async def discover_workflows(self, project_name: str) -> list[str]:
         """Discover sflow.json files in a project repo via git ls-files."""

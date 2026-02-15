@@ -234,6 +234,7 @@ class Run:
     log_dir: str = "~/.cache/scripthut/logs"  # Directory for log files on the remote backend
     account: str | None = None  # Slurm account to charge jobs to
     login_shell: bool = False  # Use #!/bin/bash -l shebang
+    commit_hash: str | None = None  # Git commit hash if run from a git workflow
 
     @property
     def status(self) -> RunStatus:
