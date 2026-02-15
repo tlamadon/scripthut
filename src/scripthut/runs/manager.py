@@ -422,11 +422,13 @@ class RunManager:
         tasks: list[TaskDefinition] = result[0]  # type: ignore[index]
         raw_output: str = result[1]  # type: ignore[index]
 
-        # Default tasks' working_dir to clone directory
+        # Resolve tasks' working_dir relative to clone directory
         if clone_dir:
             for task in tasks:
                 if task.working_dir == "~":
                     task.working_dir = clone_dir
+                elif not task.working_dir.startswith(("/", "~")):
+                    task.working_dir = f"{clone_dir}/{task.working_dir}"
 
         self._resolve_wildcard_deps(tasks)
         self._validate_dependencies(tasks)
@@ -561,11 +563,13 @@ class RunManager:
             workflow, clone_dir=clone_dir
         )
 
-        # Default tasks' working_dir to the clone directory
+        # Resolve tasks' working_dir relative to the clone directory
         if clone_dir:
             for task in tasks:
                 if task.working_dir == "~":
                     task.working_dir = clone_dir
+                elif not task.working_dir.startswith(("/", "~")):
+                    task.working_dir = f"{clone_dir}/{task.working_dir}"
 
         run = await self._build_run(
             tasks, workflow_name, workflow.backend, workflow.max_concurrent, ssh_client

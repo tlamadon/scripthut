@@ -429,6 +429,43 @@ class TestCreateRunWithGit:
 
     @pytest.mark.asyncio
     @patch.object(RunManager, "_build_run", new_callable=AsyncMock)
+    @patch.object(RunManager, "_ensure_repo_cloned", new_callable=AsyncMock)
+    async def test_relative_working_dir_joined_with_clone_dir(self, mock_clone, mock_build):
+        """Tasks with relative working_dir get it joined with clone_dir."""
+        workflow = _make_workflow()
+        tasks_json = json.dumps({
+            "tasks": [
+                {"id": "t1", "name": "Task 1", "command": "echo 1", "working_dir": "subdir/path"},
+                {"id": "t2", "name": "Task 2", "command": "echo 2", "working_dir": "src"},
+                {"id": "t3", "name": "Task 3", "command": "echo 3"},  # default ~
+                {"id": "t4", "name": "Task 4", "command": "echo 4", "working_dir": "~/my/path"},
+            ]
+        })
+
+        mock_clone.return_value = ("~/scripthut-repos/abc123", "abc123")
+        mock_build.return_value = Run(
+            id="test1234",
+            workflow_name="git-wf",
+            backend_name="test-cluster",
+            created_at=__import__("datetime").datetime.now(),
+            items=[],
+            max_concurrent=5,
+        )
+
+        ssh_mock = AsyncMock()
+        ssh_mock.run_command = AsyncMock(return_value=(tasks_json, "", 0))
+
+        manager = _make_manager(ssh_mock, workflows=[workflow])
+        await manager.create_run("git-wf")
+
+        tasks = mock_build.call_args[0][0]
+        assert tasks[0].working_dir == "~/scripthut-repos/abc123/subdir/path"  # relative joined
+        assert tasks[1].working_dir == "~/scripthut-repos/abc123/src"  # relative joined
+        assert tasks[2].working_dir == "~/scripthut-repos/abc123"  # default ~ replaced
+        assert tasks[3].working_dir == "~/my/path"  # ~-prefixed preserved
+
+    @pytest.mark.asyncio
+    @patch.object(RunManager, "_build_run", new_callable=AsyncMock)
     async def test_no_git_skips_clone(self, mock_build):
         """create_run without git config works as before."""
         workflow = _make_workflow_no_git()
