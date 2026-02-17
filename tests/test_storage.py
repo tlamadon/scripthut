@@ -219,6 +219,85 @@ class TestWeeklyBins:
         assert run.items[0].max_rss == "1.5G"
 
 
+class TestReconcileExternalJobs:
+    """Tests for reconcile_external_jobs."""
+
+    def test_marks_stale_running_jobs_as_completed(self, tmp_path: Path):
+        storage = RunStorageManager(base_dir=tmp_path)
+        submit_time = datetime(2026, 2, 11, 10, 0, 0)
+
+        # Add two running external jobs
+        storage.add_external_job(
+            backend_name="midway", slurm_job_id="100",
+            name="job-a", user="u", state="running", submit_time=submit_time,
+        )
+        storage.add_external_job(
+            backend_name="midway", slurm_job_id="200",
+            name="job-b", user="u", state="running", submit_time=submit_time,
+        )
+
+        # Only job 200 is still in squeue
+        reconciled = storage.reconcile_external_jobs("midway", {"200"})
+
+        assert reconciled == 1
+        run = storage.get_or_create_weekly_run("midway", submit_time)
+        statuses = {i.slurm_job_id: i.status for i in run.items}
+        assert statuses["100"] == RunItemStatus.COMPLETED
+        assert statuses["200"] == RunItemStatus.RUNNING
+
+    def test_ignores_already_terminal_jobs(self, tmp_path: Path):
+        storage = RunStorageManager(base_dir=tmp_path)
+        submit_time = datetime(2026, 2, 11, 10, 0, 0)
+
+        storage.add_external_job(
+            backend_name="midway", slurm_job_id="100",
+            name="done-job", user="u", state="completed", submit_time=submit_time,
+        )
+        storage.add_external_job(
+            backend_name="midway", slurm_job_id="200",
+            name="fail-job", user="u", state="failed", submit_time=submit_time,
+        )
+
+        reconciled = storage.reconcile_external_jobs("midway", set())
+        assert reconciled == 0
+
+    def test_reconciles_across_weeks(self, tmp_path: Path):
+        storage = RunStorageManager(base_dir=tmp_path)
+        week1 = datetime(2026, 2, 4, 10, 0, 0)   # W06
+        week2 = datetime(2026, 2, 11, 10, 0, 0)  # W07
+
+        storage.add_external_job(
+            backend_name="midway", slurm_job_id="100",
+            name="old-job", user="u", state="running", submit_time=week1,
+        )
+        storage.add_external_job(
+            backend_name="midway", slurm_job_id="200",
+            name="new-job", user="u", state="running", submit_time=week2,
+        )
+
+        # Save to disk so reconcile finds them
+        storage.save_if_dirty({})
+
+        # Neither job is in squeue anymore
+        reconciled = storage.reconcile_external_jobs("midway", set())
+        assert reconciled == 2
+
+    def test_reconciles_from_disk_not_just_cache(self, tmp_path: Path):
+        storage = RunStorageManager(base_dir=tmp_path)
+        submit_time = datetime(2026, 2, 11, 10, 0, 0)
+
+        storage.add_external_job(
+            backend_name="midway", slurm_job_id="100",
+            name="cached-job", user="u", state="running", submit_time=submit_time,
+        )
+        storage.save_if_dirty({})
+
+        # Fresh storage instance — empty cache, but data on disk
+        storage2 = RunStorageManager(base_dir=tmp_path)
+        reconciled = storage2.reconcile_external_jobs("midway", set())
+        assert reconciled == 1
+
+
 class TestCleanup:
     """Tests for cleanup_old_runs."""
 

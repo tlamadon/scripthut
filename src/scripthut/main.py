@@ -291,6 +291,16 @@ async def poll_backend(backend_state: BackendState, filter_user: str | None = No
                         max_rss=stats.max_rss if stats else None,
                     )
 
+            # Reconcile stale external jobs no longer in squeue
+            active_ids = {j.job_id for j in jobs}
+            reconciled = state.run_storage.reconcile_external_jobs(
+                backend_state.name, active_ids
+            )
+            if reconciled:
+                logger.info(
+                    f"Reconciled {reconciled} stale external jobs for '{backend_state.name}'"
+                )
+
     except Exception as e:
         duration_ms = int((time.perf_counter() - start_time) * 1000)
         logger.error(f"Job polling failed for '{backend_state.name}': {e}")
@@ -859,6 +869,16 @@ async def cancel_external_job(request: Request, slurm_job_id: str) -> HTMLRespon
                         state.run_manager.runs if state.run_manager else {}
                     )
                 return await jobs_partial(request)
+    return await jobs_partial(request)
+
+
+@app.post("/jobs/clear-stale", response_class=HTMLResponse)
+async def clear_stale_external_jobs(request: Request) -> HTMLResponse:
+    """Remove all completed/failed external jobs from history."""
+    if state.run_storage:
+        removed = state.run_storage.clear_completed_external_jobs()
+        if removed:
+            logger.info(f"Cleared {removed} stale external jobs")
     return await jobs_partial(request)
 
 

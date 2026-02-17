@@ -340,6 +340,73 @@ class RunStorageManager:
                     return True
         return False
 
+    def reconcile_external_jobs(
+        self, backend_name: str, active_slurm_ids: set[str]
+    ) -> int:
+        """Mark non-terminal external jobs as completed if no longer in squeue.
+
+        Called after each poll cycle to reconcile stored external jobs against
+        the current set of live Slurm job IDs.  Returns the number of items
+        whose status was updated.
+        """
+        NON_TERMINAL = {RunItemStatus.PENDING, RunItemStatus.SUBMITTED, RunItemStatus.RUNNING}
+        reconciled = 0
+
+        # Collect runs to check: weekly cache + disk (for weeks not in cache)
+        runs_to_check: dict[str, Run] = {}
+
+        # From cache
+        if backend_name in self._weekly_cache:
+            for week_id, run in self._weekly_cache[backend_name].items():
+                runs_to_check[week_id] = run
+
+        # From disk (pick up weeks not already in cache)
+        wf_name = f"_default_{self._sanitize_name(backend_name)}"
+        for run in self.load_runs_for_workflow(wf_name):
+            if run.id not in runs_to_check:
+                runs_to_check[run.id] = run
+
+        for run in runs_to_check.values():
+            for item in run.items:
+                if (
+                    item.status in NON_TERMINAL
+                    and item.slurm_job_id
+                    and item.slurm_job_id not in active_slurm_ids
+                ):
+                    item.status = RunItemStatus.COMPLETED
+                    reconciled += 1
+                    self._dirty_runs.add(run.id)
+                    # Put in cache so save_if_dirty can find it
+                    if backend_name not in self._weekly_cache:
+                        self._weekly_cache[backend_name] = {}
+                    self._weekly_cache[backend_name][run.id] = run
+
+        return reconciled
+
+    def clear_completed_external_jobs(self) -> int:
+        """Remove all terminal external jobs from weekly bins.
+
+        Returns the number of items removed.
+        """
+        TERMINAL = {RunItemStatus.COMPLETED, RunItemStatus.FAILED, RunItemStatus.DEP_FAILED}
+        removed = 0
+
+        for wf_name in self.list_workflows():
+            if not wf_name.startswith("_default_"):
+                continue
+            for run in self.load_runs_for_workflow(wf_name):
+                before = len(run.items)
+                run.items = [i for i in run.items if i.status not in TERMINAL]
+                diff = before - len(run.items)
+                if diff:
+                    removed += diff
+                    self.save_run(run)
+                    # Update cache too
+                    if run.backend_name in self._weekly_cache:
+                        self._weekly_cache[run.backend_name][run.id] = run
+
+        return removed
+
     # --- Cleanup ---
 
     def cleanup_old_runs(self) -> int:
