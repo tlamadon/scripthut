@@ -91,7 +91,8 @@ workflows:
 #       "memory": "16G",
 #       "time_limit": "4:00:00",
 #       "output_file": "/path/to/custom/output.log",  # Optional: custom stdout path
-#       "error_file": "/path/to/custom/error.log"     # Optional: custom stderr path
+#       "error_file": "/path/to/custom/error.log",    # Optional: custom stderr path
+#       "env_vars": {"MY_PARAM": "42", "DATA_DIR": "/scratch/data"}  # Optional: per-task env vars
 #     }
 #   ]
 # }

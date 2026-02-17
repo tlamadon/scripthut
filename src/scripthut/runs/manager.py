@@ -55,16 +55,31 @@ class RunManager:
     def _resolve_environment(
         self, task: TaskDefinition
     ) -> tuple[dict[str, str] | None, str]:
-        """Resolve environment config for a task."""
-        if not task.environment:
-            return None, ""
-        env_config = self.config.get_environment(task.environment)
-        if env_config is None:
-            logger.warning(
-                f"Task '{task.id}' references unknown environment '{task.environment}'"
-            )
-            return None, ""
-        return dict(env_config.variables) or None, env_config.extra_init
+        """Resolve environment config for a task.
+
+        Merges named environment variables (from config) with per-task
+        env_vars specified by the generator.  Per-task values override
+        named-environment values when keys collide.
+        """
+        env_vars: dict[str, str] = {}
+        extra_init = ""
+
+        # Named environment from config
+        if task.environment:
+            env_config = self.config.get_environment(task.environment)
+            if env_config is None:
+                logger.warning(
+                    f"Task '{task.id}' references unknown environment '{task.environment}'"
+                )
+            else:
+                env_vars.update(env_config.variables)
+                extra_init = env_config.extra_init
+
+        # Per-task env_vars from generator (override named env)
+        if task.env_vars:
+            env_vars.update(task.env_vars)
+
+        return env_vars or None, extra_init
 
     @staticmethod
     def _resolve_wildcard_deps(tasks: list[TaskDefinition]) -> None:
