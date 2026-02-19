@@ -34,6 +34,7 @@ class TaskDefinition:
     output_file: str | None = None  # Custom stdout log path
     error_file: str | None = None  # Custom stderr log path
     environment: str | None = None  # Name of the environment to use (from config)
+    env_vars: dict[str, str] = field(default_factory=dict)  # Per-task environment variables
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "TaskDefinition":
@@ -52,6 +53,7 @@ class TaskDefinition:
             output_file=data.get("output_file"),
             error_file=data.get("error_file"),
             environment=data.get("environment"),
+            env_vars=data.get("env_vars", {}),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -70,6 +72,7 @@ class TaskDefinition:
             "output_file": self.output_file,
             "error_file": self.error_file,
             "environment": self.environment,
+            "env_vars": self.env_vars,
         }
 
     def get_output_path(self, run_id: str, log_dir: str = "~/.cache/scripthut/logs") -> str:

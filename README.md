@@ -337,6 +337,7 @@ The command must return JSON in one of these formats:
 | `output_file` | No | Custom stdout log path |
 | `error_file` | No | Custom stderr log path |
 | `environment` | No | Name of an environment defined in `scripthut.yaml` |
+| `env_vars` | No | Per-task environment variables as a `{"KEY": "VALUE"}` object |
 
 #### Task Dependencies
 
@@ -442,6 +443,50 @@ julia solve.jl
 ```
 
 If a task references an environment name that doesn't exist in the config, a warning is logged and the script is generated without any environment setup.
+
+#### Per-Task Environment Variables
+
+In addition to named environments, generators can specify inline environment variables per task via the `env_vars` field:
+
+```json
+[
+  {
+    "id": "sim-1", "name": "Sim 1",
+    "command": "python sim.py",
+    "env_vars": {"MY_PARAM": "42", "DATA_DIR": "/scratch/data"}
+  }
+]
+```
+
+When both a named `environment` and per-task `env_vars` are set, they are merged. Per-task values override named-environment values when keys collide.
+
+#### Automatic ScriptHut Variables
+
+ScriptHut automatically injects environment variables into every job's sbatch script. These are always present:
+
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `SCRIPTHUT_WORKFLOW` | Name of the workflow | `jmp-grid-pure` |
+| `SCRIPTHUT_RUN_ID` | Unique run identifier | `a1b2c3d4` |
+| `SCRIPTHUT_CREATED_AT` | ISO timestamp of run creation | `2026-02-19T14:30:00` |
+
+For **git workflows**, these additional variables are also set:
+
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `SCRIPTHUT_GIT_REPO` | Repository URL | `git@github.com:org/repo.git` |
+| `SCRIPTHUT_GIT_BRANCH` | Branch name | `main` |
+| `SCRIPTHUT_GIT_SHA` | Full commit hash used for the run | `abc123def456...` |
+
+#### Variable Priority
+
+Environment variables are merged in the following order (later entries win):
+
+1. **ScriptHut automatic variables** (`SCRIPTHUT_*`)
+2. **Named environment** (from `environments` config)
+3. **Per-task `env_vars`** (from generator JSON)
+
+This means a generator can override any variable, including the automatic ones, if needed.
 
 ### Data Flow
 
