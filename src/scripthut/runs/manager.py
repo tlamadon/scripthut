@@ -82,6 +82,29 @@ class RunManager:
         return env_vars or None, extra_init
 
     @staticmethod
+    def _scripthut_env_vars(
+        workflow_name: str,
+        run_id: str,
+        created_at: datetime,
+        git_repo: str | None = None,
+        git_branch: str | None = None,
+        git_sha: str | None = None,
+    ) -> dict[str, str]:
+        """Return standard SCRIPTHUT_* environment variables for a job."""
+        env = {
+            "SCRIPTHUT_WORKFLOW": workflow_name,
+            "SCRIPTHUT_RUN_ID": run_id,
+            "SCRIPTHUT_CREATED_AT": created_at.isoformat(),
+        }
+        if git_repo is not None:
+            env["SCRIPTHUT_GIT_REPO"] = git_repo
+        if git_branch is not None:
+            env["SCRIPTHUT_GIT_BRANCH"] = git_branch
+        if git_sha is not None:
+            env["SCRIPTHUT_GIT_SHA"] = git_sha
+        return env
+
+    @staticmethod
     def _resolve_wildcard_deps(tasks: list[TaskDefinition]) -> None:
         """Expand wildcard patterns in task dependencies to matching task IDs."""
         task_ids = [t.id for t in tasks]
@@ -462,10 +485,18 @@ class RunManager:
         account = self.get_backend_account(workflow.backend)
         login_shell = self.get_backend_login_shell(workflow.backend)
 
+        preview_created_at = datetime.now()
+        git_repo = workflow.git.repo if workflow.git else None
+        git_branch = workflow.git.branch if workflow.git else None
         task_details = []
         for task in tasks:
             env_vars, extra_init = self._resolve_environment(task)
-            script = task.to_sbatch_script(preview_run_id, log_dir, account=account, login_shell=login_shell, env_vars=env_vars, extra_init=extra_init)
+            sh_vars = self._scripthut_env_vars(
+                workflow_name, preview_run_id, preview_created_at,
+                git_repo=git_repo, git_branch=git_branch, git_sha=commit_hash,
+            )
+            merged_env = {**sh_vars, **(env_vars or {})}
+            script = task.to_sbatch_script(preview_run_id, log_dir, account=account, login_shell=login_shell, env_vars=merged_env, extra_init=extra_init)
             task_details.append({
                 "task": task,
                 "sbatch_script": script,
@@ -699,7 +730,15 @@ class RunManager:
         await ssh_client.run_command(f"mkdir -p {log_dir}")
 
         env_vars, extra_init = self._resolve_environment(item.task)
-        script = item.task.to_sbatch_script(run.id, log_dir, account=run.account, login_shell=run.login_shell, env_vars=env_vars, extra_init=extra_init)
+        workflow = self.config.get_workflow(run.workflow_name)
+        git_repo = workflow.git.repo if workflow and workflow.git else None
+        git_branch = workflow.git.branch if workflow and workflow.git else None
+        sh_vars = self._scripthut_env_vars(
+            run.workflow_name, run.id, run.created_at,
+            git_repo=git_repo, git_branch=git_branch, git_sha=run.commit_hash,
+        )
+        merged_env = {**sh_vars, **(env_vars or {})}
+        script = item.task.to_sbatch_script(run.id, log_dir, account=run.account, login_shell=run.login_shell, env_vars=merged_env, extra_init=extra_init)
         item.sbatch_script = script
 
         escaped_script = script.replace("'", "'\\''")
