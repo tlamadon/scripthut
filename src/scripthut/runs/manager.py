@@ -389,6 +389,16 @@ class RunManager:
                 )
                 if exit_code != 0:
                     raise ValueError(f"Git clone failed: {stderr}")
+
+                # Run postclone command if configured
+                if git_cfg.postclone:
+                    logger.info(f"Running postclone command in {clone_dir}")
+                    cmd = f"cd {clone_dir} && {git_cfg.postclone}"
+                    _, stderr, exit_code = await ssh_client.run_command(
+                        cmd, timeout=300
+                    )
+                    if exit_code != 0:
+                        raise ValueError(f"Postclone command failed: {stderr}")
             else:
                 logger.info(
                     f"Reusing existing clone at {clone_dir} ({short_hash})"

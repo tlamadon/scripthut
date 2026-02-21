@@ -21,11 +21,13 @@ def _make_workflow(
     git_repo: str = "git@github.com:org/repo.git",
     git_branch: str = "main",
     deploy_key: str | None = None,
+    postclone: str | None = None,
 ) -> WorkflowConfig:
     git = WorkflowGitConfig(
         repo=git_repo,
         branch=git_branch,
         deploy_key=Path(deploy_key) if deploy_key else None,
+        postclone=postclone,
     )
     return WorkflowConfig(
         name=name, backend=backend, command=command, git=git
@@ -344,6 +346,104 @@ class TestEnsureRepoCloned:
         with pytest.raises(ValueError, match="no git configuration"):
             await manager._ensure_repo_cloned(ssh_mock, workflow)
 
+    @pytest.mark.asyncio
+    async def test_postclone_runs_after_fresh_clone(self):
+        """Postclone command runs in clone dir after a fresh clone."""
+        workflow = _make_workflow(deploy_key=None, postclone="rm -rf large_data/")
+        commit_hash = "abcdef123456" + "7890abcd"
+
+        ssh_mock = AsyncMock()
+        ssh_mock.run_command = AsyncMock(
+            side_effect=[
+                # 1. git ls-remote
+                (f"{commit_hash}\trefs/heads/main", "", 0),
+                # 2. test -d (doesn't exist)
+                ("", "", 1),
+                # 3. git clone
+                ("", "", 0),
+                # 4. postclone command
+                ("", "", 0),
+            ]
+        )
+
+        manager = _make_manager(ssh_mock, workflows=[workflow])
+        clone_dir, short_hash = await manager._ensure_repo_cloned(ssh_mock, workflow)
+
+        assert short_hash == commit_hash[:12]
+        # Verify postclone command was called in the clone dir
+        postclone_cmd = ssh_mock.run_command.call_args_list[3][0][0]
+        assert postclone_cmd == f"cd ~/scripthut-repos/{short_hash} && rm -rf large_data/"
+
+    @pytest.mark.asyncio
+    async def test_postclone_skipped_when_already_cloned(self):
+        """Postclone does NOT run when reusing an existing clone."""
+        workflow = _make_workflow(deploy_key=None, postclone="rm -rf large_data/")
+        commit_hash = "abcdef123456" + "7890abcd"
+
+        ssh_mock = AsyncMock()
+        ssh_mock.run_command = AsyncMock(
+            side_effect=[
+                # 1. git ls-remote
+                (f"{commit_hash}\trefs/heads/main", "", 0),
+                # 2. test -d (exists!)
+                ("exists", "", 0),
+            ]
+        )
+
+        manager = _make_manager(ssh_mock, workflows=[workflow])
+        await manager._ensure_repo_cloned(ssh_mock, workflow)
+
+        # Only 2 calls — no clone, no postclone
+        assert ssh_mock.run_command.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_postclone_failure_raises(self):
+        """Raises if postclone command fails."""
+        workflow = _make_workflow(deploy_key=None, postclone="false")
+        commit_hash = "abcdef123456" + "7890abcd"
+
+        ssh_mock = AsyncMock()
+        ssh_mock.run_command = AsyncMock(
+            side_effect=[
+                # 1. git ls-remote
+                (f"{commit_hash}\trefs/heads/main", "", 0),
+                # 2. test -d (doesn't exist)
+                ("", "", 1),
+                # 3. git clone
+                ("", "", 0),
+                # 4. postclone fails
+                ("", "command not found", 1),
+            ]
+        )
+
+        manager = _make_manager(ssh_mock, workflows=[workflow])
+        with pytest.raises(ValueError, match="Postclone command failed"):
+            await manager._ensure_repo_cloned(ssh_mock, workflow)
+
+    @pytest.mark.asyncio
+    async def test_no_postclone_config_skips(self):
+        """No postclone field means no extra command after clone."""
+        workflow = _make_workflow(deploy_key=None, postclone=None)
+        commit_hash = "abcdef123456" + "7890abcd"
+
+        ssh_mock = AsyncMock()
+        ssh_mock.run_command = AsyncMock(
+            side_effect=[
+                # 1. git ls-remote
+                (f"{commit_hash}\trefs/heads/main", "", 0),
+                # 2. test -d (doesn't exist)
+                ("", "", 1),
+                # 3. git clone
+                ("", "", 0),
+            ]
+        )
+
+        manager = _make_manager(ssh_mock, workflows=[workflow])
+        await manager._ensure_repo_cloned(ssh_mock, workflow)
+
+        # Only 3 calls — no postclone
+        assert ssh_mock.run_command.call_count == 3
+
 
 # -- create_run with git workflow tests ---------------------------------------
 
@@ -568,6 +668,14 @@ class TestWorkflowGitConfig:
         assert git.deploy_key is None
         assert git.deploy_key_resolved is None
         assert git.clone_dir == "~/scripthut-repos"
+        assert git.postclone is None
+
+    def test_postclone_field(self):
+        git = WorkflowGitConfig(
+            repo="git@github.com:org/repo.git",
+            postclone="rm -rf large_data/ && find . -name '*.bin' -delete",
+        )
+        assert git.postclone == "rm -rf large_data/ && find . -name '*.bin' -delete"
 
     def test_custom_clone_dir(self):
         git = WorkflowGitConfig(
