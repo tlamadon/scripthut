@@ -93,3 +93,6 @@ class ConnectionStatus:
     error: str | None = None
     last_poll_duration_ms: int | None = None  # How long the last poll took in milliseconds
     job_count: int = 0  # Number of jobs returned by last poll
+    cpus_total: int | None = None  # Total CPUs on the cluster
+    cpus_idle: int | None = None  # Idle (free) CPUs on the cluster
+    cpus_user: int | None = None  # CPUs used by the filtered user

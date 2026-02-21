@@ -354,6 +354,38 @@ class SlurmBackend(JobBackend):
         logger.debug(f"Fetched stats for {len(stats)}/{len(job_ids)} jobs via sacct")
         return stats
 
+    async def get_cluster_cpus(self) -> tuple[int, int] | None:
+        """Fetch total and idle CPU counts from sinfo.
+
+        Returns:
+            ``(total, idle)`` tuple, or ``None`` on failure.
+        """
+        cmd = "sinfo --noheader --format='%C'"
+        try:
+            stdout, stderr, exit_code = await self._ssh.run_command(cmd, timeout=15)
+        except Exception as e:
+            logger.warning(f"sinfo failed: {e}")
+            return None
+
+        if exit_code != 0:
+            logger.warning(f"sinfo failed (exit {exit_code}): {stderr}")
+            return None
+
+        # Format: "allocated/idle/other/total"
+        line = stdout.strip().strip("'")
+        parts = line.split("/")
+        if len(parts) != 4:
+            logger.warning(f"Unexpected sinfo output: {line}")
+            return None
+
+        try:
+            total = int(parts[3])
+            idle = int(parts[1])
+            return total, idle
+        except ValueError:
+            logger.warning(f"Failed to parse sinfo numbers: {line}")
+            return None
+
     async def is_available(self) -> bool:
         """Check if Slurm is available by running squeue --version."""
         try:

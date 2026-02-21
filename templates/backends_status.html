@@ -11,7 +11,11 @@
         </div>
         <div class="text-right flex items-center gap-2">
             {% if backend.status.connected %}
+            {% if backend.status.cpus_user is not none and backend.status.cpus_idle is not none %}
+            <span class="text-xs text-gray-600">Using <span class="font-medium text-blue-600">{{ backend.status.cpus_user }}</span> CPUs in {{ backend_job_counts.get(name, 0) }} jobs, <span class="font-medium">{{ backend.status.cpus_idle }}</span> available</span>
+            {% else %}
             <span class="text-xs text-gray-500">{{ backend_job_counts.get(name, 0) }} jobs</span>
+            {% endif %}
             {% if backend.status.last_poll_duration_ms is not none %}
             <span
                 class="text-xs font-mono {% if backend.status.last_poll_duration_ms > 5000 %}text-red-500{% elif backend.status.last_poll_duration_ms > 2000 %}text-yellow-600{% else %}text-gray-400{% endif %}"

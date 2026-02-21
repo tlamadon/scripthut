@@ -171,14 +171,27 @@ async def poll_backend(backend_state: BackendState, filter_user: str | None = No
     start_time = time.perf_counter()
     try:
         jobs = await backend_state.backend.get_jobs(user=filter_user)
+        cluster_cpus = await backend_state.backend.get_cluster_cpus()
         duration_ms = int((time.perf_counter() - start_time) * 1000)
         backend_state.jobs = jobs
+
+        # Compute CPUs used by the filtered user's running jobs
+        cpus_user: int | None = None
+        if filter_user:
+            cpus_user = sum(
+                j.cpus for j in jobs
+                if j.state == JobState.RUNNING
+            )
+
         backend_state.status = ConnectionStatus(
             connected=True,
             host=backend_state.status.host,
             last_poll=datetime.now(),
             last_poll_duration_ms=duration_ms,
             job_count=len(jobs),
+            cpus_total=cluster_cpus[0] if cluster_cpus else None,
+            cpus_idle=cluster_cpus[1] if cluster_cpus else None,
+            cpus_user=cpus_user,
         )
         logger.debug(f"Polled {len(jobs)} jobs from '{backend_state.name}' in {duration_ms}ms")
 
