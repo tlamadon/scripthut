@@ -1129,11 +1129,20 @@ def _compute_gantt_data(run: Run) -> tuple[list[dict[str, Any]], list[dict[str, 
         for ts in (item.finished_at, item.started_at, item.submitted_at):
             if ts and ts > time_end:
                 time_end = ts
-            # Sacct timestamps may be in the cluster's timezone, which can be
-            # earlier than the local created_at.  Expand the origin so bars
-            # aren't clipped to zero width.
-            if ts and ts < time_origin:
-                time_origin = ts
+
+    # Also ensure time_end covers submitted_at-anchored durations.
+    # Sacct timestamps may be in the cluster's local timezone while
+    # submitted_at is in true UTC, so we compute run durations from
+    # sacct's own start/end (self-consistent) and anchor them at
+    # submitted_at for display.
+    for item in run.items:
+        if item.submitted_at and item.started_at:
+            wait_dur = max(0, (item.started_at - item.submitted_at).total_seconds())
+            end_ts = item.finished_at or now
+            run_dur = max(0, (end_ts - item.started_at).total_seconds())
+            visual_end = item.submitted_at + timedelta(seconds=wait_dur + run_dur)
+            if visual_end > time_end:
+                time_end = visual_end
 
     total_span = (time_end - time_origin).total_seconds()
     if total_span <= 0:
@@ -1181,22 +1190,26 @@ def _compute_gantt_data(run: Run) -> tuple[list[dict[str, Any]], list[dict[str, 
             submitted_offset = max(0, (item.submitted_at - time_origin).total_seconds())
 
             if item.started_at:
-                started_offset = max(submitted_offset, (item.started_at - time_origin).total_seconds())
-                entry["wait_left"] = (submitted_offset / total_span) * 100
-                entry["wait_width"] = ((started_offset - submitted_offset) / total_span) * 100
-
+                # Compute wait and run durations from their own timestamps
+                # (self-consistent even if sacct uses a different timezone).
+                # Anchor everything at submitted_at which is always local time.
+                wait_dur = max(0, (item.started_at - item.submitted_at).total_seconds())
                 end_ts = item.finished_at or now
-                end_offset = max(started_offset, (end_ts - time_origin).total_seconds())
-                entry["run_left"] = (started_offset / total_span) * 100
-                entry["run_width"] = ((end_offset - started_offset) / total_span) * 100
+                run_dur = max(0, (end_ts - item.started_at).total_seconds())
+
+                visual_start = submitted_offset + wait_dur
+                entry["wait_left"] = (submitted_offset / total_span) * 100
+                entry["wait_width"] = (wait_dur / total_span) * 100
+                entry["run_left"] = (visual_start / total_span) * 100
+                entry["run_width"] = (run_dur / total_span) * 100
                 entry["has_bar"] = True
                 entry["bar_start"] = entry["wait_left"]
                 entry["bar_end"] = entry["run_left"] + entry["run_width"]
             else:
                 wait_end_ts = item.finished_at or now
-                wait_end = (wait_end_ts - time_origin).total_seconds()
+                wait_dur = max(0, (wait_end_ts - item.submitted_at).total_seconds())
                 entry["wait_left"] = (submitted_offset / total_span) * 100
-                entry["wait_width"] = ((wait_end - submitted_offset) / total_span) * 100
+                entry["wait_width"] = (wait_dur / total_span) * 100
                 entry["has_bar"] = True
                 entry["bar_start"] = entry["wait_left"]
                 entry["bar_end"] = entry["wait_left"] + entry["wait_width"]
