@@ -40,6 +40,17 @@ pip install -e .
 pip install -e ".[dev]"
 ```
 
+### Docker
+
+```bash
+docker run -d -p 8000:8000 \
+  -v ./scripthut.yaml:/app/scripthut.yaml \
+  -v ~/.ssh:/root/.ssh:ro \
+  ghcr.io/tlamadon/scripthut:main
+```
+
+Then open http://localhost:8000.
+
 ## Configuration
 
 ScriptHut uses a YAML configuration file. Copy the example and customize:
