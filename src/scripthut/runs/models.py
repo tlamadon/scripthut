@@ -75,13 +75,13 @@ class TaskDefinition:
             "env_vars": self.env_vars,
         }
 
-    def get_output_path(self, run_id: str, log_dir: str = "~/.cache/scripthut/logs") -> str:
+    def get_output_path(self, run_id: str, log_dir: str) -> str:
         """Get the output log file path."""
         if self.output_file:
             return self.output_file
         return f"{log_dir}/scripthut_{run_id}_{self.id}.out"
 
-    def get_error_path(self, run_id: str, log_dir: str = "~/.cache/scripthut/logs") -> str:
+    def get_error_path(self, run_id: str, log_dir: str) -> str:
         """Get the error log file path."""
         if self.error_file:
             return self.error_file
@@ -90,7 +90,7 @@ class TaskDefinition:
     def to_sbatch_script(
         self,
         run_id: str,
-        log_dir: str = "~/.cache/scripthut/logs",
+        log_dir: str,
         account: str | None = None,
         login_shell: bool = False,
         env_vars: dict[str, str] | None = None,
@@ -234,7 +234,7 @@ class Run:
     created_at: datetime
     items: list[RunItem]
     max_concurrent: int | None
-    log_dir: str = "~/.cache/scripthut/logs"  # Directory for log files on the remote backend
+    log_dir: str = ""  # Directory for log files on the remote backend
     account: str | None = None  # Slurm account to charge jobs to
     login_shell: bool = False  # Use #!/bin/bash -l shebang
     commit_hash: str | None = None  # Git commit hash if run from a git workflow

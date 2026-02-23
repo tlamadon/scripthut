@@ -459,7 +459,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.warning(f"ECS backend '{ecs_config.name}' configured but ECS backend not yet implemented")
 
     # Initialize run storage and manager
-    state.run_storage = RunStorageManager()
+    state.run_storage = RunStorageManager(config.settings.data_dir_resolved / "workflows")
     ssh_clients: dict[str, SSHClient] = {
         name: cs.ssh_client
         for name, cs in state.backends.items()

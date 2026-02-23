@@ -484,7 +484,9 @@ class RunManager:
         self._validate_dependencies(tasks)
 
         preview_run_id = "preview"
-        log_dir = "~/.cache/scripthut/logs"
+        log_dir = f"~/.cache/scripthut/logs"
+        if self.config and self.config.settings:
+            log_dir = str(self.config.settings.data_dir / "logs")
 
         ssh_client = self.get_ssh_client(workflow.backend)
         if ssh_client and log_dir.startswith("~"):
@@ -570,7 +572,8 @@ class RunManager:
             log_dir = f"{git_root}/.scripthut/{workflow_name}/logs"
             logger.info(f"Git root: {git_root} — logs at {log_dir}")
         except ValueError:
-            log_dir = f"~/.cache/scripthut/logs/{workflow_name}"
+            data_dir = self.config.settings.data_dir if self.config else "~/.cache/scripthut"
+            log_dir = f"{data_dir}/logs/{workflow_name}"
             logger.info(f"No git root for '{first_working_dir}' — logs at {log_dir}")
 
         run_id = str(uuid.uuid4())[:8]

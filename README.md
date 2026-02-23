@@ -91,10 +91,10 @@ sources:
     deploy_key: ~/.ssh/ml-jobs-deploy-key
 
 settings:
+  data_dir: ~/.cache/scripthut          # base for all stored data
   poll_interval: 60
   server_host: 127.0.0.1
   server_port: 8000
-  sources_cache_dir: ~/.cache/scripthut/sources
 ```
 
 ### Configuration Options
@@ -126,10 +126,11 @@ settings:
 
 | Field | Description | Default |
 |-------|-------------|---------|
+| `data_dir` | Base directory for all stored data | `~/.cache/scripthut` |
 | `poll_interval` | Seconds between job polls | `60` |
 | `server_host` | Web server bind host | `127.0.0.1` |
 | `server_port` | Web server bind port | `8000` |
-| `sources_cache_dir` | Directory for cloned repos | `~/.cache/scripthut/sources` |
+| `sources_cache_dir` | Directory for cloned repos (overrides `<data_dir>/sources`) | `None` |
 
 ## Usage
 

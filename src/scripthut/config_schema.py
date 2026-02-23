@@ -201,9 +201,13 @@ class GlobalSettings(BaseModel):
         default=8000,
         description="Port to bind the server to",
     )
-    sources_cache_dir: Path = Field(
-        default=Path("~/.cache/scripthut/sources"),
-        description="Directory to cache cloned repositories",
+    data_dir: Path = Field(
+        default=Path("~/.cache/scripthut"),
+        description="Base directory for all stored data (workflows, logs, sources)",
+    )
+    sources_cache_dir: Path | None = Field(
+        default=None,
+        description="Directory to cache cloned repositories (default: <data_dir>/sources)",
     )
     filter_user: str | None = Field(
         default=None,
@@ -211,9 +215,16 @@ class GlobalSettings(BaseModel):
     )
 
     @property
+    def data_dir_resolved(self) -> Path:
+        """Return the resolved data directory with ~ expansion."""
+        return self.data_dir.expanduser()
+
+    @property
     def sources_cache_dir_resolved(self) -> Path:
         """Return the resolved cache directory with ~ expansion."""
-        return self.sources_cache_dir.expanduser()
+        if self.sources_cache_dir is not None:
+            return self.sources_cache_dir.expanduser()
+        return self.data_dir_resolved / "sources"
 
 
 class ScriptHutConfig(BaseModel):
