@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, AsyncGenerator
 
+import asyncssh
 import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
@@ -54,6 +55,8 @@ class BackendState:
     status: ConnectionStatus = field(
         default_factory=lambda: ConnectionStatus(connected=False, host="")
     )
+    _reconnect_after: float = 0.0  # time.monotonic() before which reconnect is skipped
+    _reconnect_delay: float = 0.0  # current backoff delay in seconds
 
 
 @dataclass
@@ -128,12 +131,6 @@ _config_path: Path | None = None
 
 async def init_backend(backend_config: SlurmBackendConfig) -> BackendState:
     """Initialize a Slurm backend connection."""
-    backend_state = BackendState(
-        name=backend_config.name,
-        backend_type="slurm",
-        status=ConnectionStatus(connected=False, host=backend_config.ssh.host),
-    )
-
     ssh_client = SSHClient(
         host=backend_config.ssh.host,
         user=backend_config.ssh.user,
@@ -143,10 +140,16 @@ async def init_backend(backend_config: SlurmBackendConfig) -> BackendState:
         known_hosts=backend_config.ssh.known_hosts_resolved,
     )
 
+    backend_state = BackendState(
+        name=backend_config.name,
+        backend_type="slurm",
+        ssh_client=ssh_client,
+        backend=SlurmBackend(ssh_client),
+        status=ConnectionStatus(connected=False, host=backend_config.ssh.host),
+    )
+
     try:
         await ssh_client.connect()
-        backend_state.ssh_client = ssh_client
-        backend_state.backend = SlurmBackend(ssh_client)
         backend_state.status = ConnectionStatus(
             connected=True,
             host=backend_config.ssh.host,
@@ -165,8 +168,44 @@ async def init_backend(backend_config: SlurmBackendConfig) -> BackendState:
 
 async def poll_backend(backend_state: BackendState, filter_user: str | None = None) -> None:
     """Poll jobs for a single backend."""
-    if backend_state.backend is None:
+    if backend_state.backend is None or backend_state.ssh_client is None:
         return
+
+    # Attempt to reconnect if the SSH connection is down
+    if not backend_state.ssh_client.is_connected:
+        # Skip if still in backoff period
+        now = time.monotonic()
+        if now < backend_state._reconnect_after:
+            return
+
+        try:
+            await backend_state.ssh_client.connect()
+            logger.info(f"Reconnected to backend '{backend_state.name}'")
+            backend_state._reconnect_delay = 0.0
+            backend_state._reconnect_after = 0.0
+        except asyncssh.PermissionDenied as e:
+            # Auth failure — back off aggressively to avoid flooding the server
+            delay = min(max(backend_state._reconnect_delay * 2, 60.0), 600.0)
+            backend_state._reconnect_delay = delay
+            backend_state._reconnect_after = now + delay
+            logger.warning(
+                f"Auth failed for '{backend_state.name}', next retry in {delay:.0f}s: {e}"
+            )
+            backend_state.status = ConnectionStatus(
+                connected=False,
+                host=backend_state.status.host,
+                last_poll=backend_state.status.last_poll,
+                error=f"{e} (retry in {delay:.0f}s)",
+            )
+            return
+        except Exception as e:
+            backend_state.status = ConnectionStatus(
+                connected=False,
+                host=backend_state.status.host,
+                last_poll=backend_state.status.last_poll,
+                error=str(e),
+            )
+            return
 
     start_time = time.perf_counter()
     try:
@@ -341,7 +380,6 @@ async def poll_jobs() -> None:
         tasks = [
             poll_backend(backend_state, filter_user=filter_user)
             for backend_state in state.backends.values()
-            if backend_state.backend is not None
         ]
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
@@ -421,7 +459,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # Initialize run storage and manager
     state.run_storage = RunStorageManager()
-    ssh_clients = {
+    ssh_clients: dict[str, SSHClient] = {
         name: cs.ssh_client
         for name, cs in state.backends.items()
         if cs.ssh_client is not None
@@ -832,7 +870,6 @@ async def toggle_filter(request: Request) -> HTMLResponse:
     tasks = [
         poll_backend(backend_state, filter_user=filter_user)
         for backend_state in state.backends.values()
-        if backend_state.backend is not None
     ]
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)
