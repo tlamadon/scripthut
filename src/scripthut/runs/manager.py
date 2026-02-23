@@ -7,7 +7,7 @@ import base64
 import json
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from fnmatch import fnmatch
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -495,7 +495,7 @@ class RunManager:
         account = self.get_backend_account(workflow.backend)
         login_shell = self.get_backend_login_shell(workflow.backend)
 
-        preview_created_at = datetime.now()
+        preview_created_at = datetime.now(timezone.utc)
         git_repo = workflow.git.repo if workflow.git else None
         git_branch = workflow.git.branch if workflow.git else None
         task_details = []
@@ -578,7 +578,7 @@ class RunManager:
             id=run_id,
             workflow_name=workflow_name,
             backend_name=backend_name,
-            created_at=datetime.now(),
+            created_at=datetime.now(timezone.utc),
             items=[RunItem(task=task) for task in tasks],
             max_concurrent=max_concurrent,
             account=account,
@@ -726,7 +726,7 @@ class RunManager:
         if ssh_client is None:
             item.status = RunItemStatus.FAILED
             item.error = f"Backend '{run.backend_name}' not connected"
-            item.finished_at = datetime.now()
+            item.finished_at = datetime.now(timezone.utc)
             self._persist_run(run)
             return False
 
@@ -759,7 +759,7 @@ class RunManager:
         if exit_code != 0:
             item.status = RunItemStatus.FAILED
             item.error = f"sbatch failed: {stderr}"
-            item.finished_at = datetime.now()
+            item.finished_at = datetime.now(timezone.utc)
             logger.error(f"Failed to submit task '{item.task.id}': {stderr}")
             self._persist_run(run)
             return False
@@ -768,14 +768,14 @@ class RunManager:
             job_id = stdout.strip().split()[-1]
             item.slurm_job_id = job_id
             item.status = RunItemStatus.SUBMITTED
-            item.submitted_at = datetime.now()
+            item.submitted_at = datetime.now(timezone.utc)
             logger.info(f"Submitted task '{item.task.id}' as Slurm job {job_id}")
             self._persist_run(run)
             return True
         except (IndexError, ValueError):
             item.status = RunItemStatus.FAILED
             item.error = f"Could not parse job ID: {stdout}"
-            item.finished_at = datetime.now()
+            item.finished_at = datetime.now(timezone.utc)
             logger.error(f"Could not parse job ID from: {stdout}")
             self._persist_run(run)
             return False
@@ -793,7 +793,7 @@ class RunManager:
                 if failed_deps:
                     item.status = RunItemStatus.DEP_FAILED
                     item.error = f"Dependency '{failed_deps[0]}' failed"
-                    item.finished_at = datetime.now()
+                    item.finished_at = datetime.now(timezone.utc)
                     self._persist_run(run)
                     changed = True
 
@@ -896,7 +896,7 @@ class RunManager:
                 if item.status in (RunItemStatus.SUBMITTED, RunItemStatus.RUNNING):
                     item.started_at = item.started_at or item.submitted_at
                     item.status = RunItemStatus.COMPLETED
-                    item.finished_at = datetime.now()
+                    item.finished_at = datetime.now(timezone.utc)
                     changed = True
                     changed_items.append(item)
                     logger.info(f"Task '{item.task.id}' (job {item.slurm_job_id}) completed")
@@ -906,7 +906,7 @@ class RunManager:
                 if job_state in (JobState.RUNNING, JobState.COMPLETING):
                     if item.status != RunItemStatus.RUNNING:
                         item.status = RunItemStatus.RUNNING
-                        item.started_at = item.started_at or datetime.now()
+                        item.started_at = item.started_at or datetime.now(timezone.utc)
                         changed = True
                         changed_items.append(item)
                         logger.info(f"Task '{item.task.id}' (job {item.slurm_job_id}) started running")
@@ -918,7 +918,7 @@ class RunManager:
                 elif job_state == JobState.COMPLETED:
                     item.started_at = item.started_at or item.submitted_at
                     item.status = RunItemStatus.COMPLETED
-                    item.finished_at = datetime.now()
+                    item.finished_at = datetime.now(timezone.utc)
                     changed = True
                     changed_items.append(item)
                     logger.info(f"Task '{item.task.id}' (job {item.slurm_job_id}) completed")
@@ -937,7 +937,7 @@ class RunManager:
                     item.started_at = item.started_at or item.submitted_at
                     item.status = RunItemStatus.FAILED
                     item.error = f"Slurm job {job_state.value}"
-                    item.finished_at = datetime.now()
+                    item.finished_at = datetime.now(timezone.utc)
                     changed = True
                     changed_items.append(item)
                     logger.info(f"Task '{item.task.id}' (job {item.slurm_job_id}) failed: {job_state.value}")
@@ -970,14 +970,14 @@ class RunManager:
             if item.status == RunItemStatus.PENDING:
                 item.status = RunItemStatus.FAILED
                 item.error = "Cancelled"
-                item.finished_at = datetime.now()
+                item.finished_at = datetime.now(timezone.utc)
             elif item.status in (RunItemStatus.SUBMITTED, RunItemStatus.RUNNING):
                 if item.slurm_job_id and ssh_client:
                     await ssh_client.run_command(f"scancel {item.slurm_job_id}")
                 item.started_at = item.started_at or item.submitted_at
                 item.status = RunItemStatus.FAILED
                 item.error = "Cancelled"
-                item.finished_at = datetime.now()
+                item.finished_at = datetime.now(timezone.utc)
 
         self._persist_run(run)
         self.notify_run(run.id)

@@ -1,6 +1,6 @@
 """Tests for cleanup and Gantt edge cases."""
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from scripthut.main import _compute_gantt_data
 from scripthut.runs.models import (
@@ -34,7 +34,7 @@ class TestGanttWaitBarCapping:
 
     def test_wait_bar_capped_at_finished_for_completed_item(self):
         """Completed item with finished_at but no started_at should cap wait bar."""
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         created = now - timedelta(minutes=10)
         submitted = now - timedelta(minutes=8)
         finished = now - timedelta(minutes=5)
@@ -66,7 +66,7 @@ class TestGanttWaitBarCapping:
 
     def test_wait_bar_grows_for_genuinely_waiting_item(self):
         """Submitted item still waiting should have wait bar grow to now."""
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         created = now - timedelta(minutes=10)
         submitted = now - timedelta(minutes=2)
 
@@ -99,7 +99,7 @@ class TestCancelRunStartedAt:
 
     def test_cancelled_submitted_item_gets_started_at(self):
         """A SUBMITTED item cancelled should get started_at set from submitted_at."""
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         submitted = now - timedelta(minutes=5)
 
         item = _make_run_item(
@@ -113,13 +113,13 @@ class TestCancelRunStartedAt:
         item.started_at = item.started_at or item.submitted_at
         item.status = RunItemStatus.FAILED
         item.error = "Cancelled"
-        item.finished_at = datetime.now()
+        item.finished_at = datetime.now(timezone.utc)
 
         assert item.started_at == submitted
 
     def test_cancelled_running_item_keeps_started_at(self):
         """A RUNNING item already has started_at; cancel should not overwrite it."""
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         submitted = now - timedelta(minutes=10)
         started = now - timedelta(minutes=5)
 
@@ -134,7 +134,7 @@ class TestCancelRunStartedAt:
         item.started_at = item.started_at or item.submitted_at
         item.status = RunItemStatus.FAILED
         item.error = "Cancelled"
-        item.finished_at = datetime.now()
+        item.finished_at = datetime.now(timezone.utc)
 
         assert item.started_at == started  # Not overwritten
 
@@ -154,7 +154,7 @@ class TestRunStatusFailedWithBlockedPending:
             id="r1",
             workflow_name="test",
             backend_name="test",
-            created_at=datetime.now(),
+            created_at=datetime.now(timezone.utc),
             items=[item_a, item_b],
             max_concurrent=5,
         )
@@ -171,7 +171,7 @@ class TestRunStatusFailedWithBlockedPending:
             id="r2",
             workflow_name="test",
             backend_name="test",
-            created_at=datetime.now(),
+            created_at=datetime.now(timezone.utc),
             items=[item_a, item_c],
             max_concurrent=5,
         )
@@ -191,7 +191,7 @@ class TestRunStatusFailedWithBlockedPending:
             id="r3",
             workflow_name="test",
             backend_name="test",
-            created_at=datetime.now(),
+            created_at=datetime.now(timezone.utc),
             items=[item_a, item_b, item_c],
             max_concurrent=5,
         )

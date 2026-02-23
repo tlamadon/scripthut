@@ -1,6 +1,7 @@
 """Tests for git workflow support (clone-then-command)."""
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -467,7 +468,7 @@ class TestCreateRunWithGit:
             id="test1234",
             workflow_name="git-wf",
             backend_name="test-cluster",
-            created_at=__import__("datetime").datetime.now(),
+            created_at=datetime.now(timezone.utc),
             items=[],
             max_concurrent=5,
         )
@@ -512,7 +513,7 @@ class TestCreateRunWithGit:
             id="test1234",
             workflow_name="git-wf",
             backend_name="test-cluster",
-            created_at=__import__("datetime").datetime.now(),
+            created_at=datetime.now(timezone.utc),
             items=[],
             max_concurrent=5,
         )
@@ -547,7 +548,7 @@ class TestCreateRunWithGit:
             id="test1234",
             workflow_name="git-wf",
             backend_name="test-cluster",
-            created_at=__import__("datetime").datetime.now(),
+            created_at=datetime.now(timezone.utc),
             items=[],
             max_concurrent=5,
         )
@@ -579,7 +580,7 @@ class TestCreateRunWithGit:
             id="test1234",
             workflow_name="plain-wf",
             backend_name="test-cluster",
-            created_at=__import__("datetime").datetime.now(),
+            created_at=datetime.now(timezone.utc),
             items=[],
             max_concurrent=5,
         )
@@ -691,7 +692,7 @@ class TestWorkflowGitConfig:
 class TestCommitHashStorage:
     def test_save_and_load_with_commit_hash(self, tmp_path: Path):
         from scripthut.runs.storage import RunStorageManager
-        from datetime import datetime
+
 
         storage = RunStorageManager(base_dir=tmp_path)
         task = TaskDefinition(id="t1", name="Task 1", command="echo hi")
@@ -699,7 +700,7 @@ class TestCommitHashStorage:
             id="abc12345",
             workflow_name="git-wf",
             backend_name="test-cluster",
-            created_at=datetime.now(),
+            created_at=datetime.now(timezone.utc),
             items=[RunItem(task=task)],
             max_concurrent=5,
             commit_hash="abcdef123456",
@@ -713,7 +714,7 @@ class TestCommitHashStorage:
 
     def test_save_and_load_without_commit_hash(self, tmp_path: Path):
         from scripthut.runs.storage import RunStorageManager
-        from datetime import datetime
+
 
         storage = RunStorageManager(base_dir=tmp_path)
         task = TaskDefinition(id="t1", name="Task 1", command="echo hi")
@@ -721,7 +722,7 @@ class TestCommitHashStorage:
             id="xyz12345",
             workflow_name="plain-wf",
             backend_name="test-cluster",
-            created_at=datetime.now(),
+            created_at=datetime.now(timezone.utc),
             items=[RunItem(task=task)],
             max_concurrent=5,
         )

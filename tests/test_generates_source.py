@@ -1,7 +1,7 @@
 """Tests for the generates_source feature and git-aware project structure."""
 
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
 
 import pytest
@@ -54,7 +54,7 @@ def _make_run(
         id="test-r",
         workflow_name=workflow_name,
         backend_name="test-cluster",
-        created_at=datetime.now(),
+        created_at=datetime.now(timezone.utc),
         items=items,
         max_concurrent=5,
     )

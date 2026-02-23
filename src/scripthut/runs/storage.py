@@ -7,13 +7,21 @@ import logging
 import os
 import re
 import shutil
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 from scripthut.runs.models import Run, RunItem, RunItemStatus, TaskDefinition
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_dt(val: str) -> datetime:
+    """Parse an ISO datetime string, ensuring it is UTC-aware."""
+    dt = datetime.fromisoformat(val)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
 
 
 class RunStorageManager:
@@ -119,7 +127,7 @@ class RunStorageManager:
                 id=data["id"],
                 workflow_name=data["workflow_name"],
                 backend_name=data.get("backend_name", data.get("cluster_name")),
-                created_at=datetime.fromisoformat(data["created_at"]),
+                created_at=_parse_dt(data["created_at"]),
                 items=items,
                 max_concurrent=data.get("max_concurrent"),
                 log_dir=data.get("log_dir", "~/.cache/scripthut/logs"),
@@ -235,7 +243,7 @@ class RunStorageManager:
         # Monday of the ISO week
         from datetime import date
         monday = date.fromisocalendar(year, week, 1)
-        created_at = datetime(monday.year, monday.month, monday.day)
+        created_at = datetime(monday.year, monday.month, monday.day, tzinfo=timezone.utc)
 
         run = Run(
             id=week_id,
@@ -267,7 +275,7 @@ class RunStorageManager:
         max_rss: str | None = None,
     ) -> None:
         """Add or update an external job in the appropriate weekly bin."""
-        dt = submit_time or datetime.now()
+        dt = submit_time or datetime.now(timezone.utc)
         run = self.get_or_create_weekly_run(backend_name, dt)
 
         # Check if job already exists
@@ -409,7 +417,7 @@ class RunStorageManager:
 
     def cleanup_old_runs(self) -> int:
         """Remove run directories older than retention period."""
-        cutoff = datetime.now() - timedelta(days=self.RETENTION_DAYS)
+        cutoff = datetime.now(timezone.utc) - timedelta(days=self.RETENTION_DAYS)
         removed = 0
 
         if not self.base_dir.exists():

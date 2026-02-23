@@ -8,7 +8,7 @@ import time
 
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, AsyncGenerator
 
@@ -226,7 +226,7 @@ async def poll_backend(backend_state: BackendState, filter_user: str | None = No
         backend_state.status = ConnectionStatus(
             connected=True,
             host=backend_state.status.host,
-            last_poll=datetime.now(),
+            last_poll=datetime.now(timezone.utc),
             last_poll_duration_ms=duration_ms,
             job_count=len(jobs),
             cpus_total=cluster_cpus[0] if cluster_cpus else None,
@@ -661,7 +661,7 @@ def _apply_job_filters(job_views: list[JobView]) -> list[JobView]:
     if state.filter_enabled and state.filter_user:
         job_views = [j for j in job_views if j.user == state.filter_user]
     if state.live_view:
-        cutoff = datetime.now() - timedelta(hours=12)
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=12)
         job_views = [
             j for j in job_views
             if not (j.is_terminal and j.finish_time and j.finish_time < cutoff)
@@ -915,7 +915,7 @@ async def cancel_external_job(request: Request, slurm_job_id: str) -> HTMLRespon
                         state="failed",
                         submit_time=job.submit_time,
                         start_time=job.start_time,
-                        finish_time=datetime.now(),
+                        finish_time=datetime.now(timezone.utc),
                     )
                     state.run_storage.save_if_dirty(
                         state.run_manager.runs if state.run_manager else {}
@@ -1111,7 +1111,7 @@ async def list_runs() -> dict[str, Any]:
 
 def _compute_gantt_data(run: Run) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Compute layout data for Gantt chart bars."""
-    now = datetime.now()
+    now = datetime.now(timezone.utc)
 
     time_origin = run.created_at
 

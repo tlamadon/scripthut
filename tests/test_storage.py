@@ -1,7 +1,7 @@
 """Tests for RunStorageManager folder-based storage."""
 
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -29,7 +29,7 @@ def _make_run(
         id=run_id,
         workflow_name=workflow_name,
         backend_name=backend_name,
-        created_at=created_at or datetime.now(),
+        created_at=created_at or datetime.now(timezone.utc),
         items=items,
         max_concurrent=5,
     )
@@ -310,7 +310,7 @@ class TestCleanup:
                 task=TaskDefinition(id="t", name="T", command="echo"),
                 status=RunItemStatus.COMPLETED,
             )],
-            created_at=datetime.now() - timedelta(days=60),
+            created_at=datetime.now(timezone.utc) - timedelta(days=60),
         )
         storage.save_run(old_run)
 
@@ -327,7 +327,7 @@ class TestCleanup:
                 task=TaskDefinition(id="t", name="T", command="echo"),
                 status=RunItemStatus.COMPLETED,
             )],
-            created_at=datetime.now() - timedelta(days=5),
+            created_at=datetime.now(timezone.utc) - timedelta(days=5),
         )
         storage.save_run(recent_run)
 
@@ -344,7 +344,7 @@ class TestCleanup:
                 task=TaskDefinition(id="t", name="T", command="echo"),
                 status=RunItemStatus.RUNNING,
             )],
-            created_at=datetime.now() - timedelta(days=60),
+            created_at=datetime.now(timezone.utc) - timedelta(days=60),
         )
         storage.save_run(active_run)
 

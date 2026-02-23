@@ -1,6 +1,6 @@
 """Tests for run restoration from storage."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -24,7 +24,7 @@ def _make_pending_run() -> Run:
         id="pending-r",
         workflow_name="test-workflow",
         backend_name="test-cluster",
-        created_at=datetime.now(),
+        created_at=datetime.now(timezone.utc),
         items=[RunItem(task=_make_task("t1"), status=RunItemStatus.PENDING)],
         max_concurrent=5,
     )
@@ -35,7 +35,7 @@ def _make_completed_run() -> Run:
         id="done-r",
         workflow_name="test-workflow",
         backend_name="test-cluster",
-        created_at=datetime.now(),
+        created_at=datetime.now(timezone.utc),
         items=[RunItem(task=_make_task("t1"), status=RunItemStatus.COMPLETED)],
         max_concurrent=5,
     )
@@ -100,7 +100,7 @@ class TestRestoreFromStorage:
             id="2026-W07",
             workflow_name="_default",
             backend_name="test-cluster",
-            created_at=datetime.now(),
+            created_at=datetime.now(timezone.utc),
             items=[],
             max_concurrent=0,
         )

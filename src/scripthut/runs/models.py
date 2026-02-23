@@ -1,7 +1,7 @@
 """Data models for task runs."""
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
@@ -184,7 +184,12 @@ class RunItem:
         """Deserialize from dictionary."""
 
         def parse_dt(val: str | None) -> datetime | None:
-            return datetime.fromisoformat(val) if val else None
+            if not val:
+                return None
+            dt = datetime.fromisoformat(val)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt
 
         return cls(
             task=TaskDefinition.from_dict(data["task"]),

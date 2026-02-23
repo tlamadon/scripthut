@@ -3,7 +3,7 @@
 import logging
 import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 
 from scripthut.backends.base import JobBackend
 from scripthut.models import JobState, SlurmJob
@@ -101,7 +101,10 @@ def parse_slurm_datetime(dt_str: str) -> datetime | None:
         return None
     try:
         # Slurm uses ISO format: YYYY-MM-DDTHH:MM:SS
-        return datetime.fromisoformat(dt_str.replace("T", " ").split(".")[0])
+        dt = datetime.fromisoformat(dt_str.replace("T", " ").split(".")[0])
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
     except ValueError:
         logger.warning(f"Failed to parse datetime: {dt_str}")
         return None
@@ -318,12 +321,12 @@ class SlurmBackend(JobBackend):
                 # Parse actual start/end timestamps from sacct
                 try:
                     if start_str and start_str not in ("Unknown", "None", "N/A", ""):
-                        sacct_start[raw_id] = datetime.strptime(start_str, "%Y-%m-%dT%H:%M:%S")
+                        sacct_start[raw_id] = datetime.strptime(start_str, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
                 except ValueError:
                     pass
                 try:
                     if end_str and end_str not in ("Unknown", "None", "N/A", ""):
-                        sacct_end[raw_id] = datetime.strptime(end_str, "%Y-%m-%dT%H:%M:%S")
+                        sacct_end[raw_id] = datetime.strptime(end_str, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
                 except ValueError:
                     pass
 
