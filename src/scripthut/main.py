@@ -1129,6 +1129,11 @@ def _compute_gantt_data(run: Run) -> tuple[list[dict[str, Any]], list[dict[str, 
         for ts in (item.finished_at, item.started_at, item.submitted_at):
             if ts and ts > time_end:
                 time_end = ts
+            # Sacct timestamps may be in the cluster's timezone, which can be
+            # earlier than the local created_at.  Expand the origin so bars
+            # aren't clipped to zero width.
+            if ts and ts < time_origin:
+                time_origin = ts
 
     total_span = (time_end - time_origin).total_seconds()
     if total_span <= 0:
