@@ -652,7 +652,7 @@ def _collect_all_job_views() -> list[JobView]:
                         workflow_name="_default",
                     ))
 
-    views.sort(key=lambda v: v.submit_time or datetime.min, reverse=True)
+    views.sort(key=lambda v: v.submit_time or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
     return views
 
 
