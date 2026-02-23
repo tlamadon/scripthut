@@ -27,6 +27,7 @@ from scripthut.runs import Run, RunManager
 from scripthut.runs.models import RunItemStatus
 from scripthut.runs.storage import RunStorageManager
 from scripthut.sources.git import GitSourceManager, SourceStatus
+from scripthut import __version__
 from scripthut.ssh.client import SSHClient
 
 # Terminal sacct states that confirm a job has finished
@@ -523,13 +524,14 @@ async def sync_sources_background() -> None:
 app = FastAPI(
     title="ScriptHut",
     description="Remote job management for Slurm, ECS, and AWS Batch",
-    version="0.1.0",
+    version=__version__,
     lifespan=lifespan,
 )
 
 # Templates
 templates_path = Path(__file__).parent.parent.parent / "templates"
 templates = Jinja2Templates(directory=str(templates_path))
+templates.env.globals["scripthut_version"] = __version__
 
 
 def _backend_job_counts() -> dict[str, int]:
