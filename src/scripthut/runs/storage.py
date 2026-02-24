@@ -260,7 +260,7 @@ class RunStorageManager:
     def add_external_job(
         self,
         backend_name: str,
-        slurm_job_id: str,
+        job_id: str,
         name: str,
         user: str,
         state: str,
@@ -279,7 +279,7 @@ class RunStorageManager:
         run = self.get_or_create_weekly_run(backend_name, dt)
 
         # Check if job already exists
-        existing = run.get_item_by_slurm_id(slurm_job_id)
+        existing = run.get_item_by_job_id(job_id)
         if existing:
             # Update existing
             if state:
@@ -298,7 +298,7 @@ class RunStorageManager:
         else:
             # Create new item
             task = TaskDefinition(
-                id=f"ext-{slurm_job_id}",
+                id=f"ext-{job_id}",
                 name=name,
                 command="",
                 partition=partition,
@@ -314,7 +314,7 @@ class RunStorageManager:
             item = RunItem(
                 task=task,
                 status=status,
-                slurm_job_id=slurm_job_id,
+                job_id=job_id,
                 submitted_at=submit_time,
                 started_at=start_time,
                 finished_at=finish_time,
@@ -325,11 +325,11 @@ class RunStorageManager:
 
         self._dirty_runs.add(run.id)
 
-    def remove_external_job(self, slurm_job_id: str) -> bool:
+    def remove_external_job(self, job_id: str) -> bool:
         """Remove an external job from its weekly bin. Returns True if found and removed."""
         for backend_runs in self._weekly_cache.values():
             for run in backend_runs.values():
-                item = run.get_item_by_slurm_id(slurm_job_id)
+                item = run.get_item_by_job_id(job_id)
                 if item is not None:
                     run.items.remove(item)
                     self._dirty_runs.add(run.id)
@@ -339,7 +339,7 @@ class RunStorageManager:
             if not wf_name.startswith("_default_"):
                 continue
             for run in self.load_runs_for_workflow(wf_name):
-                item = run.get_item_by_slurm_id(slurm_job_id)
+                item = run.get_item_by_job_id(job_id)
                 if item is not None:
                     run.items.remove(item)
                     self.save_run(run)
@@ -347,12 +347,12 @@ class RunStorageManager:
         return False
 
     def reconcile_external_jobs(
-        self, backend_name: str, active_slurm_ids: set[str]
+        self, backend_name: str, active_job_ids: set[str]
     ) -> int:
-        """Mark non-terminal external jobs as completed if no longer in squeue.
+        """Mark non-terminal external jobs as completed if no longer in scheduler queue.
 
         Called after each poll cycle to reconcile stored external jobs against
-        the current set of live Slurm job IDs.  Returns the number of items
+        the current set of live job IDs.  Returns the number of items
         whose status was updated.
         """
         NON_TERMINAL = {RunItemStatus.PENDING, RunItemStatus.SUBMITTED, RunItemStatus.RUNNING}
@@ -376,8 +376,8 @@ class RunStorageManager:
             for item in run.items:
                 if (
                     item.status in NON_TERMINAL
-                    and item.slurm_job_id
-                    and item.slurm_job_id not in active_slurm_ids
+                    and item.job_id
+                    and item.job_id not in active_job_ids
                 ):
                     item.status = RunItemStatus.COMPLETED
                     reconciled += 1

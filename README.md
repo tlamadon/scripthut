@@ -4,20 +4,18 @@
 [![Tests](https://github.com/tlamadon/scripthut/actions/workflows/tests.yml/badge.svg)](https://github.com/tlamadon/scripthut/actions/workflows/tests.yml)
 [![Docker](https://ghcr-badge.egpl.dev/tlamadon/scripthut/latest_tag?trim=major&label=docker)](https://github.com/tlamadon/scripthut/pkgs/container/scripthut)
 
-A Python web interface to start and track jobs on remote systems like Slurm, ECS, and AWS Batch over SSH.
+A Python web interface to start and track jobs on remote HPC systems (Slurm, PBS/Torque) over SSH.
 
 ## Features
 
-- **Multi-backend support** - Monitor multiple Slurm/ECS backends from a single dashboard
-- **Real-time job monitoring** - View running and pending jobs with auto-refresh
-- **Job persistence** - Jobs survive server restarts with automatic 7-day history retention
-- **Task queues** - Submit batches of jobs with configurable concurrency limits and dependencies
-- **Unified job view** - See queue-submitted and external jobs in one dashboard
-- **Git source integration** - Clone job repositories with deploy key support
+- **Multi-backend support** - Monitor multiple Slurm and PBS/Torque clusters from a single dashboard
+- **Real-time job monitoring** - View running and pending jobs with auto-refresh via SSE
+- **Task runs** - Submit batches of jobs with configurable concurrency limits and dependencies
+- **Unified job view** - See run-submitted and external jobs in one dashboard
+- **Git workflow integration** - Clone repos on the backend before running task generators
 - **Persistent SSH connections** - Maintains connections with keepalive and auto-reconnect
 - **HTMX frontend** - Dynamic updates without full page reloads
-- **Type-safe** - Full type annotations with mypy strict mode support
-- **Extensible** - Abstract backend system ready for ECS/AWS Batch support
+- **Extensible** - Abstract backend system ready for additional schedulers
 
 ## Examples
 
@@ -74,14 +72,21 @@ backends:
       port: 22
       user: researcher
       key_path: ~/.ssh/id_rsa
+    account: my-allocation       # optional: --account flag
+    login_shell: false           # optional: use #!/bin/bash -l
+    max_concurrent: 100          # optional: max jobs across all runs
 
-  # ECS backend (coming soon)
-  - name: production-ecs
-    type: ecs
-    aws:
-      profile: my-aws-profile
-      region: us-east-1
-      cluster_name: my-ecs-cluster
+  # PBS/Torque cluster
+  - name: pbs-cluster
+    type: pbs
+    ssh:
+      host: pbs-login.cluster.edu
+      user: researcher
+      key_path: ~/.ssh/id_rsa
+    account: my-allocation       # optional: -A flag
+    queue: batch                 # optional: default queue (overrides task partition)
+    login_shell: false
+    max_concurrent: 100
 
 # Git repositories with job definitions
 sources:
@@ -101,17 +106,27 @@ settings:
 
 #### Backends
 
+**Common fields (Slurm and PBS):**
+
 | Field | Description |
 |-------|-------------|
 | `name` | Unique identifier for the backend |
-| `type` | Backend type: `slurm` or `ecs` |
-| `ssh.host` | SSH hostname (Slurm only) |
+| `type` | Backend type: `slurm`, `pbs`, or `ecs` |
+| `ssh.host` | SSH hostname |
 | `ssh.port` | SSH port (default: 22) |
 | `ssh.user` | SSH username |
 | `ssh.key_path` | Path to SSH private key |
-| `aws.profile` | AWS CLI profile name (ECS only) |
-| `aws.region` | AWS region (ECS only) |
-| `aws.cluster_name` | ECS cluster name |
+| `ssh.cert_path` | Path to SSH certificate (optional) |
+| `ssh.known_hosts` | Path to known_hosts file (optional) |
+| `account` | Account to charge jobs to (Slurm `--account`, PBS `-A`) |
+| `login_shell` | Use `#!/bin/bash -l` in submission scripts (default: false) |
+| `max_concurrent` | Max concurrent jobs across all runs (default: 100) |
+
+**PBS-specific:**
+
+| Field | Description |
+|-------|-------------|
+| `queue` | Default PBS queue (overrides task `partition` field) |
 
 #### Sources
 
@@ -158,16 +173,16 @@ Open http://127.0.0.1:8000 in your browser.
 | `GET /jobs/stream` | SSE endpoint for live updates |
 | `POST /filter/toggle` | Toggle user filter on/off |
 
-#### Queues
+#### Runs
 
 | Endpoint | Description |
 |----------|-------------|
-| `GET /queues` | Queue management page |
-| `GET /queues/{id}` | Queue detail page |
-| `GET /queues/{id}/items` | HTMX partial for queue items |
-| `POST /queues/{id}/cancel` | Cancel all pending/running items |
-| `GET /queues/{id}/tasks/{task_id}/script` | View sbatch script |
-| `GET /queues/{id}/tasks/{task_id}/logs/{type}` | View task logs (output/error) |
+| `GET /runs` | Run management page |
+| `GET /runs/{id}` | Run detail page |
+| `GET /runs/{id}/items` | HTMX partial for run items |
+| `POST /runs/{id}/cancel` | Cancel all pending/running items |
+| `GET /runs/{id}/tasks/{task_id}/script` | View submission script |
+| `GET /runs/{id}/tasks/{task_id}/logs/{type}` | View task logs (output/error) |
 
 #### Workflows
 
@@ -193,75 +208,66 @@ ScriptHut tracks several interconnected resources. Understanding their lifecycle
 
 Jobs are the primary resource displayed on the dashboard. ScriptHut tracks jobs from two sources:
 
-- **Queue jobs**: Submitted through ScriptHut's task queue system
-- **External jobs**: Detected via SLURM polling (jobs submitted outside ScriptHut)
+- **Run jobs**: Submitted through ScriptHut's run system
+- **External jobs**: Detected via scheduler polling (jobs submitted outside ScriptHut)
 
 #### Job States
 
 ```
 ┌─────────┐     ┌───────────┐     ┌─────────┐     ┌───────────┐
-│ PENDING │────▶│ SUBMITTED │────▶│ RUNNING │────▶│ COMPLETED │
+│ PENDING │────>│ SUBMITTED │────>│ RUNNING │────>│ COMPLETED │
 └─────────┘     └───────────┘     └─────────┘     └───────────┘
      │               │                 │
      │               │                 │          ┌────────┐
-     └───────────────┴─────────────────┴─────────▶│ FAILED │
+     └───────────────┴─────────────────┴─────────>│ FAILED │
                                                    └────────┘
 ```
 
 | State | Description |
 |-------|-------------|
-| `pending` | Job is in a queue, waiting to be submitted to SLURM |
-| `submitted` | Job has been submitted to SLURM (`sbatch`), waiting in SLURM queue |
+| `pending` | Job is in a run, waiting to be submitted to the scheduler |
+| `submitted` | Job has been submitted (sbatch/qsub), waiting in scheduler queue |
 | `running` | Job is actively executing on compute nodes |
-| `completed` | Job finished successfully (disappeared from `squeue`) |
+| `completed` | Job finished successfully |
 | `failed` | Job failed, was cancelled, timed out, or encountered an error |
 | `dep_failed` | Job was skipped because a dependency failed |
 
-#### Job Persistence
+### Runs
 
-Jobs are persisted to `~/.cache/scripthut/job_history.json`:
+Runs are batches of tasks created from a Workflow. Each run manages multiple jobs with configurable concurrency.
 
-- History survives server restarts
-- Jobs are saved after each polling cycle
-- Completed/failed jobs older than 7 days are automatically cleaned up
-- External jobs are added to history when first detected via polling
-
-### Queues
-
-Queues are batches of tasks created from a Workflow. Each queue manages multiple jobs with configurable concurrency.
-
-#### Queue Lifecycle
+#### Run Lifecycle
 
 ```
 ┌─────────────────┐
 │    Workflow     │  (SSH command returns JSON task list)
 └────────┬────────┘
          │ POST /workflows/{name}/run
-         ▼
+         v
 ┌─────────────────┐
-│  Queue Created  │  (All tasks registered as PENDING jobs)
+│  Run Created    │  (All tasks registered as PENDING)
 └────────┬────────┘
          │ Submit up to max_concurrent tasks
-         ▼
+         v
 ┌─────────────────┐
-│ Queue Running   │  (Mix of PENDING, SUBMITTED, RUNNING tasks)
+│  Run Running    │  (Mix of PENDING, SUBMITTED, RUNNING tasks)
 └────────┬────────┘
          │ As tasks complete, new ones are submitted
-         ▼
+         v
 ┌─────────────────┐
-│ Queue Completed │  (All tasks COMPLETED or FAILED)
+│  Run Completed  │  (All tasks COMPLETED or FAILED)
 └─────────────────┘
 ```
 
-#### Queue States
+#### Run States
 
 | State | Description |
 |-------|-------------|
-| `pending` | Queue created but no tasks submitted yet |
+| `pending` | Run created but no tasks submitted yet |
 | `running` | Has tasks that are submitted or running |
 | `completed` | All tasks completed successfully |
 | `failed` | Some tasks failed (others may have completed) |
-| `cancelled` | Queue was manually cancelled |
+| `cancelled` | Run was manually cancelled |
 
 ### Workflows
 
@@ -311,9 +317,9 @@ When a workflow has a `git` section, ScriptHut will:
 
 **Working directory resolution:** When a git workflow is active, each task's `working_dir` is resolved relative to the clone directory:
 
-- **Default** (`~` or omitted) — set to the clone directory
-- **Relative path** (e.g., `simulations`, `src/analysis`) — joined as `<clone_dir>/<working_dir>`
-- **Absolute path** (e.g., `/scratch/data`) or home-relative (e.g., `~/other`) — used as-is
+- **Default** (`~` or omitted) -- set to the clone directory
+- **Relative path** (e.g., `simulations`, `src/analysis`) -- joined as `<clone_dir>/<working_dir>`
+- **Absolute path** (e.g., `/scratch/data`) or home-relative (e.g., `~/other`) -- used as-is
 
 #### Task JSON Format
 
@@ -343,9 +349,9 @@ The command must return JSON in one of these formats:
 | `command` | Yes | Shell command to execute |
 | `deps` | No | List of task IDs this task depends on (supports wildcards) |
 | `working_dir` | No | Working directory (default: `~`); relative paths are resolved against the git clone directory for git workflows |
-| `partition` | No | SLURM partition (default: `normal`) |
+| `partition` | No | Scheduler partition/queue (default: `normal`). On PBS backends, the config-level `queue` field takes precedence |
 | `cpus` | No | CPUs per task (default: `1`) |
-| `memory` | No | Memory allocation (default: `4G`) |
+| `memory` | No | Memory allocation (default: `4G`). Automatically converted to PBS format (e.g., `4G` becomes `4gb`) |
 | `time_limit` | No | Time limit (default: `1:00:00`) |
 | `output_file` | No | Custom stdout log path |
 | `error_file` | No | Custom stderr log path |
@@ -393,11 +399,11 @@ Supported patterns:
 | `step.?` | `step.1`, `step.2`, but not `step.10` |
 | `data.[ab]` | `data.a` and `data.b` |
 
-Tasks with dot-notation IDs are also displayed hierarchically in the queue detail UI, grouped by their prefix.
+Tasks with dot-notation IDs are also displayed hierarchically in the run detail UI, grouped by their prefix.
 
 ### Environments
 
-Environments let you define reusable sets of environment variables and initialization commands in `scripthut.yaml`. Tasks reference an environment by name, and the corresponding variables and init lines are injected into the generated sbatch script.
+Environments let you define reusable sets of environment variables and initialization commands in `scripthut.yaml`. Tasks reference an environment by name, and the corresponding variables and init lines are injected into the generated submission script.
 
 #### Defining Environments
 
@@ -436,14 +442,12 @@ Tasks declare which environment to use via the `environment` field in their JSON
 ]
 ```
 
-This produces an sbatch script like:
+This produces a submission script like:
 
 ```bash
 #!/bin/bash -l
-#SBATCH --job-name="Solve Model"
-#SBATCH ...
-
-echo "=== ScriptHut Task: Solve Model ==="
+#SBATCH --job-name="Solve Model"    # Slurm
+#PBS -N Solve Model                  # or PBS
 ...
 
 export JULIA_DEPOT_PATH="/scratch/user/julia_depot"
@@ -475,7 +479,7 @@ When both a named `environment` and per-task `env_vars` are set, they are merged
 
 #### Automatic ScriptHut Variables
 
-ScriptHut automatically injects environment variables into every job's sbatch script. These are always present:
+ScriptHut automatically injects environment variables into every submission script. These are always present:
 
 | Variable | Description | Example |
 |----------|-------------|---------|
@@ -505,27 +509,27 @@ This means a generator can override any variable, including the automatic ones, 
 
 ```
                                     ┌─────────────────────┐
-                                    │   Job History       │
-                                    │   (JSON file)       │
+                                    │   Run Storage       │
+                                    │   (JSON files)      │
                                     └──────────┬──────────┘
                                                │
-                                               ▼
+                                               v
 ┌──────────────┐    polling    ┌─────────────────────────────┐    display
-│ SLURM        │◀─────────────▶│     ScriptHut Server        │─────────────▶ Web UI
-│ Cluster      │    squeue     │                             │
+│ HPC Cluster  │<─────────────>│     ScriptHut Server        │────────────> Web UI
+│ (Slurm/PBS)  │  squeue/qstat │                             │
 └──────────────┘               │  ┌─────────────────────┐    │
-       ▲                       │  │ JobHistoryManager   │    │
-       │ sbatch                │  │ - register jobs     │    │
+       ^                       │  │ RunManager          │    │
+       │ sbatch/qsub           │  │ - create runs       │    │
        │                       │  │ - update states     │    │
 ┌──────┴───────┐               │  │ - persist to JSON   │    │
-│ Queue        │◀──────────────│  └─────────────────────┘    │
-│ Manager      │  submit tasks │                             │
+│ Job Backend  │<──────────────│  └─────────────────────┘    │
+│ (abstract)   │  submit tasks │                             │
 └──────────────┘               └─────────────────────────────┘
-       ▲
-       │ create queue
+       ^
+       │ create run
        │
 ┌──────┴───────┐
-│  Workflow    │  (SSH command → JSON tasks)
+│  Workflow    │  (SSH command -> JSON tasks)
 └──────────────┘
 ```
 
@@ -536,46 +540,62 @@ src/scripthut/
 ├── main.py           # FastAPI app, routes, background polling
 ├── config.py         # Configuration loading (YAML + .env)
 ├── config_schema.py  # Pydantic models for YAML schema
-├── models.py         # Data models (SlurmJob, JobState, ConnectionStatus)
+├── models.py         # Data models (HPCJob, JobState, ConnectionStatus)
 ├── ssh/
 │   └── client.py     # Async SSH client with connection management
 ├── backends/
-│   ├── base.py       # Abstract JobBackend interface
-│   └── slurm.py      # Slurm implementation (squeue parsing)
+│   ├── base.py       # Abstract JobBackend interface + JobStats
+│   ├── utils.py      # Shared utilities (duration parsing, script body generation)
+│   ├── slurm.py      # Slurm implementation (squeue/sacct/sbatch/scancel/sinfo)
+│   └── pbs.py        # PBS/Torque implementation (qstat/qsub/qdel/pbsnodes)
 ├── sources/
 │   └── git.py        # Git repository management with deploy keys
-├── queues/
-│   ├── models.py     # Queue, QueueItem, TaskDefinition models
-│   └── manager.py    # Queue lifecycle and task submission
-└── history/
-    ├── models.py     # UnifiedJob model for persistence
-    └── manager.py    # JobHistoryManager for JSON persistence
+└── runs/
+    ├── models.py     # Run, RunItem, TaskDefinition models
+    ├── manager.py    # Run lifecycle and task submission
+    └── storage.py    # Folder-based JSON persistence
 ```
+
+### Supported Backends
+
+| Backend | Scheduler | Commands | Status |
+|---------|-----------|----------|--------|
+| Slurm | sbatch, squeue, sacct, scancel, sinfo | Submit, monitor, cancel, resource stats | Stable |
+| PBS/Torque | qsub, qstat, qdel, pbsnodes | Submit, monitor, cancel, resource stats | New |
+| ECS | AWS ECS API | -- | Planned |
 
 ### Adding New Backends
 
-To add support for a new job system (e.g., AWS Batch):
+To add support for a new job system:
 
 1. Create a new file in `src/scripthut/backends/` (e.g., `batch.py`)
-2. Implement the `JobBackend` abstract class
-3. Define appropriate job models in `models.py`
+2. Implement the `JobBackend` abstract class from `backends/base.py`
+3. Add a config model in `config_schema.py` and add it to the `BackendConfig` union
+4. Wire it into `init_backend()` in `main.py`
 
 ```python
-from scripthut.backends.base import JobBackend
+from scripthut.backends.base import JobBackend, JobStats
 
-class BatchBackend(JobBackend):
+class MyBackend(JobBackend):
     @property
     def name(self) -> str:
-        return "aws-batch"
+        return "my-backend"
 
-    async def get_jobs(self, user: str | None = None) -> list[BatchJob]:
-        # Implementation here
-        ...
+    async def get_jobs(self, user=None) -> list[HPCJob]: ...
+    async def submit_job(self, script: str) -> str: ...
+    async def cancel_job(self, job_id: str) -> None: ...
+    async def get_job_stats(self, job_ids, user=None) -> dict[str, JobStats]: ...
+    async def get_cluster_info(self) -> tuple[int, int] | None: ...
+    def generate_script(self, task, run_id, log_dir, **kwargs) -> str: ...
+    async def is_available(self) -> bool: ...
 
-    async def is_available(self) -> bool:
-        # Implementation here
-        ...
+    @property
+    def failure_states(self) -> dict[str, str]: ...
+    @property
+    def terminal_states(self) -> frozenset[str]: ...
 ```
+
+Shared utilities in `backends/utils.py` (duration parsing, memory formatting, script body generation) can be reused across backends.
 
 ## Development
 
@@ -594,16 +614,17 @@ pytest
 
 - [x] **Phase 1**: Multi-backend Slurm monitoring
 - [x] **Phase 1**: Git source integration with deploy keys
-- [x] **Phase 2**: Submit jobs to Slurm from UI (task queues)
+- [x] **Phase 2**: Submit jobs to Slurm from UI (task runs)
 - [x] **Phase 2**: Job persistence and history
 - [x] **Phase 2**: Job logs viewer
+- [x] **Phase 3**: PBS/Torque backend support
 - [ ] **Phase 3**: ECS/AWS Batch support
 - [ ] **Phase 4**: Job notifications and alerts
 
 ## Requirements
 
 - Python 3.11+
-- SSH access to remote Slurm clusters with key-based authentication
+- SSH access to remote HPC clusters (Slurm or PBS/Torque) with key-based authentication
 
 ## License
 

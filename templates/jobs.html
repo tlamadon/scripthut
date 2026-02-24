@@ -74,8 +74,8 @@
             {% for job in job_views %}
             <tr class="hover:bg-gray-50 {% if job.source == 'run' %}bg-blue-50/30{% endif %}">
                 <td class="px-4 py-3 whitespace-nowrap text-sm font-mono text-gray-900">
-                    {% if job.slurm_job_id %}
-                    {{ job.slurm_job_id }}
+                    {% if job.job_id %}
+                    {{ job.job_id }}
                     {% else %}
                     <span class="text-gray-400 italic">pending</span>
                     {% endif %}
@@ -169,20 +169,20 @@
                     {% endif %}
                 </td>
                 <td class="px-4 py-3 whitespace-nowrap text-sm">
-                    {% if job.source == 'external' and job.slurm_job_id %}
+                    {% if job.source == 'external' and job.job_id %}
                         {% if not job.is_terminal %}
-                        <button hx-post="/jobs/{{ job.slurm_job_id }}/cancel"
+                        <button hx-post="/jobs/{{ job.job_id }}/cancel"
                                 hx-target="#jobs-section" hx-swap="innerHTML"
-                                hx-confirm="Cancel job {{ job.slurm_job_id }}?"
+                                hx-confirm="Cancel job {{ job.job_id }}?"
                                 class="text-gray-400 hover:text-red-600" title="Cancel job">
                             <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
                                 <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
                             </svg>
                         </button>
                         {% else %}
-                        <button hx-delete="/jobs/{{ job.slurm_job_id }}"
+                        <button hx-delete="/jobs/{{ job.job_id }}"
                                 hx-target="#jobs-section" hx-swap="innerHTML"
-                                hx-confirm="Remove job {{ job.slurm_job_id }} from history?"
+                                hx-confirm="Remove job {{ job.job_id }} from history?"
                                 class="text-gray-400 hover:text-red-600" title="Remove from history">
                             <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
                                 <path stroke-linecap="round" stroke-linejoin="round"

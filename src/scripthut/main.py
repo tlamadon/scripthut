@@ -19,10 +19,12 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.templating import Jinja2Templates
 from sse_starlette.sse import EventSourceResponse
 
-from scripthut.backends.slurm import SLURM_FAILURE_STATES, JobStats, SlurmBackend
+from scripthut.backends.base import JobBackend, JobStats
+from scripthut.backends.pbs import PBSBackend
+from scripthut.backends.slurm import SlurmBackend
 from scripthut.config import load_config, set_config
-from scripthut.config_schema import ScriptHutConfig, SlurmBackendConfig
-from scripthut.models import ConnectionStatus, JobState, SlurmJob
+from scripthut.config_schema import PBSBackendConfig, ScriptHutConfig, SlurmBackendConfig
+from scripthut.models import ConnectionStatus, HPCJob, JobState
 from scripthut.runs import Run, RunManager
 from scripthut.runs.models import RunItemStatus
 from scripthut.runs.storage import RunStorageManager
@@ -30,12 +32,6 @@ from scripthut.sources.git import GitSourceManager, SourceStatus
 from scripthut import __version__
 from scripthut.ssh.client import SSHClient
 
-# Terminal sacct states that confirm a job has finished
-_SACCT_TERMINAL = frozenset({
-    "COMPLETED", "FAILED", "CANCELLED", "TIMEOUT",
-    "OUT_OF_MEMORY", "NODE_FAIL", "PREEMPTED",
-    "DEADLINE", "BOOT_FAIL",
-})
 
 logging.basicConfig(
     level=logging.INFO,
@@ -51,8 +47,8 @@ class BackendState:
     name: str
     backend_type: str
     ssh_client: SSHClient | None = None
-    backend: SlurmBackend | None = None
-    jobs: list[SlurmJob] = field(default_factory=list)
+    backend: JobBackend | None = None
+    jobs: list[HPCJob] = field(default_factory=list)
     status: ConnectionStatus = field(
         default_factory=lambda: ConnectionStatus(connected=False, host="")
     )
@@ -106,7 +102,7 @@ class AppState:
             return False
 
     @property
-    def all_jobs(self) -> list[tuple[str, SlurmJob]]:
+    def all_jobs(self) -> list[tuple[str, HPCJob]]:
         """Get all jobs from all backends with backend name."""
         jobs = []
         for backend_name, backend_state in self.backends.items():
@@ -114,7 +110,7 @@ class AppState:
                 jobs.append((backend_name, job))
         return jobs
 
-    def get_filtered_jobs(self) -> list[tuple[str, SlurmJob]]:
+    def get_filtered_jobs(self) -> list[tuple[str, HPCJob]]:
         """Get jobs - filtering now happens server-side during polling."""
         return self.all_jobs
 
@@ -130,8 +126,8 @@ state = AppState()
 _config_path: Path | None = None
 
 
-async def init_backend(backend_config: SlurmBackendConfig) -> BackendState:
-    """Initialize a Slurm backend connection."""
+async def init_backend(backend_config: SlurmBackendConfig | PBSBackendConfig) -> BackendState:
+    """Initialize an SSH-based backend connection (Slurm or PBS)."""
     ssh_client = SSHClient(
         host=backend_config.ssh.host,
         user=backend_config.ssh.user,
@@ -141,11 +137,20 @@ async def init_backend(backend_config: SlurmBackendConfig) -> BackendState:
         known_hosts=backend_config.ssh.known_hosts_resolved,
     )
 
+    # Create the appropriate backend implementation
+    backend: JobBackend
+    if isinstance(backend_config, PBSBackendConfig):
+        backend = PBSBackend(ssh_client, default_queue=backend_config.queue)
+        backend_type = "pbs"
+    else:
+        backend = SlurmBackend(ssh_client)
+        backend_type = "slurm"
+
     backend_state = BackendState(
         name=backend_config.name,
-        backend_type="slurm",
+        backend_type=backend_type,
         ssh_client=ssh_client,
-        backend=SlurmBackend(ssh_client),
+        backend=backend,
         status=ConnectionStatus(connected=False, host=backend_config.ssh.host),
     )
 
@@ -155,7 +160,7 @@ async def init_backend(backend_config: SlurmBackendConfig) -> BackendState:
             connected=True,
             host=backend_config.ssh.host,
         )
-        logger.info(f"Connected to backend '{backend_config.name}' ({backend_config.ssh.host})")
+        logger.info(f"Connected to {backend_type} backend '{backend_config.name}' ({backend_config.ssh.host})")
     except Exception as e:
         logger.error(f"Failed to connect to backend '{backend_config.name}': {e}")
         backend_state.status = ConnectionStatus(
@@ -211,7 +216,7 @@ async def poll_backend(backend_state: BackendState, filter_user: str | None = No
     start_time = time.perf_counter()
     try:
         jobs = await backend_state.backend.get_jobs(user=filter_user)
-        cluster_cpus = await backend_state.backend.get_cluster_cpus()
+        cluster_cpus = await backend_state.backend.get_cluster_info()
         duration_ms = int((time.perf_counter() - start_time) * 1000)
         backend_state.jobs = jobs
 
@@ -235,7 +240,7 @@ async def poll_backend(backend_state: BackendState, filter_user: str | None = No
         )
         logger.debug(f"Polled {len(jobs)} jobs from '{backend_state.name}' in {duration_ms}ms")
 
-        # Collect slurm_job_ids that need sacct data.
+        # Collect job_ids that need accounting stats data.
         # Keep querying sacct until each item's sacct_state is confirmed.
         sacct_ids: list[str] = []
         if state.run_manager:
@@ -243,10 +248,10 @@ async def poll_backend(backend_state: BackendState, filter_user: str | None = No
                 if run.backend_name != backend_state.name:
                     continue
                 for item in run.items:
-                    if (item.slurm_job_id
+                    if (item.job_id
                         and item.status in (RunItemStatus.COMPLETED, RunItemStatus.FAILED)
-                        and item.sacct_state is None):
-                        sacct_ids.append(item.slurm_job_id)
+                        and item.scheduler_state is None):
+                        sacct_ids.append(item.job_id)
 
         # Query sacct for resource utilization
         job_stats: dict[str, JobStats] = {}
@@ -265,8 +270,8 @@ async def poll_backend(backend_state: BackendState, filter_user: str | None = No
                     continue
                 run_updated = False
                 for item in run.items:
-                    if item.slurm_job_id and item.slurm_job_id in job_stats:
-                        s = job_stats[item.slurm_job_id]
+                    if item.job_id and item.job_id in job_stats:
+                        s = job_stats[item.job_id]
                         item.cpu_efficiency = s.cpu_efficiency
                         item.max_rss = s.max_rss
                         if s.start_time:
@@ -274,29 +279,29 @@ async def poll_backend(backend_state: BackendState, filter_user: str | None = No
                         if s.end_time:
                             item.finished_at = s.end_time
                         run_updated = True
-                        # Record confirmed sacct state (stops re-querying)
-                        # Only lock on terminal states — sacct can return
+                        # Record confirmed scheduler state (stops re-querying)
+                        # Only lock on terminal states — accounting DB can return
                         # RUNNING/PENDING when the DB hasn't caught up yet.
-                        if s.state and s.state in _SACCT_TERMINAL:
-                            item.sacct_state = s.state
-                        # Correct false completions: sacct says failed but
-                        # item was marked COMPLETED because it vanished from squeue
+                        if s.state and s.state in backend_state.backend.terminal_states:
+                            item.scheduler_state = s.state
+                        # Correct false completions: accounting says failed but
+                        # item was marked COMPLETED because it vanished from queue
                         if (
                             s.state
-                            and s.state in SLURM_FAILURE_STATES
+                            and s.state in backend_state.backend.failure_states
                             and item.status == RunItemStatus.COMPLETED
                         ):
-                            reason = SLURM_FAILURE_STATES[s.state]
+                            reason = backend_state.backend.failure_states[s.state]
                             item.status = RunItemStatus.FAILED
-                            item.error = f"Slurm: {reason}"
+                            item.error = f"Scheduler: {reason}"
                             logger.info(
                                 f"Corrected task '{item.task.id}' "
-                                f"(job {item.slurm_job_id}): {reason}"
+                                f"(job {item.job_id}): {reason}"
                             )
                         elif s.state:
                             logger.debug(
                                 f"sacct state for '{item.task.id}' "
-                                f"(job {item.slurm_job_id}): {s.state}"
+                                f"(job {item.job_id}): {s.state}"
                             )
                 if run_updated:
                     state.run_manager._persist_run(run)
@@ -307,8 +312,8 @@ async def poll_backend(backend_state: BackendState, filter_user: str | None = No
             known_slurm_ids: set[str] = set()
             for run in state.run_manager.runs.values():
                 for item in run.items:
-                    if item.slurm_job_id:
-                        known_slurm_ids.add(item.slurm_job_id)
+                    if item.job_id:
+                        known_slurm_ids.add(item.job_id)
 
             slurm_state_to_run_status = {
                 JobState.PENDING: "submitted",
@@ -331,7 +336,7 @@ async def poll_backend(backend_state: BackendState, filter_user: str | None = No
                     stats = job_stats.get(slurm_job.job_id)
                     state.run_storage.add_external_job(
                         backend_name=backend_state.name,
-                        slurm_job_id=slurm_job.job_id,
+                        job_id=slurm_job.job_id,
                         name=slurm_job.name,
                         user=slurm_job.user,
                         state=run_status,
@@ -450,8 +455,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     if config.sources:
         asyncio.create_task(sync_sources_background())
 
-    # Initialize backends
+    # Initialize backends (Slurm and PBS share SSH-based init)
     for backend_config in config.slurm_backends:
+        backend_state = await init_backend(backend_config)
+        state.backends[backend_config.name] = backend_state
+
+    for backend_config in config.pbs_backends:
         backend_state = await init_backend(backend_config)
         state.backends[backend_config.name] = backend_state
 
@@ -465,7 +474,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         for name, cs in state.backends.items()
         if cs.ssh_client is not None
     }
-    state.run_manager = RunManager(config, ssh_clients, storage=state.run_storage)
+    job_backends: dict[str, JobBackend] = {
+        name: bs.backend
+        for name, bs in state.backends.items()
+        if bs.backend is not None
+    }
+    state.run_manager = RunManager(
+        config, ssh_clients, storage=state.run_storage, job_backends=job_backends,
+    )
     logger.info(f"Initialized run manager with {len(config.workflows)} workflows")
 
     # Restore runs from storage
@@ -548,7 +564,7 @@ def _backend_job_counts() -> dict[str, int]:
 @dataclass
 class JobView:
     """Lightweight view model for the jobs dashboard table."""
-    slurm_job_id: str | None
+    job_id: str | None
     name: str
     user: str
     backend_name: str
@@ -600,7 +616,7 @@ def _collect_all_job_views() -> list[JobView]:
     for run in state.run_manager.runs.values():
         for item in run.items:
             views.append(JobView(
-                slurm_job_id=item.slurm_job_id,
+                job_id=item.job_id,
                 name=item.task.name,
                 user=user,
                 backend_name=run.backend_name,
@@ -630,7 +646,7 @@ def _collect_all_job_views() -> list[JobView]:
             for run in state.run_storage.load_runs_for_workflow(wf_name):
                 for item in run.items:
                     views.append(JobView(
-                        slurm_job_id=item.slurm_job_id,
+                        job_id=item.job_id,
                         name=item.task.name,
                         user=user,
                         backend_name=run.backend_name,
@@ -895,21 +911,21 @@ async def filter_status() -> dict[str, Any]:
     }
 
 
-@app.post("/jobs/{slurm_job_id}/cancel", response_class=HTMLResponse)
-async def cancel_external_job(request: Request, slurm_job_id: str) -> HTMLResponse:
-    """Cancel an external Slurm job via scancel."""
+@app.post("/jobs/{job_id}/cancel", response_class=HTMLResponse)
+async def cancel_external_job(request: Request, job_id: str) -> HTMLResponse:
+    """Cancel an external job via the scheduler."""
     for bs in state.backends.values():
         for job in bs.jobs:
-            if job.job_id == slurm_job_id:
-                if bs.ssh_client:
-                    await bs.ssh_client.run_command(f"scancel {slurm_job_id}")
+            if job.job_id == job_id:
+                if bs.backend:
+                    await bs.backend.cancel_job(job_id)
                 # Update in-memory state so the UI reflects the change immediately
                 job.state = JobState.CANCELLED
                 # Update storage
                 if state.run_storage:
                     state.run_storage.add_external_job(
                         backend_name=bs.name,
-                        slurm_job_id=slurm_job_id,
+                        job_id=job_id,
                         name=job.name,
                         user=job.user,
                         state="failed",
@@ -934,11 +950,11 @@ async def clear_stale_external_jobs(request: Request) -> HTMLResponse:
     return await jobs_partial(request)
 
 
-@app.delete("/jobs/{slurm_job_id}", response_class=HTMLResponse)
-async def delete_external_job(request: Request, slurm_job_id: str) -> HTMLResponse:
+@app.delete("/jobs/{job_id}", response_class=HTMLResponse)
+async def delete_external_job(request: Request, job_id: str) -> HTMLResponse:
     """Remove a completed external job from history."""
     if state.run_storage:
-        state.run_storage.remove_external_job(slurm_job_id)
+        state.run_storage.remove_external_job(job_id)
     return await jobs_partial(request)
 
 
@@ -1373,7 +1389,7 @@ async def view_task_script(request: Request, run_id: str, task_id: str) -> HTMLR
             {"request": request, "title": "Script", "content": None, "error": f"Task '{task_id}' not found"},
         )
 
-    script = item.sbatch_script
+    script = item.submit_script
     if script is None:
         log_dir = run.log_dir
         backend_state = state.backends.get(run.backend_name)
@@ -1384,10 +1400,17 @@ async def view_task_script(request: Request, run_id: str, task_id: str) -> HTMLR
             except Exception:
                 pass
         env_vars, extra_init = state.run_manager._resolve_environment(item.task)
-        script = item.task.to_sbatch_script(
-            run.id, log_dir, account=run.account, login_shell=run.login_shell,
-            env_vars=env_vars, extra_init=extra_init,
-        )
+        job_backend = state.run_manager.get_job_backend(run.backend_name)
+        if job_backend:
+            script = job_backend.generate_script(
+                item.task, run.id, log_dir, account=run.account,
+                login_shell=run.login_shell, env_vars=env_vars, extra_init=extra_init,
+            )
+        else:
+            script = item.task.to_sbatch_script(
+                run.id, log_dir, account=run.account, login_shell=run.login_shell,
+                env_vars=env_vars, extra_init=extra_init,
+            )
 
     return templates.TemplateResponse(
         "log_viewer.html",
@@ -1434,7 +1457,7 @@ async def get_task_detail(
         else:
             path = item.task.get_error_path(run.id, run.log_dir)
     elif detail_type == "script":
-        content = item.sbatch_script
+        content = item.submit_script
         if content is None:
             log_dir = run.log_dir
             backend_state = state.backends.get(run.backend_name)
@@ -1445,10 +1468,17 @@ async def get_task_detail(
                 except Exception:
                     pass
             env_vars, extra_init = state.run_manager._resolve_environment(item.task)
-            content = item.task.to_sbatch_script(
-                run.id, log_dir, account=run.account, login_shell=run.login_shell,
-                env_vars=env_vars, extra_init=extra_init,
-            )
+            job_backend = state.run_manager.get_job_backend(run.backend_name)
+            if job_backend:
+                content = job_backend.generate_script(
+                    item.task, run.id, log_dir, account=run.account,
+                    login_shell=run.login_shell, env_vars=env_vars, extra_init=extra_init,
+                )
+            else:
+                content = item.task.to_sbatch_script(
+                    run.id, log_dir, account=run.account, login_shell=run.login_shell,
+                    env_vars=env_vars, extra_init=extra_init,
+                )
     elif detail_type == "json":
         task_data: dict[str, Any] = {
             "id": item.task.id,
@@ -1468,7 +1498,7 @@ async def get_task_detail(
         item_data: dict[str, Any] = {
             "task": task_data,
             "status": item.status.value,
-            "slurm_job_id": item.slurm_job_id,
+            "job_id": item.job_id,
             "submitted_at": item.submitted_at.isoformat() if item.submitted_at else None,
             "started_at": item.started_at.isoformat() if item.started_at else None,
             "finished_at": item.finished_at.isoformat() if item.finished_at else None,
@@ -1530,7 +1560,7 @@ async def view_task_json(request: Request, run_id: str, task_id: str) -> HTMLRes
     item_data: dict[str, Any] = {
         "task": task_data,
         "status": item.status.value,
-        "slurm_job_id": item.slurm_job_id,
+        "job_id": item.job_id,
         "submitted_at": item.submitted_at.isoformat() if item.submitted_at else None,
         "started_at": item.started_at.isoformat() if item.started_at else None,
         "finished_at": item.finished_at.isoformat() if item.finished_at else None,

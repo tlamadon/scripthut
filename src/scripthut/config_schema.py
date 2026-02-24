@@ -73,6 +73,31 @@ class SlurmBackendConfig(BaseModel):
     )
 
 
+class PBSBackendConfig(BaseModel):
+    """PBS/Torque backend configuration."""
+
+    name: str = Field(description="Unique identifier for this backend")
+    type: Literal["pbs"] = "pbs"
+    ssh: SSHConfig = Field(description="SSH connection settings")
+    account: str | None = Field(
+        default=None,
+        description="PBS account to charge jobs to (-A flag)",
+    )
+    login_shell: bool = Field(
+        default=False,
+        description="Use login shell (#!/bin/bash -l) in PBS scripts to source profile",
+    )
+    max_concurrent: int = Field(
+        default=100,
+        ge=1,
+        description="Maximum total concurrent jobs across all runs on this backend",
+    )
+    queue: str | None = Field(
+        default=None,
+        description="Default PBS queue to submit jobs to (overrides task partition)",
+    )
+
+
 class ECSBackendConfig(BaseModel):
     """ECS backend configuration."""
 
@@ -87,7 +112,7 @@ class ECSBackendConfig(BaseModel):
 
 
 BackendConfig = Annotated[
-    SlurmBackendConfig | ECSBackendConfig,
+    SlurmBackendConfig | PBSBackendConfig | ECSBackendConfig,
     Field(discriminator="type"),
 ]
 
@@ -294,6 +319,11 @@ class ScriptHutConfig(BaseModel):
     def slurm_backends(self) -> list[SlurmBackendConfig]:
         """Get all Slurm backends."""
         return [c for c in self.backends if isinstance(c, SlurmBackendConfig)]
+
+    @property
+    def pbs_backends(self) -> list[PBSBackendConfig]:
+        """Get all PBS backends."""
+        return [c for c in self.backends if isinstance(c, PBSBackendConfig)]
 
     @property
     def ecs_backends(self) -> list[ECSBackendConfig]:

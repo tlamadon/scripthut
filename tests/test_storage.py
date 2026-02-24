@@ -177,7 +177,7 @@ class TestWeeklyBins:
 
         storage.add_external_job(
             backend_name="midway",
-            slurm_job_id="99999",
+            job_id="99999",
             name="external-job",
             user="testuser",
             state="running",
@@ -186,7 +186,7 @@ class TestWeeklyBins:
 
         run = storage.get_or_create_weekly_run("midway", submit_time)
         assert len(run.items) == 1
-        assert run.items[0].slurm_job_id == "99999"
+        assert run.items[0].job_id == "99999"
         assert run.items[0].task.name == "external-job"
 
     def test_add_external_job_updates_existing(self, tmp_path: Path):
@@ -195,7 +195,7 @@ class TestWeeklyBins:
 
         storage.add_external_job(
             backend_name="midway",
-            slurm_job_id="99999",
+            job_id="99999",
             name="my-job",
             user="testuser",
             state="running",
@@ -203,7 +203,7 @@ class TestWeeklyBins:
         )
         storage.add_external_job(
             backend_name="midway",
-            slurm_job_id="99999",
+            job_id="99999",
             name="my-job",
             user="testuser",
             state="completed",
@@ -228,11 +228,11 @@ class TestReconcileExternalJobs:
 
         # Add two running external jobs
         storage.add_external_job(
-            backend_name="midway", slurm_job_id="100",
+            backend_name="midway", job_id="100",
             name="job-a", user="u", state="running", submit_time=submit_time,
         )
         storage.add_external_job(
-            backend_name="midway", slurm_job_id="200",
+            backend_name="midway", job_id="200",
             name="job-b", user="u", state="running", submit_time=submit_time,
         )
 
@@ -241,7 +241,7 @@ class TestReconcileExternalJobs:
 
         assert reconciled == 1
         run = storage.get_or_create_weekly_run("midway", submit_time)
-        statuses = {i.slurm_job_id: i.status for i in run.items}
+        statuses = {i.job_id: i.status for i in run.items}
         assert statuses["100"] == RunItemStatus.COMPLETED
         assert statuses["200"] == RunItemStatus.RUNNING
 
@@ -250,11 +250,11 @@ class TestReconcileExternalJobs:
         submit_time = datetime(2026, 2, 11, 10, 0, 0)
 
         storage.add_external_job(
-            backend_name="midway", slurm_job_id="100",
+            backend_name="midway", job_id="100",
             name="done-job", user="u", state="completed", submit_time=submit_time,
         )
         storage.add_external_job(
-            backend_name="midway", slurm_job_id="200",
+            backend_name="midway", job_id="200",
             name="fail-job", user="u", state="failed", submit_time=submit_time,
         )
 
@@ -267,11 +267,11 @@ class TestReconcileExternalJobs:
         week2 = datetime(2026, 2, 11, 10, 0, 0)  # W07
 
         storage.add_external_job(
-            backend_name="midway", slurm_job_id="100",
+            backend_name="midway", job_id="100",
             name="old-job", user="u", state="running", submit_time=week1,
         )
         storage.add_external_job(
-            backend_name="midway", slurm_job_id="200",
+            backend_name="midway", job_id="200",
             name="new-job", user="u", state="running", submit_time=week2,
         )
 
@@ -287,7 +287,7 @@ class TestReconcileExternalJobs:
         submit_time = datetime(2026, 2, 11, 10, 0, 0)
 
         storage.add_external_job(
-            backend_name="midway", slurm_job_id="100",
+            backend_name="midway", job_id="100",
             name="cached-job", user="u", state="running", submit_time=submit_time,
         )
         storage.save_if_dirty({})

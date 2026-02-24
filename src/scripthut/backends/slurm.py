@@ -1,13 +1,23 @@
 """Slurm job backend implementation."""
 
-import logging
-import re
-from dataclasses import dataclass
-from datetime import datetime, timezone
+from __future__ import annotations
 
-from scripthut.backends.base import JobBackend
+import logging
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING
+
+from scripthut.backends.base import JobBackend, JobStats
+from scripthut.backends.utils import (
+    format_bytes,
+    generate_script_body,
+    parse_duration_hms,
+    parse_rss_to_bytes,
+)
 from scripthut.models import JobState, SlurmJob
 from scripthut.ssh.client import SSHClient
+
+if TYPE_CHECKING:
+    from scripthut.runs.models import TaskDefinition
 
 logger = logging.getLogger(__name__)
 
@@ -22,72 +32,16 @@ SLURM_FAILURE_STATES: dict[str, str] = {
     "PREEMPTED": "Preempted",
 }
 
-
-@dataclass
-class JobStats:
-    """Resource utilization stats from sacct."""
-
-    cpu_efficiency: float  # 0-100%
-    max_rss: str  # Human-readable, e.g. "1.2G"
-    total_cpu: str  # Raw Slurm time string
-    start_time: datetime | None = None  # Actual start from sacct
-    end_time: datetime | None = None  # Actual end from sacct
-    state: str | None = None  # Sacct State, e.g. "COMPLETED", "OUT_OF_MEMORY"
+# All terminal sacct states (both success and failure)
+SLURM_TERMINAL_STATES = frozenset({
+    "COMPLETED", "FAILED", "CANCELLED", "TIMEOUT",
+    "OUT_OF_MEMORY", "NODE_FAIL", "PREEMPTED",
+    "DEADLINE", "BOOT_FAIL",
+})
 
 
-def parse_slurm_duration(time_str: str) -> float:
-    """Parse Slurm duration string to total seconds.
-
-    Handles formats: MM:SS, HH:MM:SS, D-HH:MM:SS
-    """
-    if not time_str or time_str in ("", "N/A", "Unknown", "None", "INVALID"):
-        return 0.0
-
-    days = 0
-    if "-" in time_str:
-        day_part, time_str = time_str.split("-", 1)
-        days = int(day_part)
-
-    parts = time_str.split(":")
-    if len(parts) == 3:
-        hours, minutes, seconds = int(parts[0]), int(parts[1]), float(parts[2])
-    elif len(parts) == 2:
-        hours, minutes, seconds = 0, int(parts[0]), float(parts[1])
-    else:
-        return 0.0
-
-    return days * 86400 + hours * 3600 + minutes * 60 + seconds
-
-
-def parse_rss_to_bytes(rss_str: str) -> int:
-    """Parse sacct RSS string (e.g. '4556K', '1024M') to bytes. Returns 0 on failure."""
-    if not rss_str or rss_str.strip() in ("", "0", "N/A"):
-        return 0
-    match = re.match(r"^([\d.]+)([KMGTP]?)$", rss_str.strip(), re.IGNORECASE)
-    if not match:
-        return 0
-    value = float(match.group(1))
-    unit = match.group(2).upper() if match.group(2) else ""
-    multipliers = {"": 1, "K": 1024, "M": 1024**2, "G": 1024**3, "T": 1024**4}
-    return int(value * multipliers.get(unit, 1))
-
-
-def format_bytes(byte_val: int) -> str:
-    """Format byte count to human-readable form."""
-    if byte_val <= 0:
-        return ""
-    if byte_val >= 1024**3:
-        return f"{byte_val / 1024**3:.1f}G"
-    elif byte_val >= 1024**2:
-        return f"{byte_val / 1024**2:.0f}M"
-    elif byte_val >= 1024:
-        return f"{byte_val / 1024:.0f}K"
-    return f"{byte_val:.0f}B"
-
-
-def format_rss(rss_str: str) -> str:
-    """Convert sacct MaxRSS (e.g. '4556K', '1024M') to human-readable form."""
-    return format_bytes(parse_rss_to_bytes(rss_str))
+# Re-export for backward compatibility
+parse_slurm_duration = parse_duration_hms
 
 
 # squeue format string for extended job info
@@ -357,7 +311,7 @@ class SlurmBackend(JobBackend):
         logger.debug(f"Fetched stats for {len(stats)}/{len(job_ids)} jobs via sacct")
         return stats
 
-    async def get_cluster_cpus(self) -> tuple[int, int] | None:
+    async def get_cluster_info(self) -> tuple[int, int] | None:
         """Fetch total and idle CPU counts from sinfo.
 
         Returns:
@@ -389,6 +343,9 @@ class SlurmBackend(JobBackend):
             logger.warning(f"Failed to parse sinfo numbers: {line}")
             return None
 
+    # Backward-compat alias
+    get_cluster_cpus = get_cluster_info
+
     async def is_available(self) -> bool:
         """Check if Slurm is available by running squeue --version."""
         try:
@@ -397,3 +354,64 @@ class SlurmBackend(JobBackend):
         except Exception as e:
             logger.warning(f"Slurm availability check failed: {e}")
             return False
+
+    async def submit_job(self, script: str) -> str:
+        """Submit a job script via sbatch. Returns the Slurm job ID."""
+        escaped_script = script.replace("'", "'\\''")
+        submit_cmd = f"sbatch <<'SCRIPTHUT_EOF'\n{escaped_script}\nSCRIPTHUT_EOF"
+        stdout, stderr, exit_code = await self._ssh.run_command(submit_cmd)
+        if exit_code != 0:
+            raise RuntimeError(f"sbatch failed: {stderr}")
+        try:
+            return stdout.strip().split()[-1]  # "Submitted batch job 12345"
+        except (IndexError, ValueError):
+            raise RuntimeError(f"Could not parse job ID from sbatch output: {stdout}")
+
+    async def cancel_job(self, job_id: str) -> None:
+        """Cancel a Slurm job via scancel."""
+        await self._ssh.run_command(f"scancel {job_id}")
+
+    def generate_script(
+        self,
+        task: "TaskDefinition",
+        run_id: str,
+        log_dir: str,
+        account: str | None = None,
+        login_shell: bool = False,
+        env_vars: dict[str, str] | None = None,
+        extra_init: str = "",
+    ) -> str:
+        """Generate an sbatch submission script for a task."""
+        output_path = task.get_output_path(run_id, log_dir)
+        error_path = task.get_error_path(run_id, log_dir)
+        shebang = "#!/bin/bash -l" if login_shell else "#!/bin/bash"
+        account_line = f"#SBATCH --account={account}\n" if account else ""
+
+        header = f"""{shebang}
+#SBATCH --job-name="{task.name}"
+#SBATCH --partition={task.partition}
+{account_line}#SBATCH --cpus-per-task={task.cpus}
+#SBATCH --mem={task.memory}
+#SBATCH --time={task.time_limit}
+#SBATCH --output={output_path}
+#SBATCH --error={error_path}
+"""
+        body = generate_script_body(
+            task_name=task.name,
+            task_id=task.id,
+            command=task.command,
+            working_dir=task.working_dir,
+            env_vars=env_vars,
+            extra_init=extra_init,
+        )
+        return header + "\n" + body
+
+    @property
+    def failure_states(self) -> dict[str, str]:
+        """Slurm failure states from sacct."""
+        return SLURM_FAILURE_STATES
+
+    @property
+    def terminal_states(self) -> frozenset[str]:
+        """All terminal sacct states."""
+        return SLURM_TERMINAL_STATES
