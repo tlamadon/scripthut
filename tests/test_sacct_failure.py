@@ -3,9 +3,9 @@
 import pytest
 from unittest.mock import AsyncMock
 
+from scripthut.backends.base import JobStats
 from scripthut.backends.slurm import (
     SLURM_FAILURE_STATES,
-    JobStats,
     SlurmBackend,
 )
 from scripthut.runs.models import RunItem, RunItemStatus, TaskDefinition
@@ -13,10 +13,10 @@ from scripthut.runs.models import RunItem, RunItemStatus, TaskDefinition
 
 def _make_item(
     status: RunItemStatus = RunItemStatus.COMPLETED,
-    slurm_job_id: str = "12345",
+    job_id: str = "12345",
 ) -> RunItem:
     task = TaskDefinition(id="t1", name="test-task", command="echo hi")
-    return RunItem(task=task, status=status, slurm_job_id=slurm_job_id)
+    return RunItem(task=task, status=status, job_id=job_id)
 
 
 class TestJobStatsState:

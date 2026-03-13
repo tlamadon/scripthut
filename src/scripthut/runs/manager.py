@@ -12,10 +12,10 @@ from fnmatch import fnmatch
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from scripthut.backends.base import JobBackend
 from scripthut.config_schema import (
     ProjectConfig,
     ScriptHutConfig,
-    SlurmBackendConfig,
     WorkflowConfig,
 )
 from scripthut.models import JobState
@@ -42,12 +42,14 @@ class RunManager:
         config: ScriptHutConfig,
         backends: dict[str, SSHClient],
         storage: RunStorageManager | None = None,
+        job_backends: dict[str, JobBackend] | None = None,
     ) -> None:
         """Initialize with config, SSH backends, and optional persistent storage."""
         self.config = config
         self.backends = backends
         self.runs: dict[str, Run] = {}
         self.storage = storage
+        self.job_backends = job_backends or {}
         # SSE event bus: version counter + Event per run
         self._run_versions: dict[str, int] = {}
         self._run_events: dict[str, asyncio.Event] = {}
@@ -498,6 +500,8 @@ class RunManager:
         preview_created_at = datetime.now(timezone.utc)
         git_repo = workflow.git.repo if workflow.git else None
         git_branch = workflow.git.branch if workflow.git else None
+        job_backend = self.get_job_backend(workflow.backend)
+
         task_details = []
         for task in tasks:
             env_vars, extra_init = self._resolve_environment(task)
@@ -506,10 +510,21 @@ class RunManager:
                 git_repo=git_repo, git_branch=git_branch, git_sha=commit_hash,
             )
             merged_env = {**sh_vars, **(env_vars or {})}
-            script = task.to_sbatch_script(preview_run_id, log_dir, account=account, login_shell=login_shell, env_vars=merged_env, extra_init=extra_init)
+            if job_backend:
+                script = job_backend.generate_script(
+                    task, preview_run_id, log_dir,
+                    account=account, login_shell=login_shell,
+                    env_vars=merged_env, extra_init=extra_init,
+                )
+            else:
+                script = task.to_sbatch_script(
+                    preview_run_id, log_dir,
+                    account=account, login_shell=login_shell,
+                    env_vars=merged_env, extra_init=extra_init,
+                )
             task_details.append({
                 "task": task,
-                "sbatch_script": script,
+                "submit_script": script,
                 "output_path": task.get_output_path(preview_run_id, log_dir),
                 "error_path": task.get_error_path(preview_run_id, log_dir),
             })
@@ -533,17 +548,17 @@ class RunManager:
         }
 
     def get_backend_account(self, backend_name: str) -> str | None:
-        """Get the Slurm account for a backend."""
+        """Get the account for a backend (Slurm --account, PBS -A, etc.)."""
         backend = self.config.get_backend(backend_name)
-        if backend and isinstance(backend, SlurmBackendConfig):
-            return backend.account
+        if backend and hasattr(backend, "account"):
+            return backend.account  # type: ignore[union-attr]
         return None
 
     def get_backend_login_shell(self, backend_name: str) -> bool:
-        """Get whether the backend uses login shell in sbatch scripts."""
+        """Get whether the backend uses login shell in submission scripts."""
         backend = self.config.get_backend(backend_name)
-        if backend and isinstance(backend, SlurmBackendConfig):
-            return backend.login_shell
+        if backend and hasattr(backend, "login_shell"):
+            return backend.login_shell  # type: ignore[union-attr]
         return False
 
     async def _build_run(
@@ -720,12 +735,24 @@ class RunManager:
             ssh_client
         )
 
+    def get_job_backend(self, backend_name: str) -> JobBackend | None:
+        """Get the JobBackend for a backend name."""
+        return self.job_backends.get(backend_name)
+
     async def submit_task(self, run: Run, item: RunItem) -> bool:
-        """Submit a single task to Slurm."""
+        """Submit a single task to the scheduler."""
         ssh_client = self.get_ssh_client(run.backend_name)
         if ssh_client is None:
             item.status = RunItemStatus.FAILED
             item.error = f"Backend '{run.backend_name}' not connected"
+            item.finished_at = datetime.now(timezone.utc)
+            self._persist_run(run)
+            return False
+
+        job_backend = self.get_job_backend(run.backend_name)
+        if job_backend is None:
+            item.status = RunItemStatus.FAILED
+            item.error = f"No job backend for '{run.backend_name}'"
             item.finished_at = datetime.now(timezone.utc)
             self._persist_run(run)
             return False
@@ -748,35 +775,26 @@ class RunManager:
             git_repo=git_repo, git_branch=git_branch, git_sha=run.commit_hash,
         )
         merged_env = {**sh_vars, **(env_vars or {})}
-        script = item.task.to_sbatch_script(run.id, log_dir, account=run.account, login_shell=run.login_shell, env_vars=merged_env, extra_init=extra_init)
-        item.sbatch_script = script
-
-        escaped_script = script.replace("'", "'\\''")
-        submit_cmd = f"sbatch <<'SCRIPTHUT_EOF'\n{escaped_script}\nSCRIPTHUT_EOF"
-
-        stdout, stderr, exit_code = await ssh_client.run_command(submit_cmd)
-
-        if exit_code != 0:
-            item.status = RunItemStatus.FAILED
-            item.error = f"sbatch failed: {stderr}"
-            item.finished_at = datetime.now(timezone.utc)
-            logger.error(f"Failed to submit task '{item.task.id}': {stderr}")
-            self._persist_run(run)
-            return False
+        script = job_backend.generate_script(
+            item.task, run.id, log_dir,
+            account=run.account, login_shell=run.login_shell,
+            env_vars=merged_env, extra_init=extra_init,
+        )
+        item.submit_script = script
 
         try:
-            job_id = stdout.strip().split()[-1]
-            item.slurm_job_id = job_id
+            job_id = await job_backend.submit_job(script)
+            item.job_id = job_id
             item.status = RunItemStatus.SUBMITTED
             item.submitted_at = datetime.now(timezone.utc)
-            logger.info(f"Submitted task '{item.task.id}' as Slurm job {job_id}")
+            logger.info(f"Submitted task '{item.task.id}' as job {job_id}")
             self._persist_run(run)
             return True
-        except (IndexError, ValueError):
+        except RuntimeError as e:
             item.status = RunItemStatus.FAILED
-            item.error = f"Could not parse job ID: {stdout}"
+            item.error = str(e)
             item.finished_at = datetime.now(timezone.utc)
-            logger.error(f"Could not parse job ID from: {stdout}")
+            logger.error(f"Failed to submit task '{item.task.id}': {e}")
             self._persist_run(run)
             return False
 
@@ -884,13 +902,13 @@ class RunManager:
         items_snapshot = list(run.items)
 
         for item in items_snapshot:
-            if item.slurm_job_id is None:
+            if item.job_id is None:
                 continue
 
             if item.status in (RunItemStatus.COMPLETED, RunItemStatus.FAILED):
                 continue
 
-            job_state = slurm_jobs.get(item.slurm_job_id)
+            job_state = slurm_jobs.get(item.job_id)
 
             if job_state is None:
                 if item.status in (RunItemStatus.SUBMITTED, RunItemStatus.RUNNING):
@@ -899,7 +917,7 @@ class RunManager:
                     item.finished_at = datetime.now(timezone.utc)
                     changed = True
                     changed_items.append(item)
-                    logger.info(f"Task '{item.task.id}' (job {item.slurm_job_id}) completed")
+                    logger.info(f"Task '{item.task.id}' (job {item.job_id}) completed")
                     if item.task.generates_source:
                         await self._handle_generates_source(run, item)
             else:
@@ -909,7 +927,7 @@ class RunManager:
                         item.started_at = item.started_at or datetime.now(timezone.utc)
                         changed = True
                         changed_items.append(item)
-                        logger.info(f"Task '{item.task.id}' (job {item.slurm_job_id}) started running")
+                        logger.info(f"Task '{item.task.id}' (job {item.job_id}) started running")
                 elif job_state == JobState.PENDING:
                     if item.status != RunItemStatus.SUBMITTED:
                         item.status = RunItemStatus.SUBMITTED
@@ -921,7 +939,7 @@ class RunManager:
                     item.finished_at = datetime.now(timezone.utc)
                     changed = True
                     changed_items.append(item)
-                    logger.info(f"Task '{item.task.id}' (job {item.slurm_job_id}) completed")
+                    logger.info(f"Task '{item.task.id}' (job {item.job_id}) completed")
                     if item.task.generates_source:
                         await self._handle_generates_source(run, item)
                 elif job_state in (
@@ -940,7 +958,7 @@ class RunManager:
                     item.finished_at = datetime.now(timezone.utc)
                     changed = True
                     changed_items.append(item)
-                    logger.info(f"Task '{item.task.id}' (job {item.slurm_job_id}) failed: {job_state.value}")
+                    logger.info(f"Task '{item.task.id}' (job {item.job_id}) failed: {job_state.value}")
 
         if changed:
             self._persist_run(run)
@@ -972,8 +990,12 @@ class RunManager:
                 item.error = "Cancelled"
                 item.finished_at = datetime.now(timezone.utc)
             elif item.status in (RunItemStatus.SUBMITTED, RunItemStatus.RUNNING):
-                if item.slurm_job_id and ssh_client:
-                    await ssh_client.run_command(f"scancel {item.slurm_job_id}")
+                if item.job_id:
+                    job_backend = self.get_job_backend(run.backend_name)
+                    if job_backend:
+                        await job_backend.cancel_job(item.job_id)
+                    elif ssh_client:
+                        await ssh_client.run_command(f"scancel {item.job_id}")
                 item.started_at = item.started_at or item.submitted_at
                 item.status = RunItemStatus.FAILED
                 item.error = "Cancelled"

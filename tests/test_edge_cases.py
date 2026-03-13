@@ -107,7 +107,7 @@ class TestCancelRunStartedAt:
             status=RunItemStatus.SUBMITTED,
             submitted_at=submitted,
         )
-        item.slurm_job_id = "12345"
+        item.job_id = "12345"
 
         # Simulate what cancel_run does (without SSH call)
         item.started_at = item.started_at or item.submitted_at
@@ -129,7 +129,7 @@ class TestCancelRunStartedAt:
             submitted_at=submitted,
             started_at=started,
         )
-        item.slurm_job_id = "12346"
+        item.job_id = "12346"
 
         item.started_at = item.started_at or item.submitted_at
         item.status = RunItemStatus.FAILED

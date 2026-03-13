@@ -6,7 +6,7 @@ from enum import Enum
 
 
 class JobState(str, Enum):
-    """Slurm job states."""
+    """HPC scheduler job states (shared by Slurm, PBS, etc.)."""
 
     PENDING = "PENDING"
     RUNNING = "RUNNING"
@@ -29,6 +29,7 @@ class JobState(str, Enum):
         state = state.strip().upper()
         # Handle common abbreviations
         abbrev_map = {
+            # Slurm abbreviations
             "PD": cls.PENDING,
             "R": cls.RUNNING,
             "S": cls.SUSPENDED,
@@ -42,6 +43,14 @@ class JobState(str, Enum):
             "BF": cls.BOOT_FAIL,
             "DL": cls.DEADLINE,
             "OOM": cls.OUT_OF_MEMORY,
+            # PBS/Torque state letters
+            "Q": cls.PENDING,
+            "H": cls.SUSPENDED,
+            "E": cls.COMPLETING,
+            "C": cls.COMPLETED,
+            "W": cls.PENDING,  # waiting
+            "T": cls.RUNNING,  # being moved
+            "B": cls.RUNNING,  # array job running
         }
         if state in abbrev_map:
             return abbrev_map[state]
@@ -52,8 +61,8 @@ class JobState(str, Enum):
 
 
 @dataclass
-class SlurmJob:
-    """Represents a Slurm job with extended information."""
+class HPCJob:
+    """Represents an HPC scheduler job with extended information."""
 
     job_id: str
     name: str
@@ -96,3 +105,7 @@ class ConnectionStatus:
     cpus_total: int | None = None  # Total CPUs on the cluster
     cpus_idle: int | None = None  # Idle (free) CPUs on the cluster
     cpus_user: int | None = None  # CPUs used by the filtered user
+
+
+# Backward-compat alias
+SlurmJob = HPCJob

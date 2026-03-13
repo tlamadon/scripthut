@@ -152,31 +152,31 @@ class RunItem:
 
     task: TaskDefinition
     status: RunItemStatus = RunItemStatus.PENDING
-    slurm_job_id: str | None = None
+    job_id: str | None = None  # Scheduler-assigned job ID
     submitted_at: datetime | None = None
     started_at: datetime | None = None
     finished_at: datetime | None = None
     error: str | None = None
-    sbatch_script: str | None = None  # The generated sbatch script used for submission
-    # Resource utilization (from sacct)
+    submit_script: str | None = None  # The generated submission script
+    # Resource utilization (from scheduler accounting)
     cpu_efficiency: float | None = None  # 0-100%
     max_rss: str | None = None  # Peak memory, e.g. "1.2G"
-    sacct_state: str | None = None  # Confirmed final state from sacct
+    scheduler_state: str | None = None  # Confirmed final state from accounting
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to dictionary for JSON storage."""
         return {
             "task": self.task.to_dict(),
             "status": self.status.value,
-            "slurm_job_id": self.slurm_job_id,
+            "job_id": self.job_id,
             "submitted_at": self.submitted_at.isoformat() if self.submitted_at else None,
             "started_at": self.started_at.isoformat() if self.started_at else None,
             "finished_at": self.finished_at.isoformat() if self.finished_at else None,
             "error": self.error,
-            "sbatch_script": self.sbatch_script,
+            "submit_script": self.submit_script,
             "cpu_efficiency": self.cpu_efficiency,
             "max_rss": self.max_rss,
-            "sacct_state": self.sacct_state,
+            "scheduler_state": self.scheduler_state,
         }
 
     @classmethod
@@ -194,15 +194,15 @@ class RunItem:
         return cls(
             task=TaskDefinition.from_dict(data["task"]),
             status=RunItemStatus(data["status"]),
-            slurm_job_id=data.get("slurm_job_id"),
+            job_id=data.get("job_id") or data.get("slurm_job_id"),
             submitted_at=parse_dt(data.get("submitted_at")),
             started_at=parse_dt(data.get("started_at")),
             finished_at=parse_dt(data.get("finished_at")),
             error=data.get("error"),
-            sbatch_script=data.get("sbatch_script"),
+            submit_script=data.get("submit_script") or data.get("sbatch_script"),
             cpu_efficiency=data.get("cpu_efficiency"),
             max_rss=data.get("max_rss"),
-            sacct_state=data.get("sacct_state"),
+            scheduler_state=data.get("scheduler_state") or data.get("sacct_state"),
         )
 
     @property
@@ -347,10 +347,10 @@ class Run:
                 return item
         return None
 
-    def get_item_by_slurm_id(self, slurm_job_id: str) -> RunItem | None:
-        """Get a run item by its Slurm job ID."""
+    def get_item_by_job_id(self, job_id: str) -> RunItem | None:
+        """Get a run item by its scheduler job ID."""
         for item in self.items:
-            if item.slurm_job_id == slurm_job_id:
+            if item.job_id == job_id:
                 return item
         return None
 
