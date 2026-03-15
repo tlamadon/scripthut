@@ -152,7 +152,7 @@ class RunItem:
 
     task: TaskDefinition
     status: RunItemStatus = RunItemStatus.PENDING
-    slurm_job_id: str | None = None
+    backend_job_id: str | None = None
     submitted_at: datetime | None = None
     started_at: datetime | None = None
     finished_at: datetime | None = None
@@ -168,7 +168,7 @@ class RunItem:
         return {
             "task": self.task.to_dict(),
             "status": self.status.value,
-            "slurm_job_id": self.slurm_job_id,
+            "backend_job_id": self.backend_job_id,
             "submitted_at": self.submitted_at.isoformat() if self.submitted_at else None,
             "started_at": self.started_at.isoformat() if self.started_at else None,
             "finished_at": self.finished_at.isoformat() if self.finished_at else None,
@@ -194,7 +194,7 @@ class RunItem:
         return cls(
             task=TaskDefinition.from_dict(data["task"]),
             status=RunItemStatus(data["status"]),
-            slurm_job_id=data.get("slurm_job_id"),
+            backend_job_id=data.get("backend_job_id", data.get("slurm_job_id")),
             submitted_at=parse_dt(data.get("submitted_at")),
             started_at=parse_dt(data.get("started_at")),
             finished_at=parse_dt(data.get("finished_at")),
@@ -347,10 +347,10 @@ class Run:
                 return item
         return None
 
-    def get_item_by_slurm_id(self, slurm_job_id: str) -> RunItem | None:
-        """Get a run item by its Slurm job ID."""
+    def get_item_by_backend_job_id(self, backend_job_id: str) -> RunItem | None:
+        """Get a run item by its backend job ID."""
         for item in self.items:
-            if item.slurm_job_id == slurm_job_id:
+            if item.backend_job_id == backend_job_id:
                 return item
         return None
 

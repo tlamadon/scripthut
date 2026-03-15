@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from scripthut.config_schema import (
+    AWSBatchBackendConfig,
     ProjectConfig,
     ScriptHutConfig,
     SlurmBackendConfig,
@@ -29,6 +30,7 @@ from scripthut.runs.models import (
 from scripthut.ssh.client import SSHClient
 
 if TYPE_CHECKING:
+    from scripthut.backends.batch import AWSBatchBackend
     from scripthut.runs.storage import RunStorageManager
 
 logger = logging.getLogger(__name__)
@@ -42,10 +44,12 @@ class RunManager:
         config: ScriptHutConfig,
         backends: dict[str, SSHClient],
         storage: RunStorageManager | None = None,
+        batch_backends: dict[str, AWSBatchBackend] | None = None,
     ) -> None:
         """Initialize with config, SSH backends, and optional persistent storage."""
         self.config = config
         self.backends = backends
+        self.batch_backends: dict[str, AWSBatchBackend] = batch_backends or {}
         self.runs: dict[str, Run] = {}
         self.storage = storage
         # SSE event bus: version counter + Event per run
@@ -546,13 +550,22 @@ class RunManager:
             return backend.login_shell
         return False
 
+    def _is_batch_backend(self, backend_name: str) -> bool:
+        """Check if a backend is an AWS Batch backend."""
+        backend = self.config.get_backend(backend_name)
+        return isinstance(backend, AWSBatchBackendConfig)
+
+    def get_batch_backend(self, backend_name: str) -> AWSBatchBackend | None:
+        """Get the AWSBatchBackend instance for a backend name."""
+        return self.batch_backends.get(backend_name)
+
     async def _build_run(
         self,
         tasks: list[TaskDefinition],
         workflow_name: str,
         backend_name: str,
         max_concurrent: int | None,
-        ssh_client: SSHClient,
+        ssh_client: SSHClient | None = None,
     ) -> Run:
         """Build a Run: resolve deps, validate, create, persist, and start processing."""
         if not tasks:
@@ -564,14 +577,20 @@ class RunManager:
         account = self.get_backend_account(backend_name)
         login_shell = self.get_backend_login_shell(backend_name)
 
-        first_working_dir = tasks[0].working_dir
-        try:
-            git_root = await self._get_git_root(ssh_client, first_working_dir)
-            log_dir = f"{git_root}/.scripthut/{workflow_name}/logs"
-            logger.info(f"Git root: {git_root} — logs at {log_dir}")
-        except ValueError:
-            log_dir = f"~/.cache/scripthut/logs/{workflow_name}"
-            logger.info(f"No git root for '{first_working_dir}' — logs at {log_dir}")
+        # Determine log directory
+        if ssh_client is not None:
+            first_working_dir = tasks[0].working_dir
+            try:
+                git_root = await self._get_git_root(ssh_client, first_working_dir)
+                log_dir = f"{git_root}/.scripthut/{workflow_name}/logs"
+                logger.info(f"Git root: {git_root} — logs at {log_dir}")
+            except ValueError:
+                log_dir = f"~/.cache/scripthut/logs/{workflow_name}"
+                logger.info(f"No git root for '{first_working_dir}' — logs at {log_dir}")
+        else:
+            # Batch backends use CloudWatch — log_dir not needed for remote files
+            log_dir = f"cloudwatch://scripthut/{workflow_name}"
+            logger.info(f"Batch backend — logs via CloudWatch")
 
         run_id = str(uuid.uuid4())[:8]
         run = Run(
@@ -604,15 +623,17 @@ class RunManager:
             raise ValueError(f"Workflow '{workflow_name}' not found")
 
         ssh_client = self.get_ssh_client(workflow.backend)
-        if ssh_client is None:
+
+        # For Slurm backends, SSH is required
+        if not self._is_batch_backend(workflow.backend) and ssh_client is None:
             raise ValueError(
                 f"No SSH connection to backend '{workflow.backend}'"
             )
 
-        # Clone git repo on the backend if configured
+        # Clone git repo on the backend if configured (requires SSH)
         clone_dir: str | None = None
         commit_hash: str | None = None
-        if workflow.git is not None:
+        if workflow.git is not None and ssh_client is not None:
             clone_dir, commit_hash = await self._ensure_repo_cloned(
                 ssh_client, workflow
             )
@@ -630,7 +651,8 @@ class RunManager:
                     task.working_dir = f"{clone_dir}/{task.working_dir}"
 
         run = await self._build_run(
-            tasks, workflow_name, workflow.backend, workflow.max_concurrent, ssh_client
+            tasks, workflow_name, workflow.backend, workflow.max_concurrent,
+            ssh_client=ssh_client,
         )
         if commit_hash is not None:
             run.commit_hash = commit_hash
@@ -721,7 +743,13 @@ class RunManager:
         )
 
     async def submit_task(self, run: Run, item: RunItem) -> bool:
-        """Submit a single task to Slurm."""
+        """Submit a single task to the appropriate backend."""
+        if self._is_batch_backend(run.backend_name):
+            return await self._submit_task_batch(run, item)
+        return await self._submit_task_slurm(run, item)
+
+    async def _submit_task_slurm(self, run: Run, item: RunItem) -> bool:
+        """Submit a single task to Slurm via SSH."""
         ssh_client = self.get_ssh_client(run.backend_name)
         if ssh_client is None:
             item.status = RunItemStatus.FAILED
@@ -766,7 +794,7 @@ class RunManager:
 
         try:
             job_id = stdout.strip().split()[-1]
-            item.slurm_job_id = job_id
+            item.backend_job_id = job_id
             item.status = RunItemStatus.SUBMITTED
             item.submitted_at = datetime.now(timezone.utc)
             logger.info(f"Submitted task '{item.task.id}' as Slurm job {job_id}")
@@ -777,6 +805,95 @@ class RunManager:
             item.error = f"Could not parse job ID: {stdout}"
             item.finished_at = datetime.now(timezone.utc)
             logger.error(f"Could not parse job ID from: {stdout}")
+            self._persist_run(run)
+            return False
+
+    async def _submit_task_batch(self, run: Run, item: RunItem) -> bool:
+        """Submit a single task to AWS Batch."""
+        from scripthut.backends.batch import AWSBatchBackend, _parse_memory_to_mib
+
+        batch_backend = self.get_batch_backend(run.backend_name)
+        if batch_backend is None:
+            item.status = RunItemStatus.FAILED
+            item.error = f"Batch backend '{run.backend_name}' not available"
+            item.finished_at = datetime.now(timezone.utc)
+            self._persist_run(run)
+            return False
+
+        # Resolve environment → get container image
+        env_vars, extra_init = self._resolve_environment(item.task)
+        container_image: str | None = None
+        env_name: str = "default"
+
+        if item.task.environment:
+            env_config = self.config.get_environment(item.task.environment)
+            if env_config and env_config.container:
+                container_image = env_config.container
+                env_name = env_config.name
+
+        if container_image is None:
+            item.status = RunItemStatus.FAILED
+            item.error = (
+                f"No container image specified. Task '{item.task.id}' must "
+                f"reference an environment with a 'container' field for Batch backends."
+            )
+            item.finished_at = datetime.now(timezone.utc)
+            self._persist_run(run)
+            return False
+
+        try:
+            # Parse resource requirements
+            vcpus = item.task.cpus
+            memory_mib = _parse_memory_to_mib(item.task.memory)
+
+            # Register or reuse job definition
+            job_def_arn = await batch_backend.register_job_definition(
+                container_image=container_image,
+                env_name=env_name,
+                vcpus=vcpus,
+                memory_mib=memory_mib,
+            )
+
+            # Build environment variables
+            workflow = self.config.get_workflow(run.workflow_name)
+            git_repo = workflow.git.repo if workflow and workflow.git else None
+            git_branch = workflow.git.branch if workflow and workflow.git else None
+            sh_vars = self._scripthut_env_vars(
+                run.workflow_name, run.id, run.created_at,
+                git_repo=git_repo, git_branch=git_branch, git_sha=run.commit_hash,
+            )
+            merged_env = {**sh_vars, **(env_vars or {})}
+
+            # Build command (include extra_init if present)
+            command = item.task.command
+            if extra_init:
+                command = f"{extra_init}\n{command}"
+
+            # Submit to AWS Batch
+            job_name = f"sh-{run.id}-{item.task.id}"
+            job_id = await batch_backend.submit_job(
+                job_def_arn=job_def_arn,
+                job_name=job_name,
+                command=command,
+                env_vars=merged_env,
+                vcpus=vcpus,
+                memory_mib=memory_mib,
+            )
+
+            item.backend_job_id = job_id
+            item.status = RunItemStatus.SUBMITTED
+            item.submitted_at = datetime.now(timezone.utc)
+            logger.info(
+                f"Submitted task '{item.task.id}' as Batch job {job_id}"
+            )
+            self._persist_run(run)
+            return True
+
+        except Exception as e:
+            item.status = RunItemStatus.FAILED
+            item.error = f"Batch submission failed: {e}"
+            item.finished_at = datetime.now(timezone.utc)
+            logger.error(f"Failed to submit task '{item.task.id}' to Batch: {e}")
             self._persist_run(run)
             return False
 
@@ -884,13 +1001,13 @@ class RunManager:
         items_snapshot = list(run.items)
 
         for item in items_snapshot:
-            if item.slurm_job_id is None:
+            if item.backend_job_id is None:
                 continue
 
             if item.status in (RunItemStatus.COMPLETED, RunItemStatus.FAILED):
                 continue
 
-            job_state = slurm_jobs.get(item.slurm_job_id)
+            job_state = slurm_jobs.get(item.backend_job_id)
 
             if job_state is None:
                 if item.status in (RunItemStatus.SUBMITTED, RunItemStatus.RUNNING):
@@ -899,7 +1016,7 @@ class RunManager:
                     item.finished_at = datetime.now(timezone.utc)
                     changed = True
                     changed_items.append(item)
-                    logger.info(f"Task '{item.task.id}' (job {item.slurm_job_id}) completed")
+                    logger.info(f"Task '{item.task.id}' (job {item.backend_job_id}) completed")
                     if item.task.generates_source:
                         await self._handle_generates_source(run, item)
             else:
@@ -909,7 +1026,7 @@ class RunManager:
                         item.started_at = item.started_at or datetime.now(timezone.utc)
                         changed = True
                         changed_items.append(item)
-                        logger.info(f"Task '{item.task.id}' (job {item.slurm_job_id}) started running")
+                        logger.info(f"Task '{item.task.id}' (job {item.backend_job_id}) started running")
                 elif job_state == JobState.PENDING:
                     if item.status != RunItemStatus.SUBMITTED:
                         item.status = RunItemStatus.SUBMITTED
@@ -921,7 +1038,7 @@ class RunManager:
                     item.finished_at = datetime.now(timezone.utc)
                     changed = True
                     changed_items.append(item)
-                    logger.info(f"Task '{item.task.id}' (job {item.slurm_job_id}) completed")
+                    logger.info(f"Task '{item.task.id}' (job {item.backend_job_id}) completed")
                     if item.task.generates_source:
                         await self._handle_generates_source(run, item)
                 elif job_state in (
@@ -940,7 +1057,82 @@ class RunManager:
                     item.finished_at = datetime.now(timezone.utc)
                     changed = True
                     changed_items.append(item)
-                    logger.info(f"Task '{item.task.id}' (job {item.slurm_job_id}) failed: {job_state.value}")
+                    logger.info(f"Task '{item.task.id}' (job {item.backend_job_id}) failed: {job_state.value}")
+
+        if changed:
+            self._persist_run(run)
+            await self.process_run(run)
+            self.notify_run(run.id)
+
+    async def update_run_status_batch(self, run: Run) -> None:
+        """Update run item statuses by querying AWS Batch."""
+        from scripthut.backends.batch import BatchJobState
+
+        batch_backend = self.get_batch_backend(run.backend_name)
+        if batch_backend is None:
+            return
+
+        # Collect job IDs that need status checks
+        job_ids = [
+            item.backend_job_id
+            for item in run.items
+            if item.backend_job_id is not None
+            and item.status not in (RunItemStatus.COMPLETED, RunItemStatus.FAILED, RunItemStatus.DEP_FAILED)
+        ]
+
+        if not job_ids:
+            return
+
+        batch_states = await batch_backend.describe_jobs(job_ids)
+
+        changed = False
+        items_snapshot = list(run.items)
+
+        for item in items_snapshot:
+            if item.backend_job_id is None:
+                continue
+            if item.status in (RunItemStatus.COMPLETED, RunItemStatus.FAILED):
+                continue
+
+            batch_state = batch_states.get(item.backend_job_id)
+            if batch_state is None:
+                continue
+
+            if batch_state in (BatchJobState.STARTING, BatchJobState.RUNNING):
+                if item.status != RunItemStatus.RUNNING:
+                    item.status = RunItemStatus.RUNNING
+                    item.started_at = item.started_at or datetime.now(timezone.utc)
+                    changed = True
+                    logger.info(
+                        f"Task '{item.task.id}' (batch {item.backend_job_id}) running"
+                    )
+            elif batch_state in (
+                BatchJobState.SUBMITTED,
+                BatchJobState.PENDING,
+                BatchJobState.RUNNABLE,
+            ):
+                if item.status != RunItemStatus.SUBMITTED:
+                    item.status = RunItemStatus.SUBMITTED
+                    changed = True
+            elif batch_state == BatchJobState.SUCCEEDED:
+                item.started_at = item.started_at or item.submitted_at
+                item.status = RunItemStatus.COMPLETED
+                item.finished_at = datetime.now(timezone.utc)
+                changed = True
+                logger.info(
+                    f"Task '{item.task.id}' (batch {item.backend_job_id}) succeeded"
+                )
+                if item.task.generates_source:
+                    await self._handle_generates_source(run, item)
+            elif batch_state == BatchJobState.FAILED:
+                item.started_at = item.started_at or item.submitted_at
+                item.status = RunItemStatus.FAILED
+                item.error = "Batch job FAILED"
+                item.finished_at = datetime.now(timezone.utc)
+                changed = True
+                logger.info(
+                    f"Task '{item.task.id}' (batch {item.backend_job_id}) failed"
+                )
 
         if changed:
             self._persist_run(run)
@@ -948,15 +1140,17 @@ class RunManager:
             self.notify_run(run.id)
 
     async def update_all_runs(self, backend_jobs: dict[str, list[tuple[str, JobState]]]) -> None:
-        """Update all active runs based on Slurm job states."""
+        """Update all active runs based on backend job states."""
         for run in self.runs.values():
             if run.status in (RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED):
                 continue
 
-            jobs = backend_jobs.get(run.backend_name, [])
-            job_states = {job_id: state for job_id, state in jobs}
-
-            await self.update_run_status(run, job_states)
+            if self._is_batch_backend(run.backend_name):
+                await self.update_run_status_batch(run)
+            else:
+                jobs = backend_jobs.get(run.backend_name, [])
+                job_states = {job_id: state for job_id, state in jobs}
+                await self.update_run_status(run, job_states)
 
     async def cancel_run(self, run_id: str) -> bool:
         """Cancel all pending and running items in a run."""
@@ -965,6 +1159,7 @@ class RunManager:
             return False
 
         ssh_client = self.get_ssh_client(run.backend_name)
+        batch_backend = self.get_batch_backend(run.backend_name)
 
         for item in run.items:
             if item.status == RunItemStatus.PENDING:
@@ -972,8 +1167,11 @@ class RunManager:
                 item.error = "Cancelled"
                 item.finished_at = datetime.now(timezone.utc)
             elif item.status in (RunItemStatus.SUBMITTED, RunItemStatus.RUNNING):
-                if item.slurm_job_id and ssh_client:
-                    await ssh_client.run_command(f"scancel {item.slurm_job_id}")
+                if item.backend_job_id:
+                    if batch_backend:
+                        await batch_backend.cancel_job(item.backend_job_id)
+                    elif ssh_client:
+                        await ssh_client.run_command(f"scancel {item.backend_job_id}")
                 item.started_at = item.started_at or item.submitted_at
                 item.status = RunItemStatus.FAILED
                 item.error = "Cancelled"
@@ -1058,6 +1256,10 @@ class RunManager:
         if item is None:
             return None, f"Task '{task_id}' not found in run"
 
+        # For Batch backends, fetch from CloudWatch
+        if self._is_batch_backend(run.backend_name):
+            return await self._fetch_log_batch(run, item, log_type, tail_lines)
+
         ssh_client = self.get_ssh_client(run.backend_name)
         if ssh_client is None:
             return None, f"Backend '{run.backend_name}' not connected"
@@ -1083,3 +1285,36 @@ class RunManager:
         stdout, stderr, exit_code = await ssh_client.run_command(cmd)
 
         return stdout, None
+
+    async def _fetch_log_batch(
+        self,
+        run: Run,
+        item: RunItem,
+        log_type: str,
+        tail_lines: int | None,
+    ) -> tuple[str | None, str | None]:
+        """Fetch logs for a Batch job from CloudWatch."""
+        if log_type == "error":
+            # Batch combines stdout/stderr in one log stream
+            return None, "AWS Batch combines stdout and stderr in a single log stream. Use 'output' log type."
+
+        batch_backend = self.get_batch_backend(run.backend_name)
+        if batch_backend is None:
+            return None, f"Batch backend '{run.backend_name}' not available"
+
+        if item.backend_job_id is None:
+            return None, "Job not yet submitted"
+
+        # Look up the CloudWatch log stream name
+        log_stream = await batch_backend.get_log_stream_for_job(item.backend_job_id)
+        if log_stream is None:
+            return None, "Log stream not available yet (job may not have started)"
+
+        content = await batch_backend.get_log_events(
+            log_stream_name=log_stream,
+            tail=tail_lines,
+        )
+        if content is None:
+            return None, "Failed to fetch CloudWatch logs"
+
+        return content, None

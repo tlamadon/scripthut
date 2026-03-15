@@ -19,9 +19,10 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.templating import Jinja2Templates
 from sse_starlette.sse import EventSourceResponse
 
+from scripthut.backends.batch import AWSBatchBackend
 from scripthut.backends.slurm import SLURM_FAILURE_STATES, JobStats, SlurmBackend
 from scripthut.config import load_config, set_config
-from scripthut.config_schema import ScriptHutConfig, SlurmBackendConfig
+from scripthut.config_schema import AWSBatchBackendConfig, ScriptHutConfig, SlurmBackendConfig
 from scripthut.models import ConnectionStatus, JobState, SlurmJob
 from scripthut.runs import Run, RunManager
 from scripthut.runs.models import RunItemStatus
@@ -52,6 +53,7 @@ class BackendState:
     backend_type: str
     ssh_client: SSHClient | None = None
     backend: SlurmBackend | None = None
+    batch_backend: AWSBatchBackend | None = None
     jobs: list[SlurmJob] = field(default_factory=list)
     status: ConnectionStatus = field(
         default_factory=lambda: ConnectionStatus(connected=False, host="")
@@ -235,7 +237,7 @@ async def poll_backend(backend_state: BackendState, filter_user: str | None = No
         )
         logger.debug(f"Polled {len(jobs)} jobs from '{backend_state.name}' in {duration_ms}ms")
 
-        # Collect slurm_job_ids that need sacct data.
+        # Collect backend_job_ids that need sacct data.
         # Keep querying sacct until each item's sacct_state is confirmed.
         sacct_ids: list[str] = []
         if state.run_manager:
@@ -243,10 +245,10 @@ async def poll_backend(backend_state: BackendState, filter_user: str | None = No
                 if run.backend_name != backend_state.name:
                     continue
                 for item in run.items:
-                    if (item.slurm_job_id
+                    if (item.backend_job_id
                         and item.status in (RunItemStatus.COMPLETED, RunItemStatus.FAILED)
                         and item.sacct_state is None):
-                        sacct_ids.append(item.slurm_job_id)
+                        sacct_ids.append(item.backend_job_id)
 
         # Query sacct for resource utilization
         job_stats: dict[str, JobStats] = {}
@@ -265,8 +267,8 @@ async def poll_backend(backend_state: BackendState, filter_user: str | None = No
                     continue
                 run_updated = False
                 for item in run.items:
-                    if item.slurm_job_id and item.slurm_job_id in job_stats:
-                        s = job_stats[item.slurm_job_id]
+                    if item.backend_job_id and item.backend_job_id in job_stats:
+                        s = job_stats[item.backend_job_id]
                         item.cpu_efficiency = s.cpu_efficiency
                         item.max_rss = s.max_rss
                         if s.start_time:
@@ -291,12 +293,12 @@ async def poll_backend(backend_state: BackendState, filter_user: str | None = No
                             item.error = f"Slurm: {reason}"
                             logger.info(
                                 f"Corrected task '{item.task.id}' "
-                                f"(job {item.slurm_job_id}): {reason}"
+                                f"(job {item.backend_job_id}): {reason}"
                             )
                         elif s.state:
                             logger.debug(
                                 f"sacct state for '{item.task.id}' "
-                                f"(job {item.slurm_job_id}): {s.state}"
+                                f"(job {item.backend_job_id}): {s.state}"
                             )
                 if run_updated:
                     state.run_manager._persist_run(run)
@@ -307,8 +309,8 @@ async def poll_backend(backend_state: BackendState, filter_user: str | None = No
             known_slurm_ids: set[str] = set()
             for run in state.run_manager.runs.values():
                 for item in run.items:
-                    if item.slurm_job_id:
-                        known_slurm_ids.add(item.slurm_job_id)
+                    if item.backend_job_id:
+                        known_slurm_ids.add(item.backend_job_id)
 
             slurm_state_to_run_status = {
                 JobState.PENDING: "submitted",
@@ -331,7 +333,7 @@ async def poll_backend(backend_state: BackendState, filter_user: str | None = No
                     stats = job_stats.get(slurm_job.job_id)
                     state.run_storage.add_external_job(
                         backend_name=backend_state.name,
-                        slurm_job_id=slurm_job.job_id,
+                        backend_job_id=slurm_job.job_id,
                         name=slurm_job.name,
                         user=slurm_job.user,
                         state=run_status,
@@ -366,6 +368,52 @@ async def poll_backend(backend_state: BackendState, filter_user: str | None = No
         )
 
 
+async def poll_batch_backend(backend_state: BackendState) -> None:
+    """Poll an AWS Batch backend for job status updates."""
+    if backend_state.batch_backend is None:
+        return
+
+    start_time = time.perf_counter()
+    try:
+        # Check availability / reconnect
+        available = await backend_state.batch_backend.is_available()
+        if not available:
+            backend_state.status = ConnectionStatus(
+                connected=False,
+                host=backend_state.status.host,
+                last_poll=backend_state.status.last_poll,
+                error="Job queue not available",
+            )
+            return
+
+        # List active jobs in the queue
+        active_jobs = await backend_state.batch_backend.get_jobs()
+        duration_ms = int((time.perf_counter() - start_time) * 1000)
+
+        backend_state.status = ConnectionStatus(
+            connected=True,
+            host=backend_state.status.host,
+            last_poll=datetime.now(timezone.utc),
+            last_poll_duration_ms=duration_ms,
+            job_count=len(active_jobs),
+        )
+        logger.debug(
+            f"Polled {len(active_jobs)} active Batch jobs from "
+            f"'{backend_state.name}' in {duration_ms}ms"
+        )
+
+    except Exception as e:
+        duration_ms = int((time.perf_counter() - start_time) * 1000)
+        logger.error(f"Batch polling failed for '{backend_state.name}': {e}")
+        backend_state.status = ConnectionStatus(
+            connected=False,
+            host=backend_state.status.host,
+            last_poll=backend_state.status.last_poll,
+            last_poll_duration_ms=duration_ms,
+            error=str(e),
+        )
+
+
 async def poll_jobs() -> None:
     """Background task to poll all backends periodically."""
     if state.config is None:
@@ -378,20 +426,24 @@ async def poll_jobs() -> None:
     while not state._shutdown_event.is_set():
         filter_user = state.filter_user if state.filter_enabled else None
 
-        tasks = [
-            poll_backend(backend_state, filter_user=filter_user)
-            for backend_state in state.backends.values()
-        ]
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+        poll_tasks = []
+        for backend_state in state.backends.values():
+            if backend_state.backend_type == "batch":
+                poll_tasks.append(poll_batch_backend(backend_state))
+            else:
+                poll_tasks.append(poll_backend(backend_state, filter_user=filter_user))
+        if poll_tasks:
+            await asyncio.gather(*poll_tasks, return_exceptions=True)
             total_jobs = sum(len(c.jobs) for c in state.backends.values())
-            logger.info(f"Polled {total_jobs} jobs from {len(tasks)} backends (filter_user={filter_user})")
+            logger.info(f"Polled {total_jobs} jobs from {len(poll_tasks)} backends (filter_user={filter_user})")
 
         # Update run statuses based on polled jobs
+        # (update_all_runs dispatches to batch or slurm internally)
         if state.run_manager and state.run_manager.get_active_runs():
             backend_jobs: dict[str, list[tuple[str, JobState]]] = {}
             for name, bs in state.backends.items():
-                backend_jobs[name] = [(job.job_id, job.state) for job in bs.jobs]
+                if bs.backend_type != "batch":
+                    backend_jobs[name] = [(job.job_id, job.state) for job in bs.jobs]
             await state.run_manager.update_all_runs(backend_jobs)
 
         # Save dirty runs
@@ -458,6 +510,39 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     for ecs_config in config.ecs_backends:
         logger.warning(f"ECS backend '{ecs_config.name}' configured but ECS backend not yet implemented")
 
+    # Initialize AWS Batch backends
+    for batch_config in config.batch_backends:
+        batch_backend = AWSBatchBackend(batch_config)
+        backend_state = BackendState(
+            name=batch_config.name,
+            backend_type="batch",
+            batch_backend=batch_backend,
+            status=ConnectionStatus(
+                connected=False,
+                host=f"batch:{batch_config.region}/{batch_config.job_queue}",
+            ),
+        )
+        # Check availability
+        try:
+            available = await batch_backend.is_available()
+            backend_state.status = ConnectionStatus(
+                connected=available,
+                host=f"batch:{batch_config.region}/{batch_config.job_queue}",
+                error=None if available else "Job queue not available",
+            )
+            if available:
+                logger.info(f"Connected to Batch backend '{batch_config.name}' (queue: {batch_config.job_queue})")
+            else:
+                logger.warning(f"Batch backend '{batch_config.name}' queue not available")
+        except Exception as e:
+            logger.error(f"Failed to check Batch backend '{batch_config.name}': {e}")
+            backend_state.status = ConnectionStatus(
+                connected=False,
+                host=f"batch:{batch_config.region}/{batch_config.job_queue}",
+                error=str(e),
+            )
+        state.backends[batch_config.name] = backend_state
+
     # Initialize run storage and manager
     state.run_storage = RunStorageManager(config.settings.data_dir_resolved / "workflows")
     ssh_clients: dict[str, SSHClient] = {
@@ -465,7 +550,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         for name, cs in state.backends.items()
         if cs.ssh_client is not None
     }
-    state.run_manager = RunManager(config, ssh_clients, storage=state.run_storage)
+    batch_backends_map: dict[str, AWSBatchBackend] = {
+        name: cs.batch_backend
+        for name, cs in state.backends.items()
+        if cs.batch_backend is not None
+    }
+    state.run_manager = RunManager(
+        config, ssh_clients, storage=state.run_storage,
+        batch_backends=batch_backends_map,
+    )
     logger.info(f"Initialized run manager with {len(config.workflows)} workflows")
 
     # Restore runs from storage
@@ -548,7 +641,7 @@ def _backend_job_counts() -> dict[str, int]:
 @dataclass
 class JobView:
     """Lightweight view model for the jobs dashboard table."""
-    slurm_job_id: str | None
+    backend_job_id: str | None
     name: str
     user: str
     backend_name: str
@@ -600,7 +693,7 @@ def _collect_all_job_views() -> list[JobView]:
     for run in state.run_manager.runs.values():
         for item in run.items:
             views.append(JobView(
-                slurm_job_id=item.slurm_job_id,
+                backend_job_id=item.backend_job_id,
                 name=item.task.name,
                 user=user,
                 backend_name=run.backend_name,
@@ -630,7 +723,7 @@ def _collect_all_job_views() -> list[JobView]:
             for run in state.run_storage.load_runs_for_workflow(wf_name):
                 for item in run.items:
                     views.append(JobView(
-                        slurm_job_id=item.slurm_job_id,
+                        backend_job_id=item.backend_job_id,
                         name=item.task.name,
                         user=user,
                         backend_name=run.backend_name,
@@ -895,21 +988,21 @@ async def filter_status() -> dict[str, Any]:
     }
 
 
-@app.post("/jobs/{slurm_job_id}/cancel", response_class=HTMLResponse)
-async def cancel_external_job(request: Request, slurm_job_id: str) -> HTMLResponse:
+@app.post("/jobs/{backend_job_id}/cancel", response_class=HTMLResponse)
+async def cancel_external_job(request: Request, backend_job_id: str) -> HTMLResponse:
     """Cancel an external Slurm job via scancel."""
     for bs in state.backends.values():
         for job in bs.jobs:
-            if job.job_id == slurm_job_id:
+            if job.job_id == backend_job_id:
                 if bs.ssh_client:
-                    await bs.ssh_client.run_command(f"scancel {slurm_job_id}")
+                    await bs.ssh_client.run_command(f"scancel {backend_job_id}")
                 # Update in-memory state so the UI reflects the change immediately
                 job.state = JobState.CANCELLED
                 # Update storage
                 if state.run_storage:
                     state.run_storage.add_external_job(
                         backend_name=bs.name,
-                        slurm_job_id=slurm_job_id,
+                        backend_job_id=backend_job_id,
                         name=job.name,
                         user=job.user,
                         state="failed",
@@ -934,11 +1027,11 @@ async def clear_stale_external_jobs(request: Request) -> HTMLResponse:
     return await jobs_partial(request)
 
 
-@app.delete("/jobs/{slurm_job_id}", response_class=HTMLResponse)
-async def delete_external_job(request: Request, slurm_job_id: str) -> HTMLResponse:
+@app.delete("/jobs/{backend_job_id}", response_class=HTMLResponse)
+async def delete_external_job(request: Request, backend_job_id: str) -> HTMLResponse:
     """Remove a completed external job from history."""
     if state.run_storage:
-        state.run_storage.remove_external_job(slurm_job_id)
+        state.run_storage.remove_external_job(backend_job_id)
     return await jobs_partial(request)
 
 
@@ -1468,7 +1561,7 @@ async def get_task_detail(
         item_data: dict[str, Any] = {
             "task": task_data,
             "status": item.status.value,
-            "slurm_job_id": item.slurm_job_id,
+            "backend_job_id": item.backend_job_id,
             "submitted_at": item.submitted_at.isoformat() if item.submitted_at else None,
             "started_at": item.started_at.isoformat() if item.started_at else None,
             "finished_at": item.finished_at.isoformat() if item.finished_at else None,
@@ -1530,7 +1623,7 @@ async def view_task_json(request: Request, run_id: str, task_id: str) -> HTMLRes
     item_data: dict[str, Any] = {
         "task": task_data,
         "status": item.status.value,
-        "slurm_job_id": item.slurm_job_id,
+        "backend_job_id": item.backend_job_id,
         "submitted_at": item.submitted_at.isoformat() if item.submitted_at else None,
         "started_at": item.started_at.isoformat() if item.started_at else None,
         "finished_at": item.finished_at.isoformat() if item.finished_at else None,

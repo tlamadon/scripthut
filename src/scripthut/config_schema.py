@@ -86,8 +86,34 @@ class ECSBackendConfig(BaseModel):
     )
 
 
+class AWSBatchBackendConfig(BaseModel):
+    """AWS Batch backend configuration."""
+
+    name: str = Field(description="Unique identifier for this backend")
+    type: Literal["batch"] = "batch"
+    region: str = Field(description="AWS region (e.g. us-east-1)")
+    profile: str | None = Field(
+        default=None,
+        description="AWS CLI profile name (uses default credential chain if not set)",
+    )
+    job_queue: str = Field(description="AWS Batch job queue name")
+    job_definition_prefix: str = Field(
+        default="scripthut",
+        description="Prefix for auto-registered job definition names",
+    )
+    max_concurrent: int = Field(
+        default=100,
+        ge=1,
+        description="Maximum total concurrent jobs across all runs on this backend",
+    )
+    log_group: str | None = Field(
+        default=None,
+        description="CloudWatch log group (default: /aws/batch/job)",
+    )
+
+
 BackendConfig = Annotated[
-    SlurmBackendConfig | ECSBackendConfig,
+    SlurmBackendConfig | ECSBackendConfig | AWSBatchBackendConfig,
     Field(discriminator="type"),
 ]
 
@@ -175,6 +201,10 @@ class EnvironmentConfig(BaseModel):
     """Named environment with key-value variables and optional init script."""
 
     name: str = Field(description="Unique identifier for this environment")
+    container: str | None = Field(
+        default=None,
+        description="Container image URI (e.g. ECR) for AWS Batch jobs",
+    )
     variables: dict[str, str] = Field(
         default_factory=dict,
         description="Key-value pairs exported as environment variables",
@@ -299,3 +329,8 @@ class ScriptHutConfig(BaseModel):
     def ecs_backends(self) -> list[ECSBackendConfig]:
         """Get all ECS backends."""
         return [c for c in self.backends if isinstance(c, ECSBackendConfig)]
+
+    @property
+    def batch_backends(self) -> list[AWSBatchBackendConfig]:
+        """Get all AWS Batch backends."""
+        return [c for c in self.backends if isinstance(c, AWSBatchBackendConfig)]
