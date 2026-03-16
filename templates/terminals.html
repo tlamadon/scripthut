@@ -44,7 +44,7 @@
                                 {% if s.node %}
                                 <span>on {{ s.node }}</span>
                                 {% endif %}
-                                <span>started {{ s.created_at.strftime('%H:%M:%S') }} UTC</span>
+                                <span>started <time class="local-time" datetime="{{ s.created_at.isoformat() }}" data-format="time"></time></span>
                             </div>
                         </div>
                     </div>
@@ -180,6 +180,25 @@
         </div>
     </div>
     <script>
+        // Convert UTC <time> elements to browser local time
+        function formatLocalTimes(root) {
+            (root || document).querySelectorAll('time.local-time').forEach(function(el) {
+                if (el.dataset.converted) return;
+                var dt = new Date(el.getAttribute('datetime'));
+                if (isNaN(dt)) return;
+                var fmt = el.dataset.format || 'datetime';
+                if (fmt === 'time') {
+                    el.textContent = dt.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit', second: '2-digit'});
+                } else if (fmt === 'datetime-seconds') {
+                    el.textContent = dt.toLocaleDateString([], {year: 'numeric', month: '2-digit', day: '2-digit'}) + ' ' + dt.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit', second: '2-digit'});
+                } else {
+                    el.textContent = dt.toLocaleDateString([], {year: 'numeric', month: '2-digit', day: '2-digit'}) + ' ' + dt.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+                }
+                el.dataset.converted = '1';
+            });
+        }
+        formatLocalTimes();
+
         function closeSession(sessionId, btn) {
             btn.textContent = 'Closing...';
             btn.disabled = true;

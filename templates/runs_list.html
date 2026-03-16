@@ -23,7 +23,7 @@
                 <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{{ run.workflow_name }}</td>
                 <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-600">{{ run.backend_name }}</td>
                 <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                    {{ run.created_at.strftime('%Y-%m-%d %H:%M') }}
+                    <time class="local-time" datetime="{{ run.created_at.isoformat() }}" data-format="datetime"></time>
                 </td>
                 <td class="px-6 py-4 whitespace-nowrap">
                     <div class="flex items-center gap-2">

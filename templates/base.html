@@ -158,6 +158,32 @@
         return { reset, setRemaining };
         }) ();
 
+        // Convert UTC <time> elements to browser local time
+        function formatLocalTimes(root) {
+            (root || document).querySelectorAll('time.local-time').forEach(function(el) {
+                if (el.dataset.converted) return;
+                var dt = new Date(el.getAttribute('datetime'));
+                if (isNaN(dt)) return;
+                var fmt = el.dataset.format || 'datetime';
+                if (fmt === 'time') {
+                    el.textContent = dt.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit', second: '2-digit'});
+                } else if (fmt === 'datetime-seconds') {
+                    el.textContent = dt.toLocaleDateString([], {year: 'numeric', month: '2-digit', day: '2-digit'}) + ' ' + dt.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit', second: '2-digit'});
+                } else {
+                    el.textContent = dt.toLocaleDateString([], {year: 'numeric', month: '2-digit', day: '2-digit'}) + ' ' + dt.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+                }
+                el.dataset.converted = '1';
+            });
+        }
+        formatLocalTimes();
+        // Re-run after HTMX swaps and SSE updates
+        document.body.addEventListener('htmx:afterSwap', function(e) { formatLocalTimes(e.detail.target); });
+        document.body.addEventListener('htmx:oobAfterSwap', function(e) { formatLocalTimes(e.detail.target); });
+        // Also observe SSE-driven innerHTML swaps
+        new MutationObserver(function() { formatLocalTimes(); }).observe(
+            document.getElementById('backends-status') || document.body, { childList: true, subtree: true }
+        );
+
         // Trigger an immediate squeue poll on all backends
         function triggerEarlyRefresh() {
             fetch('/poll', { method: 'POST' });

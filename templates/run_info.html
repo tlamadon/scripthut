@@ -29,7 +29,7 @@
     </div>
     <div>
         <p class="text-sm text-gray-500">Created</p>
-        <p class="text-lg font-semibold text-gray-800">{{ run.created_at.strftime('%Y-%m-%d %H:%M:%S') }}</p>
+        <p class="text-lg font-semibold text-gray-800"><time class="local-time" datetime="{{ run.created_at.isoformat() }}" data-format="datetime-seconds"></time></p>
     </div>
     <div>
         <p class="text-sm text-gray-500">Max Concurrent</p>

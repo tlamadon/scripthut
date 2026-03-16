@@ -163,7 +163,7 @@
                 </td>
                 <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
                     {% if job.submit_time %}
-                    {{ job.submit_time.strftime('%Y-%m-%d %H:%M') }}
+                    <time class="local-time" datetime="{{ job.submit_time.isoformat() }}" data-format="datetime"></time>
                     {% else %}
                     -
                     {% endif %}

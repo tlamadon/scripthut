@@ -122,21 +122,21 @@
                 </td>
                 <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
                     {% if item.submitted_at %}
-                    {{ item.submitted_at.strftime('%H:%M:%S') }}
+                    <time class="local-time" datetime="{{ item.submitted_at.isoformat() }}" data-format="time"></time>
                     {% else %}
                     -
                     {% endif %}
                 </td>
                 <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
                     {% if item.started_at %}
-                    {{ item.started_at.strftime('%H:%M:%S') }}
+                    <time class="local-time" datetime="{{ item.started_at.isoformat() }}" data-format="time"></time>
                     {% else %}
                     -
                     {% endif %}
                 </td>
                 <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
                     {% if item.finished_at %}
-                    {{ item.finished_at.strftime('%H:%M:%S') }}
+                    <time class="local-time" datetime="{{ item.finished_at.isoformat() }}" data-format="time"></time>
                     {% else %}
                     -
                     {% endif %}

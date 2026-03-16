@@ -27,8 +27,7 @@
                 title="Poll duration">{{ backend.status.last_poll_duration_ms }}ms</span>
             {% endif %}
             {% if backend.status.last_poll %}
-            <span class="text-xs text-gray-400">{{ backend.status.last_poll.strftime('%H:%M:%S')
-                }}</span>
+            <time class="text-xs text-gray-400 local-time" datetime="{{ backend.status.last_poll.isoformat() }}" data-format="time"></time>
             {% endif %}
             {% else %}
             <span class="text-sm text-red-700">Disconnected</span>
