@@ -95,6 +95,36 @@ class SSHClient:
                 self._connection = None
                 logger.info(f"Disconnected from {self.host}")
 
+    async def create_interactive_session(
+        self,
+        command: str | None = None,
+        term_type: str = "xterm-256color",
+        term_size: tuple[int, int] = (80, 24),
+    ) -> asyncssh.SSHClientProcess:
+        """Create an interactive SSH process with a PTY.
+
+        Args:
+            command: Command to run (None for a login shell).
+            term_type: Terminal type for the PTY.
+            term_size: (cols, rows) terminal size.
+
+        Returns:
+            An SSHClientProcess with stdin/stdout streams.
+        """
+        if not self.is_connected:
+            await self.connect()
+
+        if self._connection is None:
+            raise RuntimeError("Failed to establish SSH connection")
+
+        process = await self._connection.create_process(
+            command,
+            term_type=term_type,
+            term_size=term_size,
+            encoding=None,
+        )
+        return process
+
     async def run_command(self, command: str, timeout: int = 30) -> tuple[str, str, int]:
         """
         Run a command on the remote host.

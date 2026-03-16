@@ -169,6 +169,7 @@
                     {% endif %}
                 </td>
                 <td class="px-4 py-3 whitespace-nowrap text-sm">
+                    <div class="flex items-center gap-1">
                     {% if job.source == 'external' and job.job_id %}
                         {% if not job.is_terminal %}
                         <button hx-post="/jobs/{{ job.job_id }}/cancel"
@@ -191,6 +192,7 @@
                         </button>
                         {% endif %}
                     {% endif %}
+                    </div>
                 </td>
             </tr>
             {% endfor %}

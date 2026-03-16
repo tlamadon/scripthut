@@ -439,6 +439,7 @@ class PBSBackend(JobBackend):
         login_shell: bool = False,
         env_vars: dict[str, str] | None = None,
         extra_init: str = "",
+        interactive_wait: bool = False,
     ) -> str:
         """Generate a PBS submission script for a task."""
         output_path = task.get_output_path(run_id, log_dir)
@@ -465,6 +466,7 @@ class PBSBackend(JobBackend):
             working_dir=task.working_dir,
             env_vars=env_vars,
             extra_init=extra_init,
+            interactive_wait=interactive_wait,
         )
         return header + "\n" + body
 

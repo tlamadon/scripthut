@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ScriptHut - Settings</title>
+    <link rel="icon" type="image/svg+xml"
+        href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='25' cy='2' r='1.8' fill='%23ccc' opacity='.5'/%3E%3Ccircle cx='23' cy='5' r='2.2' fill='%23bbb' opacity='.45'/%3E%3Ccircle cx='25.5' cy='8' r='1.8' fill='%23aaa' opacity='.4'/%3E%3Crect x='22' y='7' width='2.5' height='8' fill='%23696969'/%3E%3Cpolygon points='16,3 0,22 32,22' fill='%23B8860B'/%3E%3Cline x1='16' y1='3' x2='3' y2='22' stroke='%23A07000' stroke-width='.7'/%3E%3Cline x1='16' y1='3' x2='9' y2='22' stroke='%23A07000' stroke-width='.7'/%3E%3Cline x1='16' y1='3' x2='16' y2='22' stroke='%23A07000' stroke-width='.7'/%3E%3Cline x1='16' y1='3' x2='23' y2='22' stroke='%23A07000' stroke-width='.7'/%3E%3Cline x1='16' y1='3' x2='29' y2='22' stroke='%23A07000' stroke-width='.7'/%3E%3Crect x='6' y='22' width='20' height='8' fill='%23D2B48C'/%3E%3Crect x='12' y='24' width='6' height='6' rx='3' ry='2' fill='%235C3317'/%3E%3Crect x='20' y='25' width='3' height='3' fill='%2387CEEB' stroke='%235C3317' stroke-width='.5'/%3E%3C/svg%3E">
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .cm-editor {
+            height: auto;
+            max-height: 75vh;
+            overflow: auto;
+            border: 1px solid #e5e7eb;
+            border-radius: 0.5rem;
+            font-size: 13px;
+        }
+        .cm-editor.cm-focused {
+            outline: 2px solid #3b82f6;
+            outline-offset: -1px;
+            border-color: transparent;
+        }
+        .cm-gutters {
+            border-right: 1px solid #e5e7eb;
+            background-color: #f9fafb;
+        }
+        .cm-lineNumbers .cm-gutterElement {
+            padding: 0 8px 0 4px;
+            min-width: 2.5em;
+            color: #9ca3af;
+        }
+        .cm-content {
+            padding: 8px 0;
+        }
+        .cm-line {
+            padding: 0 8px;
+        }
+        /* Fallback textarea styling in case CodeMirror fails to load */
+        #config-fallback {
+            display: none;
+        }
+        #config-fallback.visible {
+            display: block;
+        }
+    </style>
+</head>
+
+<body class="bg-gray-100 min-h-screen">
+    <div class="container mx-auto px-4 py-8">
+        <header class="mb-8">
+            {% include "nav.html" %}
+        </header>
+
+        {% if message %}
+        <div class="mb-6 px-4 py-3 rounded-lg text-sm font-medium
+            {% if message_type == 'error' %}bg-red-100 border border-red-300 text-red-700
+            {% elif message_type == 'warning' %}bg-yellow-100 border border-yellow-300 text-yellow-700
+            {% else %}bg-green-100 border border-green-300 text-green-700{% endif %}">
+            {{ message }}
+        </div>
+        {% endif %}
+
+        <div class="bg-white rounded-lg shadow-md p-6">
+            <div class="flex items-center justify-between mb-4">
+                <div>
+                    <h2 class="text-lg font-semibold text-gray-800">Configuration</h2>
+                    <p class="text-sm text-gray-500 mt-1">{{ config_path }}</p>
+                </div>
+            </div>
+
+            <form method="POST" action="/settings" id="settings-form">
+                <textarea name="config_content" id="config-content" style="display:none;"></textarea>
+                <div id="editor-container"></div>
+                <!-- Fallback plain textarea if CodeMirror fails -->
+                <textarea id="config-fallback"
+                    class="w-full font-mono text-sm bg-gray-50 border border-gray-200 rounded-lg p-4 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    rows="30" spellcheck="false"
+                    {% if not editable %}readonly{% endif %}
+                ></textarea>
+
+                {% if editable %}
+                <div class="flex items-center gap-3 mt-4">
+                    <button type="submit" name="action" value="save"
+                        class="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-colors">
+                        Save
+                    </button>
+                    <button type="submit" name="action" value="save_restart"
+                        class="px-4 py-2 bg-orange-600 text-white text-sm font-medium rounded-lg hover:bg-orange-700 transition-colors"
+                        onclick="return confirm('This will save the config and restart the server. Continue?')">
+                        Save &amp; Restart
+                    </button>
+                    <span class="text-xs text-gray-400">Changes to most settings require a restart to take effect.</span>
+                </div>
+                {% else %}
+                <p class="mt-4 text-sm text-gray-500">Configuration file is read-only (no file found or not writable).</p>
+                {% endif %}
+            </form>
+        </div>
+    </div>
+
+    <script>
+        // Pass content safely via JSON to avoid Jinja2 escaping issues
+        const CONFIG_CONTENT = {{ config_content | tojson }};
+        const EDITABLE = {{ 'true' if editable else 'false' }};
+    </script>
+
+    <script type="module">
+        import {EditorView, basicSetup} from 'https://esm.sh/codemirror';
+        import {EditorState} from 'https://esm.sh/@codemirror/state';
+        import {yaml} from 'https://esm.sh/@codemirror/lang-yaml';
+        import {keymap} from 'https://esm.sh/@codemirror/view';
+        import {indentWithTab} from 'https://esm.sh/@codemirror/commands';
+
+        const view = new EditorView({
+            state: EditorState.create({
+                doc: CONFIG_CONTENT,
+                extensions: [
+                    basicSetup,
+                    yaml(),
+                    keymap.of([indentWithTab]),
+                    EditorState.readOnly.of(!EDITABLE),
+                    EditorView.theme({
+                        '&': { backgroundColor: '#fafafa' },
+                    }),
+                ],
+            }),
+            parent: document.getElementById('editor-container'),
+        });
+
+        // Sync editor content to hidden textarea on submit
+        document.getElementById('settings-form').addEventListener('submit', () => {
+            document.getElementById('config-content').value = view.state.doc.toString();
+        });
+    </script>
+
+    <script>
+        // Fallback: if CodeMirror doesn't load within 3s, show plain textarea
+        setTimeout(() => {
+            if (!document.querySelector('.cm-editor')) {
+                const fallback = document.getElementById('config-fallback');
+                fallback.value = CONFIG_CONTENT;
+                fallback.classList.add('visible');
+                fallback.name = 'config_content';
+                document.getElementById('config-content').name = '';
+                document.getElementById('settings-form').addEventListener('submit', () => {
+                    document.getElementById('config-content').value = fallback.value;
+                    document.getElementById('config-content').name = 'config_content';
+                });
+            }
+        }, 3000);
+    </script>
+</body>
+
+</html>

@@ -103,6 +103,7 @@ class JobBackend(ABC):
         login_shell: bool = False,
         env_vars: dict[str, str] | None = None,
         extra_init: str = "",
+        interactive_wait: bool = False,
     ) -> str:
         """Generate a scheduler-specific submission script for a task."""
         ...

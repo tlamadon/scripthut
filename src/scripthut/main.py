@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import json
 import logging
+import os
 import time
 
 from contextlib import asynccontextmanager
@@ -14,7 +15,7 @@ from typing import Any, AsyncGenerator
 
 import asyncssh
 import uvicorn
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.templating import Jinja2Templates
 from sse_starlette.sse import EventSourceResponse
@@ -22,7 +23,7 @@ from sse_starlette.sse import EventSourceResponse
 from scripthut.backends.base import JobBackend, JobStats
 from scripthut.backends.pbs import PBSBackend
 from scripthut.backends.slurm import SlurmBackend
-from scripthut.config import load_config, set_config
+from scripthut.config import find_config_file, load_config, load_yaml_config, set_config
 from scripthut.config_schema import PBSBackendConfig, ScriptHutConfig, SlurmBackendConfig
 from scripthut.models import ConnectionStatus, HPCJob, JobState
 from scripthut.runs import Run, RunManager
@@ -31,6 +32,7 @@ from scripthut.runs.storage import RunStorageManager
 from scripthut.sources.git import GitSourceManager, SourceStatus
 from scripthut import __version__
 from scripthut.ssh.client import SSHClient
+from scripthut.terminal import TerminalManager, handle_terminal_websocket
 
 
 logging.basicConfig(
@@ -66,6 +68,8 @@ class AppState:
     source_statuses: dict[str, SourceStatus] = field(default_factory=dict)
     run_manager: RunManager | None = None
     run_storage: RunStorageManager | None = None
+    terminal_manager: TerminalManager = field(default_factory=TerminalManager)
+    debug_job_ids: set[str] = field(default_factory=set)  # job IDs submitted via interactive debug
     filter_enabled: bool = False
     filter_user: str | None = None
     live_view: bool = True
@@ -604,6 +608,16 @@ class JobView:
         return self.state in ("completed", "failed", "dep_failed")
 
 
+def _get_job_nodes() -> dict[str, str]:
+    """Build a job_id -> node mapping from live scheduler data."""
+    result: dict[str, str] = {}
+    for bs in state.backends.values():
+        for job in bs.jobs:
+            if job.job_id and job.nodes and job.nodes != "-":
+                result[job.job_id] = job.nodes
+    return result
+
+
 def _collect_all_job_views() -> list[JobView]:
     """Collect all RunItems from all runs into JobViews for the dashboard."""
     views: list[JobView] = []
@@ -666,7 +680,7 @@ def _collect_all_job_views() -> list[JobView]:
                         cpu_efficiency=item.cpu_efficiency,
                         max_rss=item.max_rss,
                         workflow_name="_default",
-                    ))
+                            ))
 
     views.sort(key=lambda v: v.submit_time or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
     return views
@@ -1103,6 +1117,133 @@ async def runs_page(request: Request) -> HTMLResponse:
     )
 
 
+@app.get("/terminals", response_class=HTMLResponse)
+async def terminals_page(request: Request) -> HTMLResponse:
+    """Page listing active terminal sessions and options to create new ones."""
+    sessions = list(state.terminal_manager.sessions.values())
+
+    # Build set of known debug job IDs from both in-memory tracking and storage
+    known_debug_ids = set(state.debug_job_ids)
+    if state.run_storage:
+        for item in state.run_storage.get_external_items_by_name_prefix("[debug]"):
+            known_debug_ids.add(item.job_id)
+
+    # Collect running jobs across all backends, separating debug from regular
+    running_jobs: list[dict[str, Any]] = []
+    debug_jobs: list[dict[str, Any]] = []
+    for backend_name, bs in state.backends.items():
+        for job in bs.jobs:
+            if job.state == JobState.RUNNING and job.nodes and job.nodes != "-":
+                entry = {
+                    "backend_name": backend_name,
+                    "job_id": job.job_id,
+                    "name": job.name,
+                    "user": job.user,
+                    "node": job.nodes,
+                    "partition": job.partition,
+                }
+                if job.job_id in known_debug_ids:
+                    debug_jobs.append(entry)
+                else:
+                    running_jobs.append(entry)
+
+    # Available backends for head node connections
+    backends_info = [
+        {"name": name, "host": bs.status.host, "connected": bs.status.connected}
+        for name, bs in state.backends.items()
+    ]
+
+    return templates.TemplateResponse(
+        "terminals.html",
+        {
+            "request": request,
+            "sessions": sessions,
+            "running_jobs": running_jobs,
+            "debug_jobs": debug_jobs,
+            "backends": backends_info,
+        },
+    )
+
+
+@app.get("/settings", response_class=HTMLResponse)
+async def settings_page(request: Request, message: str = "", message_type: str = "success") -> HTMLResponse:
+    """Settings page showing the YAML config file."""
+    config_path = find_config_file(_config_path)
+    editable = False
+    config_content = ""
+
+    if config_path is not None:
+        config_path = config_path.resolve()
+        try:
+            config_content = config_path.read_text()
+            editable = os.access(config_path, os.W_OK)
+        except OSError as e:
+            config_content = f"# Error reading config: {e}"
+    else:
+        config_content = "# No configuration file found.\n# Create scripthut.yaml to get started."
+
+    return templates.TemplateResponse(
+        "settings.html",
+        {
+            "request": request,
+            "config_content": config_content,
+            "config_path": str(config_path) if config_path else "No config file",
+            "editable": editable,
+            "message": message,
+            "message_type": message_type,
+        },
+    )
+
+
+@app.post("/settings", response_class=HTMLResponse)
+async def settings_save(request: Request) -> HTMLResponse:
+    """Save the YAML config file and optionally restart."""
+    form = await request.form()
+    config_content = form.get("config_content", "")
+    action = form.get("action", "save")
+
+    config_path = find_config_file(_config_path)
+    if config_path is None:
+        return await settings_page(request, message="No config file to save to.", message_type="error")
+
+    config_path = config_path.resolve()
+
+    # Validate the YAML before saving
+    import yaml
+    try:
+        raw = yaml.safe_load(config_content)
+        if raw is None:
+            raw = {}
+        ScriptHutConfig.model_validate(raw)
+    except Exception as e:
+        return await settings_page(
+            request,
+            message=f"Invalid configuration: {e}",
+            message_type="error",
+        )
+
+    # Write the file
+    try:
+        config_path.write_text(config_content)
+    except OSError as e:
+        return await settings_page(request, message=f"Failed to save: {e}", message_type="error")
+
+    if action == "save_restart":
+        # Reload config and trigger server restart via os.execv
+        message = "Configuration saved. Restarting server..."
+        # Schedule the restart after returning the response
+        asyncio.get_event_loop().call_later(0.5, _restart_server)
+        return await settings_page(request, message=message, message_type="warning")
+
+    return await settings_page(request, message="Configuration saved successfully.", message_type="success")
+
+
+def _restart_server() -> None:
+    """Restart the server process by re-executing the current command."""
+    import sys
+    os.execv(sys.executable, [sys.executable] + sys.argv)
+
+
 @app.get("/runs/list")
 async def list_runs() -> dict[str, Any]:
     """List all runs (JSON)."""
@@ -1510,12 +1651,21 @@ async def get_task_detail(
     else:
         error = f"Unknown detail type: {detail_type}"
 
+    # Look up compute node from live scheduler data
+    job_nodes = _get_job_nodes()
+    node = job_nodes.get(item.job_id) if item.job_id else None
+
     return JSONResponse({
         "content": content,
         "error": error,
         "task_name": item.task.name,
         "task_id": task_id,
         "path": path,
+        "job_id": item.job_id,
+        "status": item.status.value,
+        "node": node,
+        "backend_name": run.backend_name,
+        "run_id": run_id,
     })
 
 
@@ -1636,6 +1786,308 @@ async def view_task_log(
             "run_items": run.items if run else [],
         },
     )
+
+
+# ── Terminal Routes ──────────────────────────────────────────────────────────
+
+
+@app.get("/terminal/{backend_name}", response_class=HTMLResponse)
+async def terminal_page(request: Request, backend_name: str) -> HTMLResponse:
+    """Serve the browser terminal page for a backend."""
+    backend_state = state.backends.get(backend_name)
+    if not backend_state:
+        return HTMLResponse("Backend not found", status_code=404)
+
+    return templates.TemplateResponse(
+        "terminal.html",
+        {
+            "request": request,
+            "backend_name": backend_name,
+            "backend_type": backend_state.backend_type,
+            "host": backend_state.status.host,
+        },
+    )
+
+
+@app.websocket("/ws/terminal/{backend_name}")
+async def terminal_ws(websocket: WebSocket, backend_name: str) -> None:
+    """WebSocket endpoint for interactive terminal sessions.
+
+    After accepting, expects an init JSON message:
+      {"type": "init", "cols": 80, "rows": 24,
+       "session_type": "headnode" | "job",
+       "node": "...", "job_id": "..."}  (node/job_id for job sessions)
+    """
+    await websocket.accept()
+
+    backend_state = state.backends.get(backend_name)
+    if not backend_state or not backend_state.ssh_client:
+        await websocket.send_json(
+            {"type": "error", "message": f"Backend '{backend_name}' not found or disconnected"}
+        )
+        await websocket.close()
+        return
+
+    # Peek at the init message to determine session type and build command
+    try:
+        init_data = await asyncio.wait_for(websocket.receive_json(), timeout=10)
+    except Exception:
+        await websocket.close()
+        return
+
+    session_type = init_data.get("session_type", "headnode")
+    command: str | None = None
+    session_node: str | None = None
+    session_job_id: str | None = None
+    session_label: str | None = None
+
+    if session_type == "attach":
+        # Direct SSH to a compute node (no tmux)
+        node = init_data.get("node", "")
+        if not node:
+            await websocket.send_json(
+                {"type": "error", "message": "Missing node for attach session"}
+            )
+            await websocket.close()
+            return
+        command = f"ssh -tt {node}"
+        session_node = node
+        session_label = f"{backend_name} - {node}"
+    elif session_type == "job":
+        node = init_data.get("node", "")
+        job_id = init_data.get("job_id", "")
+        if not node or not job_id:
+            await websocket.send_json(
+                {"type": "error", "message": "Missing node or job_id for job session"}
+            )
+            await websocket.close()
+            return
+        tmux_session = f"sh-{job_id}"
+        command = f'ssh -tt {node} "tmux attach -t {tmux_session}"'
+        session_node = node
+        session_job_id = job_id
+        session_label = f"{backend_name} - Job {job_id} on {node}"
+    else:
+        session_label = f"{backend_name} - Head node ({backend_state.status.host})"
+
+    session = state.terminal_manager.create_session(
+        backend_name, session_type,
+        node=session_node, job_id=session_job_id, label=session_label,
+    )
+    session.websocket = websocket
+    logger.info(f"Terminal session {session.id} ({session_type}) for backend '{backend_name}'")
+
+    try:
+        # Re-inject the init message since handle_terminal_websocket reads it
+        # We put the data back by overriding the first receive
+        # Actually, handle_terminal_websocket expects to read init itself,
+        # so we need to send a synthetic init. Instead, let's restructure:
+        # We already consumed the init, so create the process directly here
+        # and run the relay ourselves.
+        cols = init_data.get("cols", 80)
+        rows = init_data.get("rows", 24)
+
+        process = await backend_state.ssh_client.create_interactive_session(
+            command=command,
+            term_size=(cols, rows),
+        )
+
+        async def ws_to_ssh() -> None:
+            try:
+                while True:
+                    raw = await websocket.receive_text()
+                    msg = json.loads(raw)
+                    if msg["type"] == "input":
+                        process.stdin.write(msg["data"].encode())
+                    elif msg["type"] == "resize":
+                        process.change_terminal_size(
+                            msg.get("cols", 80), msg.get("rows", 24)
+                        )
+            except (WebSocketDisconnect, Exception):
+                process.close()
+
+        async def ssh_to_ws() -> None:
+            try:
+                while not process.is_closing():
+                    data = await process.stdout.read(4096)
+                    if not data:
+                        break
+                    text = data.decode("utf-8", errors="replace")
+                    await websocket.send_json({"type": "output", "data": text})
+            except Exception:
+                pass
+            finally:
+                exit_code = process.returncode if process.returncode is not None else -1
+                try:
+                    await websocket.send_json({"type": "exit", "code": exit_code})
+                    await websocket.close()
+                except Exception:
+                    pass
+
+        done, pending = await asyncio.wait(
+            [asyncio.create_task(ws_to_ssh()), asyncio.create_task(ssh_to_ws())],
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        for task in pending:
+            task.cancel()
+
+    except Exception as e:
+        logger.error(f"Terminal session {session.id} failed: {e}")
+        try:
+            await websocket.send_json({"type": "error", "message": str(e)})
+            await websocket.close()
+        except Exception:
+            pass
+    finally:
+        state.terminal_manager.remove_session(session.id)
+        logger.info(f"Terminal session {session.id} closed")
+
+
+@app.delete("/terminal/sessions/{session_id}")
+async def close_terminal_session(session_id: str) -> dict[str, str]:
+    """Close a terminal session by closing its WebSocket connection."""
+    closed = await state.terminal_manager.close_session(session_id)
+    if not closed:
+        return JSONResponse(status_code=404, content={"error": "Session not found"})
+    return {"status": "ok"}
+
+
+@app.post("/terminal/jobs/{backend_name}/{job_id}/continue")
+async def continue_job(backend_name: str, job_id: str) -> dict[str, Any]:
+    """Send the continue signal to a job's tmux wait, unblocking the main command."""
+    backend_state = state.backends.get(backend_name)
+    if not backend_state or not backend_state.ssh_client:
+        return {"error": "Backend not found or disconnected"}
+
+    # Find the node for this job
+    node = None
+    for job in backend_state.jobs:
+        if job.job_id == job_id and job.nodes and job.nodes != "-":
+            node = job.nodes
+            break
+
+    if not node:
+        return {"error": f"Cannot find running node for job {job_id}"}
+
+    tmux_session = f"sh-{job_id}"
+    cmd = f'ssh {node} "tmux wait-for -S continue-{tmux_session}"'
+    try:
+        stdout, stderr, exit_code = await backend_state.ssh_client.run_command(cmd, timeout=10)
+        if exit_code != 0:
+            return {"error": f"Signal failed: {stderr}"}
+        return {"status": "ok", "message": f"Continue signal sent to job {job_id}"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/terminal/jobs/{backend_name}/{job_id}/status")
+async def interactive_job_status(backend_name: str, job_id: str) -> dict[str, Any]:
+    """Poll whether an interactive job is running and return its node."""
+    backend_state = state.backends.get(backend_name)
+    if not backend_state:
+        return {"state": "error", "node": None, "error": "Backend not found"}
+
+    for job in backend_state.jobs:
+        if job.job_id == job_id:
+            node = job.nodes if job.nodes and job.nodes != "-" else None
+            return {
+                "state": job.state.value.lower(),
+                "node": node,
+            }
+
+    # Job not in current poll data yet — could still be queued
+    return {"state": "unknown", "node": None}
+
+
+@app.post("/terminal/interactive/{backend_name}/{run_id}/{task_id}")
+async def submit_interactive_task(
+    backend_name: str, run_id: str, task_id: str,
+) -> dict[str, Any]:
+    """Re-submit a task with interactive_wait=True and return the new job ID."""
+    if state.run_manager is None:
+        return JSONResponse(
+            status_code=500,
+            content={"error": "Run manager not initialized"},
+        )
+
+    run = state.run_manager.get_run(run_id)
+    if run is None:
+        return JSONResponse(status_code=404, content={"error": "Run not found"})
+
+    item = run.get_item_by_task_id(task_id)
+    if item is None:
+        return JSONResponse(status_code=404, content={"error": "Task not found"})
+
+    backend_state = state.backends.get(backend_name)
+    if not backend_state or not backend_state.ssh_client or not backend_state.backend:
+        return JSONResponse(
+            status_code=400,
+            content={"error": f"Backend '{backend_name}' not available"},
+        )
+
+    ssh_client = backend_state.ssh_client
+    job_backend = backend_state.backend
+
+    # Resolve log dir
+    log_dir = run.log_dir
+    if log_dir.startswith("~"):
+        try:
+            stdout, _, _ = await ssh_client.run_command("echo $HOME")
+            log_dir = log_dir.replace("~", stdout.strip(), 1)
+        except Exception:
+            pass
+
+    await ssh_client.run_command(f"mkdir -p {log_dir}")
+
+    # Build script with interactive_wait=True
+    env_vars, extra_init = state.run_manager._resolve_environment(item.task)
+    workflow = state.config.get_workflow(run.workflow_name) if state.config else None
+    git_repo = workflow.git.repo if workflow and workflow.git else None
+    git_branch = workflow.git.branch if workflow and workflow.git else None
+    sh_vars = state.run_manager._scripthut_env_vars(
+        run.workflow_name, run.id, run.created_at,
+        git_repo=git_repo, git_branch=git_branch, git_sha=run.commit_hash,
+    )
+    merged_env = {**sh_vars, **(env_vars or {})}
+
+    script = job_backend.generate_script(
+        item.task, run.id, log_dir,
+        account=run.account, login_shell=run.login_shell,
+        env_vars=merged_env, extra_init=extra_init,
+        interactive_wait=True,
+    )
+
+    try:
+        job_id = await job_backend.submit_job(script)
+        logger.info(
+            f"Submitted interactive job {job_id} for task '{task_id}' "
+            f"(run {run_id}) on backend '{backend_name}'"
+        )
+
+        # Register as external job so it appears in the jobs list immediately
+        if state.run_storage:
+            state.run_storage.add_external_job(
+                backend_name=backend_name,
+                job_id=job_id,
+                name=f"[debug] {item.task.name}",
+                user=state.filter_user or "unknown",
+                state="submitted",
+                partition=item.task.partition,
+                cpus=item.task.cpus,
+                memory=item.task.memory,
+                submit_time=datetime.now(timezone.utc),
+            )
+
+        # Track as debug job so the terminals page can identify it
+        state.debug_job_ids.add(job_id)
+
+        return {
+            "job_id": job_id,
+            "backend_name": backend_name,
+        }
+    except RuntimeError as e:
+        logger.error(f"Interactive submit failed for task '{task_id}': {e}")
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 
 def parse_args() -> argparse.Namespace:

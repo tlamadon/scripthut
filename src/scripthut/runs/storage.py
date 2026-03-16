@@ -325,6 +325,18 @@ class RunStorageManager:
 
         self._dirty_runs.add(run.id)
 
+    def get_external_items_by_name_prefix(self, prefix: str) -> list[RunItem]:
+        """Return external job items whose task name starts with the given prefix."""
+        results: list[RunItem] = []
+        for wf_name in self.list_workflows():
+            if not wf_name.startswith("_default_"):
+                continue
+            for run in self.load_runs_for_workflow(wf_name):
+                for item in run.items:
+                    if item.task.name.startswith(prefix) and item.job_id:
+                        results.append(item)
+        return results
+
     def remove_external_job(self, job_id: str) -> bool:
         """Remove an external job from its weekly bin. Returns True if found and removed."""
         for backend_runs in self._weekly_cache.values():

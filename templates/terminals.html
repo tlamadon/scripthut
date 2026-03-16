@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ScriptHut - Terminals</title>
+    <link rel="icon" type="image/svg+xml"
+        href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='25' cy='2' r='1.8' fill='%23ccc' opacity='.5'/%3E%3Ccircle cx='23' cy='5' r='2.2' fill='%23bbb' opacity='.45'/%3E%3Ccircle cx='25.5' cy='8' r='1.8' fill='%23aaa' opacity='.4'/%3E%3Crect x='22' y='7' width='2.5' height='8' fill='%23696969'/%3E%3Cpolygon points='16,3 0,22 32,22' fill='%23B8860B'/%3E%3Cline x1='16' y1='3' x2='3' y2='22' stroke='%23A07000' stroke-width='.7'/%3E%3Cline x1='16' y1='3' x2='9' y2='22' stroke='%23A07000' stroke-width='.7'/%3E%3Cline x1='16' y1='3' x2='16' y2='22' stroke='%23A07000' stroke-width='.7'/%3E%3Cline x1='16' y1='3' x2='23' y2='22' stroke='%23A07000' stroke-width='.7'/%3E%3Cline x1='16' y1='3' x2='29' y2='22' stroke='%23A07000' stroke-width='.7'/%3E%3Crect x='6' y='22' width='20' height='8' fill='%23D2B48C'/%3E%3Crect x='12' y='24' width='6' height='6' rx='3' ry='2' fill='%235C3317'/%3E%3Crect x='20' y='25' width='3' height='3' fill='%2387CEEB' stroke='%235C3317' stroke-width='.5'/%3E%3C/svg%3E">
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+
+<body class="bg-gray-100 min-h-screen">
+    <div class="container mx-auto px-4 py-8">
+        <header class="mb-8">
+            {% include "nav.html" %}
+        </header>
+
+        <!-- Active Sessions -->
+        <div class="bg-white rounded-lg shadow-md p-6 mb-6">
+            <div class="flex items-center justify-between mb-4">
+                <h2 class="text-lg font-semibold text-gray-800">Active Sessions</h2>
+                <span id="active-count" class="text-xs text-gray-400">{{ sessions | length }} active</span>
+            </div>
+            {% if sessions %}
+            <div id="active-list" class="space-y-2">
+                {% for s in sessions %}
+                <div class="flex items-center justify-between p-3 bg-gray-50 rounded-lg border border-gray-100">
+                    <div class="flex items-center gap-3">
+                        <span class="w-2.5 h-2.5 rounded-full bg-green-500 flex-shrink-0" title="Connected"></span>
+                        <div>
+                            <span class="text-sm font-medium text-gray-800">{{ s.label or s.backend_name }}</span>
+                            <div class="flex items-center gap-2 text-xs text-gray-500">
+                                <span class="px-1.5 py-0.5 rounded
+                                    {% if s.session_type == 'headnode' %}bg-blue-100 text-blue-700
+                                    {% elif s.session_type == 'job' %}bg-orange-100 text-orange-700
+                                    {% else %}bg-green-100 text-green-700{% endif %}">
+                                    {{ s.session_type }}
+                                </span>
+                                {% if s.job_id %}
+                                <span>Job {{ s.job_id }}</span>
+                                {% endif %}
+                                {% if s.node %}
+                                <span>on {{ s.node }}</span>
+                                {% endif %}
+                                <span>started {{ s.created_at.strftime('%H:%M:%S') }} UTC</span>
+                            </div>
+                        </div>
+                    </div>
+                    <button onclick="closeSession('{{ s.id }}', this)"
+                        class="text-xs px-3 py-1.5 bg-red-100 text-red-700 rounded hover:bg-red-200 transition-colors">
+                        Close
+                    </button>
+                </div>
+                {% endfor %}
+            </div>
+            {% else %}
+            <p class="text-sm text-gray-500">No active terminal sessions.</p>
+            {% endif %}
+        </div>
+
+        <!-- Debug Sessions (interactive jobs with tmux) -->
+        {% if debug_jobs %}
+        <div class="bg-white rounded-lg shadow-md p-6 mb-6 border-l-4 border-orange-400">
+            <div class="flex items-center justify-between mb-3">
+                <h2 class="text-lg font-semibold text-gray-800">Debug Sessions</h2>
+                <span class="text-xs text-orange-500 font-medium">{{ debug_jobs | length }} running</span>
+            </div>
+            <p class="text-sm text-gray-500 mb-4">Interactive debug jobs waiting in tmux. Connect to inspect the environment, then use "Continue Job" to let the main command run.</p>
+            <div class="space-y-2">
+                {% for job in debug_jobs %}
+                <div class="flex items-center justify-between p-3 bg-orange-50 rounded-lg border border-orange-100">
+                    <div class="flex items-center gap-3 min-w-0 flex-1">
+                        <span class="w-2.5 h-2.5 rounded-full bg-orange-400 flex-shrink-0 animate-pulse" title="Waiting in tmux"></span>
+                        <div class="min-w-0">
+                            <div class="flex items-center gap-2">
+                                <span class="text-sm font-medium text-orange-800 truncate">{{ job.name }}</span>
+                                <span class="text-xs font-mono text-orange-500 flex-shrink-0">{{ job.job_id }}</span>
+                            </div>
+                            <div class="text-xs text-orange-600 mt-0.5">
+                                {{ job.backend_name }} &middot; {{ job.node }}
+                                {% if job.partition %} &middot; {{ job.partition }}{% endif %}
+                            </div>
+                        </div>
+                    </div>
+                    <div class="flex items-center gap-2 flex-shrink-0 ml-3">
+                        <a href="/terminal/{{ job.backend_name }}?session_type=job&node={{ job.node }}&job_id={{ job.job_id }}"
+                            target="_blank"
+                            class="text-xs px-3 py-1.5 bg-orange-600 text-white rounded hover:bg-orange-700 transition-colors inline-flex items-center gap-1"
+                            title="Attach to tmux session sh-{{ job.job_id }} on {{ job.node }}">
+                            <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                                <path stroke-linecap="round" stroke-linejoin="round"
+                                    d="M6.75 7.5l3 2.25-3 2.25m4.5 0h3m-9 8.25h13.5A2.25 2.25 0 0021 18V6a2.25 2.25 0 00-2.25-2.25H5.25A2.25 2.25 0 003 6v12a2.25 2.25 0 002.25 2.25z" />
+                            </svg>
+                            Connect (tmux)
+                        </a>
+                        <a href="/terminal/{{ job.backend_name }}?session_type=attach&node={{ job.node }}"
+                            target="_blank"
+                            class="text-xs px-3 py-1.5 bg-gray-200 text-gray-700 rounded hover:bg-gray-300 transition-colors"
+                            title="SSH directly to {{ job.node }} (no tmux)">
+                            Shell
+                        </a>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+
+        <!-- New Connection -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+
+            <!-- Head Node Connections -->
+            <div class="bg-white rounded-lg shadow-md p-6">
+                <h2 class="text-lg font-semibold text-gray-800 mb-4">Connect to Head Node</h2>
+                <p class="text-sm text-gray-500 mb-4">Open a shell on the login/head node of a backend.</p>
+                {% if backends %}
+                <div class="space-y-2">
+                    {% for b in backends %}
+                    <div class="flex items-center justify-between p-3 bg-gray-50 rounded-lg border border-gray-100">
+                        <div class="flex items-center gap-2">
+                            <span class="w-2 h-2 rounded-full {% if b.connected %}bg-green-500{% else %}bg-red-400{% endif %}"></span>
+                            <span class="text-sm font-medium text-gray-700">{{ b.name }}</span>
+                            <span class="text-xs text-gray-400">{{ b.host }}</span>
+                        </div>
+                        {% if b.connected %}
+                        <a href="/terminal/{{ b.name }}?session_type=headnode" target="_blank"
+                            class="text-xs px-3 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors inline-flex items-center gap-1">
+                            <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                                <path stroke-linecap="round" stroke-linejoin="round"
+                                    d="M6.75 7.5l3 2.25-3 2.25m4.5 0h3m-9 8.25h13.5A2.25 2.25 0 0021 18V6a2.25 2.25 0 00-2.25-2.25H5.25A2.25 2.25 0 003 6v12a2.25 2.25 0 002.25 2.25z" />
+                            </svg>
+                            Connect
+                        </a>
+                        {% else %}
+                        <span class="text-xs text-gray-400 px-3 py-1.5">Disconnected</span>
+                        {% endif %}
+                    </div>
+                    {% endfor %}
+                </div>
+                {% else %}
+                <p class="text-sm text-gray-500">No backends configured.</p>
+                {% endif %}
+            </div>
+
+            <!-- Connect to Running Job -->
+            <div class="bg-white rounded-lg shadow-md p-6">
+                <h2 class="text-lg font-semibold text-gray-800 mb-4">Connect to Running Job</h2>
+                <p class="text-sm text-gray-500 mb-4">SSH into the compute node of a currently running job.</p>
+                {% if running_jobs %}
+                <div class="space-y-2 max-h-96 overflow-y-auto">
+                    {% for job in running_jobs %}
+                    <div class="flex items-center justify-between p-3 bg-gray-50 rounded-lg border border-gray-100">
+                        <div class="min-w-0 flex-1">
+                            <div class="flex items-center gap-2">
+                                <span class="text-sm font-medium text-gray-700 truncate">{{ job.name }}</span>
+                                <span class="text-xs text-gray-400 flex-shrink-0">{{ job.job_id }}</span>
+                            </div>
+                            <div class="text-xs text-gray-500 mt-0.5">
+                                {{ job.backend_name }} &middot; {{ job.node }}
+                                {% if job.partition %} &middot; {{ job.partition }}{% endif %}
+                            </div>
+                        </div>
+                        <a href="/terminal/{{ job.backend_name }}?session_type=attach&node={{ job.node }}" target="_blank"
+                            class="text-xs px-3 py-1.5 bg-green-600 text-white rounded hover:bg-green-700 transition-colors inline-flex items-center gap-1 flex-shrink-0 ml-3">
+                            <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                                <path stroke-linecap="round" stroke-linejoin="round"
+                                    d="M6.75 7.5l3 2.25-3 2.25m4.5 0h3m-9 8.25h13.5A2.25 2.25 0 0021 18V6a2.25 2.25 0 00-2.25-2.25H5.25A2.25 2.25 0 003 6v12a2.25 2.25 0 002.25 2.25z" />
+                            </svg>
+                            Attach
+                        </a>
+                    </div>
+                    {% endfor %}
+                </div>
+                {% else %}
+                <p class="text-sm text-gray-500">No running jobs with assigned nodes.</p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+    <script>
+        function closeSession(sessionId, btn) {
+            btn.textContent = 'Closing...';
+            btn.disabled = true;
+            fetch(`/terminal/sessions/${sessionId}`, { method: 'DELETE' })
+                .then(r => {
+                    if (r.ok) {
+                        btn.closest('.flex.items-center.justify-between').remove();
+                        // Update the count
+                        const counter = document.querySelector('#active-count');
+                        if (counter) {
+                            const remaining = document.querySelectorAll('#active-list > div').length;
+                            counter.textContent = remaining + ' active';
+                        }
+                    } else {
+                        btn.textContent = 'Failed';
+                        setTimeout(() => { btn.textContent = 'Close'; btn.disabled = false; }, 2000);
+                    }
+                })
+                .catch(() => {
+                    btn.textContent = 'Close';
+                    btn.disabled = false;
+                });
+        }
+    </script>
+</body>
+
+</html>
