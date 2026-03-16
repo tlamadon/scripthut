@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" style="scrollbar-gutter: stable">
 
 <head>
     <meta charset="UTF-8">
@@ -20,7 +20,10 @@
             </div>
         </header>
         <div class="mb-6">
-            <h2 class="text-xl font-semibold text-gray-800">
+            <h2 class="text-xl font-semibold text-gray-800 flex items-center gap-2">
+                <a href="/runs" class="text-gray-400 hover:text-gray-600 transition-colors" title="Back to Runs">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path></svg>
+                </a>
                 Run {% if run %}{{ run.id }}{% else %}Not Found{% endif %}
             </h2>
             {% if run %}
