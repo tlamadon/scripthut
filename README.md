@@ -358,6 +358,7 @@ The command must return JSON in one of these formats:
 | `error_file` | No | Custom stderr log path |
 | `environment` | No | Name of an environment defined in `scripthut.yaml` |
 | `env_vars` | No | Per-task environment variables as a `{"KEY": "VALUE"}` object |
+| `generates_source` | No | Path to a JSON file this task creates on the backend; new tasks are appended to the run on completion |
 
 #### Task Dependencies
 
@@ -401,6 +402,66 @@ Supported patterns:
 | `data.[ab]` | `data.a` and `data.b` |
 
 Tasks with dot-notation IDs are also displayed hierarchically in the run detail UI, grouped by their prefix.
+
+#### Dynamic Task Generation (`generates_source`)
+
+A task can dynamically produce new tasks that get appended to the run when it completes. This is useful for two-phase workflows where the first task determines what work needs to be done (e.g., scanning a directory, querying a database) and the second phase executes that work.
+
+To use this feature, set the `generates_source` field on a task to the path of a JSON file that the task will create on the backend:
+
+```json
+{
+  "tasks": [
+    {
+      "id": "plan",
+      "name": "Plan simulations",
+      "command": "python plan.py --output tasks.json",
+      "working_dir": "~/project",
+      "generates_source": "tasks.json"
+    }
+  ]
+}
+```
+
+When the `plan` task completes, ScriptHut reads `tasks.json` from the backend via SSH and appends the tasks it contains to the current run. The generated JSON file uses the same format as the workflow task JSON (either `{"tasks": [...]}` or a bare `[...]` array).
+
+| Field | Description |
+|-------|-------------|
+| `generates_source` | Path to a JSON file the task creates on the backend. Relative paths are resolved against the task's `working_dir`. Absolute paths and `~`-prefixed paths are used as-is. |
+
+**Generated tasks can use dependencies** to control execution order. They can depend on tasks already in the run (including the generator task itself) and on other generated tasks. Wildcard dependencies are also supported:
+
+```json
+{
+  "tasks": [
+    {
+      "id": "plan",
+      "name": "Plan",
+      "command": "python plan.py --output tasks.json",
+      "generates_source": "tasks.json"
+    },
+    {
+      "id": "setup",
+      "name": "Setup data",
+      "command": "bash setup.sh"
+    }
+  ]
+}
+```
+
+The generated `tasks.json` might contain:
+
+```json
+{
+  "tasks": [
+    {"id": "sim-1", "name": "Sim 1", "command": "python sim.py 1", "deps": ["setup"]},
+    {"id": "sim-2", "name": "Sim 2", "command": "python sim.py 2", "deps": ["setup"]},
+    {"id": "aggregate", "name": "Aggregate", "command": "python agg.py", "deps": ["sim-*"]}
+  ]
+}
+```
+
+If a generated task references a dependency that doesn't exist in the run, the entire batch of generated tasks is rejected and an error is logged.
 
 ### Environments
 
