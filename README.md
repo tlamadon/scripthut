@@ -15,6 +15,7 @@ A Python web interface to start and track jobs on remote HPC systems (Slurm, PBS
 - **Git workflow integration** - Clone repos on the backend before running task generators
 - **Persistent SSH connections** - Maintains connections with keepalive and auto-reconnect
 - **HTMX frontend** - Dynamic updates without full page reloads
+- **Cost estimation** - Estimate run costs using EC2 spot/on-demand pricing from [instances.vantage.sh](https://instances.vantage.sh/)
 - **Extensible** - Abstract backend system ready for additional schedulers
 
 ## Examples
@@ -505,6 +506,41 @@ Environment variables are merged in the following order (later entries win):
 
 This means a generator can override any variable, including the automatic ones, if needed.
 
+### Cost Estimation
+
+ScriptHut can estimate the cost of a run by mapping Slurm partitions to EC2 instance types and looking up pricing from [instances.vantage.sh](https://instances.vantage.sh/). Pricing data is fetched once and cached locally for 24 hours.
+
+#### Configuration
+
+Add a `pricing` section to your `scripthut.yaml`:
+
+```yaml
+pricing:
+  region: us-east-1           # AWS region for price lookup
+  price_type: spot_avg        # ondemand, spot_avg, spot_min, spot_max
+  partitions:                 # map Slurm partitions to EC2 instance types
+    standard: c5.xlarge
+    gpu: p3.2xlarge
+```
+
+| Field | Required | Description | Default |
+|-------|----------|-------------|---------|
+| `region` | No | AWS region for pricing lookup | `us-east-1` |
+| `price_type` | No | Pricing type: `ondemand`, `spot_avg`, `spot_min`, `spot_max` | `ondemand` |
+| `partitions` | Yes | Mapping of Slurm partition names to EC2 instance types | -- |
+
+#### How It Works
+
+For each completed task with timing data from the scheduler:
+
+```
+cost = elapsed_hours × (task_cpus / instance_vcpus) × price_per_hour
+```
+
+The total estimated cost is displayed in the run detail header. Tasks on unmapped partitions or without timing data are counted separately (e.g., "8/10 tasks costed").
+
+If the pricing section is omitted or the pricing data cannot be fetched, the cost display is simply hidden -- no errors or disruption to the rest of the UI.
+
 ### Data Flow
 
 ```
@@ -541,6 +577,7 @@ src/scripthut/
 ├── config.py         # Configuration loading (YAML + .env)
 ├── config_schema.py  # Pydantic models for YAML schema
 ├── models.py         # Data models (HPCJob, JobState, ConnectionStatus)
+├── pricing.py        # EC2-equivalent cost estimation (instances.vantage.sh)
 ├── ssh/
 │   └── client.py     # Async SSH client with connection management
 ├── backends/

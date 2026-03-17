@@ -1,5 +1,5 @@
 {% if run %}
-<div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+<div class="grid grid-cols-2 md:grid-cols-4 {% if cost_summary is defined and cost_summary and cost_summary.costed_tasks > 0 %}lg:grid-cols-5{% endif %} gap-4">
     <div>
         <p class="text-sm text-gray-500">Status</p>
         <span class="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-full
@@ -35,6 +35,17 @@
         <p class="text-sm text-gray-500">Max Concurrent</p>
         <p class="text-lg font-semibold text-gray-800">{{ run.max_concurrent }}</p>
     </div>
+    {% if cost_summary is defined and cost_summary and cost_summary.costed_tasks > 0 %}
+    <div>
+        <p class="text-sm text-gray-500">Est. Cost</p>
+        <p class="text-lg font-semibold text-gray-800">
+            ${{ "%.2f"|format(cost_summary.total_cost) }}
+        </p>
+        {% if cost_summary.uncosted_tasks > 0 %}
+        <p class="text-xs text-gray-400">{{ cost_summary.costed_tasks }}/{{ cost_summary.costed_tasks + cost_summary.uncosted_tasks }} tasks costed</p>
+        {% endif %}
+    </div>
+    {% endif %}
 </div>
 
 <!-- Progress Bar -->

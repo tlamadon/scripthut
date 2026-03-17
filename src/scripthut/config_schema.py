@@ -210,6 +210,23 @@ class EnvironmentConfig(BaseModel):
     )
 
 
+class PricingConfig(BaseModel):
+    """EC2-equivalent cost estimation configuration."""
+
+    region: str = Field(
+        default="us-east-1",
+        description="AWS region for pricing lookup",
+    )
+    price_type: str = Field(
+        default="ondemand",
+        description="Pricing type: ondemand, spot_avg, spot_min, spot_max",
+    )
+    partitions: dict[str, str] = Field(
+        default_factory=dict,
+        description="Mapping of Slurm partition names to EC2 instance types",
+    )
+
+
 class GlobalSettings(BaseModel):
     """Global application settings."""
 
@@ -274,6 +291,10 @@ class ScriptHutConfig(BaseModel):
     environments: list[EnvironmentConfig] = Field(
         default_factory=list,
         description="Named environments with key-value variables for tasks",
+    )
+    pricing: PricingConfig | None = Field(
+        default=None,
+        description="Optional EC2-equivalent cost estimation using instances.vantage.sh",
     )
     settings: GlobalSettings = Field(
         default_factory=GlobalSettings,

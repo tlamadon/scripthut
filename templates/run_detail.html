@@ -191,6 +191,11 @@
         }
         formatLocalTimes();
         document.body.addEventListener('htmx:afterSwap', function(e) { formatLocalTimes(e.detail.target); });
+        // Also observe SSE-driven innerHTML swaps for time conversion
+        ['run-items', 'run-info'].forEach(function(id) {
+            var el = document.getElementById(id);
+            if (el) new MutationObserver(function() { formatLocalTimes(el); }).observe(el, { childList: true, subtree: true });
+        });
 
         var _detailTaskId = null;
         var _detailType = 'output';

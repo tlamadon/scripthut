@@ -69,6 +69,7 @@ class AppState:
     run_manager: RunManager | None = None
     run_storage: RunStorageManager | None = None
     terminal_manager: TerminalManager = field(default_factory=TerminalManager)
+    pricing_service: Any = None  # Optional PricingService instance
     debug_job_ids: set[str] = field(default_factory=set)  # job IDs submitted via interactive debug
     filter_enabled: bool = False
     filter_user: str | None = None
@@ -492,6 +493,21 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     restored_count = await state.run_manager.restore_from_storage()
     if restored_count > 0:
         logger.info(f"Restored {restored_count} runs from storage")
+
+    # Initialize pricing service (optional)
+    if config.pricing and config.pricing.partitions:
+        try:
+            from scripthut.pricing import PricingService
+
+            pricing_service = PricingService(config.pricing, config.settings.data_dir_resolved)
+            await pricing_service.initialize()
+            if pricing_service.ready:
+                state.pricing_service = pricing_service
+                logger.info("Pricing service initialized")
+            else:
+                logger.warning("Pricing service loaded but has no data")
+        except Exception as e:
+            logger.warning(f"Failed to initialize pricing service: {e}")
 
     # Start background polling
     state._polling_task = asyncio.create_task(poll_jobs())
@@ -1376,6 +1392,13 @@ def _compute_gantt_data(run: Run) -> tuple[list[dict[str, Any]], list[dict[str, 
     return gantt_items, markers
 
 
+def _get_run_cost(run):
+    """Compute cost summary for a run if pricing is configured."""
+    if state.pricing_service and run:
+        return state.pricing_service.compute_run_cost(run)
+    return None
+
+
 @app.get("/runs/{run_id}", response_class=HTMLResponse)
 async def run_detail_page(request: Request, run_id: str) -> HTMLResponse:
     """Page showing run detail."""
@@ -1397,6 +1420,7 @@ async def run_detail_page(request: Request, run_id: str) -> HTMLResponse:
             "error": None,
             "gantt_items": gantt_items,
             "markers": markers,
+            "cost_summary": _get_run_cost(run),
         },
     )
 
@@ -1408,7 +1432,7 @@ async def run_info_partial(request: Request, run_id: str) -> HTMLResponse:
 
     return templates.TemplateResponse(
         "run_info.html",
-        {"request": request, "run": run},
+        {"request": request, "run": run, "cost_summary": _get_run_cost(run)},
     )
 
 
@@ -1459,7 +1483,7 @@ async def run_events(request: Request, run_id: str) -> EventSourceResponse:
 
             if changed:
                 info_html = templates.get_template("run_info.html").render(
-                    {"request": request, "run": run}
+                    {"request": request, "run": run, "cost_summary": _get_run_cost(run)}
                 )
                 items_html = templates.get_template("run_items.html").render(
                     {"request": request, "run": run}
