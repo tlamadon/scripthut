@@ -166,6 +166,12 @@ clean: ## Clean build artifacts
 install: ## Install package in development mode
 	@pip install -e ".[dev]"
 
+install-docs: ## Install docs dependencies
+	@pip install -e ".[docs]"
+
+docs-serve: ## Serve docs locally with live reload
+	@mkdocs serve
+
 # Pre-release checks (can be run manually before releasing)
 check: test ## Run all checks
 	@echo "$(GREEN)✓ All checks passed!$(NC)"

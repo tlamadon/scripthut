@@ -28,6 +28,10 @@ dev = [
     "pytest-asyncio>=0.23.0",
     "pytest-cov>=4.0.0",
 ]
+docs = [
+    "mkdocs-material>=9.5.0",
+    "mike>=2.0.0",
+]
 
 [project.scripts]
 scripthut = "scripthut.main:run"
