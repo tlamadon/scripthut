@@ -50,6 +50,9 @@ scripthut.yaml
 .coverage
 htmlcov/
 
+# MkDocs
+site/
+
 # OS
 .DS_Store
 Thumbs.db
