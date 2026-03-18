@@ -33,19 +33,24 @@ backends:
   #     region: us-east-1
   #     cluster_name: my-ecs-cluster
 
-# Git repositories containing job definitions
+# Sources: git repos or backend paths containing .hut/workflows/*.json task lists
+# Each JSON file in the workflows directory is a task list that can be triggered as a workflow.
 sources:
-  # Example: ML pipeline jobs
+  # Git source — cloned locally, workflows discovered from .hut/workflows/
   - name: ml-jobs
+    type: git
     url: git@github.com:your-org/ml-pipelines.git
     branch: main
     deploy_key: ~/.ssh/ml-jobs-deploy-key
+    backend: hpc-cluster
+    # workflows_dir: .hut/workflows  # default
 
-  # Example: Data processing jobs
-  # - name: data-processing
-  #   url: git@github.com:your-org/data-jobs.git
-  #   branch: main
-  #   deploy_key: ~/.ssh/data-deploy-key
+  # Path source — directory on the backend, workflows discovered via SSH
+  # - name: shared-workflows
+  #   type: path
+  #   path: /shared/project-workflows
+  #   backend: hpc-cluster
+  #   # workflows_dir: .hut/workflows  # default
 
 # Workflows for batch job submission
 # These are SSH commands that return JSON task lists

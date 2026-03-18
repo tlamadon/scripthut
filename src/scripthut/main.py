@@ -29,7 +29,8 @@ from scripthut.models import ConnectionStatus, HPCJob, JobState
 from scripthut.runs import Run, RunManager
 from scripthut.runs.models import RunItemStatus
 from scripthut.runs.storage import RunStorageManager
-from scripthut.sources.git import GitSourceManager, SourceStatus
+from scripthut.config_schema import GitSourceConfig, PathSourceConfig
+from scripthut.sources.git import GitSourceManager, SourceStatus, SourceWorkflow
 from scripthut import __version__
 from scripthut.ssh.client import SSHClient
 from scripthut.terminal import TerminalManager, handle_terminal_websocket
@@ -66,6 +67,8 @@ class AppState:
     backends: dict[str, BackendState] = field(default_factory=dict)
     source_manager: GitSourceManager | None = None
     source_statuses: dict[str, SourceStatus] = field(default_factory=dict)
+    path_sources: list[PathSourceConfig] = field(default_factory=list)
+    source_workflows: dict[str, list[SourceWorkflow]] = field(default_factory=dict)
     run_manager: RunManager | None = None
     run_storage: RunStorageManager | None = None
     terminal_manager: TerminalManager = field(default_factory=TerminalManager)
@@ -455,7 +458,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Initialize source manager
     state.source_manager = GitSourceManager(config.settings.sources_cache_dir_resolved)
     for source in config.sources:
-        state.source_manager.add_source(source)
+        if isinstance(source, GitSourceConfig):
+            state.source_manager.add_source(source)
+        elif isinstance(source, PathSourceConfig):
+            state.path_sources.append(source)
 
     if config.sources:
         asyncio.create_task(sync_sources_background())
@@ -543,7 +549,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 
 async def sync_sources_background() -> None:
-    """Sync git sources in the background."""
+    """Sync git sources and discover workflows."""
     if state.source_manager is None:
         return
 
@@ -552,8 +558,76 @@ async def sync_sources_background() -> None:
         state.source_statuses = await state.source_manager.sync_all()
         synced = sum(1 for s in state.source_statuses.values() if s.cloned)
         logger.info(f"Synced {synced}/{len(state.source_statuses)} sources")
+
+        # Discover workflows from git sources
+        for name in state.source_statuses:
+            try:
+                workflows = state.source_manager.discover_workflows(name)
+                state.source_workflows[name] = workflows
+            except Exception as e:
+                logger.warning(f"Failed to discover workflows for source {name}: {e}")
+
+        # Discover workflows from path sources via SSH
+        for path_source in state.path_sources:
+            try:
+                workflows = await _discover_path_source_workflows(path_source)
+                state.source_workflows[path_source.name] = workflows
+            except Exception as e:
+                logger.warning(f"Failed to discover workflows for path source {path_source.name}: {e}")
+
     except Exception as e:
         logger.error(f"Failed to sync sources: {e}")
+
+
+async def _discover_path_source_workflows(source: PathSourceConfig) -> list[SourceWorkflow]:
+    """Discover workflow JSON files from a path source on the backend via SSH."""
+    backend_state = state.backends.get(source.backend)
+    if backend_state is None or backend_state.ssh_client is None:
+        logger.warning(f"Backend '{source.backend}' not connected for path source '{source.name}'")
+        return []
+
+    workflows_path = f"{source.path}/{source.workflows_dir}"
+    stdout, stderr, exit_code = await backend_state.ssh_client.run_command(
+        f"ls -1 {workflows_path}/*.json 2>/dev/null"
+    )
+
+    if exit_code != 0 or not stdout.strip():
+        logger.debug(f"No workflow files found at {workflows_path}")
+        return []
+
+    workflows: list[SourceWorkflow] = []
+    for line in stdout.strip().splitlines():
+        filename = line.strip().rsplit("/", 1)[-1]
+        if not filename.endswith(".json"):
+            continue
+
+        # Read the file content
+        content_stdout, _, content_exit = await backend_state.ssh_client.run_command(
+            f"cat {workflows_path}/{filename}"
+        )
+        if content_exit != 0:
+            logger.warning(f"Failed to read {workflows_path}/{filename}")
+            continue
+
+        try:
+            json.loads(content_stdout)  # validate JSON
+        except ValueError:
+            logger.warning(f"Invalid JSON in {workflows_path}/{filename}")
+            continue
+
+        stem = filename.removesuffix(".json")
+        workflows.append(
+            SourceWorkflow(
+                name=f"{source.name}/{stem}",
+                source_name=source.name,
+                filename=filename,
+                backend=source.backend,
+                tasks_json=content_stdout,
+            )
+        )
+
+    logger.info(f"Discovered {len(workflows)} workflows in path source '{source.name}'")
+    return workflows
 
 
 # Create FastAPI app
@@ -909,6 +983,84 @@ async def sync_source(name: str) -> dict[str, Any]:
         return {"error": str(e)}
 
 
+@app.get("/sources/{name}/workflows")
+async def list_source_workflows(name: str) -> dict[str, Any]:
+    """List discovered workflows for a source."""
+    workflows = state.source_workflows.get(name, [])
+    return {
+        "source": name,
+        "workflows": [
+            {"name": wf.name, "filename": wf.filename, "backend": wf.backend}
+            for wf in workflows
+        ],
+    }
+
+
+@app.get("/sources/{name}/workflows/{filename}/dry-run", response_class=HTMLResponse)
+async def dry_run_source_workflow(request: Request, name: str, filename: str) -> HTMLResponse:
+    """Preview tasks from a source workflow."""
+    if state.run_manager is None:
+        return templates.TemplateResponse(
+            "dry_run.html",
+            {"request": request, "error": "Run manager not initialized"},
+        )
+
+    workflows = state.source_workflows.get(name, [])
+    wf = next((w for w in workflows if w.filename == filename), None)
+    if wf is None:
+        return templates.TemplateResponse(
+            "dry_run.html",
+            {"request": request, "error": f"Workflow '{filename}' not found in source '{name}'"},
+        )
+
+    try:
+        result = await state.run_manager.dry_run_source(name, filename, wf.tasks_json)
+        return templates.TemplateResponse(
+            "dry_run.html",
+            {"request": request, "result": result, "error": None},
+        )
+    except Exception as e:
+        logger.error(f"Dry run failed for source workflow {name}/{filename}: {e}")
+        return templates.TemplateResponse(
+            "dry_run.html",
+            {"request": request, "error": str(e)},
+        )
+
+
+@app.post("/sources/{name}/workflows/{filename}/run", response_model=None)
+async def run_source_workflow(name: str, filename: str):
+    """Trigger a run from a source workflow."""
+    if state.run_manager is None:
+        return JSONResponse(
+            status_code=500,
+            content={"error": "Run manager not initialized"},
+        )
+
+    workflows = state.source_workflows.get(name, [])
+    wf = next((w for w in workflows if w.filename == filename), None)
+    if wf is None:
+        return JSONResponse(
+            status_code=404,
+            content={"error": f"Workflow '{filename}' not found in source '{name}'"},
+        )
+
+    try:
+        run = await state.run_manager.create_run_from_source(name, filename, wf.tasks_json)
+        state.notify_poll()
+        return {
+            "run_id": run.id,
+            "workflow_name": run.workflow_name,
+            "task_count": len(run.items),
+            "status": run.status.value,
+        }
+    except Exception as e:
+        logger.error(f"Failed to create run for source workflow {name}/{filename}: {e}")
+        return JSONResponse(
+            status_code=422,
+            content={"error": str(e)},
+        )
+
+
 @app.post("/filter/toggle", response_class=HTMLResponse)
 async def toggle_filter(request: Request) -> HTMLResponse:
     """Toggle the user filter on/off and trigger immediate refresh."""
@@ -1129,6 +1281,7 @@ async def runs_page(request: Request) -> HTMLResponse:
             "workflows": workflows,
             "projects": projects,
             "project_workflows": project_workflows,
+            "source_workflows": state.source_workflows,
         },
     )
 

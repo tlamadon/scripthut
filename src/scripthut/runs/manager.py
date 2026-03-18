@@ -653,6 +653,127 @@ class RunManager:
 
         return run
 
+    def _parse_tasks_json(self, tasks_json: str, label: str) -> list[TaskDefinition]:
+        """Parse a JSON task list string into TaskDefinition objects."""
+        try:
+            data = json.loads(tasks_json)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Invalid JSON in {label}: {e}")
+
+        if isinstance(data, dict) and "tasks" in data:
+            tasks_data = data["tasks"]
+        elif isinstance(data, list):
+            tasks_data = data
+        else:
+            raise ValueError(f"JSON in {label} must be a list or dict with 'tasks' key")
+
+        return [TaskDefinition.from_dict(t) for t in tasks_data]
+
+    async def create_run_from_source(
+        self, source_name: str, workflow_filename: str, tasks_json: str,
+    ) -> Run:
+        """Create a run from a source workflow's JSON task list.
+
+        Args:
+            source_name: Name of the source.
+            workflow_filename: Filename of the workflow (e.g. "train.json").
+            tasks_json: Raw JSON task list content.
+        """
+        source = self.config.get_source(source_name)
+        if source is None:
+            raise ValueError(f"Source '{source_name}' not found")
+
+        ssh_client = self.get_ssh_client(source.backend)
+        if ssh_client is None:
+            raise ValueError(f"No SSH connection to backend '{source.backend}'")
+
+        stem = workflow_filename.removesuffix(".json")
+        workflow_name = f"{source_name}/{stem}"
+        label = f"source '{source_name}' workflow '{workflow_filename}'"
+
+        tasks = self._parse_tasks_json(tasks_json, label)
+
+        return await self._build_run(
+            tasks, workflow_name, source.backend, None, ssh_client
+        )
+
+    async def dry_run_source(
+        self, source_name: str, workflow_filename: str, tasks_json: str,
+    ) -> dict:
+        """Dry run a source workflow — preview tasks without submitting."""
+        source = self.config.get_source(source_name)
+        if source is None:
+            raise ValueError(f"Source '{source_name}' not found")
+
+        stem = workflow_filename.removesuffix(".json")
+        workflow_name = f"{source_name}/{stem}"
+        label = f"source '{source_name}' workflow '{workflow_filename}'"
+
+        tasks = self._parse_tasks_json(tasks_json, label)
+        self._resolve_wildcard_deps(tasks)
+        self._validate_dependencies(tasks)
+
+        account = self.get_backend_account(source.backend)
+        login_shell = self.get_backend_login_shell(source.backend)
+
+        log_dir = "~/.cache/scripthut/logs"
+        ssh_client = self.get_ssh_client(source.backend)
+        if ssh_client and log_dir.startswith("~"):
+            stdout, _, _ = await ssh_client.run_command("echo $HOME")
+            home_dir = stdout.strip()
+            log_dir = log_dir.replace("~", home_dir, 1)
+
+        preview_run_id = "preview"
+        preview_created_at = datetime.now(timezone.utc)
+        job_backend = self.get_job_backend(source.backend)
+
+        task_details = []
+        for task in tasks:
+            env_vars, extra_init = self._resolve_environment(task)
+            sh_vars = self._scripthut_env_vars(
+                workflow_name, preview_run_id, preview_created_at,
+            )
+            merged_env = {**sh_vars, **(env_vars or {})}
+            if job_backend:
+                script = job_backend.generate_script(
+                    task, preview_run_id, log_dir,
+                    account=account, login_shell=login_shell,
+                    env_vars=merged_env, extra_init=extra_init,
+                )
+            else:
+                script = task.to_sbatch_script(
+                    preview_run_id, log_dir,
+                    account=account, login_shell=login_shell,
+                    env_vars=merged_env, extra_init=extra_init,
+                )
+            task_details.append({
+                "task": task,
+                "submit_script": script,
+                "output_path": task.get_output_path(preview_run_id, log_dir),
+                "error_path": task.get_error_path(preview_run_id, log_dir),
+            })
+
+        try:
+            raw_output_formatted = json.dumps(json.loads(tasks_json), indent=2)
+        except (json.JSONDecodeError, TypeError):
+            raw_output_formatted = tasks_json
+
+        return {
+            "workflow": {
+                "name": workflow_name,
+                "description": "",
+                "command": f"(from source {source_name}: {workflow_filename})",
+            },
+            "submit_url": f"/sources/{source_name}/workflows/{workflow_filename}/run",
+            "backend_name": source.backend,
+            "task_count": len(tasks),
+            "max_concurrent": None,
+            "account": account,
+            "commit_hash": None,
+            "tasks": task_details,
+            "raw_output": raw_output_formatted,
+        }
+
     async def discover_workflows(self, project_name: str) -> list[str]:
         """Discover sflow.json files in a project repo via git ls-files."""
         project = self.config.get_project(project_name)

@@ -71,6 +71,52 @@
         {% endfor %}
         {% endif %}
 
+        <!-- Sources -->
+        {% if source_workflows %}
+        {% for source_name, wfs in source_workflows.items() %}
+        {% if wfs %}
+        <div class="bg-white rounded-lg shadow-md p-6 mb-6">
+            <div class="flex items-center justify-between mb-4">
+                <div class="flex items-center gap-2">
+                    <span class="text-lg">📂</span>
+                    <h2 class="text-xl font-semibold text-gray-800">{{ source_name }}</h2>
+                    <span class="text-sm text-gray-500">({{ wfs[0].backend }})</span>
+                </div>
+                <button hx-post="/sources/{{ source_name }}/sync" hx-swap="none"
+                    onclick="setTimeout(function(){ window.location.reload(); }, 1500)"
+                    class="px-3 py-1.5 text-sm text-gray-600 hover:text-gray-800 border rounded-lg hover:bg-gray-50 transition-colors"
+                    title="Sync source and refresh workflows">
+                    🔄 Sync
+                </button>
+            </div>
+
+            <div class="border rounded-lg divide-y">
+                {% for wf in wfs %}
+                <div class="flex items-center justify-between px-4 py-3 hover:bg-gray-50">
+                    <div class="flex items-center gap-2 text-sm">
+                        <span class="text-gray-400">📄</span>
+                        <span class="font-medium text-gray-700">{{ wf.filename | replace('.json', '') }}</span>
+                        <span class="text-gray-400 text-xs">.json</span>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <a href="/sources/{{ source_name }}/workflows/{{ wf.filename }}/dry-run"
+                            class="px-3 py-1.5 text-sm text-gray-600 hover:text-gray-800 border rounded-lg hover:bg-gray-50 transition-colors">
+                            Preview
+                        </a>
+                        <button hx-post="/sources/{{ source_name }}/workflows/{{ wf.filename }}/run" hx-swap="none"
+                            hx-on::after-request="handleRunResponse(event)"
+                            class="px-4 py-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm font-medium">
+                            Run
+                        </button>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+        {% endfor %}
+        {% endif %}
+
         <!-- Legacy Task Sources -->
         <div class="bg-white rounded-lg shadow-md p-6 mb-6">
             <h2 class="text-xl font-semibold text-gray-800 mb-4">Workflows</h2>
