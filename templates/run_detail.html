@@ -197,16 +197,30 @@
             if (el) new MutationObserver(function() { formatLocalTimes(el); }).observe(el, { childList: true, subtree: true });
         });
 
-        function rerunRun(runId) {
-            if (!confirm('Re-run this workflow with the same parameters and commit?')) return;
-            fetch('/runs/' + runId + '/rerun', { method: 'POST' })
+        function rerunRun(runId, mode) {
+            var label = mode === 'in_place' ? 'Re-run this run in place?' : 'Re-run as a new run with the same parameters and commit?';
+            if (!confirm(label)) return;
+            // Hide dropdown
+            var menu = document.getElementById('rerun-menu');
+            if (menu) menu.classList.add('hidden');
+            fetch('/runs/' + runId + '/rerun?mode=' + encodeURIComponent(mode), { method: 'POST' })
                 .then(function(r) { return r.json(); })
                 .then(function(data) {
                     if (data.error) { alert('Re-run failed: ' + data.error); return; }
-                    window.location.href = '/runs/' + data.run_id;
+                    if (mode === 'in_place') { window.location.reload(); }
+                    else { window.location.href = '/runs/' + data.run_id; }
                 })
                 .catch(function(err) { alert('Re-run failed: ' + err); });
         }
+
+        // Close rerun dropdown on outside click
+        document.addEventListener('click', function(e) {
+            var dropdown = document.getElementById('rerun-dropdown');
+            var menu = document.getElementById('rerun-menu');
+            if (dropdown && menu && !dropdown.contains(e.target)) {
+                menu.classList.add('hidden');
+            }
+        });
 
         var _detailTaskId = null;
         var _detailType = 'output';

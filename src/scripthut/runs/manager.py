@@ -777,6 +777,41 @@ class RunManager:
 
         return run
 
+    async def rerun_in_place(self, run_id: str) -> Run:
+        """Reset an existing run and reprocess it.
+
+        All items are reset to PENDING with runtime state cleared.
+        The run keeps its original ID, commit hash, and parameters.
+        """
+        run = self.get_run(run_id)
+        if run is None:
+            raise ValueError(f"Run '{run_id}' not found")
+
+        if run.status in (RunStatus.RUNNING, RunStatus.PENDING):
+            raise ValueError("Cannot rerun a run that is still active")
+
+        # Reset all items to pending
+        for item in run.items:
+            item.status = RunItemStatus.PENDING
+            item.job_id = None
+            item.submitted_at = None
+            item.started_at = None
+            item.finished_at = None
+            item.error = None
+            item.submit_script = None
+            item.cpu_efficiency = None
+            item.max_rss = None
+            item.scheduler_state = None
+
+        run.created_at = datetime.now(timezone.utc)
+        self._persist_run(run)
+        self.notify_run(run_id)
+
+        # Start submitting tasks
+        await self.process_run(run)
+
+        return run
+
     async def discover_workflows(self, project_name: str) -> list[str]:
         """Discover sflow.json files in a project repo via git ls-files."""
         project = self.config.get_project(project_name)

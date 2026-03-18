@@ -1519,8 +1519,12 @@ async def cancel_run(run_id: str) -> dict[str, Any]:
 
 
 @app.post("/runs/{run_id}/rerun")
-async def rerun_run(run_id: str) -> Response:
-    """Re-run using the parameters of an existing run (same commit hash)."""
+async def rerun_run(run_id: str, mode: str = "new") -> Response:
+    """Re-run using the parameters of an existing run (same commit hash).
+
+    Query param ``mode``: "new" (default) creates a fresh run,
+    "in_place" resets and re-submits the same run.
+    """
     if state.run_manager is None:
         return JSONResponse(
             status_code=500,
@@ -1528,14 +1532,17 @@ async def rerun_run(run_id: str) -> Response:
         )
 
     try:
-        new_run = await state.run_manager.rerun_from(run_id)
+        if mode == "in_place":
+            run = await state.run_manager.rerun_in_place(run_id)
+        else:
+            run = await state.run_manager.rerun_from(run_id)
         return JSONResponse(
             content={
-                "run_id": new_run.id,
-                "workflow_name": new_run.workflow_name,
-                "backend_name": new_run.backend_name,
-                "task_count": len(new_run.items),
-                "status": new_run.status.value,
+                "run_id": run.id,
+                "workflow_name": run.workflow_name,
+                "backend_name": run.backend_name,
+                "task_count": len(run.items),
+                "status": run.status.value,
             }
         )
     except Exception as e:
