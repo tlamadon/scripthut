@@ -2151,6 +2151,17 @@ def run() -> None:
     host = args.host or config.settings.server_host
     port = args.port or config.settings.server_port
 
+    url = f"http://{host}:{port}"
+    line1 = f"  ScriptHut v{__version__}"
+    line2 = f"  → {url}"
+    width = max(len(line1) + 4, len(line2) + 4, 40)
+    print()
+    print(f"  ╔{'═' * (width - 4)}╗")
+    print(f"  ║{line1:<{width - 4}}║")
+    print(f"  ║{line2:<{width - 4}}║")
+    print(f"  ╚{'═' * (width - 4)}╝")
+    print()
+
     uvicorn.run(
         "scripthut.main:app",
         host=host,
