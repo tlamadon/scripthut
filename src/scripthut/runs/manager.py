@@ -653,6 +653,130 @@ class RunManager:
 
         return run
 
+    async def rerun_from(self, run_id: str) -> Run:
+        """Re-run using the parameters of an existing run.
+
+        If the original clone directory still exists on the backend, it is
+        reused.  Otherwise the repo is cloned again and checked out at the
+        same commit hash that was recorded on the original run.
+        """
+        original = self.get_run(run_id)
+        if original is None:
+            raise ValueError(f"Run '{run_id}' not found")
+
+        workflow = self.get_workflow(original.workflow_name)
+        if workflow is None:
+            raise ValueError(
+                f"Workflow '{original.workflow_name}' not found in current config"
+            )
+
+        ssh_client = self.get_ssh_client(original.backend_name)
+        if ssh_client is None:
+            raise ValueError(
+                f"No SSH connection to backend '{original.backend_name}'"
+            )
+
+        clone_dir: str | None = None
+        commit_hash = original.commit_hash
+
+        if workflow.git is not None and commit_hash:
+            git_cfg = workflow.git
+            short_hash = commit_hash[:12]
+            expected_dir = f"{git_cfg.clone_dir}/{short_hash}"
+
+            # Check if the original clone directory still exists
+            stdout, _, _ = await ssh_client.run_command(
+                f"test -d {expected_dir} && echo exists"
+            )
+            if "exists" in stdout:
+                logger.info(
+                    f"Rerun: reusing existing clone at {expected_dir}"
+                )
+                clone_dir = expected_dir
+            else:
+                # Clone again at the exact commit
+                logger.info(
+                    f"Rerun: clone not found at {expected_dir}, "
+                    f"cloning {git_cfg.repo} at {commit_hash}"
+                )
+                remote_key: str | None = None
+                try:
+                    if git_cfg.deploy_key is not None:
+                        key_path = git_cfg.deploy_key.expanduser()
+                        remote_key = await self._upload_deploy_key(
+                            ssh_client, key_path
+                        )
+                    git_ssh = self._build_remote_git_ssh_command(remote_key)
+
+                    # Full clone (need full history to checkout arbitrary SHA)
+                    cmd = (
+                        f"{git_ssh}git clone --single-branch "
+                        f"--branch {git_cfg.branch} "
+                        f"{git_cfg.repo} {expected_dir}"
+                    )
+                    _, stderr, exit_code = await ssh_client.run_command(
+                        cmd, timeout=300
+                    )
+                    if exit_code != 0:
+                        raise ValueError(f"Git clone failed: {stderr}")
+
+                    # Checkout the exact commit
+                    cmd = f"cd {expected_dir} && git checkout {commit_hash}"
+                    _, stderr, exit_code = await ssh_client.run_command(
+                        cmd, timeout=60
+                    )
+                    if exit_code != 0:
+                        raise ValueError(
+                            f"Git checkout {commit_hash} failed: {stderr}"
+                        )
+
+                    # Run postclone command if configured
+                    if git_cfg.postclone:
+                        logger.info(
+                            f"Running postclone command in {expected_dir}"
+                        )
+                        cmd = f"cd {expected_dir} && {git_cfg.postclone}"
+                        _, stderr, exit_code = await ssh_client.run_command(
+                            cmd, timeout=300
+                        )
+                        if exit_code != 0:
+                            raise ValueError(
+                                f"Postclone command failed: {stderr}"
+                            )
+
+                    clone_dir = expected_dir
+                finally:
+                    if remote_key is not None:
+                        await self._cleanup_deploy_key(
+                            ssh_client, remote_key
+                        )
+
+        # Re-fetch tasks from the workflow command in the clone dir
+        tasks: list[TaskDefinition] = await self.fetch_tasks(  # type: ignore[assignment]
+            workflow, clone_dir=clone_dir
+        )
+
+        # Resolve working_dir relative to clone directory
+        if clone_dir:
+            for task in tasks:
+                if task.working_dir == "~":
+                    task.working_dir = clone_dir
+                elif not task.working_dir.startswith(("/", "~")):
+                    task.working_dir = f"{clone_dir}/{task.working_dir}"
+
+        run = await self._build_run(
+            tasks,
+            original.workflow_name,
+            original.backend_name,
+            original.max_concurrent,
+            ssh_client,
+        )
+        if commit_hash is not None:
+            run.commit_hash = commit_hash
+            self._persist_run(run)
+
+        return run
+
     async def discover_workflows(self, project_name: str) -> list[str]:
         """Discover sflow.json files in a project repo via git ls-files."""
         project = self.config.get_project(project_name)

@@ -1518,6 +1518,34 @@ async def cancel_run(run_id: str) -> dict[str, Any]:
         return {"error": "Run not found"}
 
 
+@app.post("/runs/{run_id}/rerun")
+async def rerun_run(run_id: str) -> Response:
+    """Re-run using the parameters of an existing run (same commit hash)."""
+    if state.run_manager is None:
+        return JSONResponse(
+            status_code=500,
+            content={"error": "Run manager not initialized"},
+        )
+
+    try:
+        new_run = await state.run_manager.rerun_from(run_id)
+        return JSONResponse(
+            content={
+                "run_id": new_run.id,
+                "workflow_name": new_run.workflow_name,
+                "backend_name": new_run.backend_name,
+                "task_count": len(new_run.items),
+                "status": new_run.status.value,
+            }
+        )
+    except Exception as e:
+        logger.error(f"Failed to rerun run '{run_id}': {e}")
+        return JSONResponse(
+            status_code=422,
+            content={"error": str(e)},
+        )
+
+
 @app.delete("/runs/{run_id}")
 async def delete_run(run_id: str) -> Response:
     """Delete a terminal run (completed, failed, or cancelled)."""
