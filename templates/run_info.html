@@ -1,5 +1,5 @@
 {% if run %}
-<div class="grid grid-cols-2 md:grid-cols-4 {% if cost_summary is defined and cost_summary and cost_summary.costed_tasks > 0 %}lg:grid-cols-5{% endif %} gap-4">
+<div class="grid grid-cols-2 md:grid-cols-5 {% if cost_summary is defined and cost_summary and cost_summary.costed_tasks > 0 %}lg:grid-cols-6{% endif %} gap-4">
     <div>
         <p class="text-sm text-gray-500">Status</p>
         <span class="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-full
@@ -26,6 +26,18 @@
     <div>
         <p class="text-sm text-gray-500">Progress</p>
         <p class="text-lg font-semibold text-gray-800">{{ run.progress[0] }} / {{ run.progress[1] }}</p>
+    </div>
+    <div>
+        <p class="text-sm text-gray-500">CPU Hours</p>
+        <p class="text-lg font-semibold text-gray-800 font-mono">
+            {% if run.total_cpu_hours >= 1 %}
+                {{ "%.1f"|format(run.total_cpu_hours) }}h
+            {% elif run.total_cpu_hours > 0 %}
+                {{ "%.1f"|format(run.total_cpu_hours * 60) }}m
+            {% else %}
+                —
+            {% endif %}
+        </p>
     </div>
     <div>
         <p class="text-sm text-gray-500">Created</p>

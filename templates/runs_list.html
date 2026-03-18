@@ -8,6 +8,7 @@
                 <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Backend</th>
                 <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Created</th>
                 <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Progress</th>
+                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">CPU Hours</th>
                 <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
                 <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
             </tr>
@@ -35,6 +36,15 @@
                             {{ run.progress[0] }}/{{ run.progress[1] }}
                         </span>
                     </div>
+                </td>
+                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-600 font-mono">
+                    {% if run.total_cpu_hours >= 1 %}
+                        {{ "%.1f"|format(run.total_cpu_hours) }}h
+                    {% elif run.total_cpu_hours > 0 %}
+                        {{ "%.1f"|format(run.total_cpu_hours * 60) }}m
+                    {% else %}
+                        —
+                    {% endif %}
                 </td>
                 <td class="px-6 py-4 whitespace-nowrap text-sm">
                     <span class="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-full

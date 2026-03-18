@@ -179,6 +179,7 @@
         // Re-run after HTMX swaps and SSE updates
         document.body.addEventListener('htmx:afterSwap', function(e) { formatLocalTimes(e.detail.target); });
         document.body.addEventListener('htmx:oobAfterSwap', function(e) { formatLocalTimes(e.detail.target); });
+        document.body.addEventListener('htmx:afterSettle', function(e) { formatLocalTimes(e.detail.target); });
         // Also observe SSE-driven innerHTML swaps
         new MutationObserver(function() { formatLocalTimes(); }).observe(
             document.getElementById('backends-status') || document.body, { childList: true, subtree: true }
