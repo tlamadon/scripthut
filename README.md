@@ -3,6 +3,7 @@
 [![PyPI version](https://img.shields.io/pypi/v/scripthut)](https://pypi.org/project/scripthut/)
 [![Tests](https://github.com/tlamadon/scripthut/actions/workflows/tests.yml/badge.svg)](https://github.com/tlamadon/scripthut/actions/workflows/tests.yml)
 [![Docker](https://ghcr-badge.egpl.dev/tlamadon/scripthut/latest_tag?trim=major&label=docker)](https://github.com/tlamadon/scripthut/pkgs/container/scripthut)
+[![Docs](https://img.shields.io/badge/docs-tlamadon.github.io%2Fscripthut-blue)](https://tlamadon.github.io/scripthut/)
 
 A Python web interface to start and track jobs on remote HPC systems (Slurm, PBS/Torque) over SSH.
 

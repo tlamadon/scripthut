@@ -19,4 +19,6 @@ pip install scripthut
 
 ## Next steps
 
-- [Getting Started](getting-started.md) — installation, configuration, and first run
+- [Installation](installation.md) — install via pip or Docker and start the server
+- [Configuration](configuration.md) — full YAML configuration reference
+- [Task JSON Format](task-json.md) — how to write task generators that produce JSON

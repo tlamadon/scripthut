@@ -51,4 +51,6 @@ extra:
 
 nav:
   - Home: index.md
-  - Getting Started: getting-started.md
+  - Installation: installation.md
+  - Configuration: configuration.md
+  - Task JSON Format: task-json.md
