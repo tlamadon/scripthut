@@ -121,17 +121,54 @@ class GitSourceConfig(BaseModel):
     """Git repository source configuration."""
 
     name: str = Field(description="Unique identifier for this source")
+    type: Literal["git"] = "git"
     url: str = Field(description="Git repository URL (SSH format recommended)")
     branch: str = Field(default="main", description="Branch to track")
     deploy_key: Path | None = Field(
         default=None,
         description="Path to deploy key for this repository",
     )
+    backend: str = Field(
+        description="Name of the backend to submit discovered workflow tasks to",
+    )
+    workflows_dir: str = Field(
+        default=".hut/workflows",
+        description="Directory within the repo containing workflow JSON files",
+    )
+    clone_dir: str = Field(
+        default="~/scripthut-repos",
+        description="Parent directory on the backend where repos are cloned into (clone goes into <clone_dir>/<commit_hash>/)",
+    )
+    postclone: str | None = Field(
+        default=None,
+        description="Shell command to run in the clone directory after cloning",
+    )
 
     @property
     def deploy_key_resolved(self) -> Path | None:
         """Return the resolved deploy key path with ~ expansion."""
         return self.deploy_key.expanduser() if self.deploy_key else None
+
+
+class PathSourceConfig(BaseModel):
+    """Path-based source on a backend filesystem."""
+
+    name: str = Field(description="Unique identifier for this source")
+    type: Literal["path"] = "path"
+    path: str = Field(description="Path to directory on the backend filesystem")
+    backend: str = Field(
+        description="Name of the backend where this path exists and where tasks are submitted",
+    )
+    workflows_dir: str = Field(
+        default=".hut/workflows",
+        description="Directory within the path containing workflow JSON files",
+    )
+
+
+SourceConfig = Annotated[
+    GitSourceConfig | PathSourceConfig,
+    Field(discriminator="type"),
+]
 
 
 class WorkflowGitConfig(BaseModel):
@@ -276,9 +313,9 @@ class ScriptHutConfig(BaseModel):
         default_factory=list,
         description="List of remote backends (Slurm, ECS)",
     )
-    sources: list[GitSourceConfig] = Field(
+    sources: list[SourceConfig] = Field(
         default_factory=list,
-        description="List of git repository sources for job definitions",
+        description="List of sources (git repos or backend paths) with workflow definitions",
     )
     workflows: list[WorkflowConfig] = Field(
         default_factory=list,
@@ -308,8 +345,8 @@ class ScriptHutConfig(BaseModel):
                 return backend
         return None
 
-    def get_source(self, name: str) -> GitSourceConfig | None:
-        """Get a git source by name."""
+    def get_source(self, name: str) -> GitSourceConfig | PathSourceConfig | None:
+        """Get a source by name."""
         for source in self.sources:
             if source.name == name:
                 return source

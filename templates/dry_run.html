@@ -14,10 +14,11 @@
             <div class="flex items-center justify-between">
                 {% include "nav.html" %}
                 {% if result %}
-                <form action="/workflows/{{ result.workflow.name }}/run" method="post" class="inline">
+                {% set submit_url = result.submit_url if result.submit_url is defined and result.submit_url else '/workflows/' ~ result.workflow.name ~ '/run' %}
+                <form action="{{ submit_url }}" method="post" class="inline">
                     <button
                         type="submit"
-                        hx-post="/workflows/{{ result.workflow.name }}/run"
+                        hx-post="{{ submit_url }}"
                         hx-swap="none"
                         hx-on::after-request="handleSubmitResponse(event)"
                         class="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors font-medium"
@@ -166,8 +167,9 @@
             <a href="/runs" class="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors">
                 Cancel
             </a>
+            {% set submit_url_bottom = result.submit_url if result.submit_url is defined and result.submit_url else '/workflows/' ~ result.workflow.name ~ '/run' %}
             <button
-                hx-post="/workflows/{{ result.workflow.name }}/run"
+                hx-post="{{ submit_url_bottom }}"
                 hx-swap="none"
                 hx-on::after-request="handleSubmitResponse(event)"
                 class="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors font-medium"

@@ -1,14 +1,26 @@
 """Git repository management with deploy key support."""
 
 import asyncio
+import json
 import logging
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from scripthut.config_schema import GitSourceConfig
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class SourceWorkflow:
+    """A workflow discovered from a source's .hut/workflows/ directory."""
+
+    name: str  # e.g. "ml-jobs/train-model"
+    source_name: str
+    filename: str  # e.g. "train-model.json"
+    backend: str
+    tasks_json: str  # raw JSON content
 
 
 @dataclass
@@ -21,6 +33,7 @@ class SourceStatus:
     branch: str
     last_commit: str | None = None
     error: str | None = None
+    workflows: list[SourceWorkflow] = field(default_factory=list)
 
 
 class GitSourceManager:
@@ -232,3 +245,68 @@ class GitSourceManager:
         if status and status.cloned:
             return status.path
         return None
+
+    def discover_workflows(self, name: str) -> list[SourceWorkflow]:
+        """Discover workflow JSON files in a git source's workflows directory.
+
+        Reads .hut/workflows/*.json from the local clone.
+
+        Args:
+            name: Name of the git source.
+
+        Returns:
+            List of discovered SourceWorkflow objects.
+        """
+        if name not in self._sources:
+            raise ValueError(f"Unknown source: {name}")
+
+        source = self._sources[name]
+        status = self._statuses[name]
+
+        if not status.cloned or not status.path.exists():
+            logger.warning(f"Source {name} not cloned yet, no workflows to discover")
+            status.workflows = []
+            return []
+
+        workflows_path = status.path / source.workflows_dir
+        if not workflows_path.is_dir():
+            logger.debug(f"No workflows directory at {workflows_path}")
+            status.workflows = []
+            return []
+
+        workflows: list[SourceWorkflow] = []
+        for json_file in sorted(workflows_path.glob("*.json")):
+            try:
+                tasks_json = json_file.read_text()
+                # Validate it's parseable JSON
+                json.loads(tasks_json)
+                stem = json_file.stem
+                workflows.append(
+                    SourceWorkflow(
+                        name=f"{name}/{stem}",
+                        source_name=name,
+                        filename=json_file.name,
+                        backend=source.backend,
+                        tasks_json=tasks_json,
+                    )
+                )
+            except (json.JSONDecodeError, OSError) as e:
+                logger.warning(f"Skipping invalid workflow file {json_file}: {e}")
+
+        status.workflows = workflows
+        logger.info(f"Discovered {len(workflows)} workflows in source {name}")
+        return workflows
+
+    def get_workflows(self, name: str) -> list[SourceWorkflow]:
+        """Get cached discovered workflows for a source."""
+        status = self._statuses.get(name)
+        if status is None:
+            return []
+        return status.workflows
+
+    def get_all_workflows(self) -> list[SourceWorkflow]:
+        """Get all discovered workflows across all git sources."""
+        result: list[SourceWorkflow] = []
+        for status in self._statuses.values():
+            result.extend(status.workflows)
+        return result

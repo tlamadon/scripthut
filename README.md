@@ -90,12 +90,14 @@ backends:
     login_shell: false
     max_concurrent: 100
 
-# Git repositories with job definitions
+# Sources: git repos or backend paths with .hut/workflows/*.json
 sources:
   - name: ml-jobs
+    type: git
     url: git@github.com:org/ml-pipelines.git
     branch: main
     deploy_key: ~/.ssh/ml-jobs-deploy-key
+    backend: hpc-cluster
 
 settings:
   data_dir: ~/.cache/scripthut          # base for all stored data
@@ -132,12 +134,32 @@ settings:
 
 #### Sources
 
+Sources are git repositories or backend filesystem paths containing workflow definitions in `.hut/workflows/*.json`. Each JSON file is a task list that can be triggered from the Sources page.
+
+**Common fields:**
+
 | Field | Description |
 |-------|-------------|
 | `name` | Unique identifier for the source |
+| `type` | Source type: `git` or `path` |
+| `backend` | Backend to submit discovered workflow tasks to |
+| `workflows_dir` | Directory containing workflow JSON files (default: `.hut/workflows`) |
+
+**Git source fields (`type: git`):**
+
+| Field | Description |
+|-------|-------------|
 | `url` | Git repository URL (SSH format recommended) |
-| `branch` | Branch to track (default: main) |
+| `branch` | Branch to track (default: `main`) |
 | `deploy_key` | Path to deploy key for authentication |
+| `clone_dir` | Parent directory on backend for clones (default: `~/scripthut-repos`) |
+| `postclone` | Shell command to run after cloning |
+
+**Path source fields (`type: path`):**
+
+| Field | Description |
+|-------|-------------|
+| `path` | Directory on the backend filesystem |
 
 #### Settings
 
@@ -199,8 +221,12 @@ Open http://127.0.0.1:8000 in your browser.
 | Endpoint | Description |
 |----------|-------------|
 | `GET /health` | Health check (JSON) |
-| `GET /sources` | List git sources |
-| `POST /sources/{name}/sync` | Trigger git source sync |
+| `GET /api/sources` | List source statuses (JSON) |
+| `GET /sources` | Sources page (HTML) |
+| `POST /sources/{name}/sync` | Trigger source sync |
+| `GET /sources/{name}/workflows` | List discovered workflows |
+| `GET /sources/{name}/workflows/{file}/dry-run` | Preview a source workflow |
+| `POST /sources/{name}/workflows/{file}/run` | Trigger a source workflow |
 
 ## Resources and Lifecycles
 
