@@ -20,7 +20,7 @@
                     d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" />
             </svg>
             {% if filter_enabled %}
-            My Jobs ({{ filter_user }})
+            My Jobs
             {% else %}
             All Users
             {% endif %}
@@ -44,9 +44,9 @@
     </div>
 </div>
 
-<!-- Jobs Table -->
+<!-- Jobs Table (desktop) -->
 {% if job_views %}
-<div class="overflow-x-auto">
+<div class="hidden md:block overflow-x-auto">
     <table class="min-w-full divide-y divide-gray-200">
         <thead class="bg-gray-50">
             <tr>
@@ -195,6 +195,93 @@
             {% endfor %}
         </tbody>
     </table>
+</div>
+
+<!-- Jobs Cards (mobile) -->
+<div class="md:hidden divide-y divide-gray-200">
+    {% for job in job_views %}
+    <div class="px-4 py-3 {% if job.source == 'run' %}bg-blue-50/30{% endif %}">
+        <!-- Row 1: Name + State badge -->
+        <div class="flex items-start justify-between gap-2">
+            <div class="min-w-0 flex-1">
+                <span class="block text-sm font-medium text-gray-900 truncate" title="{{ job.name }}">
+                    {% if job.run_id and job.task_id %}
+                    <a href="/runs/{{ job.run_id }}" class="text-blue-600 hover:text-blue-800">{{ job.name }}</a>
+                    {% else %}
+                    {{ job.name }}
+                    {% endif %}
+                </span>
+            </div>
+            <span class="inline-flex items-center gap-1.5 px-2 py-0.5 text-xs font-medium rounded-full flex-shrink-0
+                {% if job.state == 'running' %}bg-green-100 text-green-700
+                {% elif job.state == 'pending' %}bg-gray-100 text-gray-600
+                {% elif job.state == 'submitted' %}bg-yellow-100 text-yellow-700
+                {% elif job.state == 'completed' %}bg-blue-100 text-blue-700
+                {% elif job.state == 'failed' %}bg-red-100 text-red-700
+                {% else %}bg-gray-100 text-gray-600{% endif %}">
+                {% if job.state == 'running' %}
+                <span class="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span>
+                {% elif job.state == 'pending' %}
+                <span class="w-2 h-2 bg-gray-400 rounded-full"></span>
+                {% elif job.state == 'submitted' %}
+                <span class="w-2 h-2 bg-yellow-500 rounded-full"></span>
+                {% elif job.state == 'completed' %}
+                <span class="w-2 h-2 bg-blue-500 rounded-full"></span>
+                {% elif job.state == 'failed' %}
+                <span class="w-2 h-2 bg-red-500 rounded-full"></span>
+                {% endif %}
+                {{ job.state }}
+            </span>
+        </div>
+        <!-- Row 2: Metadata line -->
+        <div class="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-gray-500">
+            {% if job.job_id %}
+            <span class="font-mono">{{ job.job_id }}</span>
+            {% else %}
+            <span class="italic text-gray-400">pending</span>
+            {% endif %}
+            <span>{{ job.backend_name }}</span>
+            <span>{{ job.user }}</span>
+            {% if job.workflow_name and job.workflow_name != '_default' %}
+            <span>{{ job.workflow_name }}</span>
+            {% endif %}
+        </div>
+        <!-- Row 3: Resources + utilization -->
+        <div class="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-gray-500">
+            <span>{{ job.cpus }} CPU{% if job.memory %}, {{ job.memory }}{% endif %}</span>
+            <span class="font-mono">
+                {% if job.cpu_hours >= 1 %}{{ "%.1f"|format(job.cpu_hours) }}h
+                {% elif job.cpu_hours > 0 %}{{ "%.1f"|format(job.cpu_hours * 60) }}m
+                {% else %}—{% endif %}
+            </span>
+            {% if job.cpu_efficiency is not none %}
+            <span class="font-mono {% if job.cpu_efficiency >= 70 %}text-green-600{% elif job.cpu_efficiency >= 30 %}text-yellow-600{% else %}text-red-600{% endif %}">CPU {{ "%.0f"|format(job.cpu_efficiency) }}%</span>
+            {% endif %}
+            {% if job.max_rss and job.max_rss != "N/A" and job.max_rss != "0B" %}
+            <span class="font-mono text-gray-600">Mem {{ job.max_rss }}</span>
+            {% endif %}
+            {% if job.submit_time %}
+            <time class="local-time text-gray-400" datetime="{{ job.submit_time.isoformat() }}" data-format="datetime"></time>
+            {% endif %}
+        </div>
+        <!-- Action buttons -->
+        {% if job.source == 'external' and job.job_id %}
+        <div class="mt-1.5">
+            {% if not job.is_terminal %}
+            <button hx-post="/jobs/{{ job.job_id }}/cancel"
+                    hx-target="#jobs-section" hx-swap="innerHTML"
+                    hx-confirm="Cancel job {{ job.job_id }}?"
+                    class="text-xs text-gray-400 hover:text-red-600">Cancel</button>
+            {% else %}
+            <button hx-delete="/jobs/{{ job.job_id }}"
+                    hx-target="#jobs-section" hx-swap="innerHTML"
+                    hx-confirm="Remove job {{ job.job_id }} from history?"
+                    class="text-xs text-gray-400 hover:text-red-600">Remove</button>
+            {% endif %}
+        </div>
+        {% endif %}
+    </div>
+    {% endfor %}
 </div>
 {% else %}
 <div class="px-6 py-12 text-center">

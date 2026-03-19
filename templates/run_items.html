@@ -3,7 +3,8 @@
     <h2 class="text-xl font-semibold text-gray-800">Tasks</h2>
     <span class="text-sm text-gray-600">{{ run.items|length }} total</span>
 </div>
-<div class="overflow-x-auto">
+<!-- Tasks Table (desktop) -->
+<div class="hidden md:block overflow-x-auto">
     <table class="min-w-full divide-y divide-gray-200">
         <thead class="bg-gray-50">
             <tr>
@@ -161,6 +162,114 @@
             {% endfor %}
         </tbody>
     </table>
+</div>
+
+<!-- Tasks Cards (mobile) -->
+<div class="md:hidden divide-y divide-gray-200">
+    {% set ns_m = namespace(current_group='') %}
+    {% for item in run.items %}
+    {% set group = item.task.id.rsplit('.', 1)[0] if '.' in item.task.id else '' %}
+    {% if group != ns_m.current_group and group != '' %}
+    {% set ns_m.current_group = group %}
+    <div class="bg-gray-50 px-4 py-1.5 cursor-pointer select-none group-header hover:bg-gray-100" data-group="{{ group }}"
+        onclick="toggleGroup('{{ group }}')">
+        <div class="flex items-center justify-between">
+            <div class="flex items-center gap-2">
+                <svg class="w-3.5 h-3.5 text-gray-400 transition-transform group-chevron"
+                    viewBox="0 0 20 20" fill="currentColor">
+                    <path fill-rule="evenodd"
+                        d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z"
+                        clip-rule="evenodd" />
+                </svg>
+                <span class="text-xs font-semibold text-gray-500 uppercase tracking-wider">{{ group }}</span>
+            </div>
+            <span class="group-summary text-xs text-gray-400"></span>
+        </div>
+    </div>
+    {% elif group == '' and ns_m.current_group != '' %}
+    {% set ns_m.current_group = '' %}
+    {% endif %}
+    <div class="px-4 py-3 task-row" data-group="{{ group }}" data-status="{{ item.status.value }}"
+        onclick="showTaskDetail('{{ item.task.id }}')" style="cursor: pointer;">
+        <!-- Row 1: Task ID + Status badge -->
+        <div class="flex items-start justify-between gap-2">
+            <div class="min-w-0 flex-1">
+                <span class="text-sm font-mono text-gray-900 truncate block">
+                    {% if '.' in item.task.id %}
+                    <span class="text-gray-400">{{ item.task.id.rsplit('.', 1)[0] }}.</span>{{ item.task.id.rsplit('.', 1)[1] }}
+                    {% else %}
+                    {{ item.task.id }}
+                    {% endif %}
+                </span>
+                {% if item.task.name != item.task.id %}
+                <span class="text-xs text-gray-600 truncate block">{{ item.task.name }}</span>
+                {% endif %}
+            </div>
+            <span class="inline-flex items-center gap-1.5 px-2 py-0.5 text-xs font-medium rounded-full flex-shrink-0
+                {% if item.status.value == 'running' %}bg-green-100 text-green-700
+                {% elif item.status.value == 'pending' %}bg-gray-100 text-gray-600
+                {% elif item.status.value == 'submitted' %}bg-yellow-100 text-yellow-700
+                {% elif item.status.value == 'completed' %}bg-blue-100 text-blue-700
+                {% elif item.status.value == 'failed' %}bg-red-100 text-red-700
+                {% elif item.status.value == 'dep_failed' %}bg-orange-100 text-orange-700
+                {% else %}bg-gray-100 text-gray-600{% endif %}">
+                {% if item.status.value == 'running' %}
+                <span class="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span>
+                {% elif item.status.value == 'pending' %}
+                <span class="w-2 h-2 bg-gray-400 rounded-full"></span>
+                {% elif item.status.value == 'submitted' %}
+                <span class="w-2 h-2 bg-yellow-500 rounded-full"></span>
+                {% elif item.status.value == 'completed' %}
+                <span class="w-2 h-2 bg-blue-500 rounded-full"></span>
+                {% elif item.status.value == 'failed' %}
+                <span class="w-2 h-2 bg-red-500 rounded-full"></span>
+                {% elif item.status.value == 'dep_failed' %}
+                <span class="w-2 h-2 bg-orange-500 rounded-full"></span>
+                {% endif %}
+                {% if item.status.value == 'dep_failed' %}dep failed{% else %}{{ item.status.value }}{% endif %}
+            </span>
+        </div>
+        <!-- Row 2: Job ID, partition, resources -->
+        <div class="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-gray-500">
+            {% if item.job_id %}
+            <span class="font-mono">{{ item.job_id }}</span>
+            {% endif %}
+            <span>{{ item.task.partition }}</span>
+            <span>{{ item.task.cpus }} CPU, {{ item.task.memory }}, {{ item.task.time_limit }}</span>
+        </div>
+        <!-- Row 3: Utilization + timestamps -->
+        <div class="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-gray-500">
+            {% if item.cpu_efficiency is not none %}
+            <span class="font-mono {% if item.cpu_efficiency >= 70 %}text-green-600{% elif item.cpu_efficiency >= 30 %}text-yellow-600{% else %}text-red-600{% endif %}">CPU {{ "%.0f"|format(item.cpu_efficiency) }}%</span>
+            {% endif %}
+            {% if item.max_rss and item.max_rss != "N/A" and item.max_rss != "0B" %}
+            <span class="font-mono text-gray-600">Mem {{ item.max_rss }}/{{ item.task.memory }}</span>
+            {% endif %}
+            {% if item.submitted_at %}
+            <span>sub <time class="local-time" datetime="{{ item.submitted_at.isoformat() }}" data-format="time"></time></span>
+            {% endif %}
+            {% if item.started_at %}
+            <span>start <time class="local-time" datetime="{{ item.started_at.isoformat() }}" data-format="time"></time></span>
+            {% endif %}
+            {% if item.finished_at %}
+            <span>end <time class="local-time" datetime="{{ item.finished_at.isoformat() }}" data-format="time"></time></span>
+            {% endif %}
+        </div>
+        <!-- Dependencies -->
+        {% if item.task.dependencies %}
+        <div class="mt-1 flex flex-wrap gap-1">
+            {% for dep in item.task.dependencies %}
+            <span class="inline-block px-1.5 py-0.5 text-xs bg-gray-100 text-gray-600 rounded">{{ dep }}</span>
+            {% endfor %}
+        </div>
+        {% endif %}
+    </div>
+    {% if item.error %}
+    <div class="px-4 py-2 bg-red-50 text-sm text-red-700 task-row" data-group="{{ group }}" data-error-row>
+        <span class="font-medium">Error:</span> {{ item.error }}
+    </div>
+    {% endif %}
+    {% endfor %}
 </div>
 {% elif run %}
 <div class="px-6 py-12 text-center">
