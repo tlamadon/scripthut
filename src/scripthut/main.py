@@ -1025,6 +1025,9 @@ async def sync_source(name: str) -> dict[str, Any]:
         }
     except ValueError as e:
         return {"error": str(e)}
+    except Exception as e:
+        logger.exception(f"Unexpected error syncing source {name}")
+        return {"error": str(e)}
 
 
 @app.get("/sources/{name}/workflows")
