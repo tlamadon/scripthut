@@ -55,6 +55,7 @@ class BackendState:
     status: ConnectionStatus = field(
         default_factory=lambda: ConnectionStatus(connected=False, host="")
     )
+    enabled: bool = True  # Whether this backend is active for polling
     _reconnect_after: float = 0.0  # time.monotonic() before which reconnect is skipped
     _reconnect_delay: float = 0.0  # current backoff delay in seconds
 
@@ -183,6 +184,8 @@ async def init_backend(backend_config: SlurmBackendConfig | PBSBackendConfig) ->
 
 async def poll_backend(backend_state: BackendState, filter_user: str | None = None) -> None:
     """Poll jobs for a single backend."""
+    if not backend_state.enabled:
+        return
     if backend_state.backend is None or backend_state.ssh_client is None:
         return
 
@@ -1096,6 +1099,16 @@ async def toggle_live_view(request: Request) -> HTMLResponse:
     """Toggle live view (hide old completed jobs)."""
     state.live_view = not state.live_view
     return await jobs_partial(request)
+
+
+@app.post("/backends/{name}/toggle")
+async def toggle_backend(name: str) -> dict[str, Any]:
+    """Enable or disable a backend for polling."""
+    backend_state = state.backends.get(name)
+    if not backend_state:
+        return {"error": f"Backend '{name}' not found"}
+    backend_state.enabled = not backend_state.enabled
+    return {"name": name, "enabled": backend_state.enabled}
 
 
 @app.get("/filter/status")
