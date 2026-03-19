@@ -123,22 +123,57 @@ SSH settings are shared by both Slurm and PBS backends.
 
 ## Sources
 
-Git repository sources that ScriptHut can track. These are cloned and cached locally.
+Sources are git repositories or backend filesystem paths containing workflow definitions. ScriptHut discovers JSON task lists in the `.hut/workflows/` directory of each source. Each JSON file appears as a triggerable workflow on the Sources page.
+
+For **git sources**, the repository is cloned locally for workflow discovery, and also cloned on the backend when a workflow is triggered (tasks run inside the cloned directory, just like git-based workflows).
+
+For **path sources**, workflows are discovered via SSH on the backend, and tasks run with `working_dir` resolved relative to the source path.
+
+### Git Source
 
 ```yaml
 sources:
   - name: ml-jobs
+    type: git
     url: git@github.com:your-org/ml-pipelines.git
     branch: main
     deploy_key: ~/.ssh/ml-jobs-deploy-key
+    backend: hpc-cluster
+    # workflows_dir: .hut/workflows    # default
+    # clone_dir: ~/scripthut-repos     # default
+    # postclone: "rm -rf large_files"  # optional
 ```
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `name` | string | **required** | Unique identifier for this source. |
+| `type` | string | **required** | Must be `"git"`. |
 | `url` | string | **required** | Git repository URL. SSH format recommended. |
 | `branch` | string | `"main"` | Branch to track. |
 | `deploy_key` | path | `null` | Path to deploy key for this repository. |
+| `backend` | string | **required** | Backend to submit discovered workflow tasks to. |
+| `workflows_dir` | string | `".hut/workflows"` | Directory within the repo containing workflow JSON files. |
+| `clone_dir` | string | `"~/scripthut-repos"` | Parent directory on the backend. The repo is cloned into `<clone_dir>/<commit_hash>/`. |
+| `postclone` | string | `null` | Shell command to run in the clone directory after cloning. |
+
+### Path Source
+
+```yaml
+sources:
+  - name: shared-workflows
+    type: path
+    path: /shared/project-workflows
+    backend: hpc-cluster
+    # workflows_dir: .hut/workflows  # default
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `name` | string | **required** | Unique identifier for this source. |
+| `type` | string | **required** | Must be `"path"`. |
+| `path` | string | **required** | Directory on the backend filesystem. |
+| `backend` | string | **required** | Backend where this path exists and where tasks are submitted. |
+| `workflows_dir` | string | `".hut/workflows"` | Directory within the path containing workflow JSON files. |
 
 ---
 
@@ -354,9 +389,11 @@ backends:
 
 sources:
   - name: ml-jobs
+    type: git
     url: git@github.com:my-org/ml-pipelines.git
     branch: main
     deploy_key: ~/.ssh/ml-deploy-key
+    backend: hpc-cluster
 
 workflows:
   - name: simple-tasks
