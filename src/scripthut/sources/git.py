@@ -19,7 +19,6 @@ class SourceWorkflow:
     name: str  # e.g. "ml-jobs/train-model"
     source_name: str
     filename: str  # e.g. "train-model.json"
-    backend: str
     tasks_json: str  # raw JSON content
 
 
@@ -32,6 +31,7 @@ class SourceStatus:
     cloned: bool
     branch: str
     last_commit: str | None = None
+    last_commit_date: str | None = None  # ISO format datetime of HEAD commit
     error: str | None = None
     workflows: list[SourceWorkflow] = field(default_factory=list)
 
@@ -150,6 +150,7 @@ class GitSourceManager:
             status.error = None
             # Get the latest commit
             status.last_commit = await self._get_head_commit(name)
+            status.last_commit_date = await self._get_head_commit_date(name)
             logger.info(f"Cloned {name} at commit {status.last_commit}")
 
         return status
@@ -186,6 +187,7 @@ class GitSourceManager:
         else:
             status.error = None
             status.last_commit = await self._get_head_commit(name)
+            status.last_commit_date = await self._get_head_commit_date(name)
             logger.info(f"Updated {name} to commit {status.last_commit}")
 
         return status
@@ -198,6 +200,19 @@ class GitSourceManager:
 
         stdout, _, code = await self._run_git(
             ["rev-parse", "--short", "HEAD"],
+            cwd=status.path,
+        )
+
+        return stdout if code == 0 else None
+
+    async def _get_head_commit_date(self, name: str) -> str | None:
+        """Get the HEAD commit date in ISO format."""
+        status = self._statuses[name]
+        if not status.path.exists():
+            return None
+
+        stdout, _, code = await self._run_git(
+            ["log", "-1", "--format=%aI"],
             cwd=status.path,
         )
 
@@ -286,7 +301,6 @@ class GitSourceManager:
                         name=f"{name}/{stem}",
                         source_name=name,
                         filename=json_file.name,
-                        backend=source.backend,
                         tasks_json=tasks_json,
                     )
                 )

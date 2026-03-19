@@ -76,8 +76,8 @@ class TestBuildRemoteGitSshCommand:
         assert "ssh -i /tmp/key123" in result
         assert "IdentitiesOnly=yes" in result
         assert "BatchMode=yes" in result
-        assert result.startswith('GIT_SSH_COMMAND="')
-        assert result.endswith('" ')
+        assert result.startswith('export GIT_SSH_COMMAND="')
+        assert result.endswith('"; ')
 
     def test_without_deploy_key(self):
         assert RunManager._build_remote_git_ssh_command(None) == ""
@@ -241,8 +241,9 @@ class TestEnsureRepoCloned:
         clone_dir, short_hash = await manager._ensure_repo_cloned(ssh_mock, workflow)
 
         assert short_hash == commit_hash[:12]
-        # No GIT_SSH_COMMAND in the clone command
+        # No deploy key: uses HTTPS URL, no GIT_SSH_COMMAND
         clone_cmd = ssh_mock.run_command.call_args_list[2][0][0]
+        assert "https://" in clone_cmd
         assert "GIT_SSH_COMMAND" not in clone_cmd
 
     @pytest.mark.asyncio

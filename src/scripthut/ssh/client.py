@@ -1,10 +1,19 @@
 """Async SSH client with persistent connection management."""
 
+from __future__ import annotations
+
 import asyncio
 import logging
+import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import asyncssh
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from scripthut.ssh.command_log import CommandLogEntry
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +38,7 @@ class SSHClient:
         self.known_hosts = known_hosts
         self._connection: asyncssh.SSHClientConnection | None = None
         self._lock = asyncio.Lock()
+        self.on_command: Callable[[CommandLogEntry], None] | None = None
 
     @property
     def is_connected(self) -> bool:
@@ -125,6 +135,27 @@ class SSHClient:
         )
         return process
 
+    def _log_command(
+        self, command: str, start: float,
+        stdout: str = "", stderr: str = "", exit_code: int | None = None,
+        error: str | None = None,
+    ) -> None:
+        """Record a command to the log callback if set."""
+        if self.on_command is None:
+            return
+        from scripthut.ssh.command_log import CommandLogEntry
+        from datetime import datetime, timezone
+
+        self.on_command(CommandLogEntry(
+            timestamp=datetime.now(timezone.utc),
+            command=command,
+            exit_code=exit_code,
+            duration_ms=int((time.perf_counter() - start) * 1000),
+            stdout=stdout,
+            stderr=stderr,
+            error=error,
+        ))
+
     async def run_command(self, command: str, timeout: int = 30) -> tuple[str, str, int]:
         """
         Run a command on the remote host.
@@ -142,21 +173,24 @@ class SSHClient:
         if self._connection is None:
             raise RuntimeError("Failed to establish SSH connection")
 
+        start = time.perf_counter()
         try:
             result = await asyncio.wait_for(
                 self._connection.run(command, check=False),
                 timeout=timeout,
             )
-            return (
-                result.stdout or "",
-                result.stderr or "",
-                result.exit_status or 0,
-            )
+            stdout = result.stdout or ""
+            stderr = result.stderr or ""
+            exit_code = result.exit_status or 0
+            self._log_command(command, start, stdout, stderr, exit_code)
+            return (stdout, stderr, exit_code)
         except asyncio.TimeoutError:
             logger.error(f"Command timed out after {timeout}s: {command[:50]}...")
+            self._log_command(command, start, error=f"Timeout after {timeout}s")
             raise RuntimeError(f"Command timed out after {timeout}s")
         except asyncssh.Error as e:
             logger.error(f"Command execution failed: {e}")
+            self._log_command(command, start, error=str(e))
             # Try to reconnect on next attempt
             self._connection = None
             raise

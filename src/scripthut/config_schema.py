@@ -128,8 +128,10 @@ class GitSourceConfig(BaseModel):
         default=None,
         description="Path to deploy key for this repository",
     )
-    backend: str = Field(
-        description="Name of the backend to submit discovered workflow tasks to",
+    backend: str | None = Field(
+        default=None,
+        description="Deprecated: backend is now selected at run time",
+        exclude=True,
     )
     workflows_dir: str = Field(
         default=".hut/workflows",

@@ -285,6 +285,20 @@ class RunManager:
     # --- Git workflow support ---
 
     @staticmethod
+    def _to_https_url(repo: str) -> str:
+        """Convert git SSH URLs to HTTPS when possible.
+
+        e.g. git@github.com:org/repo.git -> https://github.com/org/repo.git
+        """
+        if repo.startswith("git@"):
+            # git@github.com:org/repo.git -> https://github.com/org/repo.git
+            host_path = repo[4:]  # strip "git@"
+            host, _, path = host_path.partition(":")
+            if path:
+                return f"https://{host}/{path}"
+        return repo
+
+    @staticmethod
     def _build_remote_git_ssh_command(remote_key_path: str | None) -> str:
         """Build GIT_SSH_COMMAND prefix for remote execution.
 
@@ -298,7 +312,7 @@ class RunManager:
         if not remote_key_path:
             return ""
         opts = "-o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=accept-new"
-        return f'GIT_SSH_COMMAND="ssh -i {remote_key_path} {opts}" '
+        return f'export GIT_SSH_COMMAND="ssh -i {remote_key_path} {opts}"; '
 
     async def _upload_deploy_key(
         self, ssh_client: SSHClient, local_key_path: Path
@@ -365,9 +379,11 @@ class RunManager:
                 )
 
             git_ssh = self._build_remote_git_ssh_command(remote_key)
+            # Use HTTPS for public repos (no deploy key) to avoid SSH key issues
+            effective_repo = repo if remote_key else self._to_https_url(repo)
 
             # 2. Resolve HEAD commit hash
-            cmd = f"{git_ssh}git ls-remote {repo} refs/heads/{branch}"
+            cmd = f"{git_ssh}GIT_TERMINAL_PROMPT=0 git ls-remote {effective_repo} refs/heads/{branch}"
             stdout, stderr, exit_code = await ssh_client.run_command(cmd, timeout=30)
             if exit_code != 0 or not stdout.strip():
                 raise ValueError(
@@ -388,8 +404,8 @@ class RunManager:
                     f"to {clone_path}"
                 )
                 cmd = (
-                    f"{git_ssh}git clone --branch {branch} "
-                    f"--single-branch --depth 1 {repo} {clone_path}"
+                    f"{git_ssh}GIT_TERMINAL_PROMPT=0 git clone --branch {branch} "
+                    f"--single-branch --depth 1 {effective_repo} {clone_path}"
                 )
                 _, stderr, exit_code = await ssh_client.run_command(
                     cmd, timeout=300
@@ -712,6 +728,7 @@ class RunManager:
 
     async def create_run_from_source(
         self, source_name: str, workflow_filename: str, tasks_json: str,
+        backend: str,
     ) -> Run:
         """Create a run from a source workflow's JSON task list.
 
@@ -722,14 +739,16 @@ class RunManager:
             source_name: Name of the source.
             workflow_filename: Filename of the workflow (e.g. "train.json").
             tasks_json: Raw JSON task list content.
+            backend: Name of the backend to submit tasks to.
         """
         source = self.config.get_source(source_name)
         if source is None:
             raise ValueError(f"Source '{source_name}' not found")
 
-        ssh_client = self.get_ssh_client(source.backend)
+        backend_name = backend
+        ssh_client = self.get_ssh_client(backend_name)
         if ssh_client is None:
-            raise ValueError(f"No SSH connection to backend '{source.backend}'")
+            raise ValueError(f"No SSH connection to backend '{backend_name}'")
 
         stem = workflow_filename.removesuffix(".json")
         workflow_name = f"{source_name}/{stem}"
@@ -750,7 +769,7 @@ class RunManager:
             self._resolve_working_dirs(tasks, source.path)
 
         run = await self._build_run(
-            tasks, workflow_name, source.backend, None, ssh_client
+            tasks, workflow_name, backend_name, None, ssh_client
         )
         if commit_hash is not None:
             run.commit_hash = commit_hash
@@ -880,11 +899,13 @@ class RunManager:
 
     async def dry_run_source(
         self, source_name: str, workflow_filename: str, tasks_json: str,
+        backend: str,
     ) -> dict:
         """Dry run a source workflow — preview tasks without submitting."""
         source = self.config.get_source(source_name)
         if source is None:
             raise ValueError(f"Source '{source_name}' not found")
+        backend_name = backend
 
         stem = workflow_filename.removesuffix(".json")
         workflow_name = f"{source_name}/{stem}"
@@ -893,10 +914,11 @@ class RunManager:
         tasks = self._parse_tasks_json(tasks_json, label)
 
         # Resolve working dirs for preview
+        warnings: list[str] = []
         commit_hash: str | None = None
         if isinstance(source, GitSourceConfig):
             # For dry run, clone so we can show correct paths
-            ssh_client = self.get_ssh_client(source.backend)
+            ssh_client = self.get_ssh_client(backend_name)
             if ssh_client:
                 try:
                     clone_dir, commit_hash = await self._clone_source_repo(
@@ -905,9 +927,13 @@ class RunManager:
                     self._resolve_working_dirs(tasks, clone_dir)
                 except Exception as e:
                     logger.warning(f"Could not clone for dry run preview: {e}")
-                    # Fall back to showing placeholder paths
+                    warnings.append(
+                        f"Could not clone repository on backend '{backend_name}': {e}. "
+                        f"The run will fail if this backend cannot access the git remote."
+                    )
                     self._resolve_working_dirs(tasks, f"{source.clone_dir}/<commit>")
             else:
+                warnings.append(f"Backend '{backend_name}' is not connected. Cannot preview clone paths.")
                 self._resolve_working_dirs(tasks, f"{source.clone_dir}/<commit>")
         elif isinstance(source, PathSourceConfig):
             self._resolve_working_dirs(tasks, source.path)
@@ -915,11 +941,11 @@ class RunManager:
         self._resolve_wildcard_deps(tasks)
         self._validate_dependencies(tasks)
 
-        account = self.get_backend_account(source.backend)
-        login_shell = self.get_backend_login_shell(source.backend)
+        account = self.get_backend_account(backend_name)
+        login_shell = self.get_backend_login_shell(backend_name)
 
         log_dir = "~/.cache/scripthut/logs"
-        ssh_client = self.get_ssh_client(source.backend)
+        ssh_client = self.get_ssh_client(backend_name)
         if ssh_client and log_dir.startswith("~"):
             stdout, _, _ = await ssh_client.run_command("echo $HOME")
             home_dir = stdout.strip()
@@ -927,7 +953,7 @@ class RunManager:
 
         preview_run_id = "preview"
         preview_created_at = datetime.now(timezone.utc)
-        job_backend = self.get_job_backend(source.backend)
+        job_backend = self.get_job_backend(backend_name)
 
         task_details = []
         for task in tasks:
@@ -966,14 +992,15 @@ class RunManager:
                 "description": "",
                 "command": f"(from source {source_name}: {workflow_filename})",
             },
-            "submit_url": f"/sources/{source_name}/workflows/{workflow_filename}/run",
-            "backend_name": source.backend,
+            "submit_url": f"/sources/{source_name}/workflows/{workflow_filename}/run?backend={backend_name}",
+            "backend_name": backend_name,
             "task_count": len(tasks),
             "max_concurrent": None,
             "account": account,
             "commit_hash": commit_hash,
             "tasks": task_details,
             "raw_output": raw_output_formatted,
+            "warnings": warnings,
         }
 
     async def rerun_in_place(self, run_id: str) -> Run:
@@ -1203,7 +1230,16 @@ class RunManager:
             )
 
         for item in to_submit:
-            await self.submit_task(run, item)
+            success = await self.submit_task(run, item)
+            if not success:
+                # Submission failure (e.g. bad queue) — mark all remaining pending tasks as failed
+                for pending_item in run.items:
+                    if pending_item.status == RunItemStatus.PENDING:
+                        pending_item.status = RunItemStatus.FAILED
+                        pending_item.error = f"Submission halted: {item.error}"
+                        pending_item.finished_at = datetime.now(timezone.utc)
+                self._persist_run(run)
+                break
 
         if to_submit:
             self.notify_run(run.id)

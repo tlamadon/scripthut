@@ -21,6 +21,7 @@ from fastapi.templating import Jinja2Templates
 from sse_starlette.sse import EventSourceResponse
 
 from scripthut.backends.base import JobBackend, JobStats
+from scripthut.ssh.command_log import CommandLog
 from scripthut.backends.pbs import PBSBackend
 from scripthut.backends.slurm import SlurmBackend
 from scripthut.config import find_config_file, load_config, load_yaml_config, set_config
@@ -56,6 +57,7 @@ class BackendState:
         default_factory=lambda: ConnectionStatus(connected=False, host="")
     )
     enabled: bool = True  # Whether this backend is active for polling
+    command_log: CommandLog = field(default_factory=CommandLog)
     _reconnect_after: float = 0.0  # time.monotonic() before which reconnect is skipped
     _reconnect_delay: float = 0.0  # current backoff delay in seconds
 
@@ -76,6 +78,7 @@ class AppState:
     terminal_manager: TerminalManager = field(default_factory=TerminalManager)
     pricing_service: Any = None  # Optional PricingService instance
     debug_job_ids: set[str] = field(default_factory=set)  # job IDs submitted via interactive debug
+    disabled_sources: set[str] = field(default_factory=set)  # Source names toggled off
     filter_enabled: bool = False
     filter_user: str | None = None
     live_view: bool = True
@@ -163,6 +166,7 @@ async def init_backend(backend_config: SlurmBackendConfig | PBSBackendConfig) ->
         backend=backend,
         status=ConnectionStatus(connected=False, host=backend_config.ssh.host),
     )
+    ssh_client.on_command = backend_state.command_log.append
 
     try:
         await ssh_client.connect()
@@ -265,15 +269,17 @@ async def poll_backend(backend_state: BackendState, filter_user: str | None = No
                         and item.scheduler_state is None):
                         sacct_ids.append(item.job_id)
 
-        # Query sacct for resource utilization
+        # Query accounting for resource utilization
         job_stats: dict[str, JobStats] = {}
         if sacct_ids:
+            logger.info(f"Fetching stats for {len(sacct_ids)} jobs on '{backend_state.name}': {sacct_ids}")
             try:
                 job_stats = await backend_state.backend.get_job_stats(
                     sacct_ids, user=filter_user,
                 )
+                logger.info(f"Got stats for {len(job_stats)}/{len(sacct_ids)} jobs on '{backend_state.name}'")
             except Exception as e:
-                logger.warning(f"sacct stats fetch failed for '{backend_state.name}': {e}")
+                logger.warning(f"Stats fetch failed for '{backend_state.name}': {e}")
 
         # Write stats back to RunItems and correct false completions
         if state.run_manager and job_stats:
@@ -632,7 +638,6 @@ async def _discover_path_source_workflows(source: PathSourceConfig) -> list[Sour
                 name=f"{source.name}/{stem}",
                 source_name=source.name,
                 filename=filename,
-                backend=source.backend,
                 tasks_json=content_stdout,
             )
         )
@@ -707,6 +712,17 @@ class JobView:
     def is_terminal(self) -> bool:
         """Check if job is in a terminal state."""
         return self.state in ("completed", "failed", "dep_failed")
+
+    @property
+    def cpu_hours(self) -> float:
+        """CPU hours for this job."""
+        if self.start_time is None:
+            return 0.0
+        end = self.finish_time if self.finish_time else datetime.now(timezone.utc)
+        elapsed = (end - self.start_time).total_seconds()
+        if elapsed > 0:
+            return elapsed * self.cpus / 3600.0
+        return 0.0
 
 
 def _get_job_nodes() -> dict[str, str]:
@@ -820,7 +836,6 @@ async def index(request: Request) -> HTMLResponse:
             "job_views": job_views,
             "backends": state.backends,
             "backend_job_counts": _backend_job_counts(),
-            "sources": state.source_statuses,
             "status": ConnectionStatus(
                 connected=state.any_connected,
                 host=", ".join(c.status.host for c in state.backends.values() if c.status.connected),
@@ -981,6 +996,18 @@ async def list_sources() -> dict[str, Any]:
     }
 
 
+@app.post("/sources/{name}/toggle")
+async def toggle_source(name: str) -> dict[str, Any]:
+    """Enable or disable a source."""
+    if name in state.disabled_sources:
+        state.disabled_sources.discard(name)
+        enabled = True
+    else:
+        state.disabled_sources.add(name)
+        enabled = False
+    return {"name": name, "enabled": enabled}
+
+
 @app.post("/sources/{name}/sync")
 async def sync_source(name: str) -> dict[str, Any]:
     """Trigger a sync for a specific source."""
@@ -1007,19 +1034,25 @@ async def list_source_workflows(name: str) -> dict[str, Any]:
     return {
         "source": name,
         "workflows": [
-            {"name": wf.name, "filename": wf.filename, "backend": wf.backend}
+            {"name": wf.name, "filename": wf.filename}
             for wf in workflows
         ],
     }
 
 
 @app.get("/sources/{name}/workflows/{filename}/dry-run", response_class=HTMLResponse)
-async def dry_run_source_workflow(request: Request, name: str, filename: str) -> HTMLResponse:
+async def dry_run_source_workflow(request: Request, name: str, filename: str, backend: str = "") -> HTMLResponse:
     """Preview tasks from a source workflow."""
     if state.run_manager is None:
         return templates.TemplateResponse(
             "dry_run.html",
             {"request": request, "error": "Run manager not initialized"},
+        )
+
+    if not backend:
+        return templates.TemplateResponse(
+            "dry_run.html",
+            {"request": request, "error": "No backend selected. Please select a backend on the Sources page."},
         )
 
     workflows = state.source_workflows.get(name, [])
@@ -1031,7 +1064,7 @@ async def dry_run_source_workflow(request: Request, name: str, filename: str) ->
         )
 
     try:
-        result = await state.run_manager.dry_run_source(name, filename, wf.tasks_json)
+        result = await state.run_manager.dry_run_source(name, filename, wf.tasks_json, backend=backend)
         return templates.TemplateResponse(
             "dry_run.html",
             {"request": request, "result": result, "error": None},
@@ -1045,12 +1078,18 @@ async def dry_run_source_workflow(request: Request, name: str, filename: str) ->
 
 
 @app.post("/sources/{name}/workflows/{filename}/run", response_model=None)
-async def run_source_workflow(name: str, filename: str):
+async def run_source_workflow(name: str, filename: str, backend: str = ""):
     """Trigger a run from a source workflow."""
     if state.run_manager is None:
         return JSONResponse(
             status_code=500,
             content={"error": "Run manager not initialized"},
+        )
+
+    if not backend:
+        return JSONResponse(
+            status_code=422,
+            content={"error": "No backend specified"},
         )
 
     workflows = state.source_workflows.get(name, [])
@@ -1062,7 +1101,7 @@ async def run_source_workflow(name: str, filename: str):
         )
 
     try:
-        run = await state.run_manager.create_run_from_source(name, filename, wf.tasks_json)
+        run = await state.run_manager.create_run_from_source(name, filename, wf.tasks_json, backend=backend)
         state.notify_poll()
         return {
             "run_id": run.id,
@@ -1109,6 +1148,30 @@ async def toggle_backend(name: str) -> dict[str, Any]:
         return {"error": f"Backend '{name}' not found"}
     backend_state.enabled = not backend_state.enabled
     return {"name": name, "enabled": backend_state.enabled}
+
+
+@app.get("/backends/{name}/log", response_class=HTMLResponse)
+async def backend_log_page(request: Request, name: str) -> HTMLResponse:
+    """Show SSH command log for a backend."""
+    backend_state = state.backends.get(name)
+    if not backend_state:
+        return HTMLResponse("Backend not found", status_code=404)
+    return templates.TemplateResponse("backend_log.html", {
+        "request": request,
+        "backend_name": name,
+        "backend_type": backend_state.backend_type,
+        "entries": backend_state.command_log.get_entries(),
+    })
+
+
+@app.post("/backends/{name}/log/clear")
+async def clear_backend_log(name: str) -> dict[str, str]:
+    """Clear the SSH command log for a backend."""
+    backend_state = state.backends.get(name)
+    if not backend_state:
+        return {"error": "Backend not found"}
+    backend_state.command_log.clear()
+    return {"status": "cleared"}
 
 
 @app.get("/filter/status")
@@ -1308,6 +1371,9 @@ async def sources_page(request: Request) -> HTMLResponse:
             "project_workflows": project_workflows,
             "source_workflows": state.source_workflows,
             "source_configs": {s.name: s for s in state.config.sources} if state.config else {},
+            "source_statuses": state.source_statuses,
+            "disabled_sources": state.disabled_sources,
+            "backend_names": list(state.backends.keys()),
         },
     )
 
@@ -1849,6 +1915,10 @@ async def get_task_detail(
             path = item.task.get_output_path(run.id, run.log_dir)
         else:
             path = item.task.get_error_path(run.id, run.log_dir)
+        # If no log file content and the task has an error (e.g. submission failure), show that
+        if not content and item.error:
+            content = item.error
+            error = None
     elif detail_type == "script":
         content = item.submit_script
         if content is None:

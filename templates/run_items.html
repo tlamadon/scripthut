@@ -111,10 +111,8 @@
                         <span
                             class="font-mono {% if item.cpu_efficiency >= 70 %}text-green-600{% elif item.cpu_efficiency >= 30 %}text-yellow-600{% else %}text-red-600{% endif %}">CPU
                             {{ "%.0f"|format(item.cpu_efficiency) }}%</span>
-                        {% if item.max_rss and item.max_rss != "N/A" and item.max_rss != "0B" %}
-                        <span class="font-mono text-gray-600">Mem {{ item.max_rss }}<span class="text-gray-400">/{{
+                        <span class="font-mono text-gray-600">Mem {{ item.max_rss or "0B" }}<span class="text-gray-400">/{{
                                 item.task.memory }}</span></span>
-                        {% endif %}
                     </div>
                     {% else %}
                     <span class="text-gray-400">-</span>
