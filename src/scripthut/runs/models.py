@@ -355,6 +355,20 @@ class Run:
         return None
 
     @property
+    def total_cpu_hours(self) -> float:
+        """Total CPU hours accumulated across all items so far."""
+        now = datetime.now(timezone.utc)
+        total_seconds = 0.0
+        for item in self.items:
+            if item.started_at is None:
+                continue
+            end = item.finished_at if item.finished_at else now
+            elapsed = (end - item.started_at).total_seconds()
+            if elapsed > 0:
+                total_seconds += elapsed * item.task.cpus
+        return total_seconds / 3600.0
+
+    @property
     def status_class(self) -> str:
         """Return CSS class for status styling."""
         status_classes = {

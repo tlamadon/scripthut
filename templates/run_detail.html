@@ -191,10 +191,37 @@
         }
         formatLocalTimes();
         document.body.addEventListener('htmx:afterSwap', function(e) { formatLocalTimes(e.detail.target); });
+        document.body.addEventListener('htmx:oobAfterSwap', function(e) { formatLocalTimes(e.detail.target); });
+        document.body.addEventListener('htmx:afterSettle', function(e) { formatLocalTimes(e.detail.target); });
         // Also observe SSE-driven innerHTML swaps for time conversion
-        ['run-items', 'run-info'].forEach(function(id) {
+        ['run-items', 'run-info', 'detail-sidebar'].forEach(function(id) {
             var el = document.getElementById(id);
             if (el) new MutationObserver(function() { formatLocalTimes(el); }).observe(el, { childList: true, subtree: true });
+        });
+
+        function rerunRun(runId, mode) {
+            var label = mode === 'in_place' ? 'Re-run this run in place?' : 'Re-run as a new run with the same parameters and commit?';
+            if (!confirm(label)) return;
+            // Hide dropdown
+            var menu = document.getElementById('rerun-menu');
+            if (menu) menu.classList.add('hidden');
+            fetch('/runs/' + runId + '/rerun?mode=' + encodeURIComponent(mode), { method: 'POST' })
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    if (data.error) { alert('Re-run failed: ' + data.error); return; }
+                    if (mode === 'in_place') { window.location.reload(); }
+                    else { window.location.href = '/runs/' + data.run_id; }
+                })
+                .catch(function(err) { alert('Re-run failed: ' + err); });
+        }
+
+        // Close rerun dropdown on outside click
+        document.addEventListener('click', function(e) {
+            var dropdown = document.getElementById('rerun-dropdown');
+            var menu = document.getElementById('rerun-menu');
+            if (dropdown && menu && !dropdown.contains(e.target)) {
+                menu.classList.add('hidden');
+            }
         });
 
         var _detailTaskId = null;

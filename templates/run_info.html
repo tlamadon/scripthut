@@ -1,5 +1,5 @@
 {% if run %}
-<div class="grid grid-cols-2 md:grid-cols-4 {% if cost_summary is defined and cost_summary and cost_summary.costed_tasks > 0 %}lg:grid-cols-5{% endif %} gap-4">
+<div class="grid grid-cols-2 md:grid-cols-5 {% if cost_summary is defined and cost_summary and cost_summary.costed_tasks > 0 %}lg:grid-cols-6{% endif %} gap-4">
     <div>
         <p class="text-sm text-gray-500">Status</p>
         <span class="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-full
@@ -26,6 +26,18 @@
     <div>
         <p class="text-sm text-gray-500">Progress</p>
         <p class="text-lg font-semibold text-gray-800">{{ run.progress[0] }} / {{ run.progress[1] }}</p>
+    </div>
+    <div>
+        <p class="text-sm text-gray-500">CPU Hours</p>
+        <p class="text-lg font-semibold text-gray-800 font-mono">
+            {% if run.total_cpu_hours >= 1 %}
+                {{ "%.1f"|format(run.total_cpu_hours) }}h
+            {% elif run.total_cpu_hours > 0 %}
+                {{ "%.1f"|format(run.total_cpu_hours * 60) }}m
+            {% else %}
+                —
+            {% endif %}
+        </p>
     </div>
     <div>
         <p class="text-sm text-gray-500">Created</p>
@@ -66,9 +78,9 @@
     </div>
 </div>
 
-<!-- Cancel Button -->
-{% if run.status.value in ['pending', 'running'] %}
-<div class="mt-4">
+<!-- Action Buttons -->
+<div class="mt-4 flex gap-2">
+    {% if run.status.value in ['pending', 'running'] %}
     <button
         hx-post="/runs/{{ run.id }}/cancel"
         hx-swap="none"
@@ -78,6 +90,28 @@
     >
         Cancel Run
     </button>
+    {% endif %}
+    {% if run.status.value in ['completed', 'failed', 'cancelled'] %}
+    <div class="relative" id="rerun-dropdown">
+        <button
+            onclick="document.getElementById('rerun-menu').classList.toggle('hidden')"
+            class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm font-medium inline-flex items-center gap-1.5"
+        >
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+            Re-run
+            <svg class="w-3 h-3 ml-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+        </button>
+        <div id="rerun-menu" class="hidden absolute left-0 mt-1 w-48 bg-white rounded-lg shadow-lg border z-10">
+            <button onclick="rerunRun('{{ run.id }}', 'new')"
+                class="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 rounded-t-lg">
+                Re-run as new
+            </button>
+            <button onclick="rerunRun('{{ run.id }}', 'in_place')"
+                class="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 rounded-b-lg">
+                Re-run in place
+            </button>
+        </div>
+    </div>
+    {% endif %}
 </div>
-{% endif %}
 {% endif %}
