@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en" style="scrollbar-gutter: stable">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ScriptHut - Sources</title>
+    <link rel="icon" type="image/svg+xml"
+        href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='25' cy='2' r='1.8' fill='%23ccc' opacity='.5'/%3E%3Ccircle cx='23' cy='5' r='2.2' fill='%23bbb' opacity='.45'/%3E%3Ccircle cx='25.5' cy='8' r='1.8' fill='%23aaa' opacity='.4'/%3E%3Crect x='22' y='7' width='2.5' height='8' fill='%23696969'/%3E%3Cpolygon points='16,3 0,22 32,22' fill='%23B8860B'/%3E%3Cline x1='16' y1='3' x2='3' y2='22' stroke='%23A07000' stroke-width='.7'/%3E%3Cline x1='16' y1='3' x2='9' y2='22' stroke='%23A07000' stroke-width='.7'/%3E%3Cline x1='16' y1='3' x2='16' y2='22' stroke='%23A07000' stroke-width='.7'/%3E%3Cline x1='16' y1='3' x2='23' y2='22' stroke='%23A07000' stroke-width='.7'/%3E%3Cline x1='16' y1='3' x2='29' y2='22' stroke='%23A07000' stroke-width='.7'/%3E%3Crect x='6' y='22' width='20' height='8' fill='%23D2B48C'/%3E%3Crect x='12' y='24' width='6' height='6' rx='3' ry='2' fill='%235C3317'/%3E%3Crect x='20' y='25' width='3' height='3' fill='%2387CEEB' stroke='%235C3317' stroke-width='.5'/%3E%3C/svg%3E">
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+
+<body class="bg-gray-100 min-h-screen">
+    <div class="container mx-auto px-4 py-8">
+        <header class="mb-8">
+            {% include "nav.html" %}
+        </header>
+
+        <!-- Error banner (hidden by default) -->
+        <div id="run-error" class="hidden bg-red-100 border border-red-300 text-red-700 px-4 py-3 rounded mb-6">
+            <span class="font-medium">Error:</span> <span id="run-error-msg"></span>
+        </div>
+
+        <!-- Sources -->
+        {% if source_workflows %}
+        {% for source_name, wfs in source_workflows.items() %}
+        {% set src_cfg = source_configs.get(source_name) %}
+        <div class="bg-white rounded-lg shadow-md p-6 mb-6">
+            <div class="flex items-center justify-between mb-4">
+                <div>
+                    <div class="flex items-center gap-2">
+                        <h2 class="text-xl font-semibold text-gray-800">{{ source_name }}</h2>
+                        {% if src_cfg and src_cfg.type == 'git' %}
+                        {% set repo_url = src_cfg.url.replace('git@github.com:', 'https://github.com/').replace('git@gitlab.com:', 'https://gitlab.com/').removesuffix('.git') %}
+                        <a href="{{ repo_url }}" target="_blank" rel="noopener" class="text-gray-400 hover:text-gray-700 transition-colors" title="Open repository">
+                            <svg class="w-5 h-5" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+                        </a>
+                        {% endif %}
+                    </div>
+                    <p class="text-sm text-gray-500">
+                        {% if wfs %}{{ wfs[0].backend }} &middot; {{ wfs | length }} workflow{{ 's' if wfs | length != 1 }}{% endif %}
+                    </p>
+                </div>
+                <button hx-post="/sources/{{ source_name }}/sync" hx-swap="none"
+                    onclick="setTimeout(function(){ window.location.reload(); }, 1500)"
+                    class="px-3 py-1.5 text-sm text-gray-600 hover:text-gray-800 border rounded-lg hover:bg-gray-50 transition-colors"
+                    title="Sync source and refresh workflows">
+                    Sync
+                </button>
+            </div>
+
+            {% if wfs %}
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {% for wf in wfs %}
+                <div class="border rounded-lg p-4 hover:shadow-md transition-shadow">
+                    <div class="flex items-start justify-between">
+                        <div>
+                            <h3 class="font-semibold text-gray-800">{{ wf.filename | replace('.json', '') }}</h3>
+                            <p class="text-sm text-gray-500">Backend: {{ wf.backend }}</p>
+                        </div>
+                        <a href="/sources/{{ source_name }}/workflows/{{ wf.filename }}/dry-run"
+                            class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm font-medium text-center whitespace-nowrap">
+                            New Run
+                        </a>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+            {% else %}
+            <p class="text-gray-500 text-sm">No workflow files found. Add JSON files to <code>.hut/workflows/</code> and sync.</p>
+            {% endif %}
+        </div>
+        {% endfor %}
+        {% endif %}
+
+        <!-- Projects -->
+        {% if projects %}
+        {% for project in projects %}
+        <div class="bg-white rounded-lg shadow-md p-6 mb-6">
+            <div class="flex items-center justify-between mb-4">
+                <div>
+                    <h2 class="text-xl font-semibold text-gray-800">{{ project.name }}</h2>
+                    <p class="text-sm text-gray-500">{{ project.backend }}</p>
+                </div>
+                <button hx-get="/projects/{{ project.name }}/workflows" hx-swap="none"
+                    onclick="window.location.reload()"
+                    class="px-3 py-1.5 text-sm text-gray-600 hover:text-gray-800 border rounded-lg hover:bg-gray-50 transition-colors"
+                    title="Refresh workflows">
+                    Refresh
+                </button>
+            </div>
+            {% if project.description %}
+            <p class="text-sm text-gray-600 mb-3">{{ project.description }}</p>
+            {% endif %}
+
+            {% set proj_workflows = project_workflows.get(project.name, []) %}
+            {% if proj_workflows %}
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {% for wf in proj_workflows %}
+                {% set wf_dir = wf.rsplit('/', 2)[-2] if '/' in wf else '.' %}
+                <div class="border rounded-lg p-4 hover:shadow-md transition-shadow">
+                    <div class="flex items-start justify-between">
+                        <div>
+                            <h3 class="font-semibold text-gray-800">{{ wf_dir }}</h3>
+                            <p class="text-sm text-gray-500">sflow.json</p>
+                        </div>
+                        <button hx-post="/projects/{{ project.name }}/run?workflow={{ wf }}" hx-swap="none"
+                            hx-on::after-request="handleRunResponse(event)"
+                            class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm font-medium text-center whitespace-nowrap">
+                            Run
+                        </button>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+            {% else %}
+            <p class="text-gray-500 text-sm">No sflow.json files found. Push a workflow to the repo and refresh.</p>
+            {% endif %}
+        </div>
+        {% endfor %}
+        {% endif %}
+
+        <!-- Global Workflows -->
+        {% if workflows %}
+        <div class="bg-white rounded-lg shadow-md p-6 mb-6">
+            <h2 class="text-xl font-semibold text-gray-800 mb-4">Workflows</h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {% for wf in workflows %}
+                <div class="border rounded-lg p-4 hover:shadow-md transition-shadow">
+                    <div class="flex items-start justify-between">
+                        <div>
+                            <h3 class="font-semibold text-gray-800">{{ wf.name }}</h3>
+                            <p class="text-sm text-gray-500">Backend: {{ wf.backend }}</p>
+                            {% if wf.description %}
+                            <p class="text-sm text-gray-600 mt-1">{{ wf.description }}</p>
+                            {% endif %}
+                            <p class="text-xs text-gray-400 mt-1">Max concurrent: {{ wf.max_concurrent }}</p>
+                        </div>
+                        <a href="/workflows/{{ wf.name }}/dry-run"
+                            class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm font-medium text-center whitespace-nowrap">
+                            New Run
+                        </a>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+
+        <!-- Empty state -->
+        {% if not source_workflows and not projects and not workflows %}
+        <div class="bg-white rounded-lg shadow-md p-6">
+            <p class="text-gray-500 text-center">No sources or workflows configured. Add <code>sources</code> or <code>workflows</code> to your scripthut.yaml.</p>
+        </div>
+        {% endif %}
+    </div>
+
+    <script>
+        function handleRunResponse(event) {
+            if (event.detail.successful) {
+                window.location.href = '/runs';
+            } else {
+                var errorBanner = document.getElementById('run-error');
+                var errorMsg = document.getElementById('run-error-msg');
+                try {
+                    var resp = JSON.parse(event.detail.xhr.responseText);
+                    errorMsg.textContent = resp.error || 'Unknown error';
+                } catch (e) {
+                    errorMsg.textContent = 'Request failed (HTTP ' + event.detail.xhr.status + ')';
+                }
+                errorBanner.classList.remove('hidden');
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+            }
+        }
+    </script>
+</body>
+
+</html>

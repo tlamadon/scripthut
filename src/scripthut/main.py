@@ -949,7 +949,7 @@ async def health() -> dict[str, Any]:
     }
 
 
-@app.get("/sources")
+@app.get("/api/sources")
 async def list_sources() -> dict[str, Any]:
     """List all configured sources and their statuses."""
     return {
@@ -1254,10 +1254,9 @@ async def run_project_workflow(name: str, workflow: str):
         )
 
 
-@app.get("/runs", response_class=HTMLResponse)
-async def runs_page(request: Request) -> HTMLResponse:
-    """Page listing all runs."""
-    runs = state.run_manager.get_all_runs() if state.run_manager else []
+@app.get("/sources", response_class=HTMLResponse)
+async def sources_page(request: Request) -> HTMLResponse:
+    """Page listing sources, projects, and workflows available to trigger."""
     workflows = state.config.workflows if state.config else []
     projects = state.config.projects if state.config else []
 
@@ -1274,14 +1273,28 @@ async def runs_page(request: Request) -> HTMLResponse:
                 project_workflows[project.name] = []
 
     return templates.TemplateResponse(
-        "runs.html",
+        "sources.html",
         {
             "request": request,
-            "runs": runs,
             "workflows": workflows,
             "projects": projects,
             "project_workflows": project_workflows,
             "source_workflows": state.source_workflows,
+            "source_configs": {s.name: s for s in state.config.sources} if state.config else {},
+        },
+    )
+
+
+@app.get("/runs", response_class=HTMLResponse)
+async def runs_page(request: Request) -> HTMLResponse:
+    """Page listing all runs."""
+    runs = state.run_manager.get_all_runs() if state.run_manager else []
+
+    return templates.TemplateResponse(
+        "runs.html",
+        {
+            "request": request,
+            "runs": runs,
         },
     )
 
