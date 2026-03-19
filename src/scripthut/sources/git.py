@@ -66,7 +66,7 @@ class GitSourceManager:
     def _build_ssh_command(self, deploy_key: Path | None) -> str:
         """Build the GIT_SSH_COMMAND for a deploy key."""
         # Common options to disable interactive prompts
-        common_opts = "-o BatchMode=yes -o PasswordAuthentication=no -o StrictHostKeyChecking=accept-new"
+        common_opts = "-o BatchMode=yes -o PasswordAuthentication=no -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null"
         if deploy_key is None:
             return f"ssh {common_opts}"
         key_path = deploy_key.expanduser()
