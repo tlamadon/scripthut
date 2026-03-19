@@ -36,14 +36,17 @@ backends:
 # Sources: git repos or backend paths containing .hut/workflows/*.json task lists
 # Each JSON file in the workflows directory is a task list that can be triggered as a workflow.
 sources:
-  # Git source — cloned locally, workflows discovered from .hut/workflows/
+  # Git source — repo is cloned on the backend, workflows discovered from .hut/workflows/
+  # Tasks run inside the cloned directory (like git-based workflows).
   - name: ml-jobs
     type: git
     url: git@github.com:your-org/ml-pipelines.git
     branch: main
     deploy_key: ~/.ssh/ml-jobs-deploy-key
     backend: hpc-cluster
-    # workflows_dir: .hut/workflows  # default
+    # workflows_dir: .hut/workflows    # default
+    # clone_dir: ~/scripthut-repos     # default — clones to <clone_dir>/<commit_hash>/
+    # postclone: "rm -rf large_files"  # optional — run after cloning
 
   # Path source — directory on the backend, workflows discovered via SSH
   # - name: shared-workflows

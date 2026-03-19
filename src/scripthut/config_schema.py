@@ -135,6 +135,14 @@ class GitSourceConfig(BaseModel):
         default=".hut/workflows",
         description="Directory within the repo containing workflow JSON files",
     )
+    clone_dir: str = Field(
+        default="~/scripthut-repos",
+        description="Parent directory on the backend where repos are cloned into (clone goes into <clone_dir>/<commit_hash>/)",
+    )
+    postclone: str | None = Field(
+        default=None,
+        description="Shell command to run in the clone directory after cloning",
+    )
 
     @property
     def deploy_key_resolved(self) -> Path | None:
