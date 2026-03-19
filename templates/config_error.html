@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ScriptHut - Configuration Error</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+
+<body class="bg-gray-100 min-h-screen flex items-center justify-center">
+    <div class="max-w-2xl w-full mx-4">
+        <div class="bg-white rounded-lg shadow-lg p-8">
+            <div class="flex items-center gap-3 mb-4">
+                <svg class="w-8 h-8 text-red-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                        d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
+                </svg>
+                <h1 class="text-xl font-bold text-gray-900">Configuration Error</h1>
+            </div>
+            <p class="text-sm text-gray-600 mb-4">
+                ScriptHut failed to load the configuration file. Please fix the error below and restart the server.
+            </p>
+            <pre class="bg-gray-900 text-red-300 rounded-md p-4 text-sm overflow-x-auto whitespace-pre-wrap">{{ config_error }}</pre>
+        </div>
+    </div>
+</body>
+
+</html>

@@ -64,6 +64,7 @@ class AppState:
     """Application state container."""
 
     config: ScriptHutConfig | None = None
+    config_error: str | None = None
     backends: dict[str, BackendState] = field(default_factory=dict)
     source_manager: GitSourceManager | None = None
     source_statuses: dict[str, SourceStatus] = field(default_factory=dict)
@@ -445,7 +446,14 @@ async def poll_jobs() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan manager - handles startup and shutdown."""
-    config = load_config(_config_path)
+    try:
+        config = load_config(_config_path)
+    except Exception as e:
+        logger.error(f"Failed to load configuration: {e}")
+        state.config_error = str(e)
+        yield
+        return
+
     set_config(config)
     state.config = config
 
@@ -792,6 +800,12 @@ def _apply_job_filters(job_views: list[JobView]) -> list[JobView]:
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request) -> HTMLResponse:
     """Main page with unified job list."""
+    if state.config_error:
+        return templates.TemplateResponse(
+            "config_error.html",
+            {"request": request, "config_error": state.config_error},
+        )
+
     job_views = _apply_job_filters(_collect_all_job_views())
 
     poll_interval = state.config.settings.poll_interval if state.config else 60
@@ -2347,10 +2361,15 @@ def run() -> None:
     args = parse_args()
     _config_path = args.config
 
-    config = load_config(_config_path)
-
-    host = args.host or config.settings.server_host
-    port = args.port or config.settings.server_port
+    try:
+        config = load_config(_config_path)
+        host = args.host or config.settings.server_host
+        port = args.port or config.settings.server_port
+    except Exception as e:
+        logger.warning(f"Failed to load config: {e}")
+        logger.warning("Starting server with defaults — config error will be shown on homepage")
+        host = args.host or "127.0.0.1"
+        port = args.port or 8000
 
     url = f"http://{host}:{port}"
     line1 = f"  ScriptHut v{__version__}"

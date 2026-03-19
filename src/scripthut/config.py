@@ -86,6 +86,54 @@ def find_config_file(config_path: Path | None = None) -> Path | None:
     return None
 
 
+def _friendly_validation_error(raw_config: dict, exc: ValidationError) -> str:
+    """Turn a Pydantic ValidationError into a human-readable message."""
+    # Map top-level list fields to their allowed type values
+    DISCRIMINATED_FIELDS: dict[str, dict[str, str | list[str]]] = {
+        "backends": {"discriminator": "type", "allowed": ["slurm", "pbs", "ecs"]},
+        "sources": {"discriminator": "type", "allowed": ["git", "path"]},
+    }
+
+    parts: list[str] = []
+    for error in exc.errors():
+        loc = error.get("loc", ())
+        err_type = error.get("type", "")
+
+        # Discriminator errors: e.g. loc = ('sources', 0) or ('backends', 1)
+        if (
+            err_type == "union_tag_not_found"
+            and len(loc) >= 2
+            and isinstance(loc[0], str)
+            and isinstance(loc[1], int)
+        ):
+            section = loc[0]
+            idx = loc[1]
+            info = DISCRIMINATED_FIELDS.get(section, {})
+            disc = info.get("discriminator", "type")
+            allowed = info.get("allowed", [])
+
+            # Try to get the item name from raw config
+            items = raw_config.get(section, [])
+            item_name = None
+            if isinstance(items, list) and idx < len(items) and isinstance(items[idx], dict):
+                item_name = items[idx].get("name", None)
+
+            label = f"'{item_name}'" if item_name else f"entry {idx + 1}"
+            allowed_str = ", ".join(f"'{v}'" for v in allowed)
+            parts.append(
+                f"{section}[{idx}] ({label}): missing required field '{disc}'.\n"
+                f"  Each item in '{section}' must have a '{disc}' field set to one of: {allowed_str}"
+            )
+            continue
+
+        # Generic fallback: use Pydantic's message with a cleaner location
+        loc_str = " → ".join(str(l) for l in loc) if loc else "(root)"
+        msg = error.get("msg", "Unknown error")
+        parts.append(f"{loc_str}: {msg}")
+
+    return "\n\n".join(parts)
+
+
 def load_yaml_config(config_path: Path) -> ScriptHutConfig:
     """Load and validate YAML configuration.
 
@@ -96,7 +144,7 @@ def load_yaml_config(config_path: Path) -> ScriptHutConfig:
         Validated ScriptHutConfig object.
 
     Raises:
-        ValidationError: If the YAML doesn't match the schema.
+        ConfigError: If the YAML doesn't match the schema (with friendly message).
         yaml.YAMLError: If the YAML is malformed.
     """
     logger.info(f"Loading configuration from {config_path}")
@@ -107,7 +155,15 @@ def load_yaml_config(config_path: Path) -> ScriptHutConfig:
     if raw_config is None:
         raw_config = {}
 
-    return ScriptHutConfig.model_validate(raw_config)
+    try:
+        return ScriptHutConfig.model_validate(raw_config)
+    except ValidationError as exc:
+        friendly = _friendly_validation_error(raw_config, exc)
+        raise ConfigError(friendly) from exc
+
+
+class ConfigError(Exception):
+    """User-friendly configuration error."""
 
 
 def load_legacy_config() -> ScriptHutConfig:
