@@ -20,6 +20,7 @@ class SourceWorkflow:
     source_name: str
     filename: str  # e.g. "train-model.json"
     tasks_json: str  # raw JSON content
+    title: str | None = None  # optional human-readable title from JSON
 
 
 @dataclass
@@ -34,6 +35,7 @@ class SourceStatus:
     last_commit_date: str | None = None  # ISO format datetime of HEAD commit
     error: str | None = None
     workflows: list[SourceWorkflow] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
 
 
 class GitSourceManager:
@@ -284,17 +286,20 @@ class GitSourceManager:
             return []
 
         workflows: list[SourceWorkflow] = []
+        parse_warnings: list[str] = []
         matched_files = sorted(status.path.glob(source.workflows_glob))
         if not matched_files:
             logger.debug(f"No workflow files matching '{source.workflows_glob}' in {status.path}")
             status.workflows = []
+            status.warnings = []
             return []
 
         for json_file in matched_files:
             try:
                 tasks_json = json_file.read_text()
-                # Validate it's parseable JSON
-                json.loads(tasks_json)
+                # Validate it's parseable JSON and extract optional title
+                parsed = json.loads(tasks_json)
+                title = parsed.get("title") if isinstance(parsed, dict) else None
                 stem = json_file.stem
                 workflows.append(
                     SourceWorkflow(
@@ -302,10 +307,16 @@ class GitSourceManager:
                         source_name=name,
                         filename=json_file.name,
                         tasks_json=tasks_json,
+                        title=title,
                     )
                 )
             except (json.JSONDecodeError, OSError) as e:
+                rel_path = json_file.relative_to(status.path)
+                msg = f"{rel_path}: {e}"
+                parse_warnings.append(msg)
                 logger.warning(f"Skipping invalid workflow file {json_file}: {e}")
+
+        status.warnings = parse_warnings
 
         status.workflows = workflows
         logger.info(f"Discovered {len(workflows)} workflows in source {name}")

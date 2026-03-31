@@ -219,6 +219,10 @@ class RunManager:
 
         new_tasks = [TaskDefinition.from_dict(t) for t in tasks_data]
 
+        # Resolve working_dir relative to the parent task's working_dir
+        # (same as _resolve_working_dirs does with clone_dir)
+        self._resolve_working_dirs(new_tasks, item.task.working_dir)
+
         # Resolve wildcard deps against ALL tasks in the run
         all_tasks = [ri.task for ri in run.items] + new_tasks
         all_task_ids = [t.id for t in all_tasks]

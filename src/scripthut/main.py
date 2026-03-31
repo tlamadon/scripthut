@@ -640,11 +640,12 @@ async def _discover_path_source_workflows(source: PathSourceConfig) -> list[Sour
             continue
 
         try:
-            json.loads(content_stdout)  # validate JSON
+            parsed = json.loads(content_stdout)
         except ValueError:
             logger.warning(f"Invalid JSON in {filepath}")
             continue
 
+        title = parsed.get("title") if isinstance(parsed, dict) else None
         filename = filepath.rsplit("/", 1)[-1]
         stem = filename.removesuffix(".json")
         workflows.append(
@@ -653,6 +654,7 @@ async def _discover_path_source_workflows(source: PathSourceConfig) -> list[Sour
                 source_name=source.name,
                 filename=filename,
                 tasks_json=content_stdout,
+                title=title,
             )
         )
 
@@ -1057,6 +1059,24 @@ async def list_source_workflows(name: str) -> dict[str, Any]:
     }
 
 
+async def _refresh_source_workflow(name: str, filename: str) -> SourceWorkflow | None:
+    """Sync a git source and return the freshly-read workflow file.
+
+    This ensures the local clone is up to date before reading the JSON,
+    so we never use stale cached tasks_json.
+    """
+    if state.source_manager and name in state.source_manager._sources:
+        try:
+            await state.source_manager.sync_source(name)
+            workflows = state.source_manager.discover_workflows(name)
+            state.source_workflows[name] = workflows
+        except Exception as e:
+            logger.warning(f"Failed to refresh source '{name}' before run: {e}")
+
+    workflows = state.source_workflows.get(name, [])
+    return next((w for w in workflows if w.filename == filename), None)
+
+
 @app.get("/sources/{name}/workflows/{filename}/dry-run", response_class=HTMLResponse)
 async def dry_run_source_workflow(request: Request, name: str, filename: str, backend: str = "") -> HTMLResponse:
     """Preview tasks from a source workflow."""
@@ -1072,8 +1092,7 @@ async def dry_run_source_workflow(request: Request, name: str, filename: str, ba
             {"request": request, "error": "No backend selected. Please select a backend on the Sources page."},
         )
 
-    workflows = state.source_workflows.get(name, [])
-    wf = next((w for w in workflows if w.filename == filename), None)
+    wf = await _refresh_source_workflow(name, filename)
     if wf is None:
         return templates.TemplateResponse(
             "dry_run.html",
@@ -1109,8 +1128,7 @@ async def run_source_workflow(name: str, filename: str, backend: str = ""):
             content={"error": "No backend specified"},
         )
 
-    workflows = state.source_workflows.get(name, [])
-    wf = next((w for w in workflows if w.filename == filename), None)
+    wf = await _refresh_source_workflow(name, filename)
     if wf is None:
         return JSONResponse(
             status_code=404,
@@ -1959,6 +1977,31 @@ async def get_task_detail(
                     run.id, log_dir, account=run.account, login_shell=run.login_shell,
                     env_vars=env_vars, extra_init=extra_init,
                 )
+    elif detail_type == "generated":
+        gs_path = item.task.generates_source
+        if not gs_path:
+            error = "This task does not have generates_source set"
+        else:
+            # Resolve relative paths against the task's working_dir
+            if not gs_path.startswith("/") and not gs_path.startswith("~"):
+                gs_path = f"{item.task.working_dir}/{gs_path}"
+            path = gs_path
+            backend_state = state.backends.get(run.backend_name)
+            if backend_state and backend_state.ssh_client:
+                stdout, stderr, exit_code = await backend_state.ssh_client.run_command(
+                    f"cat {gs_path}"
+                )
+                if exit_code != 0:
+                    error = f"Failed to read generates_source file: {stderr}"
+                else:
+                    # Try to pretty-print if it's valid JSON
+                    try:
+                        parsed = json.loads(stdout)
+                        content = json.dumps(parsed, indent=2)
+                    except (json.JSONDecodeError, ValueError):
+                        content = stdout
+            else:
+                error = f"Backend '{run.backend_name}' not connected"
     elif detail_type == "json":
         task_data: dict[str, Any] = {
             "id": item.task.id,
@@ -2005,6 +2048,7 @@ async def get_task_detail(
         "node": node,
         "backend_name": run.backend_name,
         "run_id": run_id,
+        "generates_source": item.task.generates_source,
     })
 
 

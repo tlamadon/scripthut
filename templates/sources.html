@@ -56,6 +56,11 @@
                     {% if src_status and src_status.error %}
                     <p class="text-sm text-red-600 mt-1">{{ src_status.error }}</p>
                     {% endif %}
+                    {% if src_status and src_status.warnings %}
+                    {% for warn in src_status.warnings %}
+                    <p class="text-sm text-amber-600 mt-1">&#9888; {{ warn }}</p>
+                    {% endfor %}
+                    {% endif %}
                 </div>
                 <div class="flex items-center gap-3">
                     {% if not src_disabled %}
@@ -80,7 +85,7 @@
                 <div class="border rounded-lg p-4 hover:shadow-md transition-shadow">
                     <div class="flex items-start justify-between">
                         <div>
-                            <h3 class="font-semibold text-gray-800">{{ wf.filename | replace('.json', '') }}</h3>
+                            <h3 class="font-semibold text-gray-800">{{ wf.title or (wf.filename | replace('.json', '')) }}</h3>
                             <div class="flex items-center gap-1 mt-1">
                                 <span class="text-sm text-gray-400">Backend:</span>
                                 <select id="backend-{{ source_name }}-{{ loop.index }}"

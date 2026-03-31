@@ -134,6 +134,11 @@
                                 class="px-4 py-2.5 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300">
                                 JSON
                             </button>
+                            <button onclick="loadDetailContent('generated')" id="dtab-generated"
+                                class="px-4 py-2.5 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300"
+                                style="display:none;">
+                                Generated
+                            </button>
                         </div>
                         <div class="flex items-center gap-2">
                             <div id="detail-tail-controls" class="flex items-center gap-1.5">
@@ -386,6 +391,12 @@
                     }
                     header.innerHTML = h;
 
+                    // Show/hide "Generated" tab based on generates_source
+                    var genTab = document.getElementById('dtab-generated');
+                    if (genTab) {
+                        genTab.style.display = data.generates_source ? '' : 'none';
+                    }
+
                     // Update attach/debug buttons
                     var attachBtn = document.getElementById('detail-attach-btn');
                     var debugBtn = document.getElementById('detail-debug-btn');
@@ -421,8 +432,11 @@
         function updateDetailTabs() {
             var activeClass = 'px-4 py-2.5 text-sm font-medium border-b-2 border-blue-500 text-blue-600';
             var inactiveClass = 'px-4 py-2.5 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300';
-            ['output', 'error', 'script', 'json'].forEach(function (t) {
-                document.getElementById('dtab-' + t).className = (t === _detailType) ? activeClass : inactiveClass;
+            ['output', 'error', 'script', 'json', 'generated'].forEach(function (t) {
+                var el = document.getElementById('dtab-' + t);
+                if (el && el.style.display !== 'none') {
+                    el.className = (t === _detailType) ? activeClass : inactiveClass;
+                }
             });
             document.getElementById('detail-tail-controls').style.display =
                 (_detailType === 'output' || _detailType === 'error') ? '' : 'none';
