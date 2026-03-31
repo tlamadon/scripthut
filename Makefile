@@ -54,8 +54,7 @@ release-minor: ## Create a new minor release (v0.4.4 -> v0.5.0)
 	@echo "$(GREEN)✓$(NC) Created tag $(NEW_TAG)"
 	@echo ""
 	@echo "$(BLUE)Step 5:$(NC) Pushing to remote..."
-	@git push origin main
-	@git push origin $(NEW_TAG)
+	@git push --atomic origin main $(NEW_TAG)
 	@echo ""
 	@echo "$(GREEN)✓ Release complete!$(NC)"
 	@echo "  Tag $(GREEN)$(NEW_TAG)$(NC) has been pushed."
@@ -92,8 +91,7 @@ release-patch: ## Create a new patch release (v0.4.4 -> v0.4.5)
 	@echo "$(GREEN)✓$(NC) Created tag $(NEW_TAG)"
 	@echo ""
 	@echo "$(BLUE)Step 5:$(NC) Pushing to remote..."
-	@git push origin main
-	@git push origin $(NEW_TAG)
+	@git push --atomic origin main $(NEW_TAG)
 	@echo ""
 	@echo "$(GREEN)✓ Release complete!$(NC)"
 	@echo "  Tag $(GREEN)$(NEW_TAG)$(NC) has been pushed."
@@ -135,8 +133,7 @@ release-major: ## Create a new major release (v0.4.4 -> v1.0.0)
 	@echo "$(GREEN)✓$(NC) Created tag $(NEW_TAG)"
 	@echo ""
 	@echo "$(BLUE)Step 5:$(NC) Pushing to remote..."
-	@git push origin main
-	@git push origin $(NEW_TAG)
+	@git push --atomic origin main $(NEW_TAG)
 	@echo ""
 	@echo "$(GREEN)✓ Release complete!$(NC)"
 	@echo "  Tag $(GREEN)$(NEW_TAG)$(NC) has been pushed."
