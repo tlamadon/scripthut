@@ -1235,7 +1235,7 @@
 </table>
 <hr />
 <h2 id="sources">Sources<a class="headerlink" href="#sources" title="Permanent link">&para;</a></h2>
-<p>Sources are git repositories or backend filesystem paths containing workflow definitions. ScriptHut discovers JSON task lists in the <code>.hut/workflows/</code> directory of each source. Each JSON file appears as a triggerable workflow on the Sources page.</p>
+<p>Sources are git repositories or backend filesystem paths containing workflow definitions. ScriptHut discovers workflow JSON files using the <code>workflows_glob</code> pattern (default: <code>.hut/workflows/*.json</code>). You can use glob wildcards like <code>**/*.hut.json</code> to match files recursively across any subdirectory. Each matched JSON file appears as a triggerable workflow on the Sources page.</p>
 <p>For <strong>git sources</strong>, the repository is cloned locally for workflow discovery, and also cloned on the backend when a workflow is triggered (tasks run inside the cloned directory, just like git-based workflows).</p>
 <p>For <strong>path sources</strong>, workflows are discovered via SSH on the backend, and tasks run with <code>working_dir</code> resolved relative to the source path.</p>
 <h3 id="git-source">Git Source<a class="headerlink" href="#git-source" title="Permanent link">&para;</a></h3>
@@ -1246,7 +1246,7 @@
 <a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="w">    </span><span class="nt">branch</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">main</span>
 <a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="w">    </span><span class="nt">deploy_key</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">~/.ssh/ml-jobs-deploy-key</span>
 <a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="w">    </span><span class="nt">backend</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">hpc-cluster</span>
-<a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a><span class="w">    </span><span class="c1"># workflows_dir: .hut/workflows    # default</span>
+<a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a><span class="w">    </span><span class="c1"># workflows_glob: &quot;**/*.hut.json&quot;  # default: .hut/workflows/*.json</span>
 <a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a><span class="w">    </span><span class="c1"># clone_dir: ~/scripthut-repos     # default</span>
 <a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a><span class="w">    </span><span class="c1"># postclone: &quot;rm -rf large_files&quot;  # optional</span>
 </code></pre></div>
@@ -1297,10 +1297,10 @@
 <td>Backend to submit discovered workflow tasks to.</td>
 </tr>
 <tr>
-<td><code>workflows_dir</code></td>
+<td><code>workflows_glob</code></td>
 <td>string</td>
-<td><code>".hut/workflows"</code></td>
-<td>Directory within the repo containing workflow JSON files.</td>
+<td><code>".hut/workflows/*.json"</code></td>
+<td>Glob pattern to find workflow JSON files (supports <code>**</code> for recursive matching).</td>
 </tr>
 <tr>
 <td><code>clone_dir</code></td>
@@ -1322,7 +1322,7 @@
 <a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">path</span>
 <a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="w">    </span><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">/shared/project-workflows</span>
 <a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="w">    </span><span class="nt">backend</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">hpc-cluster</span>
-<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="w">    </span><span class="c1"># workflows_dir: .hut/workflows  # default</span>
+<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="w">    </span><span class="c1"># workflows_glob: &quot;**/*.hut.json&quot;  # default: .hut/workflows/*.json</span>
 </code></pre></div>
 <table>
 <thead>
@@ -1359,10 +1359,10 @@
 <td>Backend where this path exists and where tasks are submitted.</td>
 </tr>
 <tr>
-<td><code>workflows_dir</code></td>
+<td><code>workflows_glob</code></td>
 <td>string</td>
-<td><code>".hut/workflows"</code></td>
-<td>Directory within the path containing workflow JSON files.</td>
+<td><code>".hut/workflows/*.json"</code></td>
+<td>Glob pattern to find workflow JSON files (supports <code>**</code> for recursive matching).</td>
 </tr>
 </tbody>
 </table>
