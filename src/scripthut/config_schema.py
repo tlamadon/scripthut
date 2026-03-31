@@ -133,9 +133,9 @@ class GitSourceConfig(BaseModel):
         description="Deprecated: backend is now selected at run time",
         exclude=True,
     )
-    workflows_dir: str = Field(
-        default=".hut/workflows",
-        description="Directory within the repo containing workflow JSON files",
+    workflows_glob: str = Field(
+        default=".hut/workflows/*.json",
+        description="Glob pattern to find workflow JSON files within the repo (e.g. '**/*.hut.json')",
     )
     clone_dir: str = Field(
         default="~/scripthut-repos",
@@ -161,9 +161,9 @@ class PathSourceConfig(BaseModel):
     backend: str = Field(
         description="Name of the backend where this path exists and where tasks are submitted",
     )
-    workflows_dir: str = Field(
-        default=".hut/workflows",
-        description="Directory within the path containing workflow JSON files",
+    workflows_glob: str = Field(
+        default=".hut/workflows/*.json",
+        description="Glob pattern to find workflow JSON files within the path (e.g. '**/*.hut.json')",
     )
 
 

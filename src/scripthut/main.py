@@ -603,35 +603,49 @@ async def _discover_path_source_workflows(source: PathSourceConfig) -> list[Sour
         logger.warning(f"Backend '{source.backend}' not connected for path source '{source.name}'")
         return []
 
-    workflows_path = f"{source.path}/{source.workflows_dir}"
+    # Use bash glob expansion on the remote to find matching workflow files
+    glob_pattern = f"{source.path}/{source.workflows_glob}"
     stdout, stderr, exit_code = await backend_state.ssh_client.run_command(
-        f"ls -1 {workflows_path}/*.json 2>/dev/null"
+        f"python3 -c \"import glob, json; print(json.dumps(sorted(glob.glob('{glob_pattern}', recursive=True))))\" 2>/dev/null"
     )
 
     if exit_code != 0 or not stdout.strip():
-        logger.debug(f"No workflow files found at {workflows_path}")
+        # Fallback: try bash globstar (works if extglob/globstar enabled)
+        stdout, stderr, exit_code = await backend_state.ssh_client.run_command(
+            f"bash -c 'shopt -s globstar nullglob; for f in {glob_pattern}; do echo \"$f\"; done'"
+        )
+
+    if exit_code != 0 or not stdout.strip():
+        logger.debug(f"No workflow files matching '{glob_pattern}'")
         return []
 
+    # Parse file list
+    try:
+        file_list = json.loads(stdout)
+    except (ValueError, TypeError):
+        file_list = [line.strip() for line in stdout.strip().splitlines() if line.strip()]
+
     workflows: list[SourceWorkflow] = []
-    for line in stdout.strip().splitlines():
-        filename = line.strip().rsplit("/", 1)[-1]
-        if not filename.endswith(".json"):
+    for filepath in file_list:
+        filepath = filepath.strip()
+        if not filepath:
             continue
 
         # Read the file content
         content_stdout, _, content_exit = await backend_state.ssh_client.run_command(
-            f"cat {workflows_path}/{filename}"
+            f"cat {filepath}"
         )
         if content_exit != 0:
-            logger.warning(f"Failed to read {workflows_path}/{filename}")
+            logger.warning(f"Failed to read {filepath}")
             continue
 
         try:
             json.loads(content_stdout)  # validate JSON
         except ValueError:
-            logger.warning(f"Invalid JSON in {workflows_path}/{filename}")
+            logger.warning(f"Invalid JSON in {filepath}")
             continue
 
+        filename = filepath.rsplit("/", 1)[-1]
         stem = filename.removesuffix(".json")
         workflows.append(
             SourceWorkflow(

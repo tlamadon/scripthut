@@ -90,7 +90,7 @@ backends:
     login_shell: false
     max_concurrent: 100
 
-# Sources: git repos or backend paths with .hut/workflows/*.json
+# Sources: git repos or backend paths with workflow JSON files (matched via workflows_glob)
 sources:
   - name: ml-jobs
     type: git
@@ -134,7 +134,7 @@ settings:
 
 #### Sources
 
-Sources are git repositories or backend filesystem paths containing workflow definitions in `.hut/workflows/*.json`. Each JSON file is a task list that can be triggered from the Sources page.
+Sources are git repositories or backend filesystem paths containing workflow definitions. ScriptHut discovers workflow JSON files using a configurable glob pattern (`workflows_glob`, default: `.hut/workflows/*.json`). Use patterns like `**/*.hut.json` to match files recursively across any subdirectory. Each matched JSON file appears as a triggerable workflow on the Sources page.
 
 **Common fields:**
 
@@ -143,7 +143,7 @@ Sources are git repositories or backend filesystem paths containing workflow def
 | `name` | Unique identifier for the source |
 | `type` | Source type: `git` or `path` |
 | `backend` | Backend to submit discovered workflow tasks to |
-| `workflows_dir` | Directory containing workflow JSON files (default: `.hut/workflows`) |
+| `workflows_glob` | Glob pattern to find workflow JSON files (default: `.hut/workflows/*.json`, supports `**` for recursive) |
 
 **Git source fields (`type: git`):**
 

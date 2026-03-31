@@ -283,14 +283,14 @@ class GitSourceManager:
             status.workflows = []
             return []
 
-        workflows_path = status.path / source.workflows_dir
-        if not workflows_path.is_dir():
-            logger.debug(f"No workflows directory at {workflows_path}")
+        workflows: list[SourceWorkflow] = []
+        matched_files = sorted(status.path.glob(source.workflows_glob))
+        if not matched_files:
+            logger.debug(f"No workflow files matching '{source.workflows_glob}' in {status.path}")
             status.workflows = []
             return []
 
-        workflows: list[SourceWorkflow] = []
-        for json_file in sorted(workflows_path.glob("*.json")):
+        for json_file in matched_files:
             try:
                 tasks_json = json_file.read_text()
                 # Validate it's parseable JSON

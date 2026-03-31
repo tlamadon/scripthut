@@ -123,7 +123,7 @@ SSH settings are shared by both Slurm and PBS backends.
 
 ## Sources
 
-Sources are git repositories or backend filesystem paths containing workflow definitions. ScriptHut discovers JSON task lists in the `.hut/workflows/` directory of each source. Each JSON file appears as a triggerable workflow on the Sources page.
+Sources are git repositories or backend filesystem paths containing workflow definitions. ScriptHut discovers workflow JSON files using the `workflows_glob` pattern (default: `.hut/workflows/*.json`). You can use glob wildcards like `**/*.hut.json` to match files recursively across any subdirectory. Each matched JSON file appears as a triggerable workflow on the Sources page.
 
 For **git sources**, the repository is cloned locally for workflow discovery, and also cloned on the backend when a workflow is triggered (tasks run inside the cloned directory, just like git-based workflows).
 
@@ -139,7 +139,7 @@ sources:
     branch: main
     deploy_key: ~/.ssh/ml-jobs-deploy-key
     backend: hpc-cluster
-    # workflows_dir: .hut/workflows    # default
+    # workflows_glob: "**/*.hut.json"  # default: .hut/workflows/*.json
     # clone_dir: ~/scripthut-repos     # default
     # postclone: "rm -rf large_files"  # optional
 ```
@@ -152,7 +152,7 @@ sources:
 | `branch` | string | `"main"` | Branch to track. |
 | `deploy_key` | path | `null` | Path to deploy key for this repository. |
 | `backend` | string | **required** | Backend to submit discovered workflow tasks to. |
-| `workflows_dir` | string | `".hut/workflows"` | Directory within the repo containing workflow JSON files. |
+| `workflows_glob` | string | `".hut/workflows/*.json"` | Glob pattern to find workflow JSON files (supports `**` for recursive matching). |
 | `clone_dir` | string | `"~/scripthut-repos"` | Parent directory on the backend. The repo is cloned into `<clone_dir>/<commit_hash>/`. |
 | `postclone` | string | `null` | Shell command to run in the clone directory after cloning. |
 
@@ -164,7 +164,7 @@ sources:
     type: path
     path: /shared/project-workflows
     backend: hpc-cluster
-    # workflows_dir: .hut/workflows  # default
+    # workflows_glob: "**/*.hut.json"  # default: .hut/workflows/*.json
 ```
 
 | Field | Type | Default | Description |
@@ -173,7 +173,7 @@ sources:
 | `type` | string | **required** | Must be `"path"`. |
 | `path` | string | **required** | Directory on the backend filesystem. |
 | `backend` | string | **required** | Backend where this path exists and where tasks are submitted. |
-| `workflows_dir` | string | `".hut/workflows"` | Directory within the path containing workflow JSON files. |
+| `workflows_glob` | string | `".hut/workflows/*.json"` | Glob pattern to find workflow JSON files (supports `**` for recursive matching). |
 
 ---
 
