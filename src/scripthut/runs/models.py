@@ -25,7 +25,7 @@ class TaskDefinition:
     name: str
     command: str
     working_dir: str = "~"
-    partition: str = "normal"
+    partition: str | None = None
     cpus: int = 1
     memory: str = "4G"
     time_limit: str = "1:00:00"
@@ -44,7 +44,7 @@ class TaskDefinition:
             name=data["name"],
             command=data["command"],
             working_dir=data.get("working_dir", "~"),
-            partition=data.get("partition", "normal"),
+            partition=data.get("partition"),
             cpus=data.get("cpus", 1),
             memory=data.get("memory", "4G"),
             time_limit=data.get("time_limit", "1:00:00"),
@@ -95,6 +95,7 @@ class TaskDefinition:
         login_shell: bool = False,
         env_vars: dict[str, str] | None = None,
         extra_init: str = "",
+        partition: str | None = None,
     ) -> str:
         """Generate sbatch script for this task."""
         output_path = self.get_output_path(run_id, log_dir)
@@ -102,6 +103,7 @@ class TaskDefinition:
 
         # Build account line if specified
         account_line = f"#SBATCH --account={account}\n" if account else ""
+        partition_line = f"#SBATCH --partition={partition}\n" if partition else ""
 
         shebang = "#!/bin/bash -l" if login_shell else "#!/bin/bash"
 
@@ -119,8 +121,7 @@ class TaskDefinition:
 
         return f"""{shebang}
 #SBATCH --job-name="{self.name}"
-#SBATCH --partition={self.partition}
-{account_line}#SBATCH --cpus-per-task={self.cpus}
+{partition_line}{account_line}#SBATCH --cpus-per-task={self.cpus}
 #SBATCH --mem={self.memory}
 #SBATCH --time={self.time_limit}
 #SBATCH --output={output_path}

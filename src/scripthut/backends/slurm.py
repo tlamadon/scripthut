@@ -381,17 +381,18 @@ class SlurmBackend(JobBackend):
         env_vars: dict[str, str] | None = None,
         extra_init: str = "",
         interactive_wait: bool = False,
+        partition: str | None = None,
     ) -> str:
         """Generate an sbatch submission script for a task."""
         output_path = task.get_output_path(run_id, log_dir)
         error_path = task.get_error_path(run_id, log_dir)
         shebang = "#!/bin/bash -l" if login_shell else "#!/bin/bash"
         account_line = f"#SBATCH --account={account}\n" if account else ""
+        partition_line = f"#SBATCH --partition={partition}\n" if partition else ""
 
         header = f"""{shebang}
 #SBATCH --job-name="{task.name}"
-#SBATCH --partition={task.partition}
-{account_line}#SBATCH --cpus-per-task={task.cpus}
+{partition_line}{account_line}#SBATCH --cpus-per-task={task.cpus}
 #SBATCH --mem={task.memory}
 #SBATCH --time={task.time_limit}
 #SBATCH --output={output_path}

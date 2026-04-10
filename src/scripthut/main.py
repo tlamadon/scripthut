@@ -696,7 +696,7 @@ class JobView:
     backend_name: str
     state: str
     source: str  # "run" or "external"
-    partition: str
+    partition: str | None
     cpus: int
     memory: str
     time_used: str
@@ -1901,16 +1901,19 @@ async def view_task_script(request: Request, run_id: str, task_id: str) -> HTMLR
             except Exception:
                 pass
         env_vars, extra_init = state.run_manager._resolve_environment(item.task, run.backend_name)
+        partition = state.run_manager._resolve_partition(item.task, run.backend_name)
         job_backend = state.run_manager.get_job_backend(run.backend_name)
         if job_backend:
             script = job_backend.generate_script(
                 item.task, run.id, log_dir, account=run.account,
                 login_shell=run.login_shell, env_vars=env_vars, extra_init=extra_init,
+                partition=partition,
             )
         else:
             script = item.task.to_sbatch_script(
                 run.id, log_dir, account=run.account, login_shell=run.login_shell,
                 env_vars=env_vars, extra_init=extra_init,
+                partition=partition,
             )
 
     return templates.TemplateResponse(
@@ -1973,16 +1976,19 @@ async def get_task_detail(
                 except Exception:
                     pass
             env_vars, extra_init = state.run_manager._resolve_environment(item.task, run.backend_name)
+            partition = state.run_manager._resolve_partition(item.task, run.backend_name)
             job_backend = state.run_manager.get_job_backend(run.backend_name)
             if job_backend:
                 content = job_backend.generate_script(
                     item.task, run.id, log_dir, account=run.account,
                     login_shell=run.login_shell, env_vars=env_vars, extra_init=extra_init,
+                    partition=partition,
                 )
             else:
                 content = item.task.to_sbatch_script(
                     run.id, log_dir, account=run.account, login_shell=run.login_shell,
                     env_vars=env_vars, extra_init=extra_init,
+                    partition=partition,
                 )
     elif detail_type == "generated":
         gs_path = item.task.generates_source
@@ -2473,6 +2479,7 @@ async def submit_interactive_task(
 
     # Build script with interactive_wait=True
     env_vars, extra_init = state.run_manager._resolve_environment(item.task, run.backend_name)
+    partition = state.run_manager._resolve_partition(item.task, run.backend_name)
     workflow = state.config.get_workflow(run.workflow_name) if state.config else None
     git_repo = workflow.git.repo if workflow and workflow.git else None
     git_branch = workflow.git.branch if workflow and workflow.git else None
@@ -2487,6 +2494,7 @@ async def submit_interactive_task(
         account=run.account, login_shell=run.login_shell,
         env_vars=merged_env, extra_init=extra_init,
         interactive_wait=True,
+        partition=partition,
     )
 
     try:

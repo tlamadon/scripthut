@@ -86,6 +86,21 @@ class RunManager:
 
         return env_vars or None, extra_init
 
+    def _resolve_partition(
+        self, task: TaskDefinition, backend_name: str,
+    ) -> str | None:
+        """Resolve partition for a task using backend config mapping.
+
+        Resolution order:
+        1. Map task.partition via backend partitions dict (or pass through).
+        2. Fall back to backend default_partition.
+        3. None → scheduler picks its own default.
+        """
+        backend = self.config.get_backend(backend_name)
+        if backend and hasattr(backend, "resolve_partition"):
+            return backend.resolve_partition(task.partition)
+        return task.partition
+
     @staticmethod
     def _scripthut_env_vars(
         workflow_name: str,
@@ -548,6 +563,7 @@ class RunManager:
         task_details = []
         for task in tasks:
             env_vars, extra_init = self._resolve_environment(task, workflow.backend)
+            partition = self._resolve_partition(task, workflow.backend)
             sh_vars = self._scripthut_env_vars(
                 workflow_name, preview_run_id, preview_created_at,
                 git_repo=git_repo, git_branch=git_branch, git_sha=commit_hash,
@@ -558,12 +574,14 @@ class RunManager:
                     task, preview_run_id, log_dir,
                     account=account, login_shell=login_shell,
                     env_vars=merged_env, extra_init=extra_init,
+                    partition=partition,
                 )
             else:
                 script = task.to_sbatch_script(
                     preview_run_id, log_dir,
                     account=account, login_shell=login_shell,
                     env_vars=merged_env, extra_init=extra_init,
+                    partition=partition,
                 )
             task_details.append({
                 "task": task,
@@ -963,6 +981,7 @@ class RunManager:
         task_details = []
         for task in tasks:
             env_vars, extra_init = self._resolve_environment(task, backend_name)
+            partition = self._resolve_partition(task, backend_name)
             sh_vars = self._scripthut_env_vars(
                 workflow_name, preview_run_id, preview_created_at,
             )
@@ -972,12 +991,14 @@ class RunManager:
                     task, preview_run_id, log_dir,
                     account=account, login_shell=login_shell,
                     env_vars=merged_env, extra_init=extra_init,
+                    partition=partition,
                 )
             else:
                 script = task.to_sbatch_script(
                     preview_run_id, log_dir,
                     account=account, login_shell=login_shell,
                     env_vars=merged_env, extra_init=extra_init,
+                    partition=partition,
                 )
             task_details.append({
                 "task": task,
@@ -1157,6 +1178,7 @@ class RunManager:
         await ssh_client.run_command(f"mkdir -p {log_dir}")
 
         env_vars, extra_init = self._resolve_environment(item.task, run.backend_name)
+        partition = self._resolve_partition(item.task, run.backend_name)
         workflow = self.config.get_workflow(run.workflow_name)
         git_repo = workflow.git.repo if workflow and workflow.git else None
         git_branch = workflow.git.branch if workflow and workflow.git else None
@@ -1169,6 +1191,7 @@ class RunManager:
             item.task, run.id, log_dir,
             account=run.account, login_shell=run.login_shell,
             env_vars=merged_env, extra_init=extra_init,
+            partition=partition,
         )
         item.submit_script = script
 

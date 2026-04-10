@@ -585,21 +585,21 @@ class PBSBackend(JobBackend):
         env_vars: dict[str, str] | None = None,
         extra_init: str = "",
         interactive_wait: bool = False,
+        partition: str | None = None,
     ) -> str:
         """Generate a PBS submission script for a task."""
         output_path = task.get_output_path(run_id, log_dir)
         error_path = task.get_error_path(run_id, log_dir)
         shebang = "#!/bin/bash -l" if login_shell else "#!/bin/bash"
 
-        queue = self._default_queue or task.partition
         pbs_mem = _convert_memory_to_pbs(task.memory)
 
         account_line = f"#PBS -A {account}\n" if account else ""
+        queue_line = f"#PBS -q {partition}\n" if partition else ""
 
         header = f"""{shebang}
 #PBS -N {task.name}
-#PBS -q {queue}
-{account_line}#PBS -l nodes=1:ppn={task.cpus},mem={pbs_mem},walltime={task.time_limit}
+{queue_line}{account_line}#PBS -l nodes=1:ppn={task.cpus},mem={pbs_mem},walltime={task.time_limit}
 #PBS -o {output_path}
 #PBS -e {error_path}
 #PBS -V

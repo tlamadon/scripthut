@@ -104,6 +104,7 @@ class JobBackend(ABC):
         env_vars: dict[str, str] | None = None,
         extra_init: str = "",
         interactive_wait: bool = False,
+        partition: str | None = None,
     ) -> str:
         """Generate a scheduler-specific submission script for a task."""
         ...

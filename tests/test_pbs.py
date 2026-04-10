@@ -123,7 +123,7 @@ class TestGenerateScript:
             id="t1", name="test-task", command="echo hello",
             partition="batch", cpus=2, memory="4G", time_limit="1:00:00",
         )
-        script = backend.generate_script(task, "run123", "/tmp/logs")
+        script = backend.generate_script(task, "run123", "/tmp/logs", partition="batch")
 
         assert "#!/bin/bash" in script
         assert "#PBS -N test-task" in script
@@ -151,12 +151,21 @@ class TestGenerateScript:
         script = backend.generate_script(task, "r1", "/logs", login_shell=True)
         assert "#!/bin/bash -l" in script
 
-    def test_default_queue_override(self):
+    def test_partition_passed_through(self):
+        """Partition is now passed as a parameter, not read from task."""
         ssh = AsyncMock()
-        backend = PBSBackend(ssh, default_queue="priority")
+        backend = PBSBackend(ssh)
         task = TaskDefinition(id="t1", name="test", command="pwd", partition="batch")
-        script = backend.generate_script(task, "r1", "/logs")
+        script = backend.generate_script(task, "r1", "/logs", partition="priority")
         assert "#PBS -q priority" in script
+        assert "#PBS -q batch" not in script
+
+    def test_no_partition_omits_queue_line(self):
+        """When partition is None, no #PBS -q line is emitted."""
+        backend = self._make_backend()
+        task = TaskDefinition(id="t1", name="test", command="pwd")
+        script = backend.generate_script(task, "r1", "/logs")
+        assert "#PBS -q" not in script
 
     def test_env_vars(self):
         backend = self._make_backend()

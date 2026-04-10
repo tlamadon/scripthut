@@ -70,6 +70,14 @@ class HPCBackendConfig(BaseModel):
         ge=1,
         description="Maximum total concurrent jobs across all runs on this backend",
     )
+    default_partition: str | None = Field(
+        default=None,
+        description="Default partition/queue for tasks that don't specify one",
+    )
+    partitions: dict[str, str] = Field(
+        default_factory=dict,
+        description="Map logical partition names to cluster-specific partition names",
+    )
     environments: list["EnvironmentConfig"] = Field(
         default_factory=list,
         description="Named environments with module loads and variables for tasks on this backend",
@@ -81,6 +89,19 @@ class HPCBackendConfig(BaseModel):
             if env.name == name:
                 return env
         return None
+
+    def resolve_partition(self, task_partition: str | None) -> str | None:
+        """Resolve a task's partition to a cluster-specific partition name.
+
+        Resolution order:
+        1. If the task specifies a partition, map it via the partitions dict
+           (or pass through as-is if no mapping exists).
+        2. If the task doesn't specify a partition, use default_partition.
+        3. If neither is set, return None (scheduler picks its own default).
+        """
+        if task_partition:
+            return self.partitions.get(task_partition, task_partition)
+        return self.default_partition
 
 
 class SlurmBackendConfig(HPCBackendConfig):

@@ -134,6 +134,9 @@ class PricingService:
         if item.started_at is None or item.finished_at is None:
             return None
 
+        if not item.task.partition:
+            return None
+
         instance_type = self._config.partitions.get(item.task.partition)
         if not instance_type:
             return None
