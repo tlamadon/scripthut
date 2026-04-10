@@ -1532,9 +1532,13 @@ async def settings_save(request: Request) -> HTMLResponse:
             message_type="error",
         )
 
-    # Write the file
+    # Write the file — normalize line endings to avoid \r\r\n accumulation
     try:
-        config_path.write_text(config_content)
+        # Browser form data arrives with \r\n; strip all \r so we write
+        # clean \n only (Python's write_text adds platform line endings unless
+        # we open with newline='').
+        clean_content = config_content.replace('\r\n', '\n').replace('\r', '\n')
+        config_path.write_text(clean_content, newline='')
     except OSError as e:
         return await settings_page(request, message=f"Failed to save: {e}", message_type="error")
 
@@ -1551,7 +1555,10 @@ async def settings_save(request: Request) -> HTMLResponse:
 def _restart_server() -> None:
     """Restart the server process by re-executing the current command."""
     import sys
-    os.execv(sys.executable, [sys.executable] + sys.argv)
+    # Use -m invocation so this works with pip console_scripts on Windows,
+    # where sys.argv[0] is a wrapper .exe that Python can't open as a script.
+    args = [sys.executable, "-m", "scripthut.main"] + sys.argv[1:]
+    os.execv(sys.executable, args)
 
 
 @app.get("/runs/list")
