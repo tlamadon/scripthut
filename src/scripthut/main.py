@@ -25,7 +25,7 @@ from scripthut.ssh.command_log import CommandLog
 from scripthut.backends.pbs import PBSBackend
 from scripthut.backends.slurm import SlurmBackend
 from scripthut.config import find_config_file, load_config, load_yaml_config, set_config
-from scripthut.config_schema import PBSBackendConfig, ScriptHutConfig, SlurmBackendConfig
+from scripthut.config_schema import HPCBackendConfig, PBSBackendConfig, ScriptHutConfig, SlurmBackendConfig
 from scripthut.models import ConnectionStatus, HPCJob, JobState
 from scripthut.runs import Run, RunManager
 from scripthut.runs.models import RunItemStatus
@@ -139,7 +139,7 @@ state = AppState()
 _config_path: Path | None = None
 
 
-async def init_backend(backend_config: SlurmBackendConfig | PBSBackendConfig) -> BackendState:
+async def init_backend(backend_config: HPCBackendConfig) -> BackendState:
     """Initialize an SSH-based backend connection (Slurm or PBS)."""
     ssh_client = SSHClient(
         host=backend_config.ssh.host,
@@ -1893,7 +1893,7 @@ async def view_task_script(request: Request, run_id: str, task_id: str) -> HTMLR
                 log_dir = log_dir.replace("~", stdout.strip(), 1)
             except Exception:
                 pass
-        env_vars, extra_init = state.run_manager._resolve_environment(item.task)
+        env_vars, extra_init = state.run_manager._resolve_environment(item.task, run.backend_name)
         job_backend = state.run_manager.get_job_backend(run.backend_name)
         if job_backend:
             script = job_backend.generate_script(
@@ -1965,7 +1965,7 @@ async def get_task_detail(
                     log_dir = log_dir.replace("~", stdout.strip(), 1)
                 except Exception:
                     pass
-            env_vars, extra_init = state.run_manager._resolve_environment(item.task)
+            env_vars, extra_init = state.run_manager._resolve_environment(item.task, run.backend_name)
             job_backend = state.run_manager.get_job_backend(run.backend_name)
             if job_backend:
                 content = job_backend.generate_script(
@@ -2198,8 +2198,8 @@ async def terminal_ws(websocket: WebSocket, backend_name: str) -> None:
 
     After accepting, expects an init JSON message:
       {"type": "init", "cols": 80, "rows": 24,
-       "session_type": "headnode" | "job",
-       "node": "...", "job_id": "..."}  (node/job_id for job sessions)
+       "session_type": "headnode" | "attach" | "job",
+       "node": "...", "job_id": "..."}  (node/job_id for attach/job sessions)
     """
     await websocket.accept()
 
@@ -2225,7 +2225,7 @@ async def terminal_ws(websocket: WebSocket, backend_name: str) -> None:
     session_label: str | None = None
 
     if session_type == "attach":
-        # Direct SSH to a compute node (no tmux)
+        # Tunnel through head node to reach compute node
         node = init_data.get("node", "")
         if not node:
             await websocket.send_json(
@@ -2233,7 +2233,6 @@ async def terminal_ws(websocket: WebSocket, backend_name: str) -> None:
             )
             await websocket.close()
             return
-        command = f"ssh -tt {node}"
         session_node = node
         session_label = f"{backend_name} - {node}"
     elif session_type == "job":
@@ -2246,7 +2245,7 @@ async def terminal_ws(websocket: WebSocket, backend_name: str) -> None:
             await websocket.close()
             return
         tmux_session = f"sh-{job_id}"
-        command = f'ssh -tt {node} "tmux attach -t {tmux_session}"'
+        command = f"tmux attach -t {tmux_session}"
         session_node = node
         session_job_id = job_id
         session_label = f"{backend_name} - Job {job_id} on {node}"
@@ -2260,20 +2259,61 @@ async def terminal_ws(websocket: WebSocket, backend_name: str) -> None:
     session.websocket = websocket
     logger.info(f"Terminal session {session.id} ({session_type}) for backend '{backend_name}'")
 
+    compute_conn: asyncssh.SSHClientConnection | None = None
     try:
-        # Re-inject the init message since handle_terminal_websocket reads it
-        # We put the data back by overriding the first receive
-        # Actually, handle_terminal_websocket expects to read init itself,
-        # so we need to send a synthetic init. Instead, let's restructure:
-        # We already consumed the init, so create the process directly here
-        # and run the relay ourselves.
         cols = init_data.get("cols", 80)
         rows = init_data.get("rows", 24)
 
-        process = await backend_state.ssh_client.create_interactive_session(
-            command=command,
-            term_size=(cols, rows),
-        )
+        if session_type in ("attach", "job"):
+            # Open a tunneled SSH connection to the compute node via the head node
+            # This is the asyncssh equivalent of SSH ProxyJump
+            tunnel_conn = backend_state.ssh_client.connection
+            if tunnel_conn is None or tunnel_conn.is_closed():
+                await websocket.send_json(
+                    {"type": "error", "message": "Head node SSH connection is down"}
+                )
+                await websocket.close()
+                return
+
+            # Look up the backend config to get SSH key/user for the tunnel
+            backend_config = state.config.get_backend(backend_name) if state.config else None
+            tunnel_kwargs: dict[str, Any] = {
+                "host": session_node,
+                "tunnel": tunnel_conn,
+                "known_hosts": None,
+            }
+            if backend_config and hasattr(backend_config, "ssh"):
+                tunnel_kwargs["username"] = backend_config.ssh.user
+                tunnel_kwargs["client_keys"] = [str(backend_config.ssh.key_path_resolved)]
+                if backend_config.ssh.cert_path_resolved:
+                    tunnel_kwargs["client_keys"] = [
+                        (str(backend_config.ssh.key_path_resolved),
+                         str(backend_config.ssh.cert_path_resolved))
+                    ]
+                tunnel_kwargs["preferred_auth"] = ["publickey"]
+                tunnel_kwargs["password"] = None
+
+            compute_conn = await asyncio.wait_for(
+                asyncssh.connect(**tunnel_kwargs),
+                timeout=15,
+            )
+            logger.info(
+                f"Tunneled SSH connection to compute node '{session_node}' "
+                f"via '{backend_name}' for terminal session {session.id}"
+            )
+
+            process = await compute_conn.create_process(
+                command,  # None for attach (login shell), tmux command for job
+                term_type="xterm-256color",
+                term_size=(cols, rows),
+                encoding=None,
+            )
+        else:
+            # Head node — use existing SSH client directly
+            process = await backend_state.ssh_client.create_interactive_session(
+                command=command,
+                term_size=(cols, rows),
+            )
 
         async def ws_to_ssh() -> None:
             try:
@@ -2322,6 +2362,8 @@ async def terminal_ws(websocket: WebSocket, backend_name: str) -> None:
         except Exception:
             pass
     finally:
+        if compute_conn is not None:
+            compute_conn.close()
         state.terminal_manager.remove_session(session.id)
         logger.info(f"Terminal session {session.id} closed")
 
@@ -2423,7 +2465,7 @@ async def submit_interactive_task(
     await ssh_client.run_command(f"mkdir -p {log_dir}")
 
     # Build script with interactive_wait=True
-    env_vars, extra_init = state.run_manager._resolve_environment(item.task)
+    env_vars, extra_init = state.run_manager._resolve_environment(item.task, run.backend_name)
     workflow = state.config.get_workflow(run.workflow_name) if state.config else None
     git_repo = workflow.git.repo if workflow and workflow.git else None
     git_branch = workflow.git.branch if workflow and workflow.git else None

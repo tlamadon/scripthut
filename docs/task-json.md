@@ -65,7 +65,7 @@ Each task object supports the following fields:
 | `deps` | no | array | `[]` | List of task IDs this task depends on. Supports wildcard patterns. See [Dependencies](#dependencies). |
 | `output_file` | no | string | auto | Custom path for stdout log. If not set, defaults to `<log_dir>/scripthut_<run_id>_<task_id>.out`. |
 | `error_file` | no | string | auto | Custom path for stderr log. If not set, defaults to `<log_dir>/scripthut_<run_id>_<task_id>.err`. |
-| `environment` | no | string | `null` | Name of a named environment from the [configuration](configuration.md#environments). |
+| `environment` | no | string | `null` | Name of a named environment from the [backend configuration](configuration.md#environments). |
 | `env_vars` | no | object | `{}` | Per-task environment variables as key-value pairs. |
 | `generates_source` | no | string | `null` | Path to a JSON file this task creates on the backend containing additional tasks. See [Dynamic Task Generation](#dynamic-task-generation). |
 
@@ -322,29 +322,33 @@ These variables are always available and cannot be overridden.
 
 ### Named Environments
 
-Tasks can reference a named environment from the [configuration](configuration.md#environments) using the `environment` field:
+Tasks can reference a named environment from the [backend configuration](configuration.md#environments) using the `environment` field:
 
 ```json
 {
   "id": "train",
   "name": "Train Model",
   "command": "julia train.jl",
-  "environment": "julia-1.10"
+  "environment": "julia"
 }
 ```
 
-If the environment `julia-1.10` is defined in `scripthut.yaml` as:
+If the backend's environment `julia` is defined in `scripthut.yaml` as:
 
 ```yaml
-environments:
-  - name: julia-1.10
-    variables:
-      JULIA_DEPOT_PATH: "/scratch/user/julia_depot"
-      JULIA_NUM_THREADS: "8"
-    extra_init: "module load julia/1.10"
+backends:
+  - name: mercury
+    type: slurm
+    ssh: { ... }
+    environments:
+      - name: julia
+        variables:
+          JULIA_DEPOT_PATH: "/scratch/user/julia_depot"
+          JULIA_NUM_THREADS: "8"
+        extra_init: "module load julia/1.10"
 ```
 
-Then the task will have `JULIA_DEPOT_PATH` and `JULIA_NUM_THREADS` exported, and `module load julia/1.10` will be run before the task command.
+Then the task will have `JULIA_DEPOT_PATH` and `JULIA_NUM_THREADS` exported, and `module load julia/1.10` will be run before the task command. The same task JSON works across different backends — each backend resolves the environment name to its own cluster-specific modules.
 
 ### Per-Task Environment Variables
 
@@ -368,7 +372,7 @@ Individual tasks can set environment variables using `env_vars`:
 When the same variable is defined at multiple levels, later sources override earlier ones:
 
 1. **ScriptHut automatic variables** (lowest priority)
-2. **Named environment variables** (from `environments` config)
+2. **Named environment variables** (from the backend's `environments` config)
 3. **Per-task `env_vars`** (highest priority)
 
 For example, if a named environment sets `DATA_DIR=/shared/data` and the task sets `"env_vars": {"DATA_DIR": "/scratch/local"}`, the task will see `DATA_DIR=/scratch/local`.
@@ -478,7 +482,7 @@ tasks = [
         "cpus" => 4,
         "memory" => "8G",
         "time_limit" => "6:00:00",
-        "environment" => "julia-1.10"
+        "environment" => "julia"
     )
     for i in 1:10
 ]

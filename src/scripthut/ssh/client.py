@@ -45,6 +45,11 @@ class SSHClient:
         """Check if the connection is active."""
         return self._connection is not None and not self._connection.is_closed()
 
+    @property
+    def connection(self) -> asyncssh.SSHClientConnection | None:
+        """Expose the underlying connection for use as a tunnel (ProxyJump)."""
+        return self._connection
+
     async def connect(self, timeout: int = 15) -> None:
         """Establish SSH connection.
 

@@ -57,23 +57,24 @@ class RunManager:
         self._run_events: dict[str, asyncio.Event] = {}
 
     def _resolve_environment(
-        self, task: TaskDefinition
+        self, task: TaskDefinition, backend_name: str,
     ) -> tuple[dict[str, str] | None, str]:
         """Resolve environment config for a task.
 
-        Merges named environment variables (from config) with per-task
+        Merges named environment variables (from backend config) with per-task
         env_vars specified by the generator.  Per-task values override
         named-environment values when keys collide.
         """
         env_vars: dict[str, str] = {}
         extra_init = ""
 
-        # Named environment from config
+        # Named environment from backend config
         if task.environment:
-            env_config = self.config.get_environment(task.environment)
+            env_config = self.config.get_environment(backend_name, task.environment)
             if env_config is None:
                 logger.warning(
                     f"Task '{task.id}' references unknown environment '{task.environment}'"
+                    f" on backend '{backend_name}'"
                 )
             else:
                 env_vars.update(env_config.variables)
@@ -546,7 +547,7 @@ class RunManager:
 
         task_details = []
         for task in tasks:
-            env_vars, extra_init = self._resolve_environment(task)
+            env_vars, extra_init = self._resolve_environment(task, workflow.backend)
             sh_vars = self._scripthut_env_vars(
                 workflow_name, preview_run_id, preview_created_at,
                 git_repo=git_repo, git_branch=git_branch, git_sha=commit_hash,
@@ -961,7 +962,7 @@ class RunManager:
 
         task_details = []
         for task in tasks:
-            env_vars, extra_init = self._resolve_environment(task)
+            env_vars, extra_init = self._resolve_environment(task, backend_name)
             sh_vars = self._scripthut_env_vars(
                 workflow_name, preview_run_id, preview_created_at,
             )
@@ -1155,7 +1156,7 @@ class RunManager:
 
         await ssh_client.run_command(f"mkdir -p {log_dir}")
 
-        env_vars, extra_init = self._resolve_environment(item.task)
+        env_vars, extra_init = self._resolve_environment(item.task, run.backend_name)
         workflow = self.config.get_workflow(run.workflow_name)
         git_repo = workflow.git.repo if workflow and workflow.git else None
         git_branch = workflow.git.branch if workflow and workflow.git else None

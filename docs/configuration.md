@@ -9,7 +9,6 @@ backends: [...]       # Remote compute backends (Slurm, PBS, ECS)
 sources: [...]        # Git repository sources
 workflows: [...]      # Task generators (SSH commands returning JSON)
 projects: [...]       # Git projects with sflow.json files
-environments: [...]   # Named environment variable sets
 pricing: {...}        # EC2-equivalent cost estimation
 settings: {...}       # Global application settings
 ```
@@ -38,6 +37,11 @@ backends:
     account: pi-faculty       # optional
     login_shell: false        # optional, default: false
     max_concurrent: 100       # optional, default: 100
+    environments:             # optional, see below
+      - name: python
+        extra_init: "module load python/3.12"
+      - name: R
+        extra_init: "module load R/4.5"
 ```
 
 | Field | Type | Default | Description |
@@ -48,6 +52,7 @@ backends:
 | `account` | string | `null` | Slurm account to charge jobs to. Passed as `--account` to `sbatch`. |
 | `login_shell` | boolean | `false` | If `true`, job scripts use `#!/bin/bash -l` to source your login profile (`.bash_profile`, etc.). |
 | `max_concurrent` | integer | `100` | Maximum total concurrent jobs across all runs on this backend. Must be >= 1. |
+| `environments` | list | `[]` | Named environments for this backend. See [Environments](#environments). |
 
 ### PBS/Torque Backend
 
@@ -63,6 +68,9 @@ backends:
     login_shell: false        # optional
     max_concurrent: 100       # optional
     queue: batch              # optional
+    environments:             # optional
+      - name: python
+        extra_init: "module load anaconda3"
 ```
 
 | Field | Type | Default | Description |
@@ -74,6 +82,7 @@ backends:
 | `login_shell` | boolean | `false` | Use login shell in job scripts. |
 | `max_concurrent` | integer | `100` | Maximum concurrent jobs. |
 | `queue` | string | `null` | Default PBS queue. Overrides the `partition` field in task definitions. |
+| `environments` | list | `[]` | Named environments for this backend. See [Environments](#environments). |
 
 ### ECS Backend
 
@@ -130,6 +139,21 @@ For **git sources**, the repository is cloned locally for workflow discovery, an
 For **path sources**, workflows are discovered via SSH on the backend, and tasks run with `working_dir` resolved relative to the source path.
 
 ### Git Source
+
+!!! tip "Try it now"
+    The [scripthut-examples](https://github.com/thomaswiemann/scripthut-examples) repo contains ready-to-run workflows in Python, R, Julia, and Apptainer. Add it as a source to get started immediately:
+
+    ```yaml
+    sources:
+      - name: scripthut-examples
+        type: git
+        url: https://github.com/thomaswiemann/scripthut-examples.git
+        branch: main
+        backend: hpc-cluster
+        workflows_glob: "**/*.json"
+    ```
+
+    Then go to **Sources → Sync → Run**. No deploy key needed (public repo).
 
 ```yaml
 sources:
@@ -263,24 +287,41 @@ projects:
 
 ## Environments
 
-Named environments define sets of environment variables and initialization commands that can be referenced by tasks. This is useful for loading modules, setting up language-specific paths, or configuring runtime parameters.
+Named environments are defined **per backend** — each backend has its own list of environments. This is because module names and paths are cluster-specific (e.g., `module load python/booth/3.12` on one cluster vs. `module load python/cpython-3.12` on another). Tasks reference environments by a generic name (e.g., `"python"`), and the correct `module load` command is resolved from whichever backend the run targets.
+
+Environments are defined inside each backend's configuration:
 
 ```yaml
-environments:
-  - name: julia-1.10
-    variables:
-      JULIA_DEPOT_PATH: "/scratch/user/julia_depot"
-      JULIA_NUM_THREADS: "8"
-    extra_init: "module load julia/1.10"
+backends:
+  - name: mercury
+    type: slurm
+    ssh: { ... }
+    environments:
+      - name: julia
+        variables:
+          JULIA_DEPOT_PATH: "/scratch/user/julia_depot"
+          JULIA_NUM_THREADS: "8"
+        extra_init: "module load julia/1.10"
 
-  - name: python-ml
-    variables:
-      CUDA_VISIBLE_DEVICES: "0,1"
-      PYTHONPATH: "/home/user/libs"
-    extra_init: |
-      module load cuda/12.0
-      source /home/user/venvs/ml/bin/activate
+      - name: python-ml
+        variables:
+          CUDA_VISIBLE_DEVICES: "0,1"
+          PYTHONPATH: "/home/user/libs"
+        extra_init: |
+          module load cuda/12.0
+          source /home/user/venvs/ml/bin/activate
+
+  - name: midway
+    type: slurm
+    ssh: { ... }
+    environments:
+      - name: julia
+        extra_init: "module load julia/1.10.2"
+      - name: python-ml
+        extra_init: "module load python/cpython-3.12"
 ```
+
+**Environment fields:**
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -295,9 +336,11 @@ Tasks reference environments by name in their JSON definition:
   "id": "train-model",
   "name": "Train Model",
   "command": "julia train.jl",
-  "environment": "julia-1.10"
+  "environment": "julia"
 }
 ```
+
+The same workflow JSON is portable across backends — only the backend's environment definitions change.
 
 See [Environment Variable Priority](task-json.md#environment-variable-priority) for how environment variables from different sources are merged.
 
@@ -378,6 +421,14 @@ backends:
     account: pi-faculty
     login_shell: true
     max_concurrent: 50
+    environments:
+      - name: julia
+        variables:
+          JULIA_DEPOT_PATH: "/scratch/researcher/julia_depot"
+          JULIA_NUM_THREADS: "8"
+        extra_init: "module load julia/1.10"
+      - name: python
+        extra_init: "module load python/3.12"
 
   - name: pbs-cluster
     type: pbs
@@ -386,39 +437,21 @@ backends:
       user: researcher
       key_path: ~/.ssh/id_rsa
     queue: batch
+    environments:
+      - name: julia
+        extra_init: "module load julia/1.10.2"
+      - name: python
+        extra_init: "module load anaconda3"
 
 sources:
-  - name: ml-jobs
+  - name: scripthut-examples
     type: git
-    url: git@github.com:my-org/ml-pipelines.git
+    url: https://github.com/thomaswiemann/scripthut-examples.git
     branch: main
-    deploy_key: ~/.ssh/ml-deploy-key
     backend: hpc-cluster
+    workflows_glob: "**/*.json"
 
-workflows:
-  - name: simple-tasks
-    backend: hpc-cluster
-    command: "python /shared/scripts/generate_tasks.py --count 10"
-    max_concurrent: 5
-    description: "Simple test tasks"
-
-  - name: ml-training
-    backend: hpc-cluster
-    git:
-      repo: git@github.com:my-org/ml-pipelines.git
-      branch: main
-      deploy_key: ~/.ssh/ml-deploy-key
-      clone_dir: ~/scripthut-repos
-    command: "python generate_tasks.py"
-    max_concurrent: 3
-    description: "ML training pipeline from git"
-
-environments:
-  - name: julia-env
-    variables:
-      JULIA_DEPOT_PATH: "/scratch/researcher/julia_depot"
-      JULIA_NUM_THREADS: "8"
-    extra_init: "module load julia/1.10"
+workflows: []
 
 pricing:
   region: us-east-1

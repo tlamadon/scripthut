@@ -14,7 +14,18 @@ backends:
       # cert_path: ~/.ssh/id_rsa-cert.pub  # Optional: for certificate-based auth
       # known_hosts: ~/.ssh/known_hosts    # Optional: enable host key checking
     account: pi-faculty  # Slurm account for job submission (e.g., phd, pi-faculty)
-    # login_shell: true  # Use #!/bin/bash -l to source .bash_profile in jobs
+    login_shell: true  # Use #!/bin/bash -l to source .bash_profile in jobs
+    environments:
+      - name: python
+        extra_init: "module load python/3.12"    # adjust to your cluster's module
+      - name: R
+        extra_init: "module load R/4.5"          # e.g., R/4.4/4.4.3 on some clusters
+      - name: julia
+        extra_init: "module load julia/1.12"
+      # - name: conda-env
+      #   extra_init: |
+      #     module load conda/23.10
+      #     conda activate my-env
 
   # Multiple backends can be defined
   # - name: secondary-cluster
@@ -34,41 +45,44 @@ backends:
   #     cluster_name: my-ecs-cluster
 
 # Sources: git repos or backend paths containing workflow JSON files
-# Files matching the workflows_glob pattern (default: .hut/workflows/*.json) are discovered as workflows.
+# Files matching the workflows_glob pattern are discovered as triggerable workflows.
+# Click "Sync" on the Sources page to pull the latest, then "Run" to submit.
 sources:
-  # Git source — repo is cloned on the backend, workflows discovered via glob pattern
-  # Tasks run inside the cloned directory (like git-based workflows).
-  - name: ml-jobs
+  # scripthut-examples — ready-to-run examples in Python, R, Julia, and Apptainer
+  # Public repo, no deploy key needed. Workflows are auto-discovered via the glob.
+  # See: https://github.com/thomaswiemann/scripthut-examples
+  - name: scripthut-examples
     type: git
-    url: git@github.com:your-org/ml-pipelines.git
+    url: https://github.com/thomaswiemann/scripthut-examples.git
     branch: main
-    deploy_key: ~/.ssh/ml-jobs-deploy-key
     backend: hpc-cluster
-    # workflows_glob: "**/*.hut.json"  # default: .hut/workflows/*.json
-    # clone_dir: ~/scripthut-repos     # default — clones to <clone_dir>/<commit_hash>/
-    # postclone: "rm -rf large_files"  # optional — run after cloning
+    workflows_glob: "**/*.json"  # discovers all JSON workflow files recursively
 
-  # Path source — directory on the backend, workflows discovered via SSH
-  # - name: shared-workflows
-  #   type: path
-  #   path: /shared/project-workflows
+  # Private repo example — uses a deploy key for authentication
+  # - name: my-pipelines
+  #   type: git
+  #   url: git@github.com:your-org/ml-pipelines.git
+  #   branch: main
+  #   deploy_key: ~/.ssh/ml-jobs-deploy-key
   #   backend: hpc-cluster
-  #   # workflows_glob: "**/*.hut.json"  # default: .hut/workflows/*.json
+  #   # workflows_glob: ".hut/workflows/*.json"  # default pattern
+  #   # clone_dir: ~/scripthut-repos               # default
+  #   # postclone: "rm -rf large_files"            # optional post-clone command
 
-# Workflows for batch job submission
-# These are SSH commands that return JSON task lists
-# Trigger them via the UI to create a queue of jobs
-workflows:
-  # Example: ML training pipeline
-  - name: ml-training
-    backend: hpc-cluster          # Which backend to submit jobs to
-    command: "python /shared/scripts/get_training_tasks.py"
-    max_concurrent: 5             # Max jobs running at once
-    description: "ML model training pipeline"
+  # Path source — point at a directory already on the cluster (no git needed).
+  # ScriptHut discovers workflow JSON files via SSH using the glob pattern.
+  # Great for repos you clone yourself, shared project directories, etc.
+  # - name: my-project
+  #   type: path
+  #   path: ~/my-project                           # any path on the backend
+  #   backend: hpc-cluster
+  #   workflows_glob: "**/*.json"                   # same glob as git sources
 
-  # Example: Git workflow — clones a repo on the backend, then runs the command
-  # inside the cloned directory to generate the task list
-  # - name: ml-training-git
+# Standalone workflows (alternative to sources)
+# These define an SSH command that returns a JSON task list.
+# Most users should prefer sources (above) for git-based workflows.
+workflows: []
+  # - name: quick-test
   #   backend: hpc-cluster
   #   git:
   #     repo: git@github.com:your-org/ml-pipelines.git

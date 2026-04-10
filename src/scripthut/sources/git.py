@@ -134,7 +134,12 @@ class GitSourceManager:
 
         # Remove existing directory if it exists
         if dest_path.exists():
-            shutil.rmtree(dest_path)
+            # On Windows, git pack files are read-only; force-remove them
+            def _rm_readonly(func, path, _exc_info):  # type: ignore[no-untyped-def]
+                import stat
+                Path(path).chmod(stat.S_IWRITE)
+                func(path)
+            shutil.rmtree(dest_path, onexc=_rm_readonly)
 
         logger.info(f"Cloning {source.url} to {dest_path}")
 

@@ -19,9 +19,21 @@ A Python web interface to start and track jobs on remote HPC systems (Slurm, PBS
 - **Cost estimation** - Estimate run costs using EC2 spot/on-demand pricing from [instances.vantage.sh](https://instances.vantage.sh/)
 - **Extensible** - Abstract backend system ready for additional schedulers
 
-## Examples
+## Quick Start with Examples
 
-See [scripthut-examples](https://github.com/thomaswiemann/scripthut-examples) for complete, self-contained workflow examples in R, Python, Julia, and Apptainer.
+The [scripthut-examples](https://github.com/thomaswiemann/scripthut-examples) repo contains ready-to-run workflows in Python, R, Julia, and Apptainer. Add it as a source in your `scripthut.yaml` to try them immediately:
+
+```yaml
+sources:
+  - name: scripthut-examples
+    type: git
+    url: https://github.com/thomaswiemann/scripthut-examples.git
+    branch: main
+    backend: hpc-cluster           # your backend name
+    workflows_glob: "**/*.json"    # discovers all workflow files
+```
+
+Then start ScriptHut, go to **Sources → Sync**, and click **Run** on any discovered workflow. The `scripthut.example.yaml` ships with this source pre-configured.
 
 ## Installation
 
@@ -99,6 +111,13 @@ sources:
     deploy_key: ~/.ssh/ml-jobs-deploy-key
     backend: hpc-cluster
 
+  # Or point at a directory already on the cluster (no git needed)
+  - name: my-project
+    type: path
+    path: ~/my-project
+    backend: hpc-cluster
+    workflows_glob: "**/*.json"
+
 settings:
   data_dir: ~/.cache/scripthut          # base for all stored data
   poll_interval: 60
@@ -125,6 +144,7 @@ settings:
 | `account` | Account to charge jobs to (Slurm `--account`, PBS `-A`) |
 | `login_shell` | Use `#!/bin/bash -l` in submission scripts (default: false) |
 | `max_concurrent` | Max concurrent jobs across all runs (default: 100) |
+| `environments` | Named environments for this backend (module loads, env vars) |
 
 **PBS-specific:**
 
@@ -383,7 +403,7 @@ The command must return JSON in one of these formats:
 | `time_limit` | No | Time limit (default: `1:00:00`) |
 | `output_file` | No | Custom stdout log path |
 | `error_file` | No | Custom stderr log path |
-| `environment` | No | Name of an environment defined in `scripthut.yaml` |
+| `environment` | No | Name of an environment defined in the backend's `environments` config |
 | `env_vars` | No | Per-task environment variables as a `{"KEY": "VALUE"}` object |
 | `generates_source` | No | Path to a JSON file this task creates on the backend; new tasks are appended to the run on completion |
 
@@ -492,27 +512,40 @@ If a generated task references a dependency that doesn't exist in the run, the e
 
 ### Environments
 
-Environments let you define reusable sets of environment variables and initialization commands in `scripthut.yaml`. Tasks reference an environment by name, and the corresponding variables and init lines are injected into the generated submission script.
+Environments let you define reusable sets of environment variables and initialization commands for each backend. Tasks reference an environment by a generic name (e.g., `"python"`), and the correct `module load` command is resolved from whichever backend the run targets.
 
 #### Defining Environments
 
-Add an `environments` section to your `scripthut.yaml`:
+Environments are defined inside each backend's configuration. This allows the same generic name to map to different modules on different clusters:
 
 ```yaml
-environments:
-  - name: julia-1.10
-    variables:
-      JULIA_DEPOT_PATH: "/scratch/user/julia_depot"
-      JULIA_NUM_THREADS: "8"
-    extra_init: "module load julia/1.10"
+backends:
+  - name: mercury
+    type: slurm
+    ssh: { ... }
+    environments:
+      - name: julia
+        variables:
+          JULIA_DEPOT_PATH: "/scratch/user/julia_depot"
+          JULIA_NUM_THREADS: "8"
+        extra_init: "module load julia/1.10"
 
-  - name: python-ml
-    variables:
-      CUDA_VISIBLE_DEVICES: "0,1"
-      OMP_NUM_THREADS: "4"
-    extra_init: |
-      module load cuda/12.0
-      source ~/envs/ml/bin/activate
+      - name: python-ml
+        variables:
+          CUDA_VISIBLE_DEVICES: "0,1"
+          OMP_NUM_THREADS: "4"
+        extra_init: |
+          module load cuda/12.0
+          source ~/envs/ml/bin/activate
+
+  - name: midway
+    type: slurm
+    ssh: { ... }
+    environments:
+      - name: julia
+        extra_init: "module load julia/1.10.2"
+      - name: python-ml
+        extra_init: "module load python/cpython-3.12"
 ```
 
 | Field | Required | Description |
@@ -527,9 +560,11 @@ Tasks declare which environment to use via the `environment` field in their JSON
 
 ```json
 [
-  {"id": "solve", "name": "Solve Model", "command": "julia solve.jl", "environment": "julia-1.10"}
+  {"id": "solve", "name": "Solve Model", "command": "julia solve.jl", "environment": "julia"}
 ]
 ```
+
+The same task JSON works across backends — only the backend's environment definitions change.
 
 This produces a submission script like:
 
@@ -548,7 +583,7 @@ cd ~/projects/jmp
 julia solve.jl
 ```
 
-If a task references an environment name that doesn't exist in the config, a warning is logged and the script is generated without any environment setup.
+If a task references an environment name that doesn't exist on the target backend, a warning is logged and the script is generated without any environment setup.
 
 #### Per-Task Environment Variables
 
@@ -589,7 +624,7 @@ For **git workflows**, these additional variables are also set:
 Environment variables are merged in the following order (later entries win):
 
 1. **ScriptHut automatic variables** (`SCRIPTHUT_*`)
-2. **Named environment** (from `environments` config)
+2. **Named environment** (from the backend's `environments` config)
 3. **Per-task `env_vars`** (from generator JSON)
 
 This means a generator can override any variable, including the automatic ones, if needed.

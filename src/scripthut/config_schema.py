@@ -52,46 +52,47 @@ class AWSConfig(BaseModel):
     cluster_name: str = Field(description="ECS cluster name")
 
 
-class SlurmBackendConfig(BaseModel):
+class HPCBackendConfig(BaseModel):
+    """Common configuration for SSH-based HPC backends (Slurm, PBS)."""
+
+    name: str = Field(description="Unique identifier for this backend")
+    ssh: SSHConfig = Field(description="SSH connection settings")
+    account: str | None = Field(
+        default=None,
+        description="Account to charge jobs to",
+    )
+    login_shell: bool = Field(
+        default=False,
+        description="Use login shell (#!/bin/bash -l) in submission scripts to source profile",
+    )
+    max_concurrent: int = Field(
+        default=100,
+        ge=1,
+        description="Maximum total concurrent jobs across all runs on this backend",
+    )
+    environments: list["EnvironmentConfig"] = Field(
+        default_factory=list,
+        description="Named environments with module loads and variables for tasks on this backend",
+    )
+
+    def get_environment(self, name: str) -> "EnvironmentConfig | None":
+        """Get an environment by name."""
+        for env in self.environments:
+            if env.name == name:
+                return env
+        return None
+
+
+class SlurmBackendConfig(HPCBackendConfig):
     """Slurm backend configuration."""
 
-    name: str = Field(description="Unique identifier for this backend")
     type: Literal["slurm"] = "slurm"
-    ssh: SSHConfig = Field(description="SSH connection settings")
-    account: str | None = Field(
-        default=None,
-        description="Slurm account to charge jobs to (e.g., phd, pi-faculty)",
-    )
-    login_shell: bool = Field(
-        default=False,
-        description="Use login shell (#!/bin/bash -l) in sbatch scripts to source profile",
-    )
-    max_concurrent: int = Field(
-        default=100,
-        ge=1,
-        description="Maximum total concurrent jobs across all runs on this backend",
-    )
 
 
-class PBSBackendConfig(BaseModel):
+class PBSBackendConfig(HPCBackendConfig):
     """PBS/Torque backend configuration."""
 
-    name: str = Field(description="Unique identifier for this backend")
     type: Literal["pbs"] = "pbs"
-    ssh: SSHConfig = Field(description="SSH connection settings")
-    account: str | None = Field(
-        default=None,
-        description="PBS account to charge jobs to (-A flag)",
-    )
-    login_shell: bool = Field(
-        default=False,
-        description="Use login shell (#!/bin/bash -l) in PBS scripts to source profile",
-    )
-    max_concurrent: int = Field(
-        default=100,
-        ge=1,
-        description="Maximum total concurrent jobs across all runs on this backend",
-    )
     queue: str | None = Field(
         default=None,
         description="Default PBS queue to submit jobs to (overrides task partition)",
@@ -327,10 +328,6 @@ class ScriptHutConfig(BaseModel):
         default_factory=list,
         description="List of git projects containing sflow.json workflow files",
     )
-    environments: list[EnvironmentConfig] = Field(
-        default_factory=list,
-        description="Named environments with key-value variables for tasks",
-    )
     pricing: PricingConfig | None = Field(
         default=None,
         description="Optional EC2-equivalent cost estimation using instances.vantage.sh",
@@ -368,11 +365,11 @@ class ScriptHutConfig(BaseModel):
                 return project
         return None
 
-    def get_environment(self, name: str) -> EnvironmentConfig | None:
-        """Get an environment by name."""
-        for env in self.environments:
-            if env.name == name:
-                return env
+    def get_environment(self, backend_name: str, env_name: str) -> "EnvironmentConfig | None":
+        """Get an environment by name from a specific backend."""
+        backend = self.get_backend(backend_name)
+        if backend and hasattr(backend, "get_environment"):
+            return backend.get_environment(env_name)  # type: ignore[union-attr]
         return None
 
     @property
