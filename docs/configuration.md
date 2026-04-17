@@ -38,6 +38,7 @@ backends:
     account: pi-faculty       # optional
     login_shell: false        # optional, default: false
     max_concurrent: 100       # optional, default: 100
+    clone_dir: ~/scripthut-repos  # optional, disk usage reported in UI
 ```
 
 | Field | Type | Default | Description |
@@ -48,6 +49,7 @@ backends:
 | `account` | string | `null` | Slurm account to charge jobs to. Passed as `--account` to `sbatch`. |
 | `login_shell` | boolean | `false` | If `true`, job scripts use `#!/bin/bash -l` to source your login profile (`.bash_profile`, etc.). |
 | `max_concurrent` | integer | `100` | Maximum total concurrent jobs across all runs on this backend. Must be >= 1. |
+| `clone_dir` | string | `~/scripthut-repos` | Path on the backend whose disk usage is shown in the backend status panel. Typically the parent directory where source repos are cloned. |
 
 ### PBS/Torque Backend
 
@@ -63,6 +65,7 @@ backends:
     login_shell: false        # optional
     max_concurrent: 100       # optional
     queue: batch              # optional
+    clone_dir: ~/scripthut-repos  # optional, disk usage reported in UI
 ```
 
 | Field | Type | Default | Description |
@@ -74,6 +77,7 @@ backends:
 | `login_shell` | boolean | `false` | Use login shell in job scripts. |
 | `max_concurrent` | integer | `100` | Maximum concurrent jobs. |
 | `queue` | string | `null` | Default PBS queue. Overrides the `partition` field in task definitions. |
+| `clone_dir` | string | `~/scripthut-repos` | Path on the backend whose disk usage is shown in the backend status panel. Typically the parent directory where source repos are cloned. |
 
 ### ECS Backend
 

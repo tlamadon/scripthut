@@ -71,6 +71,10 @@ class SlurmBackendConfig(BaseModel):
         ge=1,
         description="Maximum total concurrent jobs across all runs on this backend",
     )
+    clone_dir: str = Field(
+        default="~/scripthut-repos",
+        description="Path on the backend whose disk usage is reported in the backend status panel (typically the parent directory where source repos are cloned)",
+    )
 
 
 class PBSBackendConfig(BaseModel):
@@ -95,6 +99,10 @@ class PBSBackendConfig(BaseModel):
     queue: str | None = Field(
         default=None,
         description="Default PBS queue to submit jobs to (overrides task partition)",
+    )
+    clone_dir: str = Field(
+        default="~/scripthut-repos",
+        description="Path on the backend whose disk usage is reported in the backend status panel (typically the parent directory where source repos are cloned)",
     )
 
 

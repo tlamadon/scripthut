@@ -23,6 +23,15 @@ class JobStats:
     state: str | None = None  # Terminal state from accounting, e.g. "COMPLETED"
 
 
+@dataclass
+class DiskInfo:
+    """Disk usage for a path on the backend filesystem."""
+
+    total_bytes: int
+    avail_bytes: int
+    path: str
+
+
 class JobBackend(ABC):
     """Abstract base class for job management backends (Slurm, PBS, ECS, etc.)."""
 
@@ -92,6 +101,14 @@ class JobBackend(ABC):
             (total_cpus, idle_cpus) tuple, or None on failure.
         """
         ...
+
+    async def get_disk_info(self, path: str) -> DiskInfo | None:
+        """Fetch disk usage for a path on the backend filesystem.
+
+        Default implementation returns None; SSH-based backends override
+        this to run ``df`` over the connection.
+        """
+        return None
 
     @abstractmethod
     def generate_script(

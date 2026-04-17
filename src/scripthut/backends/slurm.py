@@ -6,8 +6,9 @@ import logging
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
-from scripthut.backends.base import JobBackend, JobStats
+from scripthut.backends.base import DiskInfo, JobBackend, JobStats
 from scripthut.backends.utils import (
+    fetch_disk_info,
     format_bytes,
     generate_script_body,
     parse_duration_hms,
@@ -345,6 +346,10 @@ class SlurmBackend(JobBackend):
 
     # Backward-compat alias
     get_cluster_cpus = get_cluster_info
+
+    async def get_disk_info(self, path: str) -> DiskInfo | None:
+        """Fetch disk usage for ``path`` on the backend via ``df -Pk``."""
+        return await fetch_disk_info(self._ssh, path)
 
     async def is_available(self) -> bool:
         """Check if Slurm is available by running squeue --version."""

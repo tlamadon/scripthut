@@ -1,6 +1,16 @@
 """Shared utilities for HPC scheduler backends."""
 
+from __future__ import annotations
+
+import logging
 import re
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from scripthut.backends.base import DiskInfo
+    from scripthut.ssh.client import SSHClient
+
+logger = logging.getLogger(__name__)
 
 
 def parse_duration_hms(time_str: str) -> float:
@@ -57,6 +67,54 @@ def format_bytes(byte_val: int) -> str:
 def format_rss(rss_str: str) -> str:
     """Convert RSS string (e.g. '4556K', '1024M') to human-readable form."""
     return format_bytes(parse_rss_to_bytes(rss_str))
+
+
+def parse_df_output(stdout: str) -> tuple[int, int] | None:
+    """Parse ``df -Pk <path>`` output. Returns ``(total_bytes, avail_bytes)`` or None.
+
+    POSIX ``df -P`` format is:
+        Filesystem    1024-blocks      Used  Available  Capacity  Mounted on
+        /dev/sda1       123456789  12345678  111111111       11%  /home
+
+    The data line may wrap if the Filesystem field is long, so we read the
+    last non-empty line and pick the 1024-block and Available columns.
+    """
+    lines = [line for line in stdout.splitlines() if line.strip()]
+    if len(lines) < 2:
+        return None
+    parts = lines[-1].split()
+    if len(parts) < 4:
+        return None
+    try:
+        total_kb = int(parts[-5])
+        avail_kb = int(parts[-3])
+    except (ValueError, IndexError):
+        return None
+    return total_kb * 1024, avail_kb * 1024
+
+
+async def fetch_disk_info(ssh: SSHClient, path: str) -> DiskInfo | None:
+    """Run ``df -Pk <path>`` over SSH and return a :class:`DiskInfo`.
+
+    Returns None on SSH error, non-zero exit, or unparseable output.
+    """
+    from scripthut.backends.base import DiskInfo
+
+    cmd = f"df -Pk {path}"
+    try:
+        stdout, stderr, exit_code = await ssh.run_command(cmd, timeout=15)
+    except Exception as e:
+        logger.warning(f"df failed on '{path}': {e}")
+        return None
+    if exit_code != 0:
+        logger.warning(f"df failed on '{path}' (exit {exit_code}): {stderr.strip()}")
+        return None
+    parsed = parse_df_output(stdout)
+    if parsed is None:
+        logger.warning(f"Could not parse df output for '{path}': {stdout!r}")
+        return None
+    total, avail = parsed
+    return DiskInfo(total_bytes=total, avail_bytes=avail, path=path)
 
 
 def generate_script_body(

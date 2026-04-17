@@ -33,6 +33,13 @@
             {% else %}
             <span class="text-xs text-gray-500">{{ backend_job_counts.get(name, 0) }} jobs</span>
             {% endif %}
+            {% if backend.status.disk_avail_bytes is not none and backend.status.disk_total_bytes %}
+            {% set disk_used_pct = ((backend.status.disk_total_bytes - backend.status.disk_avail_bytes) * 100 / backend.status.disk_total_bytes) | round(0, 'floor') | int %}
+            <span class="text-xs {% if disk_used_pct >= 90 %}text-red-600{% elif disk_used_pct >= 75 %}text-yellow-600{% else %}text-gray-600{% endif %}"
+                title="Disk usage at {{ backend.status.disk_clone_dir }}">
+                <span class="font-medium">{{ backend.status.disk_avail_bytes | disk_bytes }}</span> free ({{ disk_used_pct }}% used)
+            </span>
+            {% endif %}
             {% if backend.status.last_poll_duration_ms is not none %}
             <span
                 class="text-xs font-mono {% if backend.status.last_poll_duration_ms > 5000 %}text-red-500{% elif backend.status.last_poll_duration_ms > 2000 %}text-yellow-600{% else %}text-gray-400{% endif %}"

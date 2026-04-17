@@ -58,6 +58,7 @@ class BackendState:
     )
     enabled: bool = True  # Whether this backend is active for polling
     command_log: CommandLog = field(default_factory=CommandLog)
+    clone_dir: str = "~/scripthut-repos"  # Path reported in disk-usage status line
     _reconnect_after: float = 0.0  # time.monotonic() before which reconnect is skipped
     _reconnect_delay: float = 0.0  # current backoff delay in seconds
 
@@ -165,6 +166,7 @@ async def init_backend(backend_config: SlurmBackendConfig | PBSBackendConfig) ->
         ssh_client=ssh_client,
         backend=backend,
         status=ConnectionStatus(connected=False, host=backend_config.ssh.host),
+        clone_dir=backend_config.clone_dir,
     )
     ssh_client.on_command = backend_state.command_log.append
 
@@ -233,6 +235,7 @@ async def poll_backend(backend_state: BackendState, filter_user: str | None = No
     try:
         jobs = await backend_state.backend.get_jobs(user=filter_user)
         cluster_cpus = await backend_state.backend.get_cluster_info()
+        disk_info = await backend_state.backend.get_disk_info(backend_state.clone_dir)
         duration_ms = int((time.perf_counter() - start_time) * 1000)
         backend_state.jobs = jobs
 
@@ -253,6 +256,9 @@ async def poll_backend(backend_state: BackendState, filter_user: str | None = No
             cpus_total=cluster_cpus[0] if cluster_cpus else None,
             cpus_idle=cluster_cpus[1] if cluster_cpus else None,
             cpus_user=cpus_user,
+            disk_clone_dir=backend_state.clone_dir,
+            disk_total_bytes=disk_info.total_bytes if disk_info else None,
+            disk_avail_bytes=disk_info.avail_bytes if disk_info else None,
         )
         logger.debug(f"Polled {len(jobs)} jobs from '{backend_state.name}' in {duration_ms}ms")
 
@@ -674,6 +680,22 @@ app = FastAPI(
 templates_path = Path(__file__).parent.parent.parent / "templates"
 templates = Jinja2Templates(directory=str(templates_path))
 templates.env.globals["scripthut_version"] = __version__
+
+
+def _format_disk_bytes(byte_val: int | None) -> str:
+    """Render a byte count as a compact disk size (e.g. '45G', '1.2T')."""
+    if byte_val is None or byte_val <= 0:
+        return ""
+    if byte_val >= 1024**4:
+        return f"{byte_val / 1024**4:.1f}T"
+    if byte_val >= 1024**3:
+        return f"{byte_val / 1024**3:.0f}G"
+    if byte_val >= 1024**2:
+        return f"{byte_val / 1024**2:.0f}M"
+    return f"{byte_val / 1024:.0f}K"
+
+
+templates.env.filters["disk_bytes"] = _format_disk_bytes
 
 
 def _backend_job_counts() -> dict[str, int]:

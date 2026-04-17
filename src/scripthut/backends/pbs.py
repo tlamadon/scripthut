@@ -8,8 +8,9 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
-from scripthut.backends.base import JobBackend, JobStats
+from scripthut.backends.base import DiskInfo, JobBackend, JobStats
 from scripthut.backends.utils import (
+    fetch_disk_info,
     format_bytes,
     generate_script_body,
     parse_duration_hms,
@@ -559,6 +560,10 @@ class PBSBackend(JobBackend):
         if total_cpus == 0:
             return None
         return total_cpus, free_cpus
+
+    async def get_disk_info(self, path: str) -> DiskInfo | None:
+        """Fetch disk usage for ``path`` on the backend via ``df -Pk``."""
+        return await fetch_disk_info(self._ssh, path)
 
     async def submit_job(self, script: str) -> str:
         """Submit a job script via qsub. Returns the PBS job ID."""

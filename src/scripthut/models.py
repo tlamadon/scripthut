@@ -105,6 +105,9 @@ class ConnectionStatus:
     cpus_total: int | None = None  # Total CPUs on the cluster
     cpus_idle: int | None = None  # Idle (free) CPUs on the cluster
     cpus_user: int | None = None  # CPUs used by the filtered user
+    disk_clone_dir: str | None = None  # Path whose disk usage is reported
+    disk_total_bytes: int | None = None
+    disk_avail_bytes: int | None = None
 
 
 # Backward-compat alias

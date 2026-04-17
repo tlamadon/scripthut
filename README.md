@@ -125,6 +125,7 @@ settings:
 | `account` | Account to charge jobs to (Slurm `--account`, PBS `-A`) |
 | `login_shell` | Use `#!/bin/bash -l` in submission scripts (default: false) |
 | `max_concurrent` | Max concurrent jobs across all runs (default: 100) |
+| `clone_dir` | Path on the backend whose disk usage is shown in the UI (default: `~/scripthut-repos`) |
 
 **PBS-specific:**
 
