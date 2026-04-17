@@ -1290,6 +1290,13 @@
 <td>Wall-time limit in <code>HH:MM:SS</code> format.</td>
 </tr>
 <tr>
+<td><code>gres</code></td>
+<td>no</td>
+<td>string</td>
+<td><code>null</code></td>
+<td>Slurm-style generic resource request (e.g., <code>"gpu:2"</code>, <code>"gpu:v100:1"</code>). Passed to <code>--gres</code> on Slurm; on PBS the GPU count is translated to <code>:gpus=N</code> on the node spec. Non-GPU gres is ignored on PBS.</td>
+</tr>
+<tr>
 <td><code>deps</code></td>
 <td>no</td>
 <td>array</td>
