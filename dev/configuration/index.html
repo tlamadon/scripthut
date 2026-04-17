@@ -986,6 +986,7 @@
 <a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="w">    </span><span class="nt">account</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">pi-faculty</span><span class="w">       </span><span class="c1"># optional</span>
 <a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a><span class="w">    </span><span class="nt">login_shell</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">false</span><span class="w">        </span><span class="c1"># optional, default: false</span>
 <a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a><span class="w">    </span><span class="nt">max_concurrent</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">100</span><span class="w">       </span><span class="c1"># optional, default: 100</span>
+<a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a><span class="w">    </span><span class="nt">clone_dir</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">~/scripthut-repos</span><span class="w">  </span><span class="c1"># optional, disk usage reported in UI</span>
 </code></pre></div>
 <table>
 <thead>
@@ -1033,6 +1034,12 @@
 <td><code>100</code></td>
 <td>Maximum total concurrent jobs across all runs on this backend. Must be &gt;= 1.</td>
 </tr>
+<tr>
+<td><code>clone_dir</code></td>
+<td>string</td>
+<td><code>~/scripthut-repos</code></td>
+<td>Path on the backend whose disk usage is shown in the backend status panel. Typically the parent directory where source repos are cloned.</td>
+</tr>
 </tbody>
 </table>
 <h3 id="pbstorque-backend">PBS/Torque Backend<a class="headerlink" href="#pbstorque-backend" title="Permanent link">&para;</a></h3>
@@ -1047,6 +1054,7 @@
 <a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="w">    </span><span class="nt">login_shell</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">false</span><span class="w">        </span><span class="c1"># optional</span>
 <a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="w">    </span><span class="nt">max_concurrent</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">100</span><span class="w">       </span><span class="c1"># optional</span>
 <a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a><span class="w">    </span><span class="nt">queue</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">batch</span><span class="w">              </span><span class="c1"># optional</span>
+<a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a><span class="w">    </span><span class="nt">clone_dir</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">~/scripthut-repos</span><span class="w">  </span><span class="c1"># optional, disk usage reported in UI</span>
 </code></pre></div>
 <table>
 <thead>
@@ -1099,6 +1107,12 @@
 <td>string</td>
 <td><code>null</code></td>
 <td>Default PBS queue. Overrides the <code>partition</code> field in task definitions.</td>
+</tr>
+<tr>
+<td><code>clone_dir</code></td>
+<td>string</td>
+<td><code>~/scripthut-repos</code></td>
+<td>Path on the backend whose disk usage is shown in the backend status panel. Typically the parent directory where source repos are cloned.</td>
 </tr>
 </tbody>
 </table>
