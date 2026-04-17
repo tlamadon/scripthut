@@ -392,6 +392,7 @@ class SlurmBackend(JobBackend):
         error_path = task.get_error_path(run_id, log_dir)
         shebang = "#!/bin/bash -l" if login_shell else "#!/bin/bash"
         account_line = f"#SBATCH --account={account}\n" if account else ""
+        gres_line = f"#SBATCH --gres={task.gres}\n" if task.gres else ""
 
         header = f"""{shebang}
 #SBATCH --job-name="{task.name}"
@@ -399,7 +400,7 @@ class SlurmBackend(JobBackend):
 {account_line}#SBATCH --cpus-per-task={task.cpus}
 #SBATCH --mem={task.memory}
 #SBATCH --time={task.time_limit}
-#SBATCH --output={output_path}
+{gres_line}#SBATCH --output={output_path}
 #SBATCH --error={error_path}
 """
         body = generate_script_body(

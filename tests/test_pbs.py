@@ -8,6 +8,7 @@ from scripthut.backends.pbs import (
     PBS_TERMINAL_STATES,
     PBSBackend,
     _convert_memory_to_pbs,
+    _gres_to_pbs_gpus,
     _strip_server_suffix,
     parse_pbs_datetime,
     parse_qstat_line,
@@ -173,6 +174,56 @@ class TestGenerateScript:
             task, "r1", "/logs", extra_init="module load python"
         )
         assert "module load python" in script
+
+    def test_gres_gpu_count(self):
+        backend = self._make_backend()
+        task = TaskDefinition(
+            id="t1", name="test", command="pwd", cpus=2, gres="gpu:2",
+        )
+        script = backend.generate_script(task, "r1", "/logs")
+        assert "nodes=1:ppn=2:gpus=2,mem=" in script
+
+    def test_gres_gpu_typed(self):
+        backend = self._make_backend()
+        task = TaskDefinition(
+            id="t1", name="test", command="pwd", cpus=4, gres="gpu:v100:3",
+        )
+        script = backend.generate_script(task, "r1", "/logs")
+        assert "nodes=1:ppn=4:gpus=3,mem=" in script
+
+    def test_gres_bare_gpu(self):
+        backend = self._make_backend()
+        task = TaskDefinition(
+            id="t1", name="test", command="pwd", cpus=1, gres="gpu",
+        )
+        script = backend.generate_script(task, "r1", "/logs")
+        assert "nodes=1:ppn=1:gpus=1,mem=" in script
+
+    def test_gres_none(self):
+        backend = self._make_backend()
+        task = TaskDefinition(id="t1", name="test", command="pwd", cpus=2)
+        script = backend.generate_script(task, "r1", "/logs")
+        assert ":gpus=" not in script
+
+
+class TestGresParsing:
+    def test_gpu_count(self):
+        assert _gres_to_pbs_gpus("gpu:4") == 4
+
+    def test_gpu_typed(self):
+        assert _gres_to_pbs_gpus("gpu:a100:2") == 2
+
+    def test_bare_gpu(self):
+        assert _gres_to_pbs_gpus("gpu") == 1
+
+    def test_non_gpu_returns_none(self):
+        assert _gres_to_pbs_gpus("mps:100") is None
+
+    def test_empty_returns_none(self):
+        assert _gres_to_pbs_gpus("") is None
+
+    def test_unparseable_count_returns_none(self):
+        assert _gres_to_pbs_gpus("gpu:v100:many") is None
 
 
 # -- Submit / Cancel --

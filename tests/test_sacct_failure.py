@@ -241,3 +241,27 @@ class TestSacctParsesState:
 
         assert stats["800"].state == "OUT_OF_MEMORY"
 
+
+class TestSlurmGenerateScriptGres:
+    def _backend(self) -> SlurmBackend:
+        return SlurmBackend(AsyncMock())
+
+    def test_gres_emitted(self):
+        task = TaskDefinition(
+            id="t1", name="test", command="pwd", gres="gpu:2",
+        )
+        script = self._backend().generate_script(task, "r1", "/logs")
+        assert "#SBATCH --gres=gpu:2" in script
+
+    def test_gres_typed_emitted(self):
+        task = TaskDefinition(
+            id="t1", name="test", command="pwd", gres="gpu:v100:1",
+        )
+        script = self._backend().generate_script(task, "r1", "/logs")
+        assert "#SBATCH --gres=gpu:v100:1" in script
+
+    def test_gres_absent_when_unset(self):
+        task = TaskDefinition(id="t1", name="test", command="pwd")
+        script = self._backend().generate_script(task, "r1", "/logs")
+        assert "--gres" not in script
+

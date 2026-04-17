@@ -35,6 +35,7 @@ class TaskDefinition:
     error_file: str | None = None  # Custom stderr log path
     environment: str | None = None  # Name of the environment to use (from config)
     env_vars: dict[str, str] = field(default_factory=dict)  # Per-task environment variables
+    gres: str | None = None  # Slurm-style generic resource spec, e.g. "gpu:2" or "gpu:v100:1"
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "TaskDefinition":
@@ -54,6 +55,7 @@ class TaskDefinition:
             error_file=data.get("error_file"),
             environment=data.get("environment"),
             env_vars=data.get("env_vars", {}),
+            gres=data.get("gres"),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -73,6 +75,7 @@ class TaskDefinition:
             "error_file": self.error_file,
             "environment": self.environment,
             "env_vars": self.env_vars,
+            "gres": self.gres,
         }
 
     def get_output_path(self, run_id: str, log_dir: str) -> str:
@@ -117,13 +120,15 @@ class TaskDefinition:
         if extra_init:
             extra_init_lines = extra_init + "\n\n"
 
+        gres_line = f"#SBATCH --gres={self.gres}\n" if self.gres else ""
+
         return f"""{shebang}
 #SBATCH --job-name="{self.name}"
 #SBATCH --partition={self.partition}
 {account_line}#SBATCH --cpus-per-task={self.cpus}
 #SBATCH --mem={self.memory}
 #SBATCH --time={self.time_limit}
-#SBATCH --output={output_path}
+{gres_line}#SBATCH --output={output_path}
 #SBATCH --error={error_path}
 
 echo "=== ScriptHut Task: {self.name} ==="

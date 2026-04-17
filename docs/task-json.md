@@ -62,6 +62,7 @@ Each task object supports the following fields:
 | `cpus` | no | integer | `1` | Number of CPUs per task. |
 | `memory` | no | string | `"4G"` | Memory allocation. Use Slurm format (e.g., `"4G"`, `"500M"`, `"16G"`). Automatically converted to PBS format when needed. |
 | `time_limit` | no | string | `"1:00:00"` | Wall-time limit in `HH:MM:SS` format. |
+| `gres` | no | string | `null` | Slurm-style generic resource request (e.g., `"gpu:2"`, `"gpu:v100:1"`). Passed to `--gres` on Slurm; on PBS the GPU count is translated to `:gpus=N` on the node spec. Non-GPU gres is ignored on PBS. |
 | `deps` | no | array | `[]` | List of task IDs this task depends on. Supports wildcard patterns. See [Dependencies](#dependencies). |
 | `output_file` | no | string | auto | Custom path for stdout log. If not set, defaults to `<log_dir>/scripthut_<run_id>_<task_id>.out`. |
 | `error_file` | no | string | auto | Custom path for stderr log. If not set, defaults to `<log_dir>/scripthut_<run_id>_<task_id>.err`. |

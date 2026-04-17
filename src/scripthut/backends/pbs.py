@@ -58,6 +58,32 @@ _PBS_STATE_MAP: dict[str, JobState] = {
 }
 
 
+def _gres_to_pbs_gpus(gres: str) -> int | None:
+    """Translate a Slurm-style gres spec to a PBS GPU count.
+
+    Accepts forms like ``gpu:2``, ``gpu:v100:1``, or bare ``gpu`` (count 1).
+    Returns the integer count if the resource is ``gpu``, else None (and logs
+    a warning for non-GPU gres, which has no portable PBS equivalent).
+    """
+    spec = gres.strip()
+    if not spec:
+        return None
+    parts = spec.split(":")
+    if parts[0].lower() != "gpu":
+        logger.warning(
+            f"PBS backend only maps GPU gres; ignoring non-GPU gres '{gres}'"
+        )
+        return None
+    last = parts[-1]
+    if last.lower() == "gpu":
+        return 1
+    try:
+        return int(last)
+    except ValueError:
+        logger.warning(f"Could not parse GPU count from gres '{gres}'")
+        return None
+
+
 def _convert_memory_to_pbs(mem_str: str) -> str:
     """Convert memory string from Slurm format to PBS format.
 
@@ -601,10 +627,16 @@ class PBSBackend(JobBackend):
 
         account_line = f"#PBS -A {account}\n" if account else ""
 
+        gpu_suffix = ""
+        if task.gres:
+            gpus = _gres_to_pbs_gpus(task.gres)
+            if gpus is not None:
+                gpu_suffix = f":gpus={gpus}"
+
         header = f"""{shebang}
 #PBS -N {task.name}
 #PBS -q {queue}
-{account_line}#PBS -l nodes=1:ppn={task.cpus},mem={pbs_mem},walltime={task.time_limit}
+{account_line}#PBS -l nodes=1:ppn={task.cpus}{gpu_suffix},mem={pbs_mem},walltime={task.time_limit}
 #PBS -o {output_path}
 #PBS -e {error_path}
 #PBS -V
