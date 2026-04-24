@@ -1,6 +1,6 @@
 # Task JSON Format
 
-Workflows in ScriptHut work by executing a command on the remote backend via SSH. That command must print a JSON document to **stdout** describing the tasks to submit. This page covers the expected JSON structure, all available task fields, dependencies, dynamic task generation, and environment variables.
+Workflows in ScriptHut work by executing a command that prints a JSON document to **stdout** describing the tasks to submit. For Slurm and PBS backends, the command runs on the cluster's login node via SSH. For AWS Batch backends (which have no login node), the command runs locally on the scripthut host instead — plan the command path accordingly (e.g. `python /app/generate_tasks.py` inside a Docker deployment). This page covers the expected JSON structure, all available task fields, dependencies, dynamic task generation, and environment variables.
 
 ---
 
@@ -62,10 +62,11 @@ Each task object supports the following fields:
 | `cpus` | no | integer | `1` | Number of CPUs per task. |
 | `memory` | no | string | `"4G"` | Memory allocation. Use Slurm format (e.g., `"4G"`, `"500M"`, `"16G"`). Automatically converted to PBS format when needed. |
 | `time_limit` | no | string | `"1:00:00"` | Wall-time limit in `HH:MM:SS` format. |
-| `gres` | no | string | `null` | Slurm-style generic resource request (e.g., `"gpu:2"`, `"gpu:v100:1"`). Passed to `--gres` on Slurm; on PBS the GPU count is translated to `:gpus=N` on the node spec. Non-GPU gres is ignored on PBS. |
+| `gres` | no | string | `null` | Slurm-style generic resource request (e.g., `"gpu:2"`, `"gpu:v100:1"`). Passed to `--gres` on Slurm; on PBS the GPU count is translated to `:gpus=N` on the node spec. On AWS Batch the GPU count is added as a `GPU` resource requirement. Non-GPU `gres` is ignored outside Slurm. |
+| `image` | no | string | `null` | *(AWS Batch only)* Container image URI for this task. Overrides the backend's `default_image` when scripthut auto-registers a job definition. Ignored when the backend has `job_definition` set (Batch locks the image to the registered definition; scripthut logs a warning on mismatch). Ignored by Slurm and PBS. |
 | `deps` | no | array | `[]` | List of task IDs this task depends on. Supports wildcard patterns. See [Dependencies](#dependencies). |
-| `output_file` | no | string | auto | Custom path for stdout log. If not set, defaults to `<log_dir>/scripthut_<run_id>_<task_id>.out`. |
-| `error_file` | no | string | auto | Custom path for stderr log. If not set, defaults to `<log_dir>/scripthut_<run_id>_<task_id>.err`. |
+| `output_file` | no | string | auto | Custom path for stdout log (Slurm/PBS only). If not set, defaults to `<log_dir>/scripthut_<run_id>_<task_id>.out`. Ignored on AWS Batch — logs are routed to CloudWatch. |
+| `error_file` | no | string | auto | Custom path for stderr log (Slurm/PBS only). If not set, defaults to `<log_dir>/scripthut_<run_id>_<task_id>.err`. Ignored on AWS Batch — stderr is merged into the CloudWatch stream. |
 | `environment` | no | string | `null` | Name of a named environment from the [configuration](configuration.md#environments). |
 | `env_vars` | no | object | `{}` | Per-task environment variables as key-value pairs. |
 | `generates_source` | no | string | `null` | Path to a JSON file this task creates on the backend containing additional tasks. See [Dynamic Task Generation](#dynamic-task-generation). |

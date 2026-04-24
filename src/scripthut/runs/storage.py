@@ -99,6 +99,8 @@ class RunStorageManager:
             "account": run.account,
             "login_shell": run.login_shell,
             "commit_hash": run.commit_hash,
+            "git_repo": run.git_repo,
+            "git_branch": run.git_branch,
             "items": [item.to_dict() for item in run.items],
         }
 
@@ -134,6 +136,8 @@ class RunStorageManager:
                 account=data.get("account"),
                 login_shell=data.get("login_shell", False),
                 commit_hash=data.get("commit_hash"),
+                git_repo=data.get("git_repo"),
+                git_branch=data.get("git_branch"),
             )
         except Exception as e:
             logger.error(f"Failed to load run from {run_dir}: {e}")

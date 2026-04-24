@@ -34,6 +34,95 @@ backends:
   #     region: us-east-1
   #     cluster_name: my-ecs-cluster
 
+  # AWS Batch backend example
+  # Requires: pip install 'scripthut[batch]' (installs boto3)
+  # AWS credentials come from the standard AWS credential chain.
+  #
+  # Option 1a: pre-registered JD, locked mode (simplest).
+  # Scripthut skips RegisterJobDefinition — avoids the cross-account
+  # iam:PassRole error. The container image is locked to whatever the JD
+  # was registered with; per-task `image:` values are ignored with a warning.
+  # - name: aws-batch
+  #   type: batch
+  #   aws:
+  #     profile: my-aws-profile                    # optional; omit to use default chain
+  #     region: us-east-1
+  #     job_queue: my-batch-queue                  # default queue; task.partition overrides
+  #   job_definition: simpleJobDef-b760b37         # existing JD name, name:revision, or ARN
+  #   job_definition_mode: locked                   # default — image locked to the JD
+  #   retry_attempts: 1                             # Batch retryStrategy.attempts (1-10)
+  #   log_group: /aws/batch/job                    # CloudWatch log group (default)
+  #   max_concurrent: 50
+  #
+  # Option 1b: pre-registered JD, revisions mode (per-image).
+  # Scripthut uses the configured JD as a template. When a task needs a
+  # different image, scripthut clones the template's containerProperties
+  # (roles, log config, retry, tags preserved), swaps in the new image,
+  # and registers a new revision via RegisterJobDefinition. Cached per image.
+  # Requires batch:RegisterJobDefinition and batch:DescribeJobDefinitions.
+  # - name: aws-batch
+  #   type: batch
+  #   aws:
+  #     region: us-east-1
+  #     job_queue: my-batch-queue
+  #   job_definition: simpleJobDef-b760b37         # template
+  #   job_definition_mode: revisions               # register new revisions per image
+  #   retry_attempts: 1
+  #   max_concurrent: 50
+  #
+  # Option 2: let scripthut auto-register a job definition per image.
+  # The calling principal must be able to iam:PassRole on job/exec roles
+  # in the SAME AWS account as the credentials.
+  # - name: aws-batch
+  #   type: batch
+  #   aws:
+  #     region: us-east-1
+  #     job_queue: my-batch-queue
+  #   default_image: ghcr.io/my-org/workflow:latest
+  #   job_role_arn: arn:aws:iam::123456789012:role/BatchJobRole       # optional
+  #   execution_role_arn: arn:aws:iam::123456789012:role/BatchExec    # optional
+  #   retry_attempts: 1
+  #   log_group: /aws/batch/job
+  #   max_concurrent: 50
+  #
+  # AWS EC2-direct backend example.
+  # Launches one EC2 instance per task; scripthut connects via SSH tunnelled
+  # through SSM Session Manager (no inbound port 22, no EC2 key pair needed).
+  # Requires: pip install 'scripthut[batch]' and `session-manager-plugin` on PATH.
+  # - name: aws-ec2
+  #   type: ec2
+  #   aws:
+  #     profile: scripthut
+  #     region: us-east-2
+  #   ami: ami-0abc123...                     # needs sshd + SSM Agent + docker
+  #   subnet_id: subnet-0abc...
+  #   security_group_ids: [sg-0abc...]        # inbound port 22 NOT required
+  #   instance_types:
+  #     default: c5.xlarge                    # maps task.partition -> instance type
+  #     gpu: g4dn.xlarge
+  #   default_image: ghcr.io/my-org/workflow:latest
+  #   instance_profile_arn: arn:aws:iam::123456789012:instance-profile/ScriptHutTask
+  #   ssh_user: ec2-user                      # "ubuntu" for Ubuntu AMIs
+  #   max_instances: 20                       # hard cap on concurrent instances
+  #   idle_terminate_seconds: 1800            # safety shutdown slack past time_limit
+  #   tag_prefix: scripthut                   # used by the startup reconciler
+  #   extra_tags:
+  #     Environment: research
+
+  # Notes on AWS Batch behaviour:
+  #   - task.partition maps to a Batch job queue; if unset, aws.job_queue is used.
+  #   - task.cpus / task.memory / task.gres map to containerOverrides.resourceRequirements.
+  #   - task.time_limit maps to timeout.attemptDurationSeconds (min 60s).
+  #   - Env vars are passed via containerOverrides.environment so the container
+  #     entrypoint sees them at start time (not as `export` lines inside the script).
+  #   - Tasks can specify `image:` per-task; otherwise `default_image` is used.
+  #     When `job_definition` is set, the image is locked to that JD — task.image
+  #     mismatches trigger a warning and the JD's image wins.
+  #   - Git-based workflows pass the commit SHA via env vars so the container
+  #     can clone+checkout at runtime (no shared filesystem).
+  #   - Logs are read from CloudWatch Logs; stdout and stderr are merged into
+  #     the same stream (view the "output" tab).
+
 # Sources: git repos or backend paths containing workflow JSON files
 # Files matching the workflows_glob pattern (default: .hut/workflows/*.json) are discovered as workflows.
 sources:

@@ -90,7 +90,7 @@ def _friendly_validation_error(raw_config: dict, exc: ValidationError) -> str:
     """Turn a Pydantic ValidationError into a human-readable message."""
     # Map top-level list fields to their allowed type values
     DISCRIMINATED_FIELDS: dict[str, dict[str, str | list[str]]] = {
-        "backends": {"discriminator": "type", "allowed": ["slurm", "pbs", "ecs"]},
+        "backends": {"discriminator": "type", "allowed": ["slurm", "pbs", "ecs", "batch", "ec2"]},
         "sources": {"discriminator": "type", "allowed": ["git", "path"]},
     }
 

@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 from scripthut.backends.base import DiskInfo, JobBackend, JobStats
 from scripthut.backends.utils import (
     fetch_disk_info,
+    fetch_log_via_ssh,
     format_bytes,
     generate_script_body,
     parse_duration_hms,
@@ -590,6 +591,15 @@ class PBSBackend(JobBackend):
     async def get_disk_info(self, path: str) -> DiskInfo | None:
         """Fetch disk usage for ``path`` on the backend via ``df -Pk``."""
         return await fetch_disk_info(self._ssh, path)
+
+    async def fetch_log(
+        self,
+        job_id: str,
+        log_path: str,
+        log_type: str = "output",
+        tail_lines: int | None = None,
+    ) -> tuple[str | None, str | None]:
+        return await fetch_log_via_ssh(self._ssh, log_path, tail_lines)
 
     async def submit_job(self, script: str) -> str:
         """Submit a job script via qsub. Returns the PBS job ID."""

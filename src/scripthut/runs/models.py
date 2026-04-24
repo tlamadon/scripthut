@@ -36,6 +36,7 @@ class TaskDefinition:
     environment: str | None = None  # Name of the environment to use (from config)
     env_vars: dict[str, str] = field(default_factory=dict)  # Per-task environment variables
     gres: str | None = None  # Slurm-style generic resource spec, e.g. "gpu:2" or "gpu:v100:1"
+    image: str | None = None  # Container image URI (AWS Batch/ECS); overrides backend default
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "TaskDefinition":
@@ -56,6 +57,7 @@ class TaskDefinition:
             environment=data.get("environment"),
             env_vars=data.get("env_vars", {}),
             gres=data.get("gres"),
+            image=data.get("image"),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -76,6 +78,7 @@ class TaskDefinition:
             "environment": self.environment,
             "env_vars": self.env_vars,
             "gres": self.gres,
+            "image": self.image,
         }
 
     def get_output_path(self, run_id: str, log_dir: str) -> str:
@@ -248,6 +251,8 @@ class Run:
     account: str | None = None  # Slurm account to charge jobs to
     login_shell: bool = False  # Use #!/bin/bash -l shebang
     commit_hash: str | None = None  # Git commit hash if run from a git workflow
+    git_repo: str | None = None  # Git repo URL if run from a git workflow or git source
+    git_branch: str | None = None  # Git branch if run from a git workflow or git source
 
     @property
     def status(self) -> RunStatus:

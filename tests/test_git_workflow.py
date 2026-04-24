@@ -479,7 +479,7 @@ class TestCreateRunWithGit:
         ssh_mock.run_command = AsyncMock(return_value=(tasks_json, "", 0))
 
         manager = _make_manager(ssh_mock, workflows=[workflow])
-        run = await manager.create_run("git-wf")
+        await manager.create_run("git-wf")
 
         # Verify clone was called
         mock_clone.assert_called_once_with(ssh_mock, workflow)
@@ -493,8 +493,9 @@ class TestCreateRunWithGit:
         assert tasks[0].working_dir == "~/scripthut-repos/abcdef123456"
         assert tasks[1].working_dir == "~/scripthut-repos/abcdef123456"
 
-        # Verify commit_hash is set on run
-        assert run.commit_hash == "abcdef123456"
+        # Verify commit_hash was passed into _build_run so it's available
+        # when the run processes / submits tasks.
+        assert mock_build.call_args.kwargs.get("commit_hash") == "abcdef123456"
 
     @pytest.mark.asyncio
     @patch.object(RunManager, "_build_run", new_callable=AsyncMock)

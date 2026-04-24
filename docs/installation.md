@@ -8,9 +8,16 @@ ScriptHut can be installed via pip or run with Docker. It requires **Python 3.11
 
 Before installing ScriptHut, ensure you have:
 
-- **SSH key-based authentication** set up for your remote clusters
+- **SSH key-based authentication** set up for your remote clusters (Slurm / PBS)
 - Your SSH private key accessible at the path you'll configure (default: `~/.ssh/id_rsa`)
 - Network access to your HPC login nodes from the machine running ScriptHut
+
+For AWS Batch backends:
+
+- **AWS credentials** reachable via the standard credential chain — see [AWS Credentials for Batch](#aws-credentials-for-batch) below
+- An existing Batch **job queue** and at least one compute environment attached to it
+- A container image in ECR / GHCR / Docker Hub containing your workflow
+- The `scripthut[batch]` extra installed (see below) to pull in `boto3`
 
 ---
 
@@ -22,12 +29,22 @@ Before installing ScriptHut, ensure you have:
 pip install scripthut
 ```
 
+### AWS Batch support (optional)
+
+If you plan to use the AWS Batch backend, install the `[batch]` extra to pull in `boto3`:
+
+```bash
+pip install 'scripthut[batch]'
+```
+
 ### From source
 
 ```bash
 git clone https://github.com/tlamadon/scripthut.git
 cd scripthut
 pip install -e .
+# or with AWS Batch support:
+pip install -e '.[batch]'
 ```
 
 ### Development install
@@ -38,7 +55,7 @@ If you want to contribute or run tests:
 pip install -e ".[dev,docs]"
 ```
 
-This installs additional dependencies for linting (`ruff`, `mypy`), testing (`pytest`), and documentation (`mkdocs-material`, `mike`).
+This installs additional dependencies for linting (`ruff`, `mypy`), testing (`pytest`), documentation (`mkdocs-material`, `mike`), and `boto3` for the Batch backend tests.
 
 ---
 
@@ -230,6 +247,95 @@ ssh:
   key_path: ~/.ssh/id_rsa
   known_hosts: ~/.ssh/known_hosts
 ```
+
+---
+
+## AWS Credentials for Batch
+
+The AWS Batch backend uses `boto3`, which resolves credentials from the standard AWS credential chain. **ScriptHut never reads credentials from `scripthut.yaml`** — you only reference a profile name there (optionally). Pick whichever method matches how you run scripthut:
+
+### Option 1 — CLI profile (most common for local dev)
+
+Install and configure the AWS CLI, then reference the profile name in `scripthut.yaml`:
+
+```bash
+aws configure --profile scripthut
+# Enter AWS Access Key ID, Secret Access Key, region
+```
+
+```yaml
+backends:
+  - name: aws-batch
+    type: batch
+    aws:
+      profile: scripthut
+      region: us-east-1
+      job_queue: my-queue
+    default_image: ghcr.io/org/image:latest
+```
+
+### Option 2 — AWS SSO
+
+For organizations using IAM Identity Center:
+
+```bash
+aws configure sso --profile scripthut-sso
+aws sso login --profile scripthut-sso
+```
+
+Set `aws.profile: scripthut-sso`. `boto3` refreshes the session token automatically while scripthut is running, but you'll need to re-run `aws sso login` when the SSO session expires (typically 8–12 hours).
+
+### Option 3 — Environment variables
+
+Useful for CI or one-off runs:
+
+```bash
+export AWS_ACCESS_KEY_ID=AKIA...
+export AWS_SECRET_ACCESS_KEY=...
+export AWS_DEFAULT_REGION=us-east-1
+scripthut
+```
+
+Leave `aws.profile` unset — `boto3` picks up the env vars automatically.
+
+### Option 4 — IAM instance role (recommended for production)
+
+If scripthut runs on EC2, ECS, EKS, or Fargate, attach an IAM role to the host / task. `boto3` fetches credentials from the instance metadata service automatically — no disk-stored credentials, no manual refresh. Leave `aws.profile` unset.
+
+### Docker
+
+Mount your AWS credentials read-only, or (if running on AWS) use a task IAM role so no credentials land on disk:
+
+```bash
+docker run -d -p 8000:8000 \
+  -v ./scripthut.yaml:/app/scripthut.yaml:ro \
+  -v ~/.aws:/root/.aws:ro \
+  -e AWS_PROFILE=scripthut \
+  ghcr.io/tlamadon/scripthut:latest
+```
+
+Or with a mix of SSH and AWS:
+
+```yaml
+services:
+  scripthut:
+    image: ghcr.io/tlamadon/scripthut:latest
+    ports:
+      - "8000:8000"
+    environment:
+      - AWS_PROFILE=scripthut
+    volumes:
+      - ./scripthut.yaml:/app/scripthut.yaml:ro
+      - ~/.ssh:/root/.ssh:ro
+      - ~/.aws:/root/.aws:ro
+      - scripthut-data:/root/.cache/scripthut
+volumes:
+  scripthut-data:
+```
+
+### Minimum IAM permissions
+
+See the [Configuration reference](configuration.md#minimum-iam-permissions) for the required policy document. In short: the principal needs `batch:SubmitJob`, `batch:DescribeJobs`, `batch:ListJobs`, `batch:CancelJob`, `batch:TerminateJob`, `batch:RegisterJobDefinition`, `batch:DescribeJobQueues`, `batch:DescribeComputeEnvironments`, and `logs:GetLogEvents` on your log group. If you configure `job_role_arn` or `execution_role_arn`, also grant `iam:PassRole` on those roles.
 
 ---
 

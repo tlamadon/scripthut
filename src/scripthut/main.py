@@ -22,10 +22,18 @@ from sse_starlette.sse import EventSourceResponse
 
 from scripthut.backends.base import JobBackend, JobStats
 from scripthut.ssh.command_log import CommandLog
+from scripthut.backends.batch import BatchBackend
+from scripthut.backends.ec2 import EC2Backend
 from scripthut.backends.pbs import PBSBackend
 from scripthut.backends.slurm import SlurmBackend
 from scripthut.config import find_config_file, load_config, load_yaml_config, set_config
-from scripthut.config_schema import PBSBackendConfig, ScriptHutConfig, SlurmBackendConfig
+from scripthut.config_schema import (
+    BatchBackendConfig,
+    EC2BackendConfig,
+    PBSBackendConfig,
+    ScriptHutConfig,
+    SlurmBackendConfig,
+)
 from scripthut.models import ConnectionStatus, HPCJob, JobState
 from scripthut.runs import Run, RunManager
 from scripthut.runs.models import RunItemStatus
@@ -140,6 +148,90 @@ state = AppState()
 _config_path: Path | None = None
 
 
+async def init_ec2_backend(
+    backend_config: EC2BackendConfig, archive_root: Path,
+) -> BackendState:
+    """Initialize an AWS EC2-direct backend (no scripthut-side SSH connection).
+
+    Per-task SSH happens inside EC2Backend via SSM-tunnelled ephemeral keys;
+    nothing persistent to hold open here.
+    """
+    backend = EC2Backend(backend_config, archive_root=archive_root)
+    backend_state = BackendState(
+        name=backend_config.name,
+        backend_type="ec2",
+        ssh_client=None,
+        backend=backend,
+        status=ConnectionStatus(
+            connected=False, host=f"aws:{backend_config.aws.region}"
+        ),
+        clone_dir="",
+    )
+    try:
+        available = await backend.is_available()
+    except Exception as e:
+        logger.error(f"Failed to probe EC2 backend '{backend_config.name}': {e}")
+        backend_state.status = ConnectionStatus(
+            connected=False,
+            host=backend_state.status.host,
+            error=str(e),
+        )
+        return backend_state
+    if available:
+        backend_state.status = ConnectionStatus(
+            connected=True, host=backend_state.status.host
+        )
+        logger.info(
+            f"EC2 backend '{backend_config.name}' ready "
+            f"(region={backend_config.aws.region}, ami={backend_config.ami})"
+        )
+    else:
+        backend_state.status = ConnectionStatus(
+            connected=False,
+            host=backend_state.status.host,
+            error=f"Subnet '{backend_config.subnet_id}' not reachable",
+        )
+    return backend_state
+
+
+async def init_batch_backend(backend_config: BatchBackendConfig) -> BackendState:
+    """Initialize an AWS Batch backend (no SSH connection)."""
+    backend = BatchBackend(backend_config)
+    backend_state = BackendState(
+        name=backend_config.name,
+        backend_type="batch",
+        ssh_client=None,
+        backend=backend,
+        status=ConnectionStatus(connected=False, host=f"aws:{backend_config.aws.region}"),
+        clone_dir="",
+    )
+    try:
+        available = await backend.is_available()
+    except Exception as e:
+        logger.error(f"Failed to probe Batch backend '{backend_config.name}': {e}")
+        backend_state.status = ConnectionStatus(
+            connected=False,
+            host=backend_state.status.host,
+            error=str(e),
+        )
+        return backend_state
+    if available:
+        backend_state.status = ConnectionStatus(
+            connected=True, host=backend_state.status.host
+        )
+        logger.info(
+            f"Connected to Batch backend '{backend_config.name}' "
+            f"(queue={backend_config.aws.job_queue}, region={backend_config.aws.region})"
+        )
+    else:
+        backend_state.status = ConnectionStatus(
+            connected=False,
+            host=backend_state.status.host,
+            error=f"Job queue '{backend_config.aws.job_queue}' not reachable",
+        )
+    return backend_state
+
+
 async def init_backend(backend_config: SlurmBackendConfig | PBSBackendConfig) -> BackendState:
     """Initialize an SSH-based backend connection (Slurm or PBS)."""
     ssh_client = SSHClient(
@@ -192,11 +284,11 @@ async def poll_backend(backend_state: BackendState, filter_user: str | None = No
     """Poll jobs for a single backend."""
     if not backend_state.enabled:
         return
-    if backend_state.backend is None or backend_state.ssh_client is None:
+    if backend_state.backend is None:
         return
 
-    # Attempt to reconnect if the SSH connection is down
-    if not backend_state.ssh_client.is_connected:
+    # Attempt to reconnect if the SSH connection is down (SSH-based backends only)
+    if backend_state.ssh_client is not None and not backend_state.ssh_client.is_connected:
         # Skip if still in backoff period
         now = time.monotonic()
         if now < backend_state._reconnect_after:
@@ -500,6 +592,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     for ecs_config in config.ecs_backends:
         logger.warning(f"ECS backend '{ecs_config.name}' configured but ECS backend not yet implemented")
+
+    for batch_config in config.batch_backends:
+        backend_state = await init_batch_backend(batch_config)
+        state.backends[batch_config.name] = backend_state
+
+    ec2_archive_root = config.settings.data_dir_resolved / "ec2-logs"
+    for ec2_config in config.ec2_backends:
+        backend_state = await init_ec2_backend(ec2_config, ec2_archive_root)
+        state.backends[ec2_config.name] = backend_state
 
     # Initialize run storage and manager
     state.run_storage = RunStorageManager(config.settings.data_dir_resolved / "workflows")

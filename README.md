@@ -5,11 +5,11 @@
 [![Docker](https://ghcr-badge.egpl.dev/tlamadon/scripthut/latest_tag?trim=major&label=docker)](https://github.com/tlamadon/scripthut/pkgs/container/scripthut)
 [![Docs](https://img.shields.io/badge/docs-tlamadon.github.io%2Fscripthut-blue)](https://tlamadon.github.io/scripthut/)
 
-A Python web interface to start and track jobs on remote HPC systems (Slurm, PBS/Torque) over SSH.
+A Python web interface to start and track jobs on remote HPC systems (Slurm, PBS/Torque) over SSH, on **AWS Batch** via the AWS API, and on **AWS EC2** directly (one instance per task, SSH tunnelled via SSM).
 
 ## Features
 
-- **Multi-backend support** - Monitor multiple Slurm and PBS/Torque clusters from a single dashboard
+- **Multi-backend support** - Monitor Slurm, PBS/Torque, AWS Batch, and AWS EC2 queues from a single dashboard
 - **Real-time job monitoring** - View running and pending jobs with auto-refresh via SSE
 - **Task runs** - Submit batches of jobs with configurable concurrency limits and dependencies
 - **Unified job view** - See run-submitted and external jobs in one dashboard
@@ -36,6 +36,9 @@ source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 
 # Install the package
 pip install -e .
+
+# For AWS Batch support (installs boto3)
+pip install -e ".[batch]"
 
 # For development (includes mypy, ruff, pytest)
 pip install -e ".[dev]"
@@ -132,6 +135,242 @@ settings:
 | Field | Description |
 |-------|-------------|
 | `queue` | Default PBS queue (overrides task `partition` field) |
+
+**AWS Batch backend** (`type: batch`):
+
+AWS Batch is an API-based backend — there is no SSH host. Install the `[batch]` extra for boto3 support. AWS credentials come from the standard AWS credential chain (see [AWS Credentials](#aws-credentials) below).
+
+```yaml
+backends:
+  - name: aws-batch
+    type: batch
+    aws:
+      profile: my-profile            # optional, omit to use the default chain
+      region: us-east-1
+      job_queue: my-batch-queue      # default queue; task.partition overrides
+    # --- Option 1: use an existing job definition (recommended) ---
+    job_definition: simpleJobDef-b760b37
+    # --- Option 2: let scripthut auto-register job definitions per image ---
+    # default_image: ghcr.io/org/workflow:latest
+    # job_role_arn: arn:aws:iam::123456789012:role/BatchJobRole
+    # execution_role_arn: arn:aws:iam::123456789012:role/BatchExec
+    retry_attempts: 1                # Batch retryStrategy.attempts (1–10)
+    log_group: /aws/batch/job        # CloudWatch log group (default)
+    max_concurrent: 50
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `aws.profile` | No | AWS CLI profile name (from `~/.aws/credentials`). Omit to use the default credential chain. |
+| `aws.region` | Yes | AWS region (e.g. `us-east-1`). |
+| `aws.job_queue` | Yes | Default AWS Batch job queue. Tasks whose `partition` is unset use this queue. |
+| `job_definition` | No* | Pre-registered Batch job definition to submit against. Accepts a bare name (`simpleJobDef`), `name:revision`, or full ARN. Works in two modes (see `job_definition_mode`). *Either `job_definition` or `default_image` must be set. |
+| `job_definition_mode` | No | `locked` (default) — always submits against the configured definition, ignoring per-task `image` with a warning on mismatch. `revisions` — treats the configured definition as a **template**: on first submit with a new image, scripthut copies its container properties (image swapped, roles / log config / retry / tags preserved), registers a new revision of the same `jobDefinitionName`, and caches it per image. Requires `batch:RegisterJobDefinition`. |
+| `default_image` | No* | Container image URI used when scripthut auto-registers a job definition. Ignored when `job_definition` is set. |
+| `job_role_arn` | No | IAM role ARN the container assumes at runtime (`jobRoleArn`). Only used for auto-registration. |
+| `execution_role_arn` | No | IAM role used by ECS to pull the image and push logs (`executionRoleArn`). Only used for auto-registration. |
+| `retry_attempts` | No | `retryStrategy.attempts` in Batch terms. Default `1` (no retry). Allowed range 1–10. |
+| `log_group` | No | CloudWatch Logs group where Batch writes container logs. Default: `/aws/batch/job`. |
+
+**How ScriptHut maps task fields to AWS Batch:**
+
+| scripthut field | AWS Batch concept |
+|-----------------|-------------------|
+| `task.partition` | Job queue (falls back to `aws.job_queue`) |
+| `task.cpus` / `task.memory` | `containerOverrides.resourceRequirements` (VCPU / MEMORY in MiB) |
+| `task.time_limit` | `timeout.attemptDurationSeconds` (min 60s; omitted if below) |
+| `task.gres="gpu:N"` | GPU resource requirement |
+| `task.image` (or `default_image`) | Container image URI |
+| Generated script | `containerOverrides.command = ["bash", "-c", <script>]` |
+
+**Three modes for job definitions:**
+
+1. **Pre-registered, locked** (`job_definition: <name>` — default `job_definition_mode: locked`): scripthut submits against the existing definition verbatim and skips `RegisterJobDefinition`. Sidesteps the cross-account `iam:PassRole` restriction that `RegisterJobDefinition` enforces. **The image is locked** to whatever the definition was registered with — task-level `image` values are ignored with a warning on mismatch.
+
+2. **Pre-registered, revisions** (`job_definition: <name>` + `job_definition_mode: revisions`): scripthut treats the configured definition as a template. On first submit with a new image, it describes the template, clones its container properties (image swapped, roles / log config / retry / tags preserved), and calls `RegisterJobDefinition` with the same `jobDefinitionName` — AWS auto-increments the revision. Subsequent submits with the same image hit an in-process cache. Good for workflows where different tasks use different images but share roles/networking. Requires `batch:RegisterJobDefinition`; PassRole is still subject to the template's role ARN accounts.
+
+3. **Auto-register** (`default_image: <image>` and optional role ARNs, no `job_definition`): on first submission for a given image signature, scripthut registers a job definition named `scripthut-<hash>` and reuses it. Per-task `command`, `env`, `vcpus`, `memory`, and `timeout` are all applied via `containerOverrides` at submit time.
+
+**Environment variables** are passed via `containerOverrides.environment` so the container's entrypoint sees them at process start, not only after the bash script exports them. Variable names are listed as a comment in the generated script for visibility, but values travel through the AWS API.
+
+**AWS EC2 backend** (`type: ec2`):
+
+Launches one dedicated EC2 instance per task, `docker run`s the container inside via user-data, and reconciles completion over SSH tunnelled through AWS SSM Session Manager (no inbound port 22 on your instances, no EC2 key pair management).
+
+```yaml
+backends:
+  - name: aws-ec2
+    type: ec2
+    aws:
+      profile: scripthut                  # optional
+      region: us-east-2
+    ami: ami-0abc123...                   # must have sshd + SSM Agent + docker
+    subnet_id: subnet-0abc...
+    security_group_ids: [sg-0abc...]      # inbound port 22 NOT required
+    instance_types:
+      default: c5.xlarge                  # maps task.partition → instance type
+      gpu: g4dn.xlarge
+    default_image: ghcr.io/org/image:latest
+    instance_profile_arn: arn:aws:iam::123:instance-profile/ScriptHutTask
+    ssh_user: ec2-user                    # "ubuntu" for Ubuntu AMIs
+    max_instances: 20                     # hard cap — refuses submits above this
+    idle_terminate_seconds: 1800          # safety-timer slack beyond task.time_limit
+    startup_timeout_seconds: 600
+    tag_prefix: scripthut                 # used to reconcile instances on restart
+    extra_tags:
+      Environment: research
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `aws.region` | Yes | AWS region. |
+| `aws.profile` | No | AWS CLI profile (omit to use default chain). |
+| `ami` | Yes | AMI used for every task instance. Must include sshd, SSM Agent, and docker. |
+| `subnet_id` | Yes | VPC subnet where task instances launch. |
+| `security_group_ids` | No | Optional SG IDs. **No inbound rules needed** — SSH traffic is tunnelled via SSM. |
+| `instance_types` | No | Mapping of `task.partition` → EC2 instance type. Keys default to `{"default": "c5.xlarge"}`. |
+| `instance_profile_arn` | No | IAM instance profile for each task. At minimum include `AmazonSSMManagedInstanceCore`; add ECR/S3 permissions if the container needs them. |
+| `default_image` | No | Container image used when a task has no `image:` set. Required unless every task specifies its own. |
+| `ssh_user` | No | OS user scripthut logs in as (default `ec2-user`). |
+| `max_instances` | No | Hard cap on concurrent task instances (default 20). |
+| `idle_terminate_seconds` | No | Safety-shutdown slack past the task's `time_limit` (default 1800). |
+| `startup_timeout_seconds` | No | Scripthut fails a task if its instance never reaches "running" (default 600). |
+| `tag_prefix` | No | Tag namespace scripthut uses to recognize its own instances on startup (default `scripthut`). |
+| `extra_tags` | No | Additional tags applied to every launched instance. |
+
+**How it works:**
+
+1. `submit_task` → `RunInstances` with `InstanceInitiatedShutdownBehavior=terminate` and a user-data script that pulls your image, `docker run`s it with the task's bash script mounted, pipes output to `/var/log/scripthut/task.log`, and writes `/var/run/scripthut/done` containing the exit code.
+2. Each poll cycle, scripthut opens a one-shot SSM Session Manager port-forward to the instance, pushes an ephemeral SSH key via EC2 Instance Connect (valid 60 s), connects over the tunnel, and `cat`s the sentinel.
+3. When the sentinel appears, scripthut SSH-copies the log to `<data_dir>/ec2-logs/<run_id>/<task_id>.log`, then calls `TerminateInstances`.
+4. On scripthut restart, a startup reconciler picks up any existing `tag:scripthut:backend=<name>` instances and resumes polling them.
+
+**Safety layers (in order):**
+
+1. `InstanceInitiatedShutdownBehavior=terminate` + a `shutdown -h now` safety timer in user-data — the instance self-destructs after `task.time_limit + idle_terminate_seconds` regardless of what scripthut does.
+2. `timeout <task.time_limit>s` wraps the `docker run` itself — guaranteed hard kill of runaway containers.
+3. Startup reconciler adopts orphans after a scripthut restart.
+
+**Requirements on the scripthut host:**
+
+- AWS CLI (`aws`) on PATH
+- [`session-manager-plugin`](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html)
+- `boto3` (from `pip install 'scripthut[batch]'`)
+
+**Minimum IAM for the principal scripthut runs as:**
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "ec2:RunInstances", "ec2:DescribeInstances",
+        "ec2:TerminateInstances", "ec2:CreateTags",
+        "ec2:DescribeSubnets", "ec2:DescribeSecurityGroups"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": "iam:PassRole",
+      "Resource": "<instance_profile_role_arn>"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "ssm:StartSession", "ssm:TerminateSession", "ssm:DescribeSessions",
+        "ec2-instance-connect:SendSSHPublicKey"
+      ],
+      "Resource": "*"
+    }
+  ]
+}
+```
+
+No CloudWatch Logs permissions required — logs stream over the SSH tunnel.
+
+For the IAM bootstrap, use the included CloudFormation template:
+
+```bash
+aws cloudformation deploy \
+  --template-file cloudformation/scripthut-ec2-iam.yaml \
+  --stack-name scripthut-ec2-iam \
+  --capabilities CAPABILITY_NAMED_IAM
+```
+
+It creates the task instance role + instance profile and a managed policy you attach to whichever IAM principal scripthut runs as. Outputs map straight into `scripthut.yaml` — see [docs/configuration.md](docs/configuration.md) for the full quick-start.
+
+**Logs:** AWS Batch writes stdout+stderr to a single CloudWatch Log stream per job. ScriptHut reads them via `logs:GetLogEvents`. The "error" log tab shows a note pointing you to the "output" tab.
+
+**Git workflows on AWS Batch:** There is no shared filesystem, so ScriptHut resolves the commit SHA locally (via `git ls-remote`) and passes it to each container via the `SCRIPTHUT_GIT_REPO`, `SCRIPTHUT_GIT_BRANCH`, and `SCRIPTHUT_GIT_SHA` environment variables. The generated bash script includes a runtime `git clone` + `git checkout` block so each container fetches the same ref before running the task command.
+
+### AWS Credentials
+
+ScriptHut **never** stores AWS credentials in `scripthut.yaml`. It uses boto3's standard credential resolution chain, which picks up credentials from (in order):
+
+1. **Environment variables** — `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN` (and optionally `AWS_DEFAULT_REGION`).
+2. **Shared credentials file** — `~/.aws/credentials` with `aws.profile` selecting which profile to use. Run `aws configure` or `aws configure sso --profile <name>` to populate it.
+3. **IAM role for the instance** (recommended for production) — when scripthut runs on EC2 / ECS / EKS / Fargate, the role attached to the instance is used automatically. No credentials are stored on the host.
+
+The simplest setups:
+
+```bash
+# Option A — named CLI profile
+aws configure --profile scripthut
+# Then set aws.profile: scripthut in scripthut.yaml
+
+# Option B — environment variables (useful for CI or one-off runs)
+export AWS_ACCESS_KEY_ID=AKIA...
+export AWS_SECRET_ACCESS_KEY=...
+export AWS_DEFAULT_REGION=us-east-1
+
+# Option C — AWS SSO
+aws sso login --profile my-sso-profile
+# Then set aws.profile: my-sso-profile in scripthut.yaml
+```
+
+For Docker deployments, mount your credentials read-only (or prefer an IAM task role if running on AWS):
+
+```bash
+docker run -d -p 8000:8000 \
+  -v ./scripthut.yaml:/app/scripthut.yaml \
+  -v ~/.aws:/root/.aws:ro \
+  -e AWS_PROFILE=scripthut \
+  ghcr.io/tlamadon/scripthut:latest
+```
+
+**Minimum IAM permissions** required for the principal scripthut runs as:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "batch:SubmitJob",
+        "batch:DescribeJobs",
+        "batch:ListJobs",
+        "batch:CancelJob",
+        "batch:TerminateJob",
+        "batch:RegisterJobDefinition",
+        "batch:DescribeJobQueues",
+        "batch:DescribeComputeEnvironments"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": ["logs:GetLogEvents"],
+      "Resource": "arn:aws:logs:*:*:log-group:/aws/batch/job:*"
+    }
+  ]
+}
+```
+
+If you configure `job_role_arn` / `execution_role_arn`, the principal also needs `iam:PassRole` on those roles.
 
 #### Sources
 
@@ -673,7 +912,10 @@ src/scripthut/
 │   ├── base.py       # Abstract JobBackend interface + JobStats
 │   ├── utils.py      # Shared utilities (duration parsing, script body generation)
 │   ├── slurm.py      # Slurm implementation (squeue/sacct/sbatch/scancel/sinfo)
-│   └── pbs.py        # PBS/Torque implementation (qstat/qsub/qdel/pbsnodes)
+│   ├── pbs.py        # PBS/Torque implementation (qstat/qsub/qdel/pbsnodes)
+│   ├── batch.py      # AWS Batch implementation (boto3 + CloudWatch Logs)
+│   ├── ec2.py        # AWS EC2-direct implementation (one instance per task)
+│   └── ec2_ssm.py    # SSM-tunnelled SSH + ephemeral EC2 Instance Connect keys
 ├── sources/
 │   └── git.py        # Git repository management with deploy keys
 └── runs/
@@ -684,11 +926,13 @@ src/scripthut/
 
 ### Supported Backends
 
-| Backend | Scheduler | Commands | Status |
-|---------|-----------|----------|--------|
-| Slurm | sbatch, squeue, sacct, scancel, sinfo | Submit, monitor, cancel, resource stats | Stable |
-| PBS/Torque | qsub, qstat, qdel, pbsnodes | Submit, monitor, cancel, resource stats | New |
-| ECS | AWS ECS API | -- | Planned |
+| Backend | Scheduler | Transport | Status |
+|---------|-----------|-----------|--------|
+| Slurm | sbatch, squeue, sacct, scancel, sinfo | SSH | Stable |
+| PBS/Torque | qsub, qstat, qdel, pbsnodes | SSH | Stable |
+| AWS Batch | AWS Batch + CloudWatch Logs API | boto3 (AWS credential chain) | Stable |
+| AWS EC2 | RunInstances + DescribeInstances (one instance per task) | boto3 + SSH via SSM Session Manager | New |
+| ECS | AWS ECS API | boto3 | Planned |
 
 ### Adding New Backends
 
@@ -744,13 +988,17 @@ pytest
 - [x] **Phase 2**: Job persistence and history
 - [x] **Phase 2**: Job logs viewer
 - [x] **Phase 3**: PBS/Torque backend support
-- [ ] **Phase 3**: ECS/AWS Batch support
+- [x] **Phase 3**: AWS Batch backend support (boto3 + CloudWatch Logs)
+- [x] **Phase 3**: AWS EC2-direct backend support (SSM-tunnelled SSH, one instance per task)
+- [ ] **Phase 3**: ECS backend support
 - [ ] **Phase 4**: Job notifications and alerts
 
 ## Requirements
 
 - Python 3.11+
-- SSH access to remote HPC clusters (Slurm or PBS/Torque) with key-based authentication
+- For Slurm/PBS: SSH access to the cluster's login node with key-based authentication
+- For AWS Batch: `pip install 'scripthut[batch]'` and AWS credentials reachable via the standard [credential chain](#aws-credentials) (IAM role, env vars, or `~/.aws/credentials` profile)
+- For AWS EC2: same boto3 install; additionally [`session-manager-plugin`](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html) on the scripthut host, and an AMI with sshd + SSM Agent + docker
 
 ## License
 

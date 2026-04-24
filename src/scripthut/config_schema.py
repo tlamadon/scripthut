@@ -52,6 +52,29 @@ class AWSConfig(BaseModel):
     cluster_name: str = Field(description="ECS cluster name")
 
 
+class AWSBatchConfig(BaseModel):
+    """AWS configuration for Batch backends."""
+
+    profile: str | None = Field(
+        default=None,
+        description="AWS CLI profile name (uses default credential chain if not set)",
+    )
+    region: str = Field(description="AWS region")
+    job_queue: str = Field(
+        description="Default AWS Batch job queue name (overridable per-task via partition)"
+    )
+
+
+class AWSEC2Config(BaseModel):
+    """AWS configuration for EC2 backends."""
+
+    profile: str | None = Field(
+        default=None,
+        description="AWS CLI profile name (uses default credential chain if not set)",
+    )
+    region: str = Field(description="AWS region")
+
+
 class SlurmBackendConfig(BaseModel):
     """Slurm backend configuration."""
 
@@ -119,8 +142,178 @@ class ECSBackendConfig(BaseModel):
     )
 
 
+class BatchBackendConfig(BaseModel):
+    """AWS Batch backend configuration."""
+
+    name: str = Field(description="Unique identifier for this backend")
+    type: Literal["batch"] = "batch"
+    aws: AWSBatchConfig = Field(description="AWS configuration")
+    job_definition: str | None = Field(
+        default=None,
+        description=(
+            "Pre-registered AWS Batch job definition to submit against. "
+            "Accepts a bare name (e.g. 'simpleJobDef'), a name:revision, or a "
+            "full ARN. Behavior depends on ``job_definition_mode``: 'locked' "
+            "(default) uses the definition as-is and ignores per-task images; "
+            "'revisions' uses it as a template and registers a new revision "
+            "when a task requests a different image."
+        ),
+    )
+    job_definition_mode: Literal["locked", "revisions"] = Field(
+        default="locked",
+        description=(
+            "How to handle ``job_definition`` when tasks request different "
+            "container images. 'locked' (default): always submit against the "
+            "configured definition; task-level ``image`` is ignored with a "
+            "warning on mismatch. 'revisions': use the configured definition "
+            "as a template — on first submit with a new image, clone its "
+            "container properties (image swapped, roles and other settings "
+            "preserved) and register a new revision via RegisterJobDefinition. "
+            "'revisions' mode requires batch:RegisterJobDefinition and is "
+            "subject to iam:PassRole if the template's role ARNs are "
+            "cross-account."
+        ),
+    )
+    default_image: str | None = Field(
+        default=None,
+        description=(
+            "Container image URI used when scripthut auto-registers a job "
+            "definition (i.e. when ``job_definition`` is unset). Required in "
+            "that case; ignored when ``job_definition`` is set."
+        ),
+    )
+    job_role_arn: str | None = Field(
+        default=None,
+        description=(
+            "IAM role ARN the container assumes at runtime (jobRoleArn). "
+            "Only used when scripthut auto-registers a job definition."
+        ),
+    )
+    execution_role_arn: str | None = Field(
+        default=None,
+        description=(
+            "IAM role used by ECS to pull images and write logs (executionRoleArn). "
+            "Only used when scripthut auto-registers a job definition."
+        ),
+    )
+    retry_attempts: int = Field(
+        default=1,
+        ge=1,
+        le=10,
+        description="Batch retryStrategy.attempts (1 = no retry; max 10).",
+    )
+    log_group: str = Field(
+        default="/aws/batch/job",
+        description="CloudWatch Logs group where Batch writes container logs",
+    )
+    max_concurrent: int = Field(
+        default=100,
+        ge=1,
+        description="Maximum total concurrent jobs across all runs on this backend",
+    )
+    clone_dir: str = Field(
+        default="",
+        description="Unused for Batch (no shared filesystem). Kept for UI compatibility.",
+    )
+
+
+class EC2BackendConfig(BaseModel):
+    """AWS EC2-direct backend configuration.
+
+    Launches one EC2 instance per task, runs the task's container inside via
+    user-data, and connects over SSH tunnelled through SSM Session Manager
+    (no inbound port 22, no key-pair management — authentication uses a
+    one-shot SSH key pushed via EC2 Instance Connect for each connection).
+    """
+
+    name: str = Field(description="Unique identifier for this backend")
+    type: Literal["ec2"] = "ec2"
+    aws: AWSEC2Config = Field(description="AWS configuration")
+
+    # Compute
+    ami: str = Field(description="AMI ID used for every task instance (must have sshd + SSM Agent)")
+    subnet_id: str = Field(description="VPC subnet ID where task instances are launched")
+    security_group_ids: list[str] = Field(
+        default_factory=list,
+        description="Optional security group IDs to attach (inbound port 22 NOT required — scripthut tunnels via SSM)",
+    )
+    instance_types: dict[str, str] = Field(
+        default_factory=lambda: {"default": "c5.xlarge"},
+        description=(
+            "Maps ``task.partition`` (or 'default') to an EC2 instance type. "
+            "Tasks whose partition isn't in this map fall back to the 'default' entry."
+        ),
+    )
+    instance_profile_arn: str | None = Field(
+        default=None,
+        description=(
+            "Optional IAM instance profile ARN attached to each task instance. "
+            "Must include AmazonSSMManagedInstanceCore at minimum; add ECR/S3 "
+            "permissions if your container pulls from ECR or reads/writes S3."
+        ),
+    )
+
+    # Execution
+    default_image: str | None = Field(
+        default=None,
+        description=(
+            "Default container image URI. Tasks can override via ``image``. "
+            "Required unless every task specifies its own image."
+        ),
+    )
+    ssh_user: str = Field(
+        default="ec2-user",
+        description=(
+            "OS user for SSH connections via SSM tunnel. 'ec2-user' for Amazon "
+            "Linux, 'ubuntu' for Ubuntu AMIs."
+        ),
+    )
+
+    # Safety
+    max_instances: int = Field(
+        default=20,
+        ge=1,
+        description="Hard cap on concurrently-running task instances (refuses further submits)",
+    )
+    max_concurrent: int = Field(
+        default=100,
+        ge=1,
+        description="Maximum total concurrent tasks across all runs on this backend (per-run caps apply too)",
+    )
+    idle_terminate_seconds: int = Field(
+        default=1800,
+        ge=60,
+        description=(
+            "Instance self-terminates (via user-data safety timer) if it sits "
+            "idle without a task-completion sentinel for this many seconds. "
+            "Belt-and-braces against scripthut crashes."
+        ),
+    )
+    startup_timeout_seconds: int = Field(
+        default=600,
+        ge=60,
+        description="Scripthut marks a task FAILED if its instance hasn't reached 'running' within this many seconds",
+    )
+
+    # Tagging — scripthut uses these to find its own instances on reconcile
+    tag_prefix: str = Field(
+        default="scripthut",
+        description="Tag key prefix scripthut uses to identify its own instances",
+    )
+    extra_tags: dict[str, str] = Field(
+        default_factory=dict,
+        description="Extra tags applied to every launched instance (useful for cost allocation)",
+    )
+
+    # For UI compatibility only (disk_usage panel expects this field)
+    clone_dir: str = Field(
+        default="",
+        description="Unused for EC2 (no shared filesystem). Kept for UI compatibility.",
+    )
+
+
 BackendConfig = Annotated[
-    SlurmBackendConfig | PBSBackendConfig | ECSBackendConfig,
+    SlurmBackendConfig | PBSBackendConfig | ECSBackendConfig | BatchBackendConfig | EC2BackendConfig,
     Field(discriminator="type"),
 ]
 
@@ -397,3 +590,13 @@ class ScriptHutConfig(BaseModel):
     def ecs_backends(self) -> list[ECSBackendConfig]:
         """Get all ECS backends."""
         return [c for c in self.backends if isinstance(c, ECSBackendConfig)]
+
+    @property
+    def batch_backends(self) -> list[BatchBackendConfig]:
+        """Get all AWS Batch backends."""
+        return [c for c in self.backends if isinstance(c, BatchBackendConfig)]
+
+    @property
+    def ec2_backends(self) -> list[EC2BackendConfig]:
+        """Get all AWS EC2-direct backends."""
+        return [c for c in self.backends if isinstance(c, EC2BackendConfig)]

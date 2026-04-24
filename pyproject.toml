@@ -22,12 +22,16 @@ Homepage = "https://github.com/tlamadon/scripthut"
 Repository = "https://github.com/tlamadon/scripthut"
 
 [project.optional-dependencies]
+batch = [
+    "boto3>=1.34.0",
+]
 dev = [
     "mypy>=1.8.0",
     "ruff>=0.1.0",
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
     "pytest-cov>=4.0.0",
+    "boto3>=1.34.0",
 ]
 docs = [
     "mkdocs-material>=9.5.0",

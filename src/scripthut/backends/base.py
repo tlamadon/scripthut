@@ -73,6 +73,23 @@ class JobBackend(ABC):
         """
         ...
 
+    async def submit_task(
+        self,
+        task: "TaskDefinition",
+        script: str,
+        env_vars: dict[str, str] | None = None,
+    ) -> str:
+        """Submit a task with its full context.
+
+        Default implementation forwards to :meth:`submit_job`, which is
+        sufficient for shell-script-based schedulers (env vars are already
+        inlined as ``export`` lines in the script). API-based backends
+        (e.g. AWS Batch) override this to use structured task metadata and
+        pass ``env_vars`` through the API (e.g. ``containerOverrides.environment``)
+        so the container's entrypoint sees them before the script runs.
+        """
+        return await self.submit_job(script)
+
     @abstractmethod
     async def cancel_job(self, job_id: str) -> None:
         """Cancel a running or queued job."""
@@ -109,6 +126,26 @@ class JobBackend(ABC):
         this to run ``df`` over the connection.
         """
         return None
+
+    async def fetch_log(
+        self,
+        job_id: str,
+        log_path: str,
+        log_type: str = "output",
+        tail_lines: int | None = None,
+    ) -> tuple[str | None, str | None]:
+        """Fetch stdout/stderr log contents for a submitted job.
+
+        Args:
+            job_id: Scheduler-assigned job ID (needed by API-based backends).
+            log_path: Filesystem path to the log file (used by SSH backends).
+            log_type: ``"output"`` or ``"error"``.
+            tail_lines: If set, return only the last N lines.
+
+        Returns:
+            ``(content, error)`` — exactly one of the two will be set.
+        """
+        return None, "Log fetching not implemented for this backend"
 
     @abstractmethod
     def generate_script(

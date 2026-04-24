@@ -36,6 +36,30 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+async def _run_local_shell(command: str, timeout: float = 60.0) -> tuple[str, str, int]:
+    """Run ``command`` locally (``sh -c``) and return ``(stdout, stderr, exit_code)``.
+
+    Used for workflows whose backend has no SSH connection (e.g. AWS Batch) —
+    the command runs on the scripthut host instead of a remote login node.
+    """
+    proc = await asyncio.create_subprocess_shell(
+        command,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        raise ValueError(f"Local command timed out after {timeout}s: {command}")
+    return (
+        stdout_b.decode("utf-8", errors="replace"),
+        stderr_b.decode("utf-8", errors="replace"),
+        proc.returncode if proc.returncode is not None else -1,
+    )
+
+
 class RunManager:
     """Manages runs - fetching, submitting, and tracking."""
 
@@ -461,18 +485,26 @@ class RunManager:
         return_raw: bool = False,
         clone_dir: str | None = None,
     ) -> list[TaskDefinition] | tuple[list[TaskDefinition], str]:
-        """Fetch task list from a workflow via SSH."""
-        ssh_client = self.get_ssh_client(workflow.backend)
-        if ssh_client is None:
-            raise ValueError(f"Backend '{workflow.backend}' not found or not connected")
+        """Fetch task list from a workflow.
 
-        logger.info(f"Fetching tasks from workflow '{workflow.name}' on backend '{workflow.backend}'")
+        Runs the workflow command on the backend via SSH for SSH-based backends;
+        for API-based backends (no SSH) the command is executed locally as a
+        subprocess of the scripthut server.
+        """
+        logger.info(
+            f"Fetching tasks from workflow '{workflow.name}' on backend '{workflow.backend}'"
+        )
 
         command = workflow.command
         if clone_dir:
             command = f"cd {clone_dir} && {command}"
 
-        stdout, stderr, exit_code = await ssh_client.run_command(command)
+        ssh_client = self.get_ssh_client(workflow.backend)
+        if ssh_client is not None:
+            stdout, stderr, exit_code = await ssh_client.run_command(command)
+        else:
+            # API-based backend — run the generator locally so we still get a task list.
+            stdout, stderr, exit_code = await _run_local_shell(command)
 
         if exit_code != 0:
             raise ValueError(f"Command failed (exit {exit_code}): {stderr}")
@@ -609,9 +641,19 @@ class RunManager:
         workflow_name: str,
         backend_name: str,
         max_concurrent: int | None,
-        ssh_client: SSHClient,
+        ssh_client: SSHClient | None,
+        *,
+        git_repo: str | None = None,
+        git_branch: str | None = None,
+        commit_hash: str | None = None,
     ) -> Run:
-        """Build a Run: resolve deps, validate, create, persist, and start processing."""
+        """Build a Run: resolve deps, validate, create, persist, and start processing.
+
+        Git-related kwargs must be provided here (not set after) because
+        ``_build_run`` triggers task submission via ``process_run`` before
+        returning — the generated container scripts need the git info at
+        submit time.
+        """
         if not tasks:
             raise ValueError(f"No tasks for workflow '{workflow_name}'")
 
@@ -622,13 +664,18 @@ class RunManager:
         login_shell = self.get_backend_login_shell(backend_name)
 
         first_working_dir = tasks[0].working_dir
-        try:
-            git_root = await self._get_git_root(ssh_client, first_working_dir)
-            log_dir = f"{git_root}/.scripthut/{workflow_name}/logs"
-            logger.info(f"Git root: {git_root} — logs at {log_dir}")
-        except ValueError:
-            log_dir = f"~/.cache/scripthut/logs/{workflow_name}"
-            logger.info(f"No git root for '{first_working_dir}' — logs at {log_dir}")
+        if ssh_client is not None:
+            try:
+                git_root = await self._get_git_root(ssh_client, first_working_dir)
+                log_dir = f"{git_root}/.scripthut/{workflow_name}/logs"
+                logger.info(f"Git root: {git_root} — logs at {log_dir}")
+            except ValueError:
+                log_dir = f"~/.cache/scripthut/logs/{workflow_name}"
+                logger.info(f"No git root for '{first_working_dir}' — logs at {log_dir}")
+        else:
+            # API-based backends have no filesystem — use a synthetic placeholder.
+            log_dir = f"backend://{backend_name}/{workflow_name}"
+            logger.info(f"Backend '{backend_name}' has no filesystem — logs via backend API")
 
         run_id = str(uuid.uuid4())[:8]
         run = Run(
@@ -641,6 +688,9 @@ class RunManager:
             account=account,
             login_shell=login_shell,
             log_dir=log_dir,
+            git_repo=git_repo,
+            git_branch=git_branch,
+            commit_hash=commit_hash,
         )
 
         self.runs[run_id] = run
@@ -661,18 +711,24 @@ class RunManager:
             raise ValueError(f"Workflow '{workflow_name}' not found")
 
         ssh_client = self.get_ssh_client(workflow.backend)
-        if ssh_client is None:
+        job_backend = self.get_job_backend(workflow.backend)
+        if ssh_client is None and job_backend is None:
             raise ValueError(
-                f"No SSH connection to backend '{workflow.backend}'"
+                f"Backend '{workflow.backend}' is not available"
             )
 
-        # Clone git repo on the backend if configured
+        # Clone git repo on the backend if configured and SSH-capable.
+        # For API-only backends (e.g. Batch), the commit hash is resolved locally
+        # so the container can check out the same ref at runtime.
         clone_dir: str | None = None
         commit_hash: str | None = None
         if workflow.git is not None:
-            clone_dir, commit_hash = await self._ensure_repo_cloned(
-                ssh_client, workflow
-            )
+            if ssh_client is not None:
+                clone_dir, commit_hash = await self._ensure_repo_cloned(
+                    ssh_client, workflow
+                )
+            else:
+                commit_hash = await self._resolve_commit_locally(workflow)
 
         tasks: list[TaskDefinition] = await self.fetch_tasks(  # type: ignore[assignment]
             workflow, clone_dir=clone_dir
@@ -682,14 +738,43 @@ class RunManager:
         if clone_dir:
             self._resolve_working_dirs(tasks, clone_dir)
 
+        git_repo = workflow.git.repo if workflow.git is not None else None
+        git_branch = workflow.git.branch if workflow.git is not None else None
         run = await self._build_run(
-            tasks, workflow_name, workflow.backend, workflow.max_concurrent, ssh_client
+            tasks, workflow_name, workflow.backend, workflow.max_concurrent, ssh_client,
+            git_repo=git_repo, git_branch=git_branch, commit_hash=commit_hash,
         )
-        if commit_hash is not None:
-            run.commit_hash = commit_hash
-            self._persist_run(run)
-
         return run
+
+    async def _resolve_commit_locally(
+        self, workflow: WorkflowConfig,
+    ) -> str | None:
+        """Best-effort resolution of a git workflow's ref to a commit hash."""
+        git_cfg = workflow.git
+        if git_cfg is None:
+            return None
+        return await self._ls_remote_commit(git_cfg.repo, git_cfg.branch)
+
+    async def _ls_remote_commit(
+        self, repo: str, branch: str,
+    ) -> str | None:
+        """Resolve a remote git ref to a commit hash via local ``git ls-remote``.
+
+        Used by API-only backends (Batch) so they can pass a concrete SHA to
+        their container's runtime clone step.  Returns None on failure; the
+        container will fall back to the branch name.
+        """
+        cmd = f"git ls-remote {repo} {branch}"
+        try:
+            stdout, stderr, code = await _run_local_shell(cmd, timeout=30.0)
+        except Exception as e:
+            logger.warning(f"Local git ls-remote failed: {e}")
+            return None
+        if code != 0:
+            logger.warning(f"Local git ls-remote exit {code}: {stderr.strip()}")
+            return None
+        line = stdout.strip().split("\n", 1)[0]
+        return line.split()[0] if line else None
 
     def _parse_tasks_json(self, tasks_json: str, label: str) -> list[TaskDefinition]:
         """Parse a JSON task list string into TaskDefinition objects."""
@@ -736,8 +821,11 @@ class RunManager:
     ) -> Run:
         """Create a run from a source workflow's JSON task list.
 
-        For git sources, the repo is cloned on the backend and tasks run
-        inside the cloned directory (same as git-based workflows).
+        For SSH-based backends and git sources, the repo is cloned on the
+        backend and tasks run inside the cloned directory.  For API-based
+        backends (AWS Batch), the commit hash is resolved locally and each
+        container clones the source at runtime using env vars.  Path sources
+        require SSH (they reference a filesystem path on the cluster).
 
         Args:
             source_name: Name of the source.
@@ -751,8 +839,9 @@ class RunManager:
 
         backend_name = backend
         ssh_client = self.get_ssh_client(backend_name)
-        if ssh_client is None:
-            raise ValueError(f"No SSH connection to backend '{backend_name}'")
+        job_backend = self.get_job_backend(backend_name)
+        if ssh_client is None and job_backend is None:
+            raise ValueError(f"Backend '{backend_name}' is not available")
 
         stem = workflow_filename.removesuffix(".json")
         workflow_name = f"{source_name}/{stem}"
@@ -760,25 +849,37 @@ class RunManager:
 
         tasks = self._parse_tasks_json(tasks_json, label)
 
-        # Clone git source repo on the backend and resolve working dirs
         clone_dir: str | None = None
         commit_hash: str | None = None
+
         if isinstance(source, GitSourceConfig):
-            clone_dir, commit_hash = await self._clone_source_repo(
-                ssh_client, source
-            )
-            self._resolve_working_dirs(tasks, clone_dir)
+            if ssh_client is not None:
+                # SSH backend: clone on the backend filesystem now.
+                clone_dir, commit_hash = await self._clone_source_repo(
+                    ssh_client, source
+                )
+                self._resolve_working_dirs(tasks, clone_dir)
+            else:
+                # API-only backend: resolve the commit locally so the
+                # container can check out the same ref at runtime.  Don't
+                # touch tasks.working_dir — the backend's generate_script
+                # rewrites relative paths against $_SCRIPTHUT_CLONE_DIR.
+                commit_hash = await self._ls_remote_commit(source.url, source.branch)
         elif isinstance(source, PathSourceConfig):
-            # Path sources already exist on the backend
+            if ssh_client is None:
+                raise ValueError(
+                    f"Path source '{source_name}' requires an SSH backend; "
+                    f"'{backend_name}' has no filesystem."
+                )
+            # Path sources already exist on the backend.
             self._resolve_working_dirs(tasks, source.path)
 
+        git_repo = source.url if isinstance(source, GitSourceConfig) else None
+        git_branch = source.branch if isinstance(source, GitSourceConfig) else None
         run = await self._build_run(
-            tasks, workflow_name, backend_name, None, ssh_client
+            tasks, workflow_name, backend_name, None, ssh_client,
+            git_repo=git_repo, git_branch=git_branch, commit_hash=commit_hash,
         )
-        if commit_hash is not None:
-            run.commit_hash = commit_hash
-            self._persist_run(run)
-
         return run
 
     async def rerun_from(self, run_id: str) -> Run:
@@ -888,17 +989,18 @@ class RunManager:
         if clone_dir:
             self._resolve_working_dirs(tasks, clone_dir)
 
+        git_repo = workflow.git.repo if workflow.git is not None else None
+        git_branch = workflow.git.branch if workflow.git is not None else None
         run = await self._build_run(
             tasks,
             original.workflow_name,
             original.backend_name,
             original.max_concurrent,
             ssh_client,
+            git_repo=git_repo,
+            git_branch=git_branch,
+            commit_hash=commit_hash,
         )
-        if commit_hash is not None:
-            run.commit_hash = commit_hash
-            self._persist_run(run)
-
         return run
 
     async def dry_run_source(
@@ -1130,14 +1232,6 @@ class RunManager:
 
     async def submit_task(self, run: Run, item: RunItem) -> bool:
         """Submit a single task to the scheduler."""
-        ssh_client = self.get_ssh_client(run.backend_name)
-        if ssh_client is None:
-            item.status = RunItemStatus.FAILED
-            item.error = f"Backend '{run.backend_name}' not connected"
-            item.finished_at = datetime.now(timezone.utc)
-            self._persist_run(run)
-            return False
-
         job_backend = self.get_job_backend(run.backend_name)
         if job_backend is None:
             item.status = RunItemStatus.FAILED
@@ -1146,19 +1240,29 @@ class RunManager:
             self._persist_run(run)
             return False
 
-        # Resolve ~ to actual home directory
-        log_dir = run.log_dir
-        if log_dir.startswith("~"):
-            stdout, _, _ = await ssh_client.run_command("echo $HOME")
-            home_dir = stdout.strip()
-            log_dir = log_dir.replace("~", home_dir, 1)
+        ssh_client = self.get_ssh_client(run.backend_name)
 
-        await ssh_client.run_command(f"mkdir -p {log_dir}")
+        # SSH-based backends resolve ~ and create the log directory before
+        # submission.  API-based backends (Batch) route logs elsewhere.
+        log_dir = run.log_dir
+        if ssh_client is not None:
+            if log_dir.startswith("~"):
+                stdout, _, _ = await ssh_client.run_command("echo $HOME")
+                home_dir = stdout.strip()
+                log_dir = log_dir.replace("~", home_dir, 1)
+            await ssh_client.run_command(f"mkdir -p {log_dir}")
 
         env_vars, extra_init = self._resolve_environment(item.task)
-        workflow = self.config.get_workflow(run.workflow_name)
-        git_repo = workflow.git.repo if workflow and workflow.git else None
-        git_branch = workflow.git.branch if workflow and workflow.git else None
+        # Prefer git info stored on the run (set for both git workflows and
+        # git-source runs).  Fall back to the workflow config for older runs
+        # that predate the run-level fields.
+        git_repo = run.git_repo
+        git_branch = run.git_branch
+        if git_repo is None:
+            workflow = self.config.get_workflow(run.workflow_name)
+            if workflow and workflow.git:
+                git_repo = workflow.git.repo
+                git_branch = workflow.git.branch
         sh_vars = self._scripthut_env_vars(
             run.workflow_name, run.id, run.created_at,
             git_repo=git_repo, git_branch=git_branch, git_sha=run.commit_hash,
@@ -1172,7 +1276,9 @@ class RunManager:
         item.submit_script = script
 
         try:
-            job_id = await job_backend.submit_job(script)
+            job_id = await job_backend.submit_task(
+                item.task, script, env_vars=merged_env,
+            )
             item.job_id = job_id
             item.status = RunItemStatus.SUBMITTED
             item.submitted_at = datetime.now(timezone.utc)
@@ -1469,7 +1575,12 @@ class RunManager:
         log_type: str = "output",
         tail_lines: int | None = None,
     ) -> tuple[str | None, str | None]:
-        """Fetch a log file from the remote backend."""
+        """Fetch a log file from the backend.
+
+        SSH-based backends read the file off the filesystem; API-based
+        backends (e.g. Batch) route through CloudWatch.  In both cases the
+        actual fetch is delegated to ``JobBackend.fetch_log``.
+        """
         run = self.runs.get(run_id)
         if run is None:
             return None, f"Run '{run_id}' not found"
@@ -1478,28 +1589,31 @@ class RunManager:
         if item is None:
             return None, f"Task '{task_id}' not found in run"
 
-        ssh_client = self.get_ssh_client(run.backend_name)
-        if ssh_client is None:
-            return None, f"Backend '{run.backend_name}' not connected"
+        if log_type not in ("output", "error"):
+            return None, f"Invalid log_type: {log_type}"
 
+        job_backend = self.get_job_backend(run.backend_name)
+        if job_backend is None:
+            return None, f"No job backend for '{run.backend_name}'"
+
+        if item.job_id is None:
+            return None, "Task has not been submitted yet"
+
+        # Resolve the filesystem log path (SSH backends use it; API backends ignore).
         log_dir = run.log_dir
-        if log_dir.startswith("~"):
+        ssh_client = self.get_ssh_client(run.backend_name)
+        if ssh_client is not None and log_dir.startswith("~"):
             stdout, _, _ = await ssh_client.run_command("echo $HOME")
             home_dir = stdout.strip()
             log_dir = log_dir.replace("~", home_dir, 1)
-
         if log_type == "output":
             log_path = item.task.get_output_path(run.id, log_dir)
-        elif log_type == "error":
+        else:
             log_path = item.task.get_error_path(run.id, log_dir)
-        else:
-            return None, f"Invalid log_type: {log_type}"
 
-        if tail_lines:
-            cmd = f"tail -n {tail_lines} {log_path} 2>/dev/null || echo '[File not found or empty]'"
-        else:
-            cmd = f"cat {log_path} 2>/dev/null || echo '[File not found or empty]'"
-
-        stdout, stderr, exit_code = await ssh_client.run_command(cmd)
-
-        return stdout, None
+        return await job_backend.fetch_log(
+            job_id=item.job_id,
+            log_path=log_path,
+            log_type=log_type,
+            tail_lines=tail_lines,
+        )

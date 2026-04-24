@@ -1,0 +1,155 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  IAM resources for scripthut's AWS EC2-direct backend. Creates the
+  task-instance role + instance profile attached to each task instance,
+  and a managed policy you attach to whichever IAM principal scripthut
+  runs as (your user, an SSO role, an EC2 instance role, etc).
+
+  Outputs print the exact ARNs to drop into scripthut.yaml. Tear down
+  with: aws cloudformation delete-stack --stack-name <name>
+
+Parameters:
+  ResourcePrefix:
+    Type: String
+    Default: scripthut
+    Description: >
+      Prefix for resource names. Keep short — AWS appends generated
+      suffixes. Must start with a letter.
+    MaxLength: 16
+    MinLength: 1
+    AllowedPattern: '^[a-zA-Z][a-zA-Z0-9-]*$'
+  EnableECRReadAccess:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: >
+      If 'true', task instances can pull container images from ECR
+      (attaches AmazonEC2ContainerRegistryReadOnly to the instance role).
+      Set to 'false' if you only pull from public registries (Docker Hub,
+      GHCR, etc) and want to minimize permissions.
+
+Conditions:
+  IncludeEcrReadOnly: !Equals [!Ref EnableECRReadAccess, 'true']
+
+Resources:
+  # ----- IAM role attached to every task EC2 instance ----------------------
+  TaskInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ResourcePrefix}-task-instance-role'
+      Description: >
+        Role attached to scripthut EC2 task instances. Provides SSM Agent
+        registration (used by scripthut's SSM-tunnelled SSH probes) and
+        optional ECR pull access. Add custom policies here if your
+        workload needs S3 / DynamoDB / Secrets Manager access.
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+        - !If
+            - IncludeEcrReadOnly
+            - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
+            - !Ref AWS::NoValue
+      Tags:
+        - Key: ManagedBy
+          Value: scripthut-cloudformation
+        - Key: Stack
+          Value: !Ref AWS::StackName
+
+  # Wraps the role so it can be attached to EC2 instances by RunInstances.
+  TaskInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub '${ResourcePrefix}-task-instance-profile'
+      Roles:
+        - !Ref TaskInstanceRole
+
+  # ----- Managed policy for the principal that runs scripthut --------------
+  # Doesn't get attached to anyone here — that's an explicit step the
+  # operator takes for whichever user/role they use, so we don't make
+  # surprising attachments.
+  ScripthutControllerPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub '${ResourcePrefix}-controller-policy'
+      Description: >
+        Permissions scripthut's EC2 backend needs. Attach to whichever
+        IAM principal scripthut runs as. Includes EC2 lifecycle, SSM
+        Session Manager, EC2 Instance Connect (ephemeral SSH key push),
+        and iam:PassRole on the task instance role created by this stack.
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: EC2Lifecycle
+            Effect: Allow
+            Action:
+              - ec2:RunInstances
+              - ec2:DescribeInstances
+              - ec2:TerminateInstances
+              - ec2:CreateTags
+              - ec2:DescribeSubnets
+              - ec2:DescribeSecurityGroups
+              - ec2:DescribeImages
+            # ec2:DescribeSubnets / DescribeSecurityGroups don't support
+            # resource-level scoping, so we use "*" here. Scope further via
+            # tag conditions in production if your security policy requires.
+            Resource: '*'
+          - Sid: PassInstanceProfileRoleToEc2
+            Effect: Allow
+            Action: iam:PassRole
+            Resource: !GetAtt TaskInstanceRole.Arn
+            Condition:
+              StringEquals:
+                'iam:PassedToService': 'ec2.amazonaws.com'
+          - Sid: SSMSessionForTunnelledSSH
+            Effect: Allow
+            Action:
+              - ssm:StartSession
+              - ssm:TerminateSession
+              - ssm:DescribeSessions
+              - ssm:GetConnectionStatus
+            Resource: '*'
+          - Sid: EC2InstanceConnectEphemeralKeys
+            Effect: Allow
+            Action: ec2-instance-connect:SendSSHPublicKey
+            Resource: '*'
+
+Outputs:
+  InstanceProfileArn:
+    Description: >-
+      Drop into scripthut.yaml -> backends[*].instance_profile_arn for
+      the EC2 backend.
+    Value: !GetAtt TaskInstanceProfile.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-InstanceProfileArn'
+
+  TaskInstanceRoleArn:
+    Description: >-
+      ARN of the IAM role wrapped by the instance profile (informational —
+      it's the iam:PassRole resource inside ScripthutControllerPolicy).
+    Value: !GetAtt TaskInstanceRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-TaskInstanceRoleArn'
+
+  TaskInstanceRoleName:
+    Description: >-
+      Name of the task instance role. Use this if you want to attach
+      additional inline / managed policies for what your container needs
+      (e.g. S3 access).
+    Value: !Ref TaskInstanceRole
+    Export:
+      Name: !Sub '${AWS::StackName}-TaskInstanceRoleName'
+
+  ScripthutControllerPolicyArn:
+    Description: >-
+      Attach to the IAM user/role scripthut runs as. Examples:
+        aws iam attach-user-policy --user-name <user> --policy-arn <this>
+        aws iam attach-role-policy --role-name <role> --policy-arn <this>
+    Value: !Ref ScripthutControllerPolicy
+    Export:
+      Name: !Sub '${AWS::StackName}-ScripthutControllerPolicyArn'

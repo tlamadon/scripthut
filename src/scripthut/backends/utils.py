@@ -93,6 +93,23 @@ def parse_df_output(stdout: str) -> tuple[int, int] | None:
     return total_kb * 1024, avail_kb * 1024
 
 
+async def fetch_log_via_ssh(
+    ssh: SSHClient,
+    log_path: str,
+    tail_lines: int | None = None,
+) -> tuple[str | None, str | None]:
+    """Read a log file over SSH with ``tail`` or ``cat``. Returns ``(content, error)``."""
+    if tail_lines:
+        cmd = f"tail -n {tail_lines} {log_path} 2>/dev/null || echo '[File not found or empty]'"
+    else:
+        cmd = f"cat {log_path} 2>/dev/null || echo '[File not found or empty]'"
+    try:
+        stdout, _, _ = await ssh.run_command(cmd)
+    except Exception as e:
+        return None, f"SSH error fetching log: {e}"
+    return stdout, None
+
+
 async def fetch_disk_info(ssh: SSHClient, path: str) -> DiskInfo | None:
     """Run ``df -Pk <path>`` over SSH and return a :class:`DiskInfo`.
 
