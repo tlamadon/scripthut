@@ -291,7 +291,15 @@ backends:
 
 No CloudWatch Logs permissions required — logs stream over the SSH tunnel.
 
-For the IAM bootstrap, use the included CloudFormation template:
+For the fastest setup, run the guided wizard:
+
+```bash
+scripthut setup-aws-ec2
+```
+
+It discovers your default VPC + subnet, looks up the latest Amazon Linux 2023 AMI, deploys the IAM CloudFormation stack, appends a complete backend stanza to `scripthut.yaml`, and prints the one-liner you still need to run by hand (attaching the controller policy to your IAM principal). All prompts have flags so you can run it non-interactively in CI.
+
+If you'd rather just deploy the CloudFormation stack manually:
 
 ```bash
 aws cloudformation deploy \
@@ -300,7 +308,7 @@ aws cloudformation deploy \
   --capabilities CAPABILITY_NAMED_IAM
 ```
 
-It creates the task instance role + instance profile and a managed policy you attach to whichever IAM principal scripthut runs as. Outputs map straight into `scripthut.yaml` — see [docs/configuration.md](docs/configuration.md) for the full quick-start.
+See [docs/configuration.md](docs/configuration.md) for the full options reference.
 
 **Logs:** AWS Batch writes stdout+stderr to a single CloudWatch Log stream per job. ScriptHut reads them via `logs:GetLogEvents`. The "error" log tab shows a note pointing you to the "output" tab.
 

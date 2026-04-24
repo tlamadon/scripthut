@@ -442,9 +442,42 @@ Three layered safeguards keep cost bounded even if scripthut crashes:
 
 No CloudWatch Logs permissions needed — logs travel over the SSH tunnel.
 
-#### Quick IAM bootstrap (CloudFormation)
+#### Guided setup (`scripthut setup-aws-ec2`)
 
-The IAM piece is the most error-prone part — two roles, one instance profile, an `iam:PassRole` cross-reference, and a managed policy that has to match scripthut's exact API surface. To skip the manual click-ops, deploy [`cloudformation/scripthut-ec2-iam.yaml`](https://github.com/tlamadon/scripthut/blob/main/cloudformation/scripthut-ec2-iam.yaml) — it creates the task instance role + instance profile + a managed policy you attach to whatever principal scripthut runs as.
+For the fastest path from zero to a working backend, run:
+
+```bash
+scripthut setup-aws-ec2
+```
+
+It walks you through, picks sensible defaults wherever possible, and:
+
+1. Discovers your **default VPC** + a usable subnet in the chosen region.
+2. Looks up the latest **Amazon Linux 2023 AMI** (you can override).
+3. Deploys the IAM CloudFormation stack (`scripthut-ec2-iam`).
+4. Reads the stack outputs.
+5. Appends a complete EC2 backend stanza to `scripthut.yaml` (timestamped backup of the original is created first).
+6. Runs a connectivity smoke test (`is_available()`).
+7. Prints the one-liner you still need to run by hand: attaching the controller policy to your IAM user/role.
+
+Useful flags (all optional — they skip the corresponding prompt):
+
+```bash
+scripthut setup-aws-ec2 \
+  --region us-east-2 \
+  --profile scripthut \
+  --backend-name aws-ec2 \
+  --stack-name scripthut-ec2-iam \
+  --config scripthut.yaml
+```
+
+Add `--non-interactive` to fail rather than prompt for missing values (useful in CI).
+
+**Tear down later** with `aws cloudformation delete-stack --stack-name scripthut-ec2-iam` and remove the appended block from `scripthut.yaml` (the backup file gives you the pre-change state).
+
+#### Quick IAM bootstrap (CloudFormation, manual)
+
+If you'd rather skip the guided script and run CloudFormation yourself, deploy [`cloudformation/scripthut-ec2-iam.yaml`](https://github.com/tlamadon/scripthut/blob/main/cloudformation/scripthut-ec2-iam.yaml) — it creates the task instance role + instance profile + a managed policy you attach to whatever principal scripthut runs as. (The guided setup script uses an embedded copy of the same template.)
 
 ```bash
 # 1) Deploy the stack (one shot per AWS account/region).

@@ -2621,8 +2621,22 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+_SUBCOMMANDS = {"setup-aws-ec2"}
+
+
+def _dispatch_subcommand(name: str, argv_rest: list[str]) -> int:
+    if name == "setup-aws-ec2":
+        from scripthut.setup.aws_ec2 import main as setup_main
+        return setup_main(argv_rest)
+    raise SystemExit(f"Unknown subcommand: {name}")
+
+
 def run() -> None:
-    """Run the application with uvicorn."""
+    """Run the application with uvicorn (or dispatch to a subcommand)."""
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] in _SUBCOMMANDS:
+        sys.exit(_dispatch_subcommand(sys.argv[1], sys.argv[2:]))
+
     global _config_path
 
     args = parse_args()
