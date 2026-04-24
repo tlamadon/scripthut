@@ -1178,7 +1178,7 @@
 
 
 <h1 id="task-json-format">Task JSON Format<a class="headerlink" href="#task-json-format" title="Permanent link">&para;</a></h1>
-<p>Workflows in ScriptHut work by executing a command on the remote backend via SSH. That command must print a JSON document to <strong>stdout</strong> describing the tasks to submit. This page covers the expected JSON structure, all available task fields, dependencies, dynamic task generation, and environment variables.</p>
+<p>Workflows in ScriptHut work by executing a command that prints a JSON document to <strong>stdout</strong> describing the tasks to submit. For Slurm and PBS backends, the command runs on the cluster's login node via SSH. For AWS Batch backends (which have no login node), the command runs locally on the scripthut host instead — plan the command path accordingly (e.g. <code>python /app/generate_tasks.py</code> inside a Docker deployment). This page covers the expected JSON structure, all available task fields, dependencies, dynamic task generation, and environment variables.</p>
 <hr />
 <h2 id="json-structure">JSON Structure<a class="headerlink" href="#json-structure" title="Permanent link">&para;</a></h2>
 <p>ScriptHut accepts two top-level formats:</p>
@@ -1294,7 +1294,14 @@
 <td>no</td>
 <td>string</td>
 <td><code>null</code></td>
-<td>Slurm-style generic resource request (e.g., <code>"gpu:2"</code>, <code>"gpu:v100:1"</code>). Passed to <code>--gres</code> on Slurm; on PBS the GPU count is translated to <code>:gpus=N</code> on the node spec. Non-GPU gres is ignored on PBS.</td>
+<td>Slurm-style generic resource request (e.g., <code>"gpu:2"</code>, <code>"gpu:v100:1"</code>). Passed to <code>--gres</code> on Slurm; on PBS the GPU count is translated to <code>:gpus=N</code> on the node spec. On AWS Batch the GPU count is added as a <code>GPU</code> resource requirement. Non-GPU <code>gres</code> is ignored outside Slurm.</td>
+</tr>
+<tr>
+<td><code>image</code></td>
+<td>no</td>
+<td>string</td>
+<td><code>null</code></td>
+<td><em>(AWS Batch only)</em> Container image URI for this task. Overrides the backend's <code>default_image</code> when scripthut auto-registers a job definition. Ignored when the backend has <code>job_definition</code> set (Batch locks the image to the registered definition; scripthut logs a warning on mismatch). Ignored by Slurm and PBS.</td>
 </tr>
 <tr>
 <td><code>deps</code></td>
@@ -1308,14 +1315,14 @@
 <td>no</td>
 <td>string</td>
 <td>auto</td>
-<td>Custom path for stdout log. If not set, defaults to <code>&lt;log_dir&gt;/scripthut_&lt;run_id&gt;_&lt;task_id&gt;.out</code>.</td>
+<td>Custom path for stdout log (Slurm/PBS only). If not set, defaults to <code>&lt;log_dir&gt;/scripthut_&lt;run_id&gt;_&lt;task_id&gt;.out</code>. Ignored on AWS Batch — logs are routed to CloudWatch.</td>
 </tr>
 <tr>
 <td><code>error_file</code></td>
 <td>no</td>
 <td>string</td>
 <td>auto</td>
-<td>Custom path for stderr log. If not set, defaults to <code>&lt;log_dir&gt;/scripthut_&lt;run_id&gt;_&lt;task_id&gt;.err</code>.</td>
+<td>Custom path for stderr log (Slurm/PBS only). If not set, defaults to <code>&lt;log_dir&gt;/scripthut_&lt;run_id&gt;_&lt;task_id&gt;.err</code>. Ignored on AWS Batch — stderr is merged into the CloudWatch stream.</td>
 </tr>
 <tr>
 <td><code>environment</code></td>
