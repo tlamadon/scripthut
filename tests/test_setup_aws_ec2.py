@@ -23,7 +23,12 @@ def test_embedded_template_matches_disk_copy():
     at cloudformation/scripthut-ec2-iam.yaml — otherwise the docs and the
     in-process setup script will drift."""
     on_disk = (REPO_ROOT / "cloudformation" / "scripthut-ec2-iam.yaml").read_text()
-    assert on_disk == IAM_TEMPLATE_BODY, (
+    # Normalize line endings: Windows git autocrlf checks out the Python
+    # source with \r\n, baking those into the triple-quoted IAM_TEMPLATE_BODY,
+    # while read_text() returns \n. Compare the logical contents.
+    def _lf(s: str) -> str:
+        return s.replace("\r\n", "\n")
+    assert _lf(on_disk) == _lf(IAM_TEMPLATE_BODY), (
         "Embedded IAM_TEMPLATE_BODY differs from cloudformation/scripthut-ec2-iam.yaml. "
         "Update both copies when changing the template."
     )
