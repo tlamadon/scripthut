@@ -22,10 +22,13 @@ def test_embedded_template_matches_disk_copy():
     """The template embedded in the Python module must match the disk copy
     at cloudformation/scripthut-ec2-iam.yaml — otherwise the docs and the
     in-process setup script will drift."""
-    on_disk = (REPO_ROOT / "cloudformation" / "scripthut-ec2-iam.yaml").read_text()
-    # Normalize line endings: Windows git autocrlf checks out the Python
-    # source with \r\n, baking those into the triple-quoted IAM_TEMPLATE_BODY,
-    # while read_text() returns \n. Compare the logical contents.
+    # Force UTF-8: read_text()'s default encoding is cp1252 on Windows, which
+    # mis-decodes the em-dashes in the template (Python source is always
+    # UTF-8). Also normalize line endings since git autocrlf may bake \r\n
+    # into the triple-quoted IAM_TEMPLATE_BODY when checking out on Windows.
+    on_disk = (REPO_ROOT / "cloudformation" / "scripthut-ec2-iam.yaml").read_text(
+        encoding="utf-8",
+    )
     def _lf(s: str) -> str:
         return s.replace("\r\n", "\n")
     assert _lf(on_disk) == _lf(IAM_TEMPLATE_BODY), (
