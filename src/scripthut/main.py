@@ -36,6 +36,7 @@ from scripthut.config_schema import (
 )
 from scripthut.models import ConnectionStatus, HPCJob, JobState
 from scripthut.runs import Run, RunManager
+from scripthut.runs.manager import DISAPPEARED_BEFORE_RUNNING_MARKER
 from scripthut.runs.models import RunItemStatus
 from scripthut.runs.storage import RunStorageManager
 from scripthut.config_schema import GitSourceConfig, PathSourceConfig
@@ -414,6 +415,22 @@ async def poll_backend(backend_state: BackendState, filter_user: str | None = No
                                 f"Corrected task '{item.task.id}' "
                                 f"(job {item.job_id}): {reason}"
                             )
+                        # Symmetric correction: an item we marked FAILED because
+                        # it vanished from the queue without ever being seen
+                        # running may actually have completed successfully —
+                        # this happens for ultra-fast jobs that finish between
+                        # two poll cycles. If sacct confirms COMPLETED, flip back.
+                        elif (
+                            s.state == "COMPLETED"
+                            and item.status == RunItemStatus.FAILED
+                            and item.error == DISAPPEARED_BEFORE_RUNNING_MARKER
+                        ):
+                            item.status = RunItemStatus.COMPLETED
+                            item.error = None
+                            logger.info(
+                                f"Corrected task '{item.task.id}' "
+                                f"(job {item.job_id}): sacct confirms COMPLETED"
+                            )
                         elif s.state:
                             logger.debug(
                                 f"sacct state for '{item.task.id}' "
@@ -767,6 +784,104 @@ async def _discover_path_source_workflows(source: PathSourceConfig) -> list[Sour
 
     logger.info(f"Discovered {len(workflows)} workflows in path source '{source.name}'")
     return workflows
+
+
+@dataclass
+class ReloadReport:
+    """Summary of which config sections were hot-reloaded vs require a restart."""
+
+    reloaded: list[str] = field(default_factory=list)
+    requires_restart: list[str] = field(default_factory=list)
+    counts: dict[str, int] = field(default_factory=dict)
+    messages: list[str] = field(default_factory=list)
+
+
+def _diff_named(
+    old_items: list[Any], new_items: list[Any]
+) -> tuple[set[str], set[str], set[str]]:
+    """Return (added, removed, modified) names for two lists of named pydantic models."""
+    old_map = {item.name: item.model_dump() for item in old_items}
+    new_map = {item.name: item.model_dump() for item in new_items}
+    added = set(new_map) - set(old_map)
+    removed = set(old_map) - set(new_map)
+    modified = {k for k in old_map.keys() & new_map.keys() if old_map[k] != new_map[k]}
+    return added, removed, modified
+
+
+def reload_runtime_config(new_config: ScriptHutConfig) -> ReloadReport:
+    """Apply a freshly parsed config to the running server, in-process.
+
+    Hot-reloadable: environments, workflows, projects, sources, most settings.
+    Backend changes are detected and reported but NOT applied (SSH connections
+    and the polling task are kept as-is to avoid losing in-flight job state).
+    Pricing service changes also require a restart.
+    """
+    report = ReloadReport()
+
+    if state.config is None:
+        # No prior config (config_error path). A full restart is the only
+        # safe way to bring up SSH backends, the polling loop, and the run
+        # manager — those are wired up in lifespan(), not here.
+        raise RuntimeError(
+            "Cannot hot-reload: server started without a valid config. Restart required."
+        )
+
+    old = state.config
+
+    added_b, removed_b, modified_b = _diff_named(old.backends, new_config.backends)
+    if added_b or removed_b or modified_b:
+        report.requires_restart.append("backends")
+        if added_b:
+            report.messages.append(f"Backends added (restart required): {sorted(added_b)}")
+        if removed_b:
+            report.messages.append(f"Backends removed (restart required): {sorted(removed_b)}")
+        if modified_b:
+            report.messages.append(f"Backends modified (restart required): {sorted(modified_b)}")
+
+    old_pricing = old.pricing.model_dump() if old.pricing else None
+    new_pricing = new_config.pricing.model_dump() if new_config.pricing else None
+    if old_pricing != new_pricing:
+        report.requires_restart.append("pricing")
+        report.messages.append("Pricing config changed (restart required)")
+
+    if old.settings.poll_interval != new_config.settings.poll_interval:
+        report.messages.append(
+            f"poll_interval changed ({old.settings.poll_interval} → "
+            f"{new_config.settings.poll_interval}); restart required for new interval"
+        )
+
+    state.config = new_config
+    set_config(new_config)
+    if state.run_manager is not None:
+        state.run_manager.config = new_config
+
+    state.filter_user = new_config.settings.filter_user
+    state.filter_enabled = new_config.settings.filter_user is not None
+
+    report.reloaded.extend(["environments", "workflows", "projects", "settings"])
+    report.counts["environments"] = len(new_config.environments)
+    report.counts["workflows"] = len(new_config.workflows)
+    report.counts["projects"] = len(new_config.projects)
+
+    previously_disabled = set(state.disabled_sources)
+    state.source_manager = GitSourceManager(new_config.settings.sources_cache_dir_resolved)
+    state.path_sources = []
+    state.source_workflows = {}
+    state.source_statuses = {}
+    new_source_names = {s.name for s in new_config.sources}
+    state.disabled_sources = previously_disabled & new_source_names
+    for source in new_config.sources:
+        if isinstance(source, GitSourceConfig):
+            state.source_manager.add_source(source)
+        elif isinstance(source, PathSourceConfig):
+            state.path_sources.append(source)
+    if new_config.sources:
+        asyncio.create_task(sync_sources_background())
+    report.reloaded.append("sources")
+    report.counts["sources"] = len(new_config.sources)
+
+    state.config_error = None
+    return report
 
 
 # Create FastAPI app
@@ -1615,6 +1730,8 @@ async def settings_page(request: Request, message: str = "", message_type: str =
     else:
         config_content = "# No configuration file found.\n# Create scripthut.yaml to get started."
 
+    sections = _section_summary()
+
     return templates.TemplateResponse(
         "settings.html",
         {
@@ -1624,13 +1741,60 @@ async def settings_page(request: Request, message: str = "", message_type: str =
             "editable": editable,
             "message": message,
             "message_type": message_type,
+            "sections": sections,
+            "can_hot_reload": state.config is not None,
         },
     )
 
 
+def _section_summary() -> dict[str, dict[str, Any]]:
+    """Build a per-section summary of the loaded config for the settings page.
+
+    Each entry is `{names: [...], hot_reload: bool, label: str}`. Used to show
+    the user which sections will hot-reload vs require a restart.
+    """
+    cfg = state.config
+    if cfg is None:
+        return {}
+    return {
+        "environments": {
+            "label": "Environments",
+            "names": [e.name for e in cfg.environments],
+            "hot_reload": True,
+        },
+        "workflows": {
+            "label": "Workflows",
+            "names": [w.name for w in cfg.workflows],
+            "hot_reload": True,
+        },
+        "projects": {
+            "label": "Projects",
+            "names": [p.name for p in cfg.projects],
+            "hot_reload": True,
+        },
+        "sources": {
+            "label": "Sources",
+            "names": [s.name for s in cfg.sources],
+            "hot_reload": True,
+        },
+        "backends": {
+            "label": "Backends",
+            "names": [b.name for b in cfg.backends],
+            "hot_reload": False,
+        },
+        "pricing": {
+            "label": "Pricing",
+            "names": (
+                [p.name for p in cfg.pricing.partitions] if cfg.pricing else []
+            ),
+            "hot_reload": False,
+        },
+    }
+
+
 @app.post("/settings", response_class=HTMLResponse)
 async def settings_save(request: Request) -> HTMLResponse:
-    """Save the YAML config file and optionally restart."""
+    """Save the YAML config file and optionally restart or hot-reload."""
     form = await request.form()
     config_content = form.get("config_content", "")
     action = form.get("action", "save")
@@ -1641,13 +1805,12 @@ async def settings_save(request: Request) -> HTMLResponse:
 
     config_path = config_path.resolve()
 
-    # Validate the YAML before saving
     import yaml
     try:
         raw = yaml.safe_load(config_content)
         if raw is None:
             raw = {}
-        ScriptHutConfig.model_validate(raw)
+        new_config = ScriptHutConfig.model_validate(raw)
     except Exception as e:
         return await settings_page(
             request,
@@ -1655,20 +1818,68 @@ async def settings_save(request: Request) -> HTMLResponse:
             message_type="error",
         )
 
-    # Write the file
     try:
         config_path.write_text(config_content)
     except OSError as e:
         return await settings_page(request, message=f"Failed to save: {e}", message_type="error")
 
     if action == "save_restart":
-        # Reload config and trigger server restart via os.execv
         message = "Configuration saved. Restarting server..."
-        # Schedule the restart after returning the response
         asyncio.get_event_loop().call_later(0.5, _restart_server)
         return await settings_page(request, message=message, message_type="warning")
 
+    if action == "save_reload":
+        try:
+            report = reload_runtime_config(new_config)
+        except Exception as e:
+            return await settings_page(
+                request,
+                message=f"Saved, but hot-reload failed: {e}. Restart to apply.",
+                message_type="error",
+            )
+        parts = [f"Reloaded {', '.join(report.reloaded)}."]
+        if report.requires_restart:
+            parts.append(
+                f"Restart required for: {', '.join(report.requires_restart)}."
+            )
+        parts.extend(report.messages)
+        msg_type = "warning" if report.requires_restart else "success"
+        return await settings_page(request, message=" ".join(parts), message_type=msg_type)
+
     return await settings_page(request, message="Configuration saved successfully.", message_type="success")
+
+
+@app.post("/admin/reload")
+async def admin_reload() -> JSONResponse:
+    """Re-read scripthut.yaml from disk and hot-reload safe sections.
+
+    Reloads environments, workflows, projects, sources, and most settings
+    in-process. Backend connection changes still require a server restart.
+    """
+    try:
+        path = find_config_file(_config_path)
+        if path is None:
+            return JSONResponse(
+                {"ok": False, "error": "No config file found"}, status_code=404
+            )
+        new_config = load_yaml_config(path)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+
+    try:
+        report = reload_runtime_config(new_config)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=409)
+
+    return JSONResponse(
+        {
+            "ok": True,
+            "reloaded": report.reloaded,
+            "requires_restart": report.requires_restart,
+            "counts": report.counts,
+            "messages": report.messages,
+        }
+    )
 
 
 def _restart_server() -> None:

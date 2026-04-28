@@ -82,23 +82,65 @@
                 ></textarea>
 
                 {% if editable %}
-                <div class="flex items-center gap-3 mt-4">
+                <div class="flex flex-wrap items-center gap-3 mt-4">
                     <button type="submit" name="action" value="save"
                         class="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-colors">
                         Save
                     </button>
+                    {% if can_hot_reload %}
+                    <button type="submit" name="action" value="save_reload"
+                        class="px-4 py-2 bg-emerald-600 text-white text-sm font-medium rounded-lg hover:bg-emerald-700 transition-colors"
+                        title="Save and hot-reload environments, workflows, projects, and sources without restarting.">
+                        Save &amp; Reload
+                    </button>
+                    {% endif %}
                     <button type="submit" name="action" value="save_restart"
                         class="px-4 py-2 bg-orange-600 text-white text-sm font-medium rounded-lg hover:bg-orange-700 transition-colors"
                         onclick="return confirm('This will save the config and restart the server. Continue?')">
                         Save &amp; Restart
                     </button>
-                    <span class="text-xs text-gray-400">Changes to most settings require a restart to take effect.</span>
+                    <span class="text-xs text-gray-400">Backend changes still require a restart.</span>
                 </div>
                 {% else %}
                 <p class="mt-4 text-sm text-gray-500">Configuration file is read-only (no file found or not writable).</p>
                 {% endif %}
             </form>
         </div>
+
+        {% if sections %}
+        <div class="bg-white rounded-lg shadow-md p-6 mt-6">
+            <div class="flex items-center justify-between mb-4">
+                <h2 class="text-lg font-semibold text-gray-800">Loaded sections</h2>
+                <span class="text-xs text-gray-500">
+                    <span class="inline-block w-2 h-2 rounded-full bg-emerald-500 mr-1"></span>hot-reloadable
+                    <span class="inline-block w-2 h-2 rounded-full bg-orange-500 ml-3 mr-1"></span>requires restart
+                </span>
+            </div>
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {% for key, section in sections.items() %}
+                <div class="border border-gray-200 rounded-lg p-3">
+                    <div class="flex items-center justify-between mb-2">
+                        <div class="flex items-center gap-2">
+                            <span class="inline-block w-2 h-2 rounded-full
+                                {% if section.hot_reload %}bg-emerald-500{% else %}bg-orange-500{% endif %}"></span>
+                            <span class="font-medium text-sm text-gray-800">{{ section.label }}</span>
+                            <span class="text-xs text-gray-400">({{ section.names|length }})</span>
+                        </div>
+                    </div>
+                    {% if section.names %}
+                    <ul class="text-xs text-gray-600 space-y-0.5 max-h-32 overflow-auto">
+                        {% for name in section.names %}
+                        <li class="truncate font-mono">{{ name }}</li>
+                        {% endfor %}
+                    </ul>
+                    {% else %}
+                    <p class="text-xs text-gray-400 italic">none defined</p>
+                    {% endif %}
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
     </div>
 
     <script>
