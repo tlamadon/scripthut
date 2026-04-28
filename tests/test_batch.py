@@ -291,9 +291,9 @@ class TestSubmitTask:
         backend._batch_client.submit_job.return_value = {"jobId": "job-xyz"}
 
         task = _make_task(cpus=4, memory="8G", gres="gpu:2", time_limit="2:00:00")
-        job_id = await backend.submit_task(task, "#!/bin/bash\necho hi\n")
+        result = await backend.submit_task(task, "#!/bin/bash\necho hi\n")
 
-        assert job_id == "job-xyz"
+        assert result.job_id == "job-xyz"
 
         kwargs = backend._batch_client.submit_job.call_args.kwargs
         assert kwargs["jobName"] == "my-task"

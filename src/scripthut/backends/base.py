@@ -24,6 +24,21 @@ class JobStats:
 
 
 @dataclass
+class SubmitResult:
+    """Outcome of a task submission to a backend.
+
+    ``submit_output`` carries the raw stdout/stderr from the submission
+    command (sbatch/qsub/AWS API response).  Stored on the run item so the
+    user can inspect what the scheduler actually said even on apparent
+    success — useful when the parsed job ID looks fine but the job never
+    enters the queue.
+    """
+
+    job_id: str
+    submit_output: str = ""
+
+
+@dataclass
 class DiskInfo:
     """Disk usage for a path on the backend filesystem."""
 
@@ -78,7 +93,7 @@ class JobBackend(ABC):
         task: "TaskDefinition",
         script: str,
         env_vars: dict[str, str] | None = None,
-    ) -> str:
+    ) -> SubmitResult:
         """Submit a task with its full context.
 
         Default implementation forwards to :meth:`submit_job`, which is
@@ -87,8 +102,12 @@ class JobBackend(ABC):
         (e.g. AWS Batch) override this to use structured task metadata and
         pass ``env_vars`` through the API (e.g. ``containerOverrides.environment``)
         so the container's entrypoint sees them before the script runs.
+
+        Returns a :class:`SubmitResult` so backends can additionally surface
+        raw stdout/stderr from the submission command for diagnostics.
         """
-        return await self.submit_job(script)
+        job_id = await self.submit_job(script)
+        return SubmitResult(job_id=job_id)
 
     @abstractmethod
     async def cancel_job(self, job_id: str) -> None:

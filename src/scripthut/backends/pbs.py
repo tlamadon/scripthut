@@ -8,11 +8,12 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
-from scripthut.backends.base import DiskInfo, JobBackend, JobStats
+from scripthut.backends.base import DiskInfo, JobBackend, JobStats, SubmitResult
 from scripthut.backends.utils import (
     fetch_disk_info,
     fetch_log_via_ssh,
     format_bytes,
+    format_submit_output,
     generate_script_body,
     parse_duration_hms,
     parse_rss_to_bytes,
@@ -602,15 +603,65 @@ class PBSBackend(JobBackend):
         return await fetch_log_via_ssh(self._ssh, log_path, tail_lines)
 
     async def submit_job(self, script: str) -> str:
-        """Submit a job script via qsub. Returns the PBS job ID."""
+        """Submit a job script via qsub and return the parsed PBS job ID."""
+        result = await self._submit_and_verify(script)
+        return result.job_id
+
+    async def _submit_and_verify(self, script: str) -> SubmitResult:
+        """Run qsub, parse the job ID strictly, and verify PBS accepted it.
+
+        Captures stdout/stderr so users can inspect the raw qsub response
+        even when submission appeared successful.
+        """
         escaped_script = script.replace("'", "'\\''")
         submit_cmd = f"qsub <<'SCRIPTHUT_EOF'\n{escaped_script}\nSCRIPTHUT_EOF"
         stdout, stderr, exit_code = await self._ssh.run_command(submit_cmd)
+        combined = format_submit_output(stdout, stderr)
+
         if exit_code != 0:
-            raise RuntimeError(f"qsub failed: {stderr}")
-        # qsub output: "12345.pbs-server" or just "12345"
-        raw_id = stdout.strip().split("\n")[-1].strip()
-        return _strip_server_suffix(raw_id)
+            raise RuntimeError(f"qsub failed (exit {exit_code}): {combined}")
+
+        # qsub output: "12345.pbs-server" or just "12345" — pick the first
+        # token that starts with digits.  Tolerates extra warnings before/after.
+        match = re.search(r"\b(\d+(?:\.\S+)?)\b", stdout)
+        if not match:
+            raise RuntimeError(
+                f"Could not parse job ID from qsub output: {combined}"
+            )
+        job_id = _strip_server_suffix(match.group(1))
+
+        verified = await self._verify_job_accepted(job_id)
+        if not verified:
+            raise RuntimeError(
+                f"qsub returned job ID {job_id} but PBS does not recognize it "
+                f"— the job likely never entered the queue. qsub output: {combined}"
+            )
+
+        return SubmitResult(job_id=job_id, submit_output=combined)
+
+    async def _verify_job_accepted(self, job_id: str) -> bool:
+        """Return True if PBS recognizes ``job_id`` (qstat or qstat -x)."""
+        # qstat -f returns 0 with details if job exists in the active queue;
+        # qstat -xf also includes recently completed jobs (PBS Pro).
+        for cmd in (f"qstat -f {job_id}", f"qstat -xf {job_id}"):
+            try:
+                stdout, _, exit_code = await self._ssh.run_command(cmd, timeout=15)
+            except Exception as e:
+                logger.warning(f"qstat verify failed for {job_id} via '{cmd}': {e}")
+                continue
+            if exit_code == 0 and stdout.strip():
+                return True
+        return False
+
+    async def submit_task(
+        self,
+        task: TaskDefinition,
+        script: str,
+        env_vars: dict[str, str] | None = None,
+    ) -> SubmitResult:
+        """Submit a PBS task, returning the captured qsub output."""
+        del task, env_vars  # script carries everything PBS needs
+        return await self._submit_and_verify(script)
 
     async def cancel_job(self, job_id: str) -> None:
         """Cancel a PBS job via qdel."""

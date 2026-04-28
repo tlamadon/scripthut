@@ -27,7 +27,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from scripthut.backends.base import JobBackend, JobStats
+from scripthut.backends.base import JobBackend, JobStats, SubmitResult
 from scripthut.backends.ec2_ssm import SSMSSHSession
 from scripthut.backends.utils import (
     fetch_log_via_ssh,
@@ -148,7 +148,7 @@ class EC2Backend(JobBackend):
         task: TaskDefinition,
         script: str,
         env_vars: dict[str, str] | None = None,
-    ) -> str:
+    ) -> SubmitResult:
         if len(self._instances) >= self._config.max_instances:
             raise RuntimeError(
                 f"EC2 backend '{self.name}' is at max_instances "
@@ -208,7 +208,10 @@ class EC2Backend(JobBackend):
             f"Launched EC2 {instance_id} ({instance_type}) for task "
             f"'{task.id}' (backend '{self.name}')"
         )
-        return instance_id
+        submit_output = (
+            f"EC2 instance={instance_id} type={instance_type} az={az or '-'}"
+        )
+        return SubmitResult(job_id=instance_id, submit_output=submit_output)
 
     def _instance_type_for(self, task: TaskDefinition) -> str:
         partition = (task.partition or "").strip()

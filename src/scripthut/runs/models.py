@@ -166,6 +166,7 @@ class RunItem:
     finished_at: datetime | None = None
     error: str | None = None
     submit_script: str | None = None  # The generated submission script
+    submit_output: str | None = None  # Raw stdout/stderr from sbatch/qsub/etc
     # Resource utilization (from scheduler accounting)
     cpu_efficiency: float | None = None  # 0-100%
     max_rss: str | None = None  # Peak memory, e.g. "1.2G"
@@ -182,6 +183,7 @@ class RunItem:
             "finished_at": self.finished_at.isoformat() if self.finished_at else None,
             "error": self.error,
             "submit_script": self.submit_script,
+            "submit_output": self.submit_output,
             "cpu_efficiency": self.cpu_efficiency,
             "max_rss": self.max_rss,
             "scheduler_state": self.scheduler_state,
@@ -208,6 +210,7 @@ class RunItem:
             finished_at=parse_dt(data.get("finished_at")),
             error=data.get("error"),
             submit_script=data.get("submit_script") or data.get("sbatch_script"),
+            submit_output=data.get("submit_output"),
             cpu_efficiency=data.get("cpu_efficiency"),
             max_rss=data.get("max_rss"),
             scheduler_state=data.get("scheduler_state") or data.get("sacct_state"),

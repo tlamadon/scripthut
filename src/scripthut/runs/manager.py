@@ -35,6 +35,13 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Marker stored on ``item.error`` when a SUBMITTED job vanishes from the
+# scheduler queue without ever being observed RUNNING.  Used by the polling
+# layer to flip the item back to COMPLETED if the accounting DB later
+# confirms it actually ran successfully (covers ultra-fast jobs that finish
+# between two poll cycles).
+DISAPPEARED_BEFORE_RUNNING_MARKER = "Job vanished before being observed running"
+
 
 async def _run_local_shell(command: str, timeout: float = 60.0) -> tuple[str, str, int]:
     """Run ``command`` locally (``sh -c``) and return ``(stdout, stderr, exit_code)``.
@@ -1131,6 +1138,7 @@ class RunManager:
             item.finished_at = None
             item.error = None
             item.submit_script = None
+            item.submit_output = None
             item.cpu_efficiency = None
             item.max_rss = None
             item.scheduler_state = None
@@ -1276,18 +1284,20 @@ class RunManager:
         item.submit_script = script
 
         try:
-            job_id = await job_backend.submit_task(
+            result = await job_backend.submit_task(
                 item.task, script, env_vars=merged_env,
             )
-            item.job_id = job_id
+            item.job_id = result.job_id
+            item.submit_output = result.submit_output or None
             item.status = RunItemStatus.SUBMITTED
             item.submitted_at = datetime.now(timezone.utc)
-            logger.info(f"Submitted task '{item.task.id}' as job {job_id}")
+            logger.info(f"Submitted task '{item.task.id}' as job {result.job_id}")
             self._persist_run(run)
             return True
         except RuntimeError as e:
             item.status = RunItemStatus.FAILED
             item.error = str(e)
+            item.submit_output = item.submit_output or str(e)
             item.finished_at = datetime.now(timezone.utc)
             logger.error(f"Failed to submit task '{item.task.id}': {e}")
             self._persist_run(run)
@@ -1415,8 +1425,9 @@ class RunManager:
             job_state = slurm_jobs.get(item.job_id)
 
             if job_state is None:
-                if item.status in (RunItemStatus.SUBMITTED, RunItemStatus.RUNNING):
-                    item.started_at = item.started_at or item.submitted_at
+                if item.status == RunItemStatus.RUNNING:
+                    # We saw it run; gone now means it finished. sacct may
+                    # later flip this to FAILED if it was actually a failure.
                     item.status = RunItemStatus.COMPLETED
                     item.finished_at = datetime.now(timezone.utc)
                     changed = True
@@ -1424,6 +1435,23 @@ class RunManager:
                     logger.info(f"Task '{item.task.id}' (job {item.job_id}) completed")
                     if item.task.generates_source:
                         await self._handle_generates_source(run, item)
+                elif item.status == RunItemStatus.SUBMITTED:
+                    # Never seen running and now missing from the queue —
+                    # the job most likely never made it past sbatch validation
+                    # or was rejected by the scheduler. Mark FAILED so the
+                    # user gets a loud signal; the polling layer will revert
+                    # this if sacct confirms the job actually ran fine
+                    # (e.g. an ultra-fast job that finished between polls).
+                    item.started_at = item.submitted_at
+                    item.status = RunItemStatus.FAILED
+                    item.error = DISAPPEARED_BEFORE_RUNNING_MARKER
+                    item.finished_at = datetime.now(timezone.utc)
+                    changed = True
+                    changed_items.append(item)
+                    logger.warning(
+                        f"Task '{item.task.id}' (job {item.job_id}) vanished from "
+                        f"queue before being observed running — marking FAILED"
+                    )
             else:
                 if job_state in (JobState.RUNNING, JobState.COMPLETING):
                     if item.status != RunItemStatus.RUNNING:

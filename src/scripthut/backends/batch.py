@@ -9,7 +9,7 @@ import re
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
-from scripthut.backends.base import JobBackend, JobStats
+from scripthut.backends.base import JobBackend, JobStats, SubmitResult
 from scripthut.backends.utils import generate_script_body
 from scripthut.models import HPCJob, JobState
 
@@ -308,7 +308,7 @@ class BatchBackend(JobBackend):
         task: TaskDefinition,
         script: str,
         env_vars: dict[str, str] | None = None,
-    ) -> str:
+    ) -> SubmitResult:
         """Submit one Batch job for a task.
 
         If ``job_definition`` is configured on the backend, that definition
@@ -367,7 +367,11 @@ class BatchBackend(JobBackend):
         logger.info(
             f"Submitted task '{task.id}' to Batch queue '{queue}' as job {job_id}"
         )
-        return job_id
+        # Capture the queue + jobDefinition we submitted against for diagnostics.
+        submit_output = (
+            f"Batch jobId={job_id} queue={queue} jobDefinition={job_def}"
+        )
+        return SubmitResult(job_id=job_id, submit_output=submit_output)
 
     async def _resolve_job_definition(self, task: TaskDefinition) -> str:
         """Return the Batch jobDefinition string to submit against.

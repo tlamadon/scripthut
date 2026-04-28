@@ -164,11 +164,11 @@ class TestSubmit:
             }],
         }
         task = _make_task(partition="gpu")
-        iid = await backend.submit_task(
+        result = await backend.submit_task(
             task, "#!/bin/bash\necho hi\n",
             env_vars={"SCRIPTHUT_RUN_ID": "run-xyz"},
         )
-        assert iid == "i-abc123"
+        assert result.job_id == "i-abc123"
 
         kwargs = backend._ec2_client.run_instances.call_args.kwargs
         assert kwargs["ImageId"] == "ami-0123456789abcdef0"

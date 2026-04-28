@@ -13,6 +13,22 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def format_submit_output(stdout: str, stderr: str) -> str:
+    """Combine submission-command stdout/stderr into a single diagnostic blob.
+
+    Stored on ``RunItem.submit_output`` so users can see exactly what
+    sbatch/qsub/etc said even when submission appeared to succeed.
+    """
+    parts: list[str] = []
+    out = (stdout or "").strip()
+    err = (stderr or "").strip()
+    if out:
+        parts.append(f"stdout: {out}")
+    if err:
+        parts.append(f"stderr: {err}")
+    return " | ".join(parts)
+
+
 def parse_duration_hms(time_str: str) -> float:
     """Parse duration string to total seconds.
 
