@@ -21,6 +21,7 @@ from scripthut.config_schema import (
     WorkflowConfig,
 )
 from scripthut.models import JobState
+from scripthut.runs.env import resolve_for_task
 from scripthut.runs.models import (
     Run,
     RunItem,
@@ -88,56 +89,35 @@ class RunManager:
         self._run_events: dict[str, asyncio.Event] = {}
 
     def _resolve_environment(
-        self, task: TaskDefinition
-    ) -> tuple[dict[str, str] | None, str]:
-        """Resolve environment config for a task.
+        self, run: Run, task: TaskDefinition
+    ) -> tuple[dict[str, str], str]:
+        """Resolve env vars and extra_init for a task in the context of a run.
 
-        Merges named environment variables (from config) with per-task
-        env_vars specified by the generator.  Per-task values override
-        named-environment values when keys collide.
+        Chains backend → server → workflow → task env rules and applies them
+        against a seed of SCRIPTHUT_* runtime variables. Returns the fully
+        merged env dict (ready to pass to ``generate_script``) and the
+        concatenated extra_init bash text.
         """
-        env_vars: dict[str, str] = {}
-        extra_init = ""
-
-        # Named environment from config
-        if task.environment:
-            env_config = self.config.get_environment(task.environment)
-            if env_config is None:
-                logger.warning(
-                    f"Task '{task.id}' references unknown environment '{task.environment}'"
-                )
-            else:
-                env_vars.update(env_config.variables)
-                extra_init = env_config.extra_init
-
-        # Per-task env_vars from generator (override named env)
-        if task.env_vars:
-            env_vars.update(task.env_vars)
-
-        return env_vars or None, extra_init
-
-    @staticmethod
-    def _scripthut_env_vars(
-        workflow_name: str,
-        run_id: str,
-        created_at: datetime,
-        git_repo: str | None = None,
-        git_branch: str | None = None,
-        git_sha: str | None = None,
-    ) -> dict[str, str]:
-        """Return standard SCRIPTHUT_* environment variables for a job."""
-        env = {
-            "SCRIPTHUT_WORKFLOW": workflow_name,
-            "SCRIPTHUT_RUN_ID": run_id,
-            "SCRIPTHUT_CREATED_AT": created_at.isoformat(),
-        }
-        if git_repo is not None:
-            env["SCRIPTHUT_GIT_REPO"] = git_repo
-        if git_branch is not None:
-            env["SCRIPTHUT_GIT_BRANCH"] = git_branch
-        if git_sha is not None:
-            env["SCRIPTHUT_GIT_SHA"] = git_sha
-        return env
+        # Prefer git info stored on the run; fall back to the workflow config
+        # for older runs that predate the run-level fields.
+        git_repo = run.git_repo
+        git_branch = run.git_branch
+        if git_repo is None:
+            workflow = self.config.get_workflow(run.workflow_name)
+            if workflow and workflow.git:
+                git_repo = workflow.git.repo
+                git_branch = workflow.git.branch
+        return resolve_for_task(
+            self.config,
+            backend_name=run.backend_name,
+            workflow_name=run.workflow_name,
+            run_id=run.id,
+            created_at=run.created_at,
+            task=task,
+            git_repo=git_repo,
+            git_branch=git_branch,
+            git_sha=run.commit_hash,
+        )
 
     @staticmethod
     def _resolve_wildcard_deps(tasks: list[TaskDefinition]) -> None:
@@ -535,17 +515,27 @@ class RunManager:
             return tasks, stdout
         return tasks
 
-    async def dry_run(self, workflow_name: str) -> dict:
-        """Perform a dry run - fetch tasks and show what would be submitted."""
+    async def dry_run(
+        self, workflow_name: str, *, backend: str | None = None,
+    ) -> dict:
+        """Perform a dry run - fetch tasks and show what would be submitted.
+
+        ``backend`` overrides the workflow's configured backend (mirrors
+        the same flag on ``create_run``).
+        """
         workflow = self.get_workflow(workflow_name)
         if workflow is None:
             raise ValueError(f"Workflow '{workflow_name}' not found")
+
+        if backend and self.config.get_backend(backend) is None:
+            raise ValueError(f"Backend '{backend}' not found in config")
+        backend_name = backend or workflow.backend
 
         # Clone git repo on backend if configured
         clone_dir: str | None = None
         commit_hash: str | None = None
         if workflow.git is not None:
-            ssh_client = self.get_ssh_client(workflow.backend)
+            ssh_client = self.get_ssh_client(backend_name)
             if ssh_client is not None:
                 clone_dir, commit_hash = await self._ensure_repo_cloned(
                     ssh_client, workflow
@@ -569,28 +559,33 @@ class RunManager:
         preview_run_id = "preview"
         log_dir = "~/.cache/scripthut/logs"
 
-        ssh_client = self.get_ssh_client(workflow.backend)
+        ssh_client = self.get_ssh_client(backend_name)
         if ssh_client and log_dir.startswith("~"):
             stdout, _, _ = await ssh_client.run_command("echo $HOME")
             home_dir = stdout.strip()
             log_dir = log_dir.replace("~", home_dir, 1)
 
-        account = self.get_backend_account(workflow.backend)
-        login_shell = self.get_backend_login_shell(workflow.backend)
+        account = self.get_backend_account(backend_name)
+        login_shell = self.get_backend_login_shell(backend_name)
 
         preview_created_at = datetime.now(timezone.utc)
         git_repo = workflow.git.repo if workflow.git else None
         git_branch = workflow.git.branch if workflow.git else None
-        job_backend = self.get_job_backend(workflow.backend)
+        job_backend = self.get_job_backend(backend_name)
 
         task_details = []
         for task in tasks:
-            env_vars, extra_init = self._resolve_environment(task)
-            sh_vars = self._scripthut_env_vars(
-                workflow_name, preview_run_id, preview_created_at,
-                git_repo=git_repo, git_branch=git_branch, git_sha=commit_hash,
+            merged_env, extra_init = resolve_for_task(
+                self.config,
+                backend_name=backend_name,
+                workflow_name=workflow_name,
+                run_id=preview_run_id,
+                created_at=preview_created_at,
+                task=task,
+                git_repo=git_repo,
+                git_branch=git_branch,
+                git_sha=commit_hash,
             )
-            merged_env = {**sh_vars, **(env_vars or {})}
             if job_backend:
                 script = job_backend.generate_script(
                     task, preview_run_id, log_dir,
@@ -619,7 +614,7 @@ class RunManager:
 
         return {
             "workflow": workflow,
-            "backend_name": workflow.backend,
+            "backend_name": backend_name,
             "task_count": len(tasks),
             "max_concurrent": workflow.max_concurrent,
             "account": account,
@@ -711,17 +706,28 @@ class RunManager:
 
         return run
 
-    async def create_run(self, workflow_name: str) -> Run:
-        """Create a new run from a workflow."""
+    async def create_run(
+        self, workflow_name: str, *, backend: str | None = None,
+    ) -> Run:
+        """Create a new run from a workflow.
+
+        ``backend`` overrides the workflow's configured backend at submit
+        time (e.g. to retarget a Slurm workflow at a PBS cluster).  The
+        backend must exist in the config and have an available driver.
+        """
         workflow = self.get_workflow(workflow_name)
         if workflow is None:
             raise ValueError(f"Workflow '{workflow_name}' not found")
 
-        ssh_client = self.get_ssh_client(workflow.backend)
-        job_backend = self.get_job_backend(workflow.backend)
+        backend_name = backend or workflow.backend
+        if backend and self.config.get_backend(backend) is None:
+            raise ValueError(f"Backend '{backend}' not found in config")
+
+        ssh_client = self.get_ssh_client(backend_name)
+        job_backend = self.get_job_backend(backend_name)
         if ssh_client is None and job_backend is None:
             raise ValueError(
-                f"Backend '{workflow.backend}' is not available"
+                f"Backend '{backend_name}' is not available"
             )
 
         # Clone git repo on the backend if configured and SSH-capable.
@@ -748,7 +754,7 @@ class RunManager:
         git_repo = workflow.git.repo if workflow.git is not None else None
         git_branch = workflow.git.branch if workflow.git is not None else None
         run = await self._build_run(
-            tasks, workflow_name, workflow.backend, workflow.max_concurrent, ssh_client,
+            tasks, workflow_name, backend_name, workflow.max_concurrent, ssh_client,
             git_repo=git_repo, git_branch=git_branch, commit_hash=commit_hash,
         )
         return run
@@ -1070,11 +1076,14 @@ class RunManager:
 
         task_details = []
         for task in tasks:
-            env_vars, extra_init = self._resolve_environment(task)
-            sh_vars = self._scripthut_env_vars(
-                workflow_name, preview_run_id, preview_created_at,
+            merged_env, extra_init = resolve_for_task(
+                self.config,
+                backend_name=backend_name,
+                workflow_name=workflow_name,
+                run_id=preview_run_id,
+                created_at=preview_created_at,
+                task=task,
             )
-            merged_env = {**sh_vars, **(env_vars or {})}
             if job_backend:
                 script = job_backend.generate_script(
                     task, preview_run_id, log_dir,
@@ -1179,17 +1188,24 @@ class RunManager:
         return paths
 
     async def create_run_from_project(
-        self, project_name: str, workflow_path: str
+        self, project_name: str, workflow_path: str, *, backend: str | None = None,
     ) -> Run:
-        """Create a run from a sflow.json in a project repo."""
+        """Create a run from a sflow.json in a project repo.
+
+        ``backend`` overrides the project's configured backend.
+        """
         project = self.config.get_project(project_name)
         if project is None:
             raise ValueError(f"Project '{project_name}' not found")
 
-        ssh_client = self.get_ssh_client(project.backend)
+        if backend and self.config.get_backend(backend) is None:
+            raise ValueError(f"Backend '{backend}' not found in config")
+        backend_name = backend or project.backend
+
+        ssh_client = self.get_ssh_client(backend_name)
         if ssh_client is None:
             raise ValueError(
-                f"No SSH connection to backend '{project.backend}'"
+                f"No SSH connection to backend '{backend_name}'"
             )
 
         full_path = f"{project.path}/{workflow_path}"
@@ -1230,7 +1246,7 @@ class RunManager:
         )
 
         return await self._build_run(
-            tasks, workflow_name, project.backend, project.max_concurrent,
+            tasks, workflow_name, backend_name, project.max_concurrent,
             ssh_client
         )
 
@@ -1260,22 +1276,7 @@ class RunManager:
                 log_dir = log_dir.replace("~", home_dir, 1)
             await ssh_client.run_command(f"mkdir -p {log_dir}")
 
-        env_vars, extra_init = self._resolve_environment(item.task)
-        # Prefer git info stored on the run (set for both git workflows and
-        # git-source runs).  Fall back to the workflow config for older runs
-        # that predate the run-level fields.
-        git_repo = run.git_repo
-        git_branch = run.git_branch
-        if git_repo is None:
-            workflow = self.config.get_workflow(run.workflow_name)
-            if workflow and workflow.git:
-                git_repo = workflow.git.repo
-                git_branch = workflow.git.branch
-        sh_vars = self._scripthut_env_vars(
-            run.workflow_name, run.id, run.created_at,
-            git_repo=git_repo, git_branch=git_branch, git_sha=run.commit_hash,
-        )
-        merged_env = {**sh_vars, **(env_vars or {})}
+        merged_env, extra_init = self._resolve_environment(run, item.task)
         script = job_backend.generate_script(
             item.task, run.id, log_dir,
             account=run.account, login_shell=run.login_shell,

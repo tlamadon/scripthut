@@ -139,6 +139,10 @@
                                 style="display:none;">
                                 Generated
                             </button>
+                            <button onclick="loadDetailContent('env')" id="dtab-env"
+                                class="px-4 py-2.5 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300">
+                                Env
+                            </button>
                         </div>
                         <div class="flex items-center gap-2">
                             <div id="detail-tail-controls" class="flex items-center gap-1.5">
@@ -365,6 +369,11 @@
             if (!_detailTaskId) return;
             updateDetailTabs();
 
+            if (_detailType === 'env') {
+                fetchEnvDetail();
+                return;
+            }
+
             var url = '/runs/' + _detailRunId + '/tasks/' + encodeURIComponent(_detailTaskId) + '/detail/' + _detailType;
             if (_detailType === 'output' || _detailType === 'error') {
                 var tail = document.getElementById('detail-tail-select').value;
@@ -432,7 +441,7 @@
         function updateDetailTabs() {
             var activeClass = 'px-4 py-2.5 text-sm font-medium border-b-2 border-blue-500 text-blue-600';
             var inactiveClass = 'px-4 py-2.5 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300';
-            ['output', 'error', 'script', 'json', 'generated'].forEach(function (t) {
+            ['output', 'error', 'script', 'json', 'generated', 'env'].forEach(function (t) {
                 var el = document.getElementById('dtab-' + t);
                 if (el && el.style.display !== 'none') {
                     el.className = (t === _detailType) ? activeClass : inactiveClass;
@@ -440,6 +449,65 @@
             });
             document.getElementById('detail-tail-controls').style.display =
                 (_detailType === 'output' || _detailType === 'error') ? '' : 'none';
+        }
+
+        function fetchEnvDetail() {
+            var url = '/runs/' + _detailRunId + '/tasks/' + encodeURIComponent(_detailTaskId) + '/env';
+            document.getElementById('detail-content').textContent = 'Loading...';
+            document.getElementById('detail-error').style.display = 'none';
+
+            fetch(url)
+                .then(function (r) { return r.json(); })
+                .then(function (data) {
+                    if (data.error) {
+                        document.getElementById('detail-error').textContent = data.error;
+                        document.getElementById('detail-error').style.display = '';
+                        document.getElementById('detail-content').textContent = '';
+                        return;
+                    }
+                    document.getElementById('detail-error').style.display = 'none';
+
+                    var header = document.getElementById('detail-header');
+                    header.innerHTML = '<h2 class="text-sm font-semibold text-gray-800">Resolved environment</h2>'
+                        + '<p class="text-xs text-gray-400">backend → server → workflow → task (later wins). '
+                        + Object.keys(data.vars).length + ' keys, '
+                        + (data.extra_init ? data.extra_init.split("\n").length + ' init lines' : 'no init')
+                        + '</p>';
+
+                    var lines = [];
+                    var keys = Object.keys(data.vars).sort();
+                    keys.forEach(function (k) {
+                        var entry = data.vars[k];
+                        lines.push(k + ' = ' + entry.value);
+                        entry.ops.forEach(function (op) {
+                            var pad = '  ';
+                            var src = padRight(op.source, 28);
+                            var operation = padRight(op.op, 7);
+                            lines.push(pad + src + ' ' + operation + ' ' + op.contribution);
+                        });
+                        lines.push('');
+                    });
+
+                    if (data.extra_init) {
+                        lines.push('────────  extra_init  ────────');
+                        lines.push(data.extra_init);
+                    }
+
+                    document.getElementById('detail-content').textContent = lines.join('\n');
+
+                    // Hide buttons not relevant for env view
+                    document.getElementById('detail-attach-btn').style.display = 'none';
+                    document.getElementById('detail-debug-btn').style.display = 'none';
+                })
+                .catch(function (err) {
+                    document.getElementById('detail-content').textContent = 'Error loading env: ' + err;
+                });
+        }
+
+        function padRight(s, n) {
+            s = String(s);
+            while (s.length < n) s += ' ';
+            return s;
         }
 
         function copyDetailContent() {

@@ -6,12 +6,12 @@ import json
 import logging
 import os
 import time
-
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, AsyncGenerator
+from typing import Any
 
 import asyncssh
 import uvicorn
@@ -20,56 +20,33 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.templating import Jinja2Templates
 from sse_starlette.sse import EventSourceResponse
 
-from scripthut.backends.base import JobBackend, JobStats
-from scripthut.ssh.command_log import CommandLog
-from scripthut.backends.batch import BatchBackend
-from scripthut.backends.ec2 import EC2Backend
-from scripthut.backends.pbs import PBSBackend
-from scripthut.backends.slurm import SlurmBackend
+from scripthut import __version__
+from scripthut.backends.base import JobStats
 from scripthut.config import find_config_file, load_config, load_yaml_config, set_config
 from scripthut.config_schema import (
-    BatchBackendConfig,
-    EC2BackendConfig,
-    PBSBackendConfig,
+    GitSourceConfig,
+    PathSourceConfig,
     ScriptHutConfig,
-    SlurmBackendConfig,
 )
 from scripthut.models import ConnectionStatus, HPCJob, JobState
 from scripthut.runs import Run, RunManager
 from scripthut.runs.manager import DISAPPEARED_BEFORE_RUNNING_MARKER
 from scripthut.runs.models import RunItemStatus
 from scripthut.runs.storage import RunStorageManager
-from scripthut.config_schema import GitSourceConfig, PathSourceConfig
+from scripthut.runtime import (
+    BackendState,
+    Runtime,
+    init_runtime,
+    shutdown_runtime,
+)
 from scripthut.sources.git import GitSourceManager, SourceStatus, SourceWorkflow
-from scripthut import __version__
-from scripthut.ssh.client import SSHClient
-from scripthut.terminal import TerminalManager, handle_terminal_websocket
-
+from scripthut.terminal import TerminalManager
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class BackendState:
-    """State for a single backend."""
-
-    name: str
-    backend_type: str
-    ssh_client: SSHClient | None = None
-    backend: JobBackend | None = None
-    jobs: list[HPCJob] = field(default_factory=list)
-    status: ConnectionStatus = field(
-        default_factory=lambda: ConnectionStatus(connected=False, host="")
-    )
-    enabled: bool = True  # Whether this backend is active for polling
-    command_log: CommandLog = field(default_factory=CommandLog)
-    clone_dir: str = "~/scripthut-repos"  # Path reported in disk-usage status line
-    _reconnect_after: float = 0.0  # time.monotonic() before which reconnect is skipped
-    _reconnect_delay: float = 0.0  # current backoff delay in seconds
 
 
 @dataclass
@@ -121,7 +98,7 @@ class AppState:
         try:
             await asyncio.wait_for(self._poll_event.wait(), timeout=timeout)
             return True
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return False
 
     @property
@@ -147,138 +124,6 @@ state = AppState()
 
 # CLI argument for config path (set by run())
 _config_path: Path | None = None
-
-
-async def init_ec2_backend(
-    backend_config: EC2BackendConfig, archive_root: Path,
-) -> BackendState:
-    """Initialize an AWS EC2-direct backend (no scripthut-side SSH connection).
-
-    Per-task SSH happens inside EC2Backend via SSM-tunnelled ephemeral keys;
-    nothing persistent to hold open here.
-    """
-    backend = EC2Backend(backend_config, archive_root=archive_root)
-    backend_state = BackendState(
-        name=backend_config.name,
-        backend_type="ec2",
-        ssh_client=None,
-        backend=backend,
-        status=ConnectionStatus(
-            connected=False, host=f"aws:{backend_config.aws.region}"
-        ),
-        clone_dir="",
-    )
-    try:
-        available = await backend.is_available()
-    except Exception as e:
-        logger.error(f"Failed to probe EC2 backend '{backend_config.name}': {e}")
-        backend_state.status = ConnectionStatus(
-            connected=False,
-            host=backend_state.status.host,
-            error=str(e),
-        )
-        return backend_state
-    if available:
-        backend_state.status = ConnectionStatus(
-            connected=True, host=backend_state.status.host
-        )
-        logger.info(
-            f"EC2 backend '{backend_config.name}' ready "
-            f"(region={backend_config.aws.region}, ami={backend_config.ami})"
-        )
-    else:
-        backend_state.status = ConnectionStatus(
-            connected=False,
-            host=backend_state.status.host,
-            error=f"Subnet '{backend_config.subnet_id}' not reachable",
-        )
-    return backend_state
-
-
-async def init_batch_backend(backend_config: BatchBackendConfig) -> BackendState:
-    """Initialize an AWS Batch backend (no SSH connection)."""
-    backend = BatchBackend(backend_config)
-    backend_state = BackendState(
-        name=backend_config.name,
-        backend_type="batch",
-        ssh_client=None,
-        backend=backend,
-        status=ConnectionStatus(connected=False, host=f"aws:{backend_config.aws.region}"),
-        clone_dir="",
-    )
-    try:
-        available = await backend.is_available()
-    except Exception as e:
-        logger.error(f"Failed to probe Batch backend '{backend_config.name}': {e}")
-        backend_state.status = ConnectionStatus(
-            connected=False,
-            host=backend_state.status.host,
-            error=str(e),
-        )
-        return backend_state
-    if available:
-        backend_state.status = ConnectionStatus(
-            connected=True, host=backend_state.status.host
-        )
-        logger.info(
-            f"Connected to Batch backend '{backend_config.name}' "
-            f"(queue={backend_config.aws.job_queue}, region={backend_config.aws.region})"
-        )
-    else:
-        backend_state.status = ConnectionStatus(
-            connected=False,
-            host=backend_state.status.host,
-            error=f"Job queue '{backend_config.aws.job_queue}' not reachable",
-        )
-    return backend_state
-
-
-async def init_backend(backend_config: SlurmBackendConfig | PBSBackendConfig) -> BackendState:
-    """Initialize an SSH-based backend connection (Slurm or PBS)."""
-    ssh_client = SSHClient(
-        host=backend_config.ssh.host,
-        user=backend_config.ssh.user,
-        key_path=backend_config.ssh.key_path_resolved,
-        port=backend_config.ssh.port,
-        cert_path=backend_config.ssh.cert_path_resolved,
-        known_hosts=backend_config.ssh.known_hosts_resolved,
-    )
-
-    # Create the appropriate backend implementation
-    backend: JobBackend
-    if isinstance(backend_config, PBSBackendConfig):
-        backend = PBSBackend(ssh_client, default_queue=backend_config.queue)
-        backend_type = "pbs"
-    else:
-        backend = SlurmBackend(ssh_client)
-        backend_type = "slurm"
-
-    backend_state = BackendState(
-        name=backend_config.name,
-        backend_type=backend_type,
-        ssh_client=ssh_client,
-        backend=backend,
-        status=ConnectionStatus(connected=False, host=backend_config.ssh.host),
-        clone_dir=backend_config.clone_dir,
-    )
-    ssh_client.on_command = backend_state.command_log.append
-
-    try:
-        await ssh_client.connect()
-        backend_state.status = ConnectionStatus(
-            connected=True,
-            host=backend_config.ssh.host,
-        )
-        logger.info(f"Connected to {backend_type} backend '{backend_config.name}' ({backend_config.ssh.host})")
-    except Exception as e:
-        logger.error(f"Failed to connect to backend '{backend_config.name}': {e}")
-        backend_state.status = ConnectionStatus(
-            connected=False,
-            host=backend_config.ssh.host,
-            error=str(e),
-        )
-
-    return backend_state
 
 
 async def poll_backend(backend_state: BackendState, filter_user: str | None = None) -> None:
@@ -343,7 +188,7 @@ async def poll_backend(backend_state: BackendState, filter_user: str | None = No
         backend_state.status = ConnectionStatus(
             connected=True,
             host=backend_state.status.host,
-            last_poll=datetime.now(timezone.utc),
+            last_poll=datetime.now(UTC),
             last_poll_duration_ms=duration_ms,
             job_count=len(jobs),
             cpus_total=cluster_cpus[0] if cluster_cpus else None,
@@ -598,48 +443,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     if config.sources:
         asyncio.create_task(sync_sources_background())
 
-    # Initialize backends (Slurm and PBS share SSH-based init)
-    for backend_config in config.slurm_backends:
-        backend_state = await init_backend(backend_config)
-        state.backends[backend_config.name] = backend_state
-
-    for backend_config in config.pbs_backends:
-        backend_state = await init_backend(backend_config)
-        state.backends[backend_config.name] = backend_state
-
-    for ecs_config in config.ecs_backends:
-        logger.warning(f"ECS backend '{ecs_config.name}' configured but ECS backend not yet implemented")
-
-    for batch_config in config.batch_backends:
-        backend_state = await init_batch_backend(batch_config)
-        state.backends[batch_config.name] = backend_state
-
-    ec2_archive_root = config.settings.data_dir_resolved / "ec2-logs"
-    for ec2_config in config.ec2_backends:
-        backend_state = await init_ec2_backend(ec2_config, ec2_archive_root)
-        state.backends[ec2_config.name] = backend_state
-
-    # Initialize run storage and manager
-    state.run_storage = RunStorageManager(config.settings.data_dir_resolved / "workflows")
-    ssh_clients: dict[str, SSHClient] = {
-        name: cs.ssh_client
-        for name, cs in state.backends.items()
-        if cs.ssh_client is not None
-    }
-    job_backends: dict[str, JobBackend] = {
-        name: bs.backend
-        for name, bs in state.backends.items()
-        if bs.backend is not None
-    }
-    state.run_manager = RunManager(
-        config, ssh_clients, storage=state.run_storage, job_backends=job_backends,
-    )
-    logger.info(f"Initialized run manager with {len(config.workflows)} workflows")
-
-    # Restore runs from storage
-    restored_count = await state.run_manager.restore_from_storage()
-    if restored_count > 0:
-        logger.info(f"Restored {restored_count} runs from storage")
+    # Initialize backends, storage, and run manager (shared with CLI)
+    runtime = await init_runtime(config)
+    state.backends.update(runtime.backends)
+    state.run_storage = runtime.run_storage
+    state.run_manager = runtime.run_manager
 
     # Initialize pricing service (optional)
     if config.pricing and config.pricing.partitions:
@@ -678,15 +486,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         except asyncio.CancelledError:
             pass
 
-    # Save any unsaved run changes before disconnecting
-    if state.run_manager:
-        state.run_manager.save_dirty()
+    # Persist any unsaved runs and disconnect SSH-based backends
+    if state.run_manager and state.run_storage:
+        await shutdown_runtime(
+            Runtime(
+                config=state.config,
+                backends=state.backends,
+                run_storage=state.run_storage,
+                run_manager=state.run_manager,
+            )
+        )
         logger.info("Saved run data on shutdown")
-
-    # Disconnect all backends
-    for backend_state in state.backends.values():
-        if backend_state.ssh_client:
-            await backend_state.ssh_client.disconnect()
 
 
 async def sync_sources_background() -> None:
@@ -858,8 +668,8 @@ def reload_runtime_config(new_config: ScriptHutConfig) -> ReloadReport:
     state.filter_user = new_config.settings.filter_user
     state.filter_enabled = new_config.settings.filter_user is not None
 
-    report.reloaded.extend(["environments", "workflows", "projects", "settings"])
-    report.counts["environments"] = len(new_config.environments)
+    report.reloaded.extend(["env rules", "workflows", "projects", "settings"])
+    report.counts["env_rules"] = len(new_config.env)
     report.counts["workflows"] = len(new_config.workflows)
     report.counts["projects"] = len(new_config.projects)
 
@@ -891,6 +701,11 @@ app = FastAPI(
     version=__version__,
     lifespan=lifespan,
 )
+
+# Versioned JSON API for CLI and external clients
+from scripthut.api import make_api_router  # noqa: E402
+
+app.include_router(make_api_router(state))
 
 # Templates
 templates_path = Path(__file__).parent.parent.parent / "templates"
@@ -972,7 +787,7 @@ class JobView:
         """CPU hours for this job."""
         if self.start_time is None:
             return 0.0
-        end = self.finish_time if self.finish_time else datetime.now(timezone.utc)
+        end = self.finish_time if self.finish_time else datetime.now(UTC)
         elapsed = (end - self.start_time).total_seconds()
         if elapsed > 0:
             return elapsed * self.cpus / 3600.0
@@ -1053,7 +868,7 @@ def _collect_all_job_views() -> list[JobView]:
                         workflow_name="_default",
                             ))
 
-    views.sort(key=lambda v: v.submit_time or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+    views.sort(key=lambda v: v.submit_time or datetime.min.replace(tzinfo=UTC), reverse=True)
     return views
 
 
@@ -1062,7 +877,7 @@ def _apply_job_filters(job_views: list[JobView]) -> list[JobView]:
     if state.filter_enabled and state.filter_user:
         job_views = [j for j in job_views if j.user == state.filter_user]
     if state.live_view:
-        cutoff = datetime.now(timezone.utc) - timedelta(hours=12)
+        cutoff = datetime.now(UTC) - timedelta(hours=12)
         job_views = [
             j for j in job_views
             if not (j.is_terminal and j.finish_time and j.finish_time < cutoff)
@@ -1476,7 +1291,7 @@ async def cancel_external_job(request: Request, job_id: str) -> HTMLResponse:
                         state="failed",
                         submit_time=job.submit_time,
                         start_time=job.start_time,
-                        finish_time=datetime.now(timezone.utc),
+                        finish_time=datetime.now(UTC),
                     )
                     state.run_storage.save_if_dirty(
                         state.run_manager.runs if state.run_manager else {}
@@ -1757,9 +1572,9 @@ def _section_summary() -> dict[str, dict[str, Any]]:
     if cfg is None:
         return {}
     return {
-        "environments": {
-            "label": "Environments",
-            "names": [e.name for e in cfg.environments],
+        "env_rules": {
+            "label": "Env rules",
+            "names": [f"rule #{i}" for i, _ in enumerate(cfg.env)],
             "hot_reload": True,
         },
         "workflows": {
@@ -1912,7 +1727,7 @@ async def list_runs() -> dict[str, Any]:
 
 def _compute_gantt_data(run: Run) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Compute layout data for Gantt chart bars."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     time_origin = run.created_at
 
@@ -2227,7 +2042,7 @@ async def view_task_script(request: Request, run_id: str, task_id: str) -> HTMLR
                 log_dir = log_dir.replace("~", stdout.strip(), 1)
             except Exception:
                 pass
-        env_vars, extra_init = state.run_manager._resolve_environment(item.task)
+        env_vars, extra_init = state.run_manager._resolve_environment(run, item.task)
         job_backend = state.run_manager.get_job_backend(run.backend_name)
         if job_backend:
             script = job_backend.generate_script(
@@ -2253,6 +2068,68 @@ async def view_task_script(request: Request, run_id: str, task_id: str) -> HTMLR
             "content_type": "script",
             "run_items": run.items,
         },
+    )
+
+
+@app.get("/runs/{run_id}/tasks/{task_id}/env")
+async def get_task_env(run_id: str, task_id: str) -> JSONResponse:
+    """Return the resolved env for a task, with per-key provenance.
+
+    Each entry in ``vars`` includes the final value plus the ordered list of
+    operations (source, op, contribution) that produced it. ``extra_init`` is
+    the bash text concatenated from all init rules.
+    """
+    if state.run_manager is None:
+        return JSONResponse({"error": "Run manager not initialized"}, status_code=503)
+
+    run = state.run_manager.get_run(run_id)
+    if run is None:
+        return JSONResponse({"error": f"Run '{run_id}' not found"}, status_code=404)
+
+    item = run.get_item_by_task_id(task_id)
+    if item is None:
+        return JSONResponse({"error": f"Task '{task_id}' not found"}, status_code=404)
+
+    from scripthut.runs.env import resolve_for_task_detailed
+
+    git_repo = run.git_repo
+    git_branch = run.git_branch
+    if git_repo is None and state.config is not None:
+        workflow = state.config.get_workflow(run.workflow_name)
+        if workflow and workflow.git:
+            git_repo = workflow.git.repo
+            git_branch = workflow.git.branch
+
+    env, extra_init, prov = resolve_for_task_detailed(
+        state.run_manager.config,
+        backend_name=run.backend_name,
+        workflow_name=run.workflow_name,
+        run_id=run.id,
+        created_at=run.created_at,
+        task=item.task,
+        git_repo=git_repo,
+        git_branch=git_branch,
+        git_sha=run.commit_hash,
+    )
+
+    return JSONResponse(
+        {
+            "run_id": run_id,
+            "task_id": task_id,
+            "vars": {
+                k: {
+                    "value": p.value,
+                    "ops": [
+                        {"source": src, "op": op, "contribution": c}
+                        for (src, op, c) in p.ops
+                    ],
+                }
+                for k, p in prov.items()
+            },
+            "extra_init": extra_init,
+            # echo final env separately for convenience
+            "resolved": env,
+        }
     )
 
 
@@ -2299,7 +2176,7 @@ async def get_task_detail(
                     log_dir = log_dir.replace("~", stdout.strip(), 1)
                 except Exception:
                     pass
-            env_vars, extra_init = state.run_manager._resolve_environment(item.task)
+            env_vars, extra_init = state.run_manager._resolve_environment(run, item.task)
             job_backend = state.run_manager.get_job_backend(run.backend_name)
             if job_backend:
                 content = job_backend.generate_script(
@@ -2347,7 +2224,7 @@ async def get_task_detail(
             "memory": item.task.memory,
             "time_limit": item.task.time_limit,
             "dependencies": item.task.dependencies,
-            "environment": item.task.environment,
+            "env": [r.model_dump(by_alias=True, exclude_defaults=True) for r in item.task.env],
             "generates_source": item.task.generates_source,
             "output_file": item.task.output_file,
             "error_file": item.task.error_file,
@@ -2419,7 +2296,7 @@ async def view_task_json(request: Request, run_id: str, task_id: str) -> HTMLRes
         "memory": item.task.memory,
         "time_limit": item.task.time_limit,
         "dependencies": item.task.dependencies,
-        "environment": item.task.environment,
+        "env": [r.model_dump(by_alias=True, exclude_defaults=True) for r in item.task.env],
         "generates_source": item.task.generates_source,
         "output_file": item.task.output_file,
         "error_file": item.task.error_file,
@@ -2757,16 +2634,7 @@ async def submit_interactive_task(
     await ssh_client.run_command(f"mkdir -p {log_dir}")
 
     # Build script with interactive_wait=True
-    env_vars, extra_init = state.run_manager._resolve_environment(item.task)
-    workflow = state.config.get_workflow(run.workflow_name) if state.config else None
-    git_repo = workflow.git.repo if workflow and workflow.git else None
-    git_branch = workflow.git.branch if workflow and workflow.git else None
-    sh_vars = state.run_manager._scripthut_env_vars(
-        run.workflow_name, run.id, run.created_at,
-        git_repo=git_repo, git_branch=git_branch, git_sha=run.commit_hash,
-    )
-    merged_env = {**sh_vars, **(env_vars or {})}
-
+    merged_env, extra_init = state.run_manager._resolve_environment(run, item.task)
     script = job_backend.generate_script(
         item.task, run.id, log_dir,
         account=run.account, login_shell=run.login_shell,
@@ -2792,7 +2660,7 @@ async def submit_interactive_task(
                 partition=item.task.partition,
                 cpus=item.task.cpus,
                 memory=item.task.memory,
-                submit_time=datetime.now(timezone.utc),
+                submit_time=datetime.now(UTC),
             )
 
         # Track as debug job so the terminals page can identify it
@@ -2832,13 +2700,16 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-_SUBCOMMANDS = {"setup-aws-ec2"}
+_SUBCOMMANDS = {"setup-aws-ec2", "workflow", "run", "backend", "project"}
 
 
 def _dispatch_subcommand(name: str, argv_rest: list[str]) -> int:
     if name == "setup-aws-ec2":
         from scripthut.setup.aws_ec2 import main as setup_main
         return setup_main(argv_rest)
+    if name in {"workflow", "run", "backend", "project"}:
+        from scripthut.cli import main as cli_main
+        return cli_main([name, *argv_rest])
     raise SystemExit(f"Unknown subcommand: {name}")
 
 

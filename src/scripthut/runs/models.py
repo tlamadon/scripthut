@@ -5,6 +5,8 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
+from scripthut.config_schema import EnvRule
+
 
 class RunItemStatus(str, Enum):
     """Status of a run item."""
@@ -33,14 +35,21 @@ class TaskDefinition:
     generates_source: str | None = None  # Path to JSON file this task creates on the backend
     output_file: str | None = None  # Custom stdout log path
     error_file: str | None = None  # Custom stderr log path
-    environment: str | None = None  # Name of the environment to use (from config)
-    env_vars: dict[str, str] = field(default_factory=dict)  # Per-task environment variables
+    env: list[EnvRule] = field(default_factory=list)  # Task-level env rules
     gres: str | None = None  # Slurm-style generic resource spec, e.g. "gpu:2" or "gpu:v100:1"
     image: str | None = None  # Container image URI (AWS Batch/ECS); overrides backend default
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "TaskDefinition":
         """Create TaskDefinition from dictionary."""
+        if "environment" in data or "env_vars" in data:
+            raise ValueError(
+                f"Task '{data.get('id', '?')}': legacy 'environment' / 'env_vars' "
+                "fields are no longer supported. Use the 'env' rule list instead "
+                "(see scripthut docs on env resolution)."
+            )
+        env_raw = data.get("env", [])
+        env_rules = [EnvRule.model_validate(r) for r in env_raw]
         return cls(
             id=data["id"],
             name=data["name"],
@@ -54,8 +63,7 @@ class TaskDefinition:
             generates_source=data.get("generates_source"),
             output_file=data.get("output_file"),
             error_file=data.get("error_file"),
-            environment=data.get("environment"),
-            env_vars=data.get("env_vars", {}),
+            env=env_rules,
             gres=data.get("gres"),
             image=data.get("image"),
         )
@@ -75,8 +83,7 @@ class TaskDefinition:
             "generates_source": self.generates_source,
             "output_file": self.output_file,
             "error_file": self.error_file,
-            "environment": self.environment,
-            "env_vars": self.env_vars,
+            "env": [r.model_dump(by_alias=True, exclude_defaults=True) for r in self.env],
             "gres": self.gres,
             "image": self.image,
         }

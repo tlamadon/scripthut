@@ -1,0 +1,35 @@
+{
+  "tasks": [
+    {
+      "id": "setup.init",
+      "name": "Setup",
+      "command": "bash simple_task.sh 1",
+      "working_dir": "."
+    },
+    {
+      "id": "build.x",
+      "name": "Build-X",
+      "command": "bash simple_task.sh 2",
+      "working_dir": ".",
+      "cpus": 2,
+      "memory": "2G",
+      "deps": ["setup.init"]
+    },
+    {
+      "id": "build.y",
+      "name": "Build-Y",
+      "command": "bash simple_task.sh 3",
+      "working_dir": ".",
+      "cpus": 2,
+      "memory": "2G",
+      "deps": ["setup.init"]
+    },
+    {
+      "id": "final.merge",
+      "name": "Finalize",
+      "command": "bash simple_task.sh 4",
+      "working_dir": ".",
+      "deps": ["build.*"]
+    }
+  ]
+}

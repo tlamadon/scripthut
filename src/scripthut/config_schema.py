@@ -3,7 +3,47 @@
 from pathlib import Path
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class EnvRule(BaseModel):
+    """A single environment-resolution rule.
+
+    Rules are accumulated from every layer (backend, server, workflow, task)
+    into a single ordered list, then evaluated top-to-bottom against a seed
+    of ``SCRIPTHUT_*`` runtime vars. Conditionals see the env as resolved so
+    far, so later rules can react to earlier rules.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    if_: dict[str, str | list[str]] | None = Field(
+        default=None,
+        alias="if",
+        description=(
+            "Optional guard. AND across keys; list value means OR. The rule "
+            "is skipped when the guard does not match the env-so-far."
+        ),
+    )
+    include: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Names of env_groups to inline at this position. The included rules "
+            "are evaluated in order, and inherit this rule's if-guard if any."
+        ),
+    )
+    set: dict[str, str] = Field(
+        default_factory=dict,
+        description="Variables to set (overwrites prior values). ${name} is expanded against env-so-far.",
+    )
+    append: dict[str, str] = Field(
+        default_factory=dict,
+        description='Variables to append to (joined with ":"). ${name} is expanded against env-so-far.',
+    )
+    init: str = Field(
+        default="",
+        description="Bash text concatenated into extra_init. ${name} is expanded against env-so-far.",
+    )
 
 
 class SSHConfig(BaseModel):
@@ -98,6 +138,14 @@ class SlurmBackendConfig(BaseModel):
         default="~/scripthut-repos",
         description="Path on the backend whose disk usage is reported in the backend status panel (typically the parent directory where source repos are cloned)",
     )
+    env: list[EnvRule] = Field(
+        default_factory=list,
+        description="Backend-level env rules — cluster facts like SCRATCH and module init",
+    )
+    env_groups: dict[str, list[EnvRule]] = Field(
+        default_factory=dict,
+        description="Named, reusable rule lists. Visible to this backend's env: and to all later layers (server, workflow, task).",
+    )
 
 
 class PBSBackendConfig(BaseModel):
@@ -127,6 +175,14 @@ class PBSBackendConfig(BaseModel):
         default="~/scripthut-repos",
         description="Path on the backend whose disk usage is reported in the backend status panel (typically the parent directory where source repos are cloned)",
     )
+    env: list[EnvRule] = Field(
+        default_factory=list,
+        description="Backend-level env rules — cluster facts like SCRATCH and module init",
+    )
+    env_groups: dict[str, list[EnvRule]] = Field(
+        default_factory=dict,
+        description="Named, reusable rule lists. Visible to this backend's env: and to all later layers (server, workflow, task).",
+    )
 
 
 class ECSBackendConfig(BaseModel):
@@ -139,6 +195,14 @@ class ECSBackendConfig(BaseModel):
         default=100,
         ge=1,
         description="Maximum total concurrent jobs across all runs on this backend",
+    )
+    env: list[EnvRule] = Field(
+        default_factory=list,
+        description="Backend-level env rules — cluster facts like SCRATCH and module init",
+    )
+    env_groups: dict[str, list[EnvRule]] = Field(
+        default_factory=dict,
+        description="Named, reusable rule lists. Visible to this backend's env: and to all later layers (server, workflow, task).",
     )
 
 
@@ -214,6 +278,14 @@ class BatchBackendConfig(BaseModel):
     clone_dir: str = Field(
         default="",
         description="Unused for Batch (no shared filesystem). Kept for UI compatibility.",
+    )
+    env: list[EnvRule] = Field(
+        default_factory=list,
+        description="Backend-level env rules — cluster facts like SCRATCH and module init",
+    )
+    env_groups: dict[str, list[EnvRule]] = Field(
+        default_factory=dict,
+        description="Named, reusable rule lists. Visible to this backend's env: and to all later layers (server, workflow, task).",
     )
 
 
@@ -309,6 +381,14 @@ class EC2BackendConfig(BaseModel):
     clone_dir: str = Field(
         default="",
         description="Unused for EC2 (no shared filesystem). Kept for UI compatibility.",
+    )
+    env: list[EnvRule] = Field(
+        default_factory=list,
+        description="Backend-level env rules — cluster facts like SCRATCH and module init",
+    )
+    env_groups: dict[str, list[EnvRule]] = Field(
+        default_factory=dict,
+        description="Named, reusable rule lists. Visible to this backend's env: and to all later layers (server, workflow, task).",
     )
 
 
@@ -417,6 +497,14 @@ class WorkflowConfig(BaseModel):
         default=None,
         description="Optional: clone a git repo on the backend before running the workflow command",
     )
+    env: list[EnvRule] = Field(
+        default_factory=list,
+        description="Workflow-level env rules applied to every task in the workflow",
+    )
+    env_groups: dict[str, list[EnvRule]] = Field(
+        default_factory=dict,
+        description="Named, reusable rule lists. Visible to this workflow's env: and to its tasks.",
+    )
 
 
 class ProjectConfig(BaseModel):
@@ -433,20 +521,6 @@ class ProjectConfig(BaseModel):
     description: str = Field(
         default="",
         description="Human-readable description of this project",
-    )
-
-
-class EnvironmentConfig(BaseModel):
-    """Named environment with key-value variables and optional init script."""
-
-    name: str = Field(description="Unique identifier for this environment")
-    variables: dict[str, str] = Field(
-        default_factory=dict,
-        description="Key-value pairs exported as environment variables",
-    )
-    extra_init: str = Field(
-        default="",
-        description="Raw bash lines to run before the task command (e.g. module load)",
     )
 
 
@@ -495,6 +569,14 @@ class GlobalSettings(BaseModel):
         default=None,
         description="Default username to filter jobs by (None for all users)",
     )
+    cli_server: str | None = Field(
+        default=None,
+        description=(
+            "Default URL of a running scripthut server for the CLI. "
+            "When set, CLI commands hit this server instead of running locally. "
+            "Overridden by --server and the SCRIPTHUT_SERVER env var."
+        ),
+    )
 
     @property
     def data_dir_resolved(self) -> Path:
@@ -528,9 +610,13 @@ class ScriptHutConfig(BaseModel):
         default_factory=list,
         description="List of git projects containing sflow.json workflow files",
     )
-    environments: list[EnvironmentConfig] = Field(
+    env: list[EnvRule] = Field(
         default_factory=list,
-        description="Named environments with key-value variables for tasks",
+        description="Server-level env rules applied to every task on every backend",
+    )
+    env_groups: dict[str, list[EnvRule]] = Field(
+        default_factory=dict,
+        description="Named, reusable rule lists. Visible to server env: and to all workflows / tasks.",
     )
     pricing: PricingConfig | None = Field(
         default=None,
@@ -567,13 +653,6 @@ class ScriptHutConfig(BaseModel):
         for project in self.projects:
             if project.name == name:
                 return project
-        return None
-
-    def get_environment(self, name: str) -> EnvironmentConfig | None:
-        """Get an environment by name."""
-        for env in self.environments:
-            if env.name == name:
-                return env
         return None
 
     @property
