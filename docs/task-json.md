@@ -348,6 +348,64 @@ A task's `env:` is a list of `EnvRule` entries. Each entry can `set:` variables,
 }
 ```
 
+### Full workflow example
+
+This is what a generator's complete stdout looks like — the same top-level `{"tasks": [...]}` document, with several tasks demonstrating different env-rule patterns:
+
+```json
+{
+  "tasks": [
+    {
+      "id": "prep",
+      "name": "Prepare data",
+      "command": "python prep.py --out ${DATA_DIR}/run.parquet",
+      "cpus": 2,
+      "memory": "8G",
+      "env": [
+        {"set": {"DATA_DIR": "/scratch/${USER}/${SCRIPTHUT_RUN_ID}"}}
+      ]
+    },
+    {
+      "id": "train.gpu",
+      "name": "Train (GPU)",
+      "command": "python train.py --data ${DATA_DIR}/run.parquet --seed ${SEED}",
+      "deps": ["prep"],
+      "cpus": 4,
+      "memory": "32G",
+      "gres": "gpu:1",
+      "env": [
+        {"set": {
+          "DATA_DIR": "/scratch/${USER}/${SCRIPTHUT_RUN_ID}",
+          "SEED": "42"
+        }},
+        {"if": {"SCRIPTHUT_BACKEND": "mercury"},
+         "init": "module load cuda/11"},
+        {"if": {"SCRIPTHUT_BACKEND": "anvil"},
+         "init": "module load cuda-toolkit"},
+        {"include": ["wandb"]},
+        {"append": {"PATH": "/opt/cuda/bin"}}
+      ]
+    },
+    {
+      "id": "report",
+      "name": "Render report",
+      "command": "python report.py --data ${DATA_DIR}/run.parquet",
+      "deps": ["train.gpu"],
+      "env": [
+        {"set": {"DATA_DIR": "/scratch/${USER}/${SCRIPTHUT_RUN_ID}"}}
+      ]
+    }
+  ]
+}
+```
+
+Points worth noting:
+
+- **`set:` cascades within a single task's `env:`** — `DATA_DIR` is written in the first rule, then referenced via `${DATA_DIR}` in the task's `command`. The `command` itself is *not* expanded by the resolver; rather, the generated submission script exports `DATA_DIR=...` before running the command so the shell does the substitution.
+- **`include:` resolves against env_groups defined upstream** — `wandb` here would be defined at the workflow level (in `scripthut.yaml`) or at the server level. The task doesn't define groups itself; it only references them.
+- **`if:` rules guard their entire block** — when neither `mercury` nor `anvil` matches `SCRIPTHUT_BACKEND` (e.g. running on a laptop), neither `module load` line is added. The `append: { PATH: /opt/cuda/bin }` after them is unconditional; if you only want it on GPU clusters, wrap it in an `if:` as well or move it inside an `env_group` whose include is guarded.
+- **Repeating values across tasks** — if many tasks share `DATA_DIR: /scratch/${USER}/${SCRIPTHUT_RUN_ID}`, lift it to the workflow's `env:` in `scripthut.yaml` instead of repeating it in every task. Anything not specific to a single task belongs upstream.
+
 ### Resolution order — later rules win
 
 Rules from each layer are concatenated and evaluated top to bottom: backend rules, then server, then workflow, then task. `set:` overwrites; `append:` extends. So if the workflow sets `DATA_DIR=/shared` and the task sets `DATA_DIR=/scratch/local`, the task wins. The Env tab on the task detail page in the UI shows the resolved env with per-key provenance (which layer / which group wrote each value) — use it to debug surprising values. The same data is exposed at `GET /runs/{run_id}/tasks/{task_id}/env`.
