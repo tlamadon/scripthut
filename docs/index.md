@@ -20,6 +20,6 @@ pip install scripthut
 ## Next steps
 
 - [Installation](installation.md) — install via pip or Docker and start the server
-- [Configuration](configuration.md) — full YAML configuration reference
-- [Task JSON Format](task-json.md) — how to write task generators that produce JSON
+- [Configuration](configuration/index.md) — YAML configuration reference (backends, workflows, environments, settings)
+- [Task JSON Format](task-json/index.md) — how to write task generators that produce JSON
 - [CLI](cli.md) — `scripthut workflow / run / backend / project` subcommands, local vs remote transports, exit codes

@@ -308,7 +308,7 @@ aws cloudformation deploy \
   --capabilities CAPABILITY_NAMED_IAM
 ```
 
-See [docs/configuration.md](docs/configuration.md) for the full options reference.
+See [docs/configuration/index.md](docs/configuration/index.md) for the full options reference.
 
 **Logs:** AWS Batch writes stdout+stderr to a single CloudWatch Log stream per job. ScriptHut reads them via `logs:GetLogEvents`. The "error" log tab shows a note pointing you to the "output" tab.
 
@@ -631,7 +631,7 @@ The command must return JSON in one of these formats:
 | `time_limit` | No | Time limit (default: `1:00:00`) |
 | `output_file` | No | Custom stdout log path |
 | `error_file` | No | Custom stderr log path |
-| `env` | No | Task-level env rules (list of `EnvRule` entries with `set` / `append` / `init` / `if` / `include`). See [Environments](docs/configuration.md#environments) |
+| `env` | No | Task-level env rules (list of `EnvRule` entries with `set` / `append` / `init` / `if` / `include`). See [Environments](docs/configuration/environments.md) |
 | `generates_source` | No | Path to a JSON file this task creates on the backend; new tasks are appended to the run on completion |
 
 #### Task Dependencies
@@ -739,7 +739,7 @@ If a generated task references a dependency that doesn't exist in the run, the e
 
 ### Environments
 
-ScriptHut resolves a task's environment by walking an ordered chain of **env rules** from four layers — **backend → server → workflow → task** — against a seed of `SCRIPTHUT_*` runtime variables. The full reference lives in [docs/configuration.md → Environments](docs/configuration.md#environments). What follows is a quick tour.
+ScriptHut resolves a task's environment by walking an ordered chain of **env rules** from five layers — **backend → server → workflow (config) → workflow (document) → task** — against a seed of `SCRIPTHUT_*` runtime variables. The full reference lives in [docs/configuration/environments.md](docs/configuration/environments.md). What follows is a quick tour.
 
 #### One primitive: the `EnvRule`
 

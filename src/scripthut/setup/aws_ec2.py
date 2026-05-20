@@ -556,7 +556,7 @@ def _main_interactive(args: argparse.Namespace) -> int:
         print(f"    Latest Amazon Linux 2023 AMI: {discovered}")
         print("    NOTE: AL2023 has SSM Agent pre-installed but you must install")
         print("          docker yourself (e.g. dnf install -y docker; systemctl")
-        print("          enable --now docker) — see docs/configuration.md.")
+        print("          enable --now docker) — see docs/configuration/backends.md.")
         if interactive and _confirm("Use this AMI?"):
             ami = discovered
     if ami is None:

@@ -32,6 +32,11 @@ theme:
 
 plugins:
   - search
+  - redirects:
+      redirect_maps:
+        # Old monolithic pages → new sections (after the split)
+        'configuration.md': 'configuration/index.md'
+        'task-json.md': 'task-json/index.md'
 
 markdown_extensions:
   - admonition
@@ -52,6 +57,13 @@ extra:
 nav:
   - Home: index.md
   - Installation: installation.md
-  - Configuration: configuration.md
-  - Task JSON Format: task-json.md
+  - Configuration:
+      - Overview: configuration/index.md
+      - Backends: configuration/backends.md
+      - Workflows: configuration/workflows.md
+      - Environments: configuration/environments.md
+  - Task JSON:
+      - Overview: task-json/index.md
+      - Environment Variables: task-json/environments.md
+      - Writing a Generator: task-json/generators.md
   - CLI: cli.md

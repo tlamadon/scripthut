@@ -63,7 +63,7 @@ This installs additional dependencies for linting (`ruff`, `mypy`), testing (`py
 
 ### Quick start
 
-1. Create a `scripthut.yaml` in your working directory (see [Configuration](configuration.md) for the full reference):
+1. Create a `scripthut.yaml` in your working directory (see [Configuration](configuration/index.md) for the full reference):
 
     ```yaml
     backends:
@@ -335,7 +335,7 @@ volumes:
 
 ### Minimum IAM permissions
 
-See the [Configuration reference](configuration.md#minimum-iam-permissions) for the required policy document. In short: the principal needs `batch:SubmitJob`, `batch:DescribeJobs`, `batch:ListJobs`, `batch:CancelJob`, `batch:TerminateJob`, `batch:RegisterJobDefinition`, `batch:DescribeJobQueues`, `batch:DescribeComputeEnvironments`, and `logs:GetLogEvents` on your log group. If you configure `job_role_arn` or `execution_role_arn`, also grant `iam:PassRole` on those roles.
+See the [Configuration reference](configuration/backends.md#minimum-iam-permissions) for the required policy document. In short: the principal needs `batch:SubmitJob`, `batch:DescribeJobs`, `batch:ListJobs`, `batch:CancelJob`, `batch:TerminateJob`, `batch:RegisterJobDefinition`, `batch:DescribeJobQueues`, `batch:DescribeComputeEnvironments`, and `logs:GetLogEvents` on your log group. If you configure `job_role_arn` or `execution_role_arn`, also grant `iam:PassRole` on those roles.
 
 ---
 

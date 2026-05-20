@@ -36,6 +36,7 @@ dev = [
 ]
 docs = [
     "mkdocs-material>=9.5.0",
+    "mkdocs-redirects>=1.2.0",
     "mike>=2.0.0",
 ]
 

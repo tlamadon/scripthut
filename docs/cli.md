@@ -117,7 +117,7 @@ The Env tab in the web UI shows resolved env with per-key provenance. The same d
 curl -s "$SCRIPTHUT_SERVER/runs/$RUN_ID/tasks/train.shard-3/env" | jq
 ```
 
-See [Environments](configuration.md#environments) for the full env-rule resolution model that produces these values.
+See [Environments](configuration/environments.md) for the full env-rule resolution model that produces these values.
 
 ### CI / automation
 
