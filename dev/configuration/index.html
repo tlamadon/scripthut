@@ -813,6 +813,89 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Environments">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#the-envrule-shape" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The EnvRule shape
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#where-rules-live" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Where rules live
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#scripthut_-runtime-seed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        SCRIPTHUT_* runtime seed
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#name-expansion" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ${name} expansion
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#reusable-groups" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Reusable groups
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#inspecting-the-resolved-env" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Inspecting the resolved env
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#worked-example-cluster-specific-module-loads" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Worked example: cluster-specific module loads
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -1267,6 +1350,89 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Environments">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#the-envrule-shape" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The EnvRule shape
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#where-rules-live" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Where rules live
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#scripthut_-runtime-seed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        SCRIPTHUT_* runtime seed
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#name-expansion" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ${name} expansion
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#reusable-groups" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Reusable groups
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#inspecting-the-resolved-env" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Inspecting the resolved env
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#worked-example-cluster-specific-module-loads" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Worked example: cluster-specific module loads
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -1340,15 +1506,18 @@
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="nt">sources</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">...</span><span class="p p-Indicator">]</span><span class="w">        </span><span class="c1"># Git repository sources</span>
 <a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="nt">workflows</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">...</span><span class="p p-Indicator">]</span><span class="w">      </span><span class="c1"># Task generators (SSH commands returning JSON)</span>
 <a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="nt">projects</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">...</span><span class="p p-Indicator">]</span><span class="w">       </span><span class="c1"># Git projects with sflow.json files</span>
-<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="nt">environments</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">...</span><span class="p p-Indicator">]</span><span class="w">   </span><span class="c1"># Named environment variable sets</span>
-<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="nt">pricing</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nv">...</span><span class="p p-Indicator">}</span><span class="w">        </span><span class="c1"># EC2-equivalent cost estimation</span>
-<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="nt">settings</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nv">...</span><span class="p p-Indicator">}</span><span class="w">       </span><span class="c1"># Global application settings</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="nt">env</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">...</span><span class="p p-Indicator">]</span><span class="w">            </span><span class="c1"># Server-level env rules (see Environments)</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="nt">env_groups</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nv">...</span><span class="p p-Indicator">}</span><span class="w">     </span><span class="c1"># Named, reusable rule lists</span>
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="nt">pricing</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nv">...</span><span class="p p-Indicator">}</span><span class="w">        </span><span class="c1"># EC2-equivalent cost estimation</span>
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="nt">settings</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nv">...</span><span class="p p-Indicator">}</span><span class="w">       </span><span class="c1"># Global application settings</span>
 </code></pre></div>
+<p>Both <code>env:</code> and <code>env_groups:</code> can also appear inside individual backend and workflow entries — see <a href="#environments">Environments</a>.</p>
 <p>All sections are optional and default to empty lists or sensible defaults.</p>
 <hr />
 <h2 id="backends">Backends<a class="headerlink" href="#backends" title="Permanent link">&para;</a></h2>
 <p>Backends define the remote compute systems where jobs are submitted. ScriptHut supports <strong>Slurm</strong>, <strong>PBS/Torque</strong>, <strong>AWS Batch</strong>, and <strong>AWS EC2</strong> backend types (plus ECS, which is planned). Each backend is identified by a unique <code>name</code> and discriminated by its <code>type</code> field.</p>
 <p>Slurm and PBS backends connect to a cluster login node over SSH. AWS Batch is API-based (boto3). AWS EC2 is API-based for launch/terminate but uses SSH tunnelled through SSM Session Manager for per-instance probes and logs — see <a href="#aws-batch-backend">AWS Batch Backend</a> and <a href="#aws-ec2-backend">AWS EC2 Backend</a> for credential setup.</p>
+<p>All backend types accept two extra optional fields not shown in the per-type tables below: <code>env:</code> (a list of env rules applied to every task on that backend) and <code>env_groups:</code> (named, reusable rule lists). See <a href="#environments">Environments</a>.</p>
 <h3 id="slurm-backend">Slurm Backend<a class="headerlink" href="#slurm-backend" title="Permanent link">&para;</a></h3>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nt">backends</span><span class="p">:</span>
 <a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">hpc-cluster</span>
@@ -2339,6 +2508,18 @@
 <td><code>null</code></td>
 <td>Optional git repository to clone on the backend before running the command.</td>
 </tr>
+<tr>
+<td><code>env</code></td>
+<td>list</td>
+<td><code>[]</code></td>
+<td>Workflow-level env rules applied to every task in the workflow. See <a href="#environments">Environments</a>.</td>
+</tr>
+<tr>
+<td><code>env_groups</code></td>
+<td>object</td>
+<td><code>{}</code></td>
+<td>Named, reusable env-rule lists local to this workflow (also visible to its tasks).</td>
+</tr>
 </tbody>
 </table>
 <h3 id="git-workflows">Git Workflows<a class="headerlink" href="#git-workflows" title="Permanent link">&para;</a></h3>
@@ -2459,71 +2640,220 @@
 </table>
 <hr />
 <h2 id="environments">Environments<a class="headerlink" href="#environments" title="Permanent link">&para;</a></h2>
-<p>Named environments define sets of environment variables and initialization commands that can be referenced by tasks. This is useful for loading modules, setting up language-specific paths, or configuring runtime parameters.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-26-1" name="__codelineno-26-1" href="#__codelineno-26-1"></a><span class="nt">environments</span><span class="p">:</span>
-<a id="__codelineno-26-2" name="__codelineno-26-2" href="#__codelineno-26-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">julia-1.10</span>
-<a id="__codelineno-26-3" name="__codelineno-26-3" href="#__codelineno-26-3"></a><span class="w">    </span><span class="nt">variables</span><span class="p">:</span>
-<a id="__codelineno-26-4" name="__codelineno-26-4" href="#__codelineno-26-4"></a><span class="w">      </span><span class="nt">JULIA_DEPOT_PATH</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;/scratch/user/julia_depot&quot;</span>
-<a id="__codelineno-26-5" name="__codelineno-26-5" href="#__codelineno-26-5"></a><span class="w">      </span><span class="nt">JULIA_NUM_THREADS</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;8&quot;</span>
-<a id="__codelineno-26-6" name="__codelineno-26-6" href="#__codelineno-26-6"></a><span class="w">    </span><span class="nt">extra_init</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;module</span><span class="nv"> </span><span class="s">load</span><span class="nv"> </span><span class="s">julia/1.10&quot;</span>
-<a id="__codelineno-26-7" name="__codelineno-26-7" href="#__codelineno-26-7"></a>
-<a id="__codelineno-26-8" name="__codelineno-26-8" href="#__codelineno-26-8"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">python-ml</span>
-<a id="__codelineno-26-9" name="__codelineno-26-9" href="#__codelineno-26-9"></a><span class="w">    </span><span class="nt">variables</span><span class="p">:</span>
-<a id="__codelineno-26-10" name="__codelineno-26-10" href="#__codelineno-26-10"></a><span class="w">      </span><span class="nt">CUDA_VISIBLE_DEVICES</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;0,1&quot;</span>
-<a id="__codelineno-26-11" name="__codelineno-26-11" href="#__codelineno-26-11"></a><span class="w">      </span><span class="nt">PYTHONPATH</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;/home/user/libs&quot;</span>
-<a id="__codelineno-26-12" name="__codelineno-26-12" href="#__codelineno-26-12"></a><span class="w">    </span><span class="nt">extra_init</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">|</span>
-<a id="__codelineno-26-13" name="__codelineno-26-13" href="#__codelineno-26-13"></a><span class="w">      </span><span class="no">module load cuda/12.0</span>
-<a id="__codelineno-26-14" name="__codelineno-26-14" href="#__codelineno-26-14"></a><span class="w">      </span><span class="no">source /home/user/venvs/ml/bin/activate</span>
+<p>ScriptHut resolves the environment for each task by walking an ordered chain of <strong>env rules</strong> from four layers — <strong>backend → server → workflow → task</strong> — against a seed of <code>SCRIPTHUT_*</code> runtime variables. Every layer contributes rules to the same list; later rules see earlier rules' effects, so conditionals can branch on any value set upstream (including the seed).</p>
+<h3 id="the-envrule-shape">The <code>EnvRule</code> shape<a class="headerlink" href="#the-envrule-shape" title="Permanent link">&para;</a></h3>
+<p>Every entry in any <code>env:</code> list is an <code>EnvRule</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-26-1" name="__codelineno-26-1" href="#__codelineno-26-1"></a><span class="nt">env</span><span class="p">:</span>
+<a id="__codelineno-26-2" name="__codelineno-26-2" href="#__codelineno-26-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">set</span><span class="p">:</span><span class="w">                              </span><span class="c1"># always-applied</span>
+<a id="__codelineno-26-3" name="__codelineno-26-3" href="#__codelineno-26-3"></a><span class="w">      </span><span class="nt">PROJECT</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">training</span>
+<a id="__codelineno-26-4" name="__codelineno-26-4" href="#__codelineno-26-4"></a><span class="w">      </span><span class="nt">LOG_LEVEL</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">info</span>
+<a id="__codelineno-26-5" name="__codelineno-26-5" href="#__codelineno-26-5"></a>
+<a id="__codelineno-26-6" name="__codelineno-26-6" href="#__codelineno-26-6"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">if</span><span class="p">:</span><span class="w">                               </span><span class="c1"># optional guard</span>
+<a id="__codelineno-26-7" name="__codelineno-26-7" href="#__codelineno-26-7"></a><span class="w">      </span><span class="nt">SCRIPTHUT_BACKEND</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">mercury</span><span class="w">      </span><span class="c1"># single value = equality</span>
+<a id="__codelineno-26-8" name="__codelineno-26-8" href="#__codelineno-26-8"></a><span class="w">    </span><span class="nt">set</span><span class="p">:</span>
+<a id="__codelineno-26-9" name="__codelineno-26-9" href="#__codelineno-26-9"></a><span class="w">      </span><span class="nt">SCRATCH</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">/scratch/${USER}</span><span class="w">       </span><span class="c1"># ${name} expanded against env-so-far</span>
+<a id="__codelineno-26-10" name="__codelineno-26-10" href="#__codelineno-26-10"></a><span class="w">    </span><span class="nt">init</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;module</span><span class="nv"> </span><span class="s">load</span><span class="nv"> </span><span class="s">gcc/12</span><span class="nv"> </span><span class="s">cuda/11&quot;</span>
+<a id="__codelineno-26-11" name="__codelineno-26-11" href="#__codelineno-26-11"></a>
+<a id="__codelineno-26-12" name="__codelineno-26-12" href="#__codelineno-26-12"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">if</span><span class="p">:</span>
+<a id="__codelineno-26-13" name="__codelineno-26-13" href="#__codelineno-26-13"></a><span class="w">      </span><span class="nt">SCRIPTHUT_BACKEND</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">anvil</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">delta</span><span class="p p-Indicator">]</span><span class="w">   </span><span class="c1"># list value = OR</span>
+<a id="__codelineno-26-14" name="__codelineno-26-14" href="#__codelineno-26-14"></a><span class="w">    </span><span class="nt">set</span><span class="p">:</span>
+<a id="__codelineno-26-15" name="__codelineno-26-15" href="#__codelineno-26-15"></a><span class="w">      </span><span class="nt">SCRATCH</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">/tmp/work/${USER}</span>
+<a id="__codelineno-26-16" name="__codelineno-26-16" href="#__codelineno-26-16"></a><span class="w">    </span><span class="nt">init</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;module</span><span class="nv"> </span><span class="s">load</span><span class="nv"> </span><span class="s">gcc</span><span class="nv"> </span><span class="s">cuda-toolkit&quot;</span>
+<a id="__codelineno-26-17" name="__codelineno-26-17" href="#__codelineno-26-17"></a>
+<a id="__codelineno-26-18" name="__codelineno-26-18" href="#__codelineno-26-18"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">if</span><span class="p">:</span>
+<a id="__codelineno-26-19" name="__codelineno-26-19" href="#__codelineno-26-19"></a><span class="w">      </span><span class="nt">SCRIPTHUT_BACKEND</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">mercury</span>
+<a id="__codelineno-26-20" name="__codelineno-26-20" href="#__codelineno-26-20"></a><span class="w">      </span><span class="nt">GPU</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;1&quot;</span><span class="w">                        </span><span class="c1"># multiple keys = AND</span>
+<a id="__codelineno-26-21" name="__codelineno-26-21" href="#__codelineno-26-21"></a><span class="w">    </span><span class="nt">append</span><span class="p">:</span>
+<a id="__codelineno-26-22" name="__codelineno-26-22" href="#__codelineno-26-22"></a><span class="w">      </span><span class="nt">PATH</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">/opt/cuda/bin</span><span class="w">             </span><span class="c1"># joined with &quot;:&quot; to existing value</span>
 </code></pre></div>
 <table>
 <thead>
 <tr>
 <th>Field</th>
 <th>Type</th>
-<th>Default</th>
 <th>Description</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><code>name</code></td>
-<td>string</td>
-<td><strong>required</strong></td>
-<td>Unique identifier. Referenced by the <code>environment</code> field in task definitions.</td>
-</tr>
-<tr>
-<td><code>variables</code></td>
+<td><code>if</code></td>
 <td>object</td>
-<td><code>{}</code></td>
-<td>Key-value pairs exported as environment variables before the task command.</td>
+<td>Optional guard. Each key must match the env-so-far. A list value matches if the actual value is in the list (OR). When all keys match, the rule applies.</td>
 </tr>
 <tr>
-<td><code>extra_init</code></td>
+<td><code>set</code></td>
+<td>object</td>
+<td>Variables to write. Overwrites any prior value. <code>${name}</code> is expanded against env-so-far.</td>
+</tr>
+<tr>
+<td><code>append</code></td>
+<td>object</td>
+<td>Variables to extend. Joined to the existing value with <code>:</code> (creates the value if absent). <code>${name}</code> is expanded.</td>
+</tr>
+<tr>
+<td><code>init</code></td>
 <td>string</td>
-<td><code>""</code></td>
-<td>Raw bash lines to run before the task command (e.g., <code>module load</code> commands). Runs after environment variable exports.</td>
+<td>Bash text appended (newline-joined) into the <code>extra_init</code> block that runs before the task command. <code>${name}</code> is expanded.</td>
+</tr>
+<tr>
+<td><code>include</code></td>
+<td>list of strings</td>
+<td>Names of <code>env_groups</code> to inline at this position. See <a href="#reusable-groups">Reusable groups</a>.</td>
 </tr>
 </tbody>
 </table>
-<p>Tasks reference environments by name in their JSON definition:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-27-1" name="__codelineno-27-1" href="#__codelineno-27-1"></a><span class="p">{</span>
-<a id="__codelineno-27-2" name="__codelineno-27-2" href="#__codelineno-27-2"></a><span class="w">  </span><span class="nt">&quot;id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;train-model&quot;</span><span class="p">,</span>
-<a id="__codelineno-27-3" name="__codelineno-27-3" href="#__codelineno-27-3"></a><span class="w">  </span><span class="nt">&quot;name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Train Model&quot;</span><span class="p">,</span>
-<a id="__codelineno-27-4" name="__codelineno-27-4" href="#__codelineno-27-4"></a><span class="w">  </span><span class="nt">&quot;command&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;julia train.jl&quot;</span><span class="p">,</span>
-<a id="__codelineno-27-5" name="__codelineno-27-5" href="#__codelineno-27-5"></a><span class="w">  </span><span class="nt">&quot;environment&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;julia-1.10&quot;</span>
-<a id="__codelineno-27-6" name="__codelineno-27-6" href="#__codelineno-27-6"></a><span class="p">}</span>
+<h3 id="where-rules-live">Where rules live<a class="headerlink" href="#where-rules-live" title="Permanent link">&para;</a></h3>
+<p><code>env:</code> is a list of rules accepted at four locations, evaluated in this order:</p>
+<table>
+<thead>
+<tr>
+<th>Layer</th>
+<th>Defined in</th>
+<th>Typical use</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Backend</strong></td>
+<td><code>env:</code> on each backend entry</td>
+<td>Cluster-specific facts — scratch paths, module-system bootstrap</td>
+</tr>
+<tr>
+<td><strong>Server</strong></td>
+<td>top-level <code>env:</code></td>
+<td>Org-wide defaults across all clusters</td>
+</tr>
+<tr>
+<td><strong>Workflow</strong></td>
+<td><code>env:</code> on each workflow entry</td>
+<td>Workflow-specific overrides applied to every task in it</td>
+</tr>
+<tr>
+<td><strong>Task</strong></td>
+<td><code>env:</code> on each task in the JSON generator output</td>
+<td>Per-task adjustments</td>
+</tr>
+</tbody>
+</table>
+<p>Rules from each layer are concatenated in that order, then evaluated top-to-bottom. There is no separate "merge" step — <code>set</code> overwrites and <code>append</code> extends, so layer X overrides layer X-1 simply by being written later.</p>
+<h3 id="scripthut_-runtime-seed"><code>SCRIPTHUT_*</code> runtime seed<a class="headerlink" href="#scripthut_-runtime-seed" title="Permanent link">&para;</a></h3>
+<p>Before any user rule runs, ScriptHut seeds the env with run-context variables. Any rule's <code>if:</code> can branch on these:</p>
+<table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Always present</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>SCRIPTHUT_BACKEND</code></td>
+<td>yes</td>
+<td>Name of the backend this task runs on.</td>
+</tr>
+<tr>
+<td><code>SCRIPTHUT_WORKFLOW</code></td>
+<td>yes</td>
+<td>Name of the workflow.</td>
+</tr>
+<tr>
+<td><code>SCRIPTHUT_RUN_ID</code></td>
+<td>yes</td>
+<td>Unique 8-char run identifier.</td>
+</tr>
+<tr>
+<td><code>SCRIPTHUT_CREATED_AT</code></td>
+<td>yes</td>
+<td>ISO 8601 timestamp of run creation.</td>
+</tr>
+<tr>
+<td><code>SCRIPTHUT_GIT_REPO</code></td>
+<td>git workflows only</td>
+<td>Repository URL.</td>
+</tr>
+<tr>
+<td><code>SCRIPTHUT_GIT_BRANCH</code></td>
+<td>git workflows only</td>
+<td>Branch name.</td>
+</tr>
+<tr>
+<td><code>SCRIPTHUT_GIT_SHA</code></td>
+<td>git workflows only</td>
+<td>Resolved commit hash.</td>
+</tr>
+</tbody>
+</table>
+<p>These keys are <strong>protected</strong>: any rule attempting to <code>set:</code> or <code>append:</code> to a key starting with <code>SCRIPTHUT_</code> is rejected with a warning and ignored.</p>
+<h3 id="name-expansion"><code>${name}</code> expansion<a class="headerlink" href="#name-expansion" title="Permanent link">&para;</a></h3>
+<p>String values in <code>set:</code>, <code>append:</code>, and <code>init:</code> may reference other variables with <code>${name}</code>. Expansion happens against the env as resolved <em>so far</em>, so it sees the seed plus everything earlier rules have written. Unknown names expand to an empty string and log a warning. Only the <code>${name}</code> form is interpolated — bare <code>$name</code> is left alone, so shell expressions written into <code>init:</code> are passed through unchanged.</p>
+<h3 id="reusable-groups">Reusable groups<a class="headerlink" href="#reusable-groups" title="Permanent link">&para;</a></h3>
+<p>Define a rule list once with <code>env_groups:</code> and inline it from any <code>env:</code> rule using <code>include:</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-27-1" name="__codelineno-27-1" href="#__codelineno-27-1"></a><span class="nt">env_groups</span><span class="p">:</span>
+<a id="__codelineno-27-2" name="__codelineno-27-2" href="#__codelineno-27-2"></a><span class="w">  </span><span class="nt">monitoring</span><span class="p">:</span>
+<a id="__codelineno-27-3" name="__codelineno-27-3" href="#__codelineno-27-3"></a><span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">set</span><span class="p">:</span>
+<a id="__codelineno-27-4" name="__codelineno-27-4" href="#__codelineno-27-4"></a><span class="w">        </span><span class="nt">OTEL_EXPORTER</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">otlp</span>
+<a id="__codelineno-27-5" name="__codelineno-27-5" href="#__codelineno-27-5"></a><span class="w">        </span><span class="nt">OTEL_ENDPOINT</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;http://collector:4318&quot;</span>
+<a id="__codelineno-27-6" name="__codelineno-27-6" href="#__codelineno-27-6"></a>
+<a id="__codelineno-27-7" name="__codelineno-27-7" href="#__codelineno-27-7"></a><span class="nt">backends</span><span class="p">:</span>
+<a id="__codelineno-27-8" name="__codelineno-27-8" href="#__codelineno-27-8"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">mercury</span>
+<a id="__codelineno-27-9" name="__codelineno-27-9" href="#__codelineno-27-9"></a><span class="w">    </span><span class="nt">env_groups</span><span class="p">:</span>
+<a id="__codelineno-27-10" name="__codelineno-27-10" href="#__codelineno-27-10"></a><span class="w">      </span><span class="nt">gpu-stack</span><span class="p">:</span><span class="w">                      </span><span class="c1"># mercury&#39;s flavor of &quot;gpu-stack&quot;</span>
+<a id="__codelineno-27-11" name="__codelineno-27-11" href="#__codelineno-27-11"></a><span class="w">        </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">init</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;module</span><span class="nv"> </span><span class="s">load</span><span class="nv"> </span><span class="s">gcc/12</span><span class="nv"> </span><span class="s">cuda/11&quot;</span>
+<a id="__codelineno-27-12" name="__codelineno-27-12" href="#__codelineno-27-12"></a><span class="w">        </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">append</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> PATH</span><span class="p">:</span><span class="w"> </span><span class="nv">/opt/cuda/bin</span><span class="w"> </span><span class="p p-Indicator">}</span>
+<a id="__codelineno-27-13" name="__codelineno-27-13" href="#__codelineno-27-13"></a><span class="w">    </span><span class="nt">env</span><span class="p">:</span>
+<a id="__codelineno-27-14" name="__codelineno-27-14" href="#__codelineno-27-14"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">include</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">gpu-stack</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">monitoring</span><span class="p p-Indicator">]</span>
 </code></pre></div>
-<p>See <a href="../task-json/#environment-variable-priority">Environment Variable Priority</a> for how environment variables from different sources are merged.</p>
+<p><code>env_groups:</code> is accepted on each backend, on the server (top-level), and on each workflow. <strong>Scoping</strong>: a group defined at layer X is visible to that layer's own <code>env:</code> and to all later layers. Names defined at a later layer shadow earlier ones, so each backend can declare its own <code>gpu-stack</code> group and any workflow's <code>include: [gpu-stack]</code> resolves to the right one based on <code>SCRIPTHUT_BACKEND</code>.</p>
+<p>Includes can be guarded — an <code>if:</code> clause on the include-rule is inherited by every inlined rule (ANDed with any guard the inlined rule already carries):</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-28-1" name="__codelineno-28-1" href="#__codelineno-28-1"></a><span class="nt">env</span><span class="p">:</span>
+<a id="__codelineno-28-2" name="__codelineno-28-2" href="#__codelineno-28-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">if</span><span class="p">:</span>
+<a id="__codelineno-28-3" name="__codelineno-28-3" href="#__codelineno-28-3"></a><span class="w">      </span><span class="nt">SCRIPTHUT_BACKEND</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">mercury</span>
+<a id="__codelineno-28-4" name="__codelineno-28-4" href="#__codelineno-28-4"></a><span class="w">    </span><span class="nt">include</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">gpu-stack</span><span class="p p-Indicator">]</span><span class="w">              </span><span class="c1"># only fires on mercury</span>
+</code></pre></div>
+<p>Cycles between groups are detected and raise a clear error. Unknown group names log a warning and are skipped.</p>
+<h3 id="inspecting-the-resolved-env">Inspecting the resolved env<a class="headerlink" href="#inspecting-the-resolved-env" title="Permanent link">&para;</a></h3>
+<p>The task detail page in the UI has an <strong>Env</strong> tab that shows the resolved env for the selected task, with <strong>per-key provenance</strong> — every <code>set</code> / <code>append</code> operation lists its source layer (and which group, if any) and contribution. The same information is available as JSON at:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-29-1" name="__codelineno-29-1" href="#__codelineno-29-1"></a>GET /runs/{run_id}/tasks/{task_id}/env
+</code></pre></div>
+<p>Use this when a value isn't what you expect: the provenance pinpoints which layer wrote it.</p>
+<h3 id="worked-example-cluster-specific-module-loads">Worked example: cluster-specific module loads<a class="headerlink" href="#worked-example-cluster-specific-module-loads" title="Permanent link">&para;</a></h3>
+<p>The canonical case — "Mercury needs <code>module load gcc/12 cuda/11</code>, Anvil needs <code>module load gcc cuda-toolkit</code>, the laptop needs nothing":</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-30-1" name="__codelineno-30-1" href="#__codelineno-30-1"></a><span class="nt">backends</span><span class="p">:</span>
+<a id="__codelineno-30-2" name="__codelineno-30-2" href="#__codelineno-30-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">mercury</span>
+<a id="__codelineno-30-3" name="__codelineno-30-3" href="#__codelineno-30-3"></a><span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">slurm</span>
+<a id="__codelineno-30-4" name="__codelineno-30-4" href="#__codelineno-30-4"></a><span class="w">    </span><span class="nt">ssh</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> host</span><span class="p">:</span><span class="w"> </span><span class="nv">mercury.example.edu</span><span class="p p-Indicator">,</span><span class="nt"> user</span><span class="p">:</span><span class="w"> </span><span class="nv">alice</span><span class="w"> </span><span class="p p-Indicator">}</span>
+<a id="__codelineno-30-5" name="__codelineno-30-5" href="#__codelineno-30-5"></a><span class="w">    </span><span class="nt">env</span><span class="p">:</span>
+<a id="__codelineno-30-6" name="__codelineno-30-6" href="#__codelineno-30-6"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">set</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> SCRATCH</span><span class="p">:</span><span class="w"> </span><span class="nv">/scratch/$</span><span class="p p-Indicator">{</span><span class="nv">USER</span><span class="p p-Indicator">}</span><span class="w"> </span><span class="p p-Indicator">}</span>
+<a id="__codelineno-30-7" name="__codelineno-30-7" href="#__codelineno-30-7"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">init</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;source</span><span class="nv"> </span><span class="s">/etc/profile.d/modules.sh&quot;</span>
+<a id="__codelineno-30-8" name="__codelineno-30-8" href="#__codelineno-30-8"></a>
+<a id="__codelineno-30-9" name="__codelineno-30-9" href="#__codelineno-30-9"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">anvil</span>
+<a id="__codelineno-30-10" name="__codelineno-30-10" href="#__codelineno-30-10"></a><span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">pbs</span>
+<a id="__codelineno-30-11" name="__codelineno-30-11" href="#__codelineno-30-11"></a><span class="w">    </span><span class="nt">ssh</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> host</span><span class="p">:</span><span class="w"> </span><span class="nv">anvil.example.edu</span><span class="p p-Indicator">,</span><span class="nt"> user</span><span class="p">:</span><span class="w"> </span><span class="nv">alice</span><span class="w"> </span><span class="p p-Indicator">}</span>
+<a id="__codelineno-30-12" name="__codelineno-30-12" href="#__codelineno-30-12"></a><span class="w">    </span><span class="nt">env</span><span class="p">:</span>
+<a id="__codelineno-30-13" name="__codelineno-30-13" href="#__codelineno-30-13"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">set</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> SCRATCH</span><span class="p">:</span><span class="w"> </span><span class="nv">/tmp/work/$</span><span class="p p-Indicator">{</span><span class="nv">USER</span><span class="p p-Indicator">}</span><span class="w"> </span><span class="p p-Indicator">}</span>
+<a id="__codelineno-30-14" name="__codelineno-30-14" href="#__codelineno-30-14"></a>
+<a id="__codelineno-30-15" name="__codelineno-30-15" href="#__codelineno-30-15"></a><span class="nt">workflows</span><span class="p">:</span>
+<a id="__codelineno-30-16" name="__codelineno-30-16" href="#__codelineno-30-16"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">train</span>
+<a id="__codelineno-30-17" name="__codelineno-30-17" href="#__codelineno-30-17"></a><span class="w">    </span><span class="nt">backend</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">mercury</span><span class="w">                  </span><span class="c1"># this workflow targets mercury</span>
+<a id="__codelineno-30-18" name="__codelineno-30-18" href="#__codelineno-30-18"></a><span class="w">    </span><span class="nt">command</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;python</span><span class="nv"> </span><span class="s">generate_tasks.py&quot;</span>
+<a id="__codelineno-30-19" name="__codelineno-30-19" href="#__codelineno-30-19"></a><span class="w">    </span><span class="nt">env</span><span class="p">:</span>
+<a id="__codelineno-30-20" name="__codelineno-30-20" href="#__codelineno-30-20"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">if</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> SCRIPTHUT_BACKEND</span><span class="p">:</span><span class="w"> </span><span class="nv">mercury</span><span class="w"> </span><span class="p p-Indicator">}</span>
+<a id="__codelineno-30-21" name="__codelineno-30-21" href="#__codelineno-30-21"></a><span class="w">        </span><span class="nt">init</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;module</span><span class="nv"> </span><span class="s">load</span><span class="nv"> </span><span class="s">gcc/12</span><span class="nv"> </span><span class="s">cuda/11&quot;</span>
+<a id="__codelineno-30-22" name="__codelineno-30-22" href="#__codelineno-30-22"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">if</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> SCRIPTHUT_BACKEND</span><span class="p">:</span><span class="w"> </span><span class="nv">anvil</span><span class="w"> </span><span class="p p-Indicator">}</span>
+<a id="__codelineno-30-23" name="__codelineno-30-23" href="#__codelineno-30-23"></a><span class="w">        </span><span class="nt">init</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;module</span><span class="nv"> </span><span class="s">load</span><span class="nv"> </span><span class="s">gcc</span><span class="nv"> </span><span class="s">cuda-toolkit&quot;</span>
+</code></pre></div>
+<p>The same workflow definition, ported to a different backend (e.g. by adding a second <code>train-anvil</code> workflow that points to <code>anvil</code>), gets the right module loads automatically — no per-backend duplication of the workflow.</p>
 <hr />
 <h2 id="pricing">Pricing<a class="headerlink" href="#pricing" title="Permanent link">&para;</a></h2>
 <p>Optional EC2-equivalent cost estimation. Maps scheduler partitions to EC2 instance types and fetches pricing data from <code>instances.vantage.sh</code>.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-28-1" name="__codelineno-28-1" href="#__codelineno-28-1"></a><span class="nt">pricing</span><span class="p">:</span>
-<a id="__codelineno-28-2" name="__codelineno-28-2" href="#__codelineno-28-2"></a><span class="w">  </span><span class="nt">region</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">us-east-1</span>
-<a id="__codelineno-28-3" name="__codelineno-28-3" href="#__codelineno-28-3"></a><span class="w">  </span><span class="nt">price_type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">spot_avg</span>
-<a id="__codelineno-28-4" name="__codelineno-28-4" href="#__codelineno-28-4"></a><span class="w">  </span><span class="nt">partitions</span><span class="p">:</span>
-<a id="__codelineno-28-5" name="__codelineno-28-5" href="#__codelineno-28-5"></a><span class="w">    </span><span class="nt">standard</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">c5.xlarge</span>
-<a id="__codelineno-28-6" name="__codelineno-28-6" href="#__codelineno-28-6"></a><span class="w">    </span><span class="nt">gpu</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">p3.2xlarge</span>
-<a id="__codelineno-28-7" name="__codelineno-28-7" href="#__codelineno-28-7"></a><span class="w">    </span><span class="nt">highmem</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">r5.4xlarge</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-31-1" name="__codelineno-31-1" href="#__codelineno-31-1"></a><span class="nt">pricing</span><span class="p">:</span>
+<a id="__codelineno-31-2" name="__codelineno-31-2" href="#__codelineno-31-2"></a><span class="w">  </span><span class="nt">region</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">us-east-1</span>
+<a id="__codelineno-31-3" name="__codelineno-31-3" href="#__codelineno-31-3"></a><span class="w">  </span><span class="nt">price_type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">spot_avg</span>
+<a id="__codelineno-31-4" name="__codelineno-31-4" href="#__codelineno-31-4"></a><span class="w">  </span><span class="nt">partitions</span><span class="p">:</span>
+<a id="__codelineno-31-5" name="__codelineno-31-5" href="#__codelineno-31-5"></a><span class="w">    </span><span class="nt">standard</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">c5.xlarge</span>
+<a id="__codelineno-31-6" name="__codelineno-31-6" href="#__codelineno-31-6"></a><span class="w">    </span><span class="nt">gpu</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">p3.2xlarge</span>
+<a id="__codelineno-31-7" name="__codelineno-31-7" href="#__codelineno-31-7"></a><span class="w">    </span><span class="nt">highmem</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">r5.4xlarge</span>
 </code></pre></div>
 <table>
 <thead>
@@ -2559,13 +2889,13 @@
 <hr />
 <h2 id="settings">Settings<a class="headerlink" href="#settings" title="Permanent link">&para;</a></h2>
 <p>Global application settings that control server behavior and data storage.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-29-1" name="__codelineno-29-1" href="#__codelineno-29-1"></a><span class="nt">settings</span><span class="p">:</span>
-<a id="__codelineno-29-2" name="__codelineno-29-2" href="#__codelineno-29-2"></a><span class="w">  </span><span class="nt">poll_interval</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">60</span>
-<a id="__codelineno-29-3" name="__codelineno-29-3" href="#__codelineno-29-3"></a><span class="w">  </span><span class="nt">server_host</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">127.0.0.1</span>
-<a id="__codelineno-29-4" name="__codelineno-29-4" href="#__codelineno-29-4"></a><span class="w">  </span><span class="nt">server_port</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">8000</span>
-<a id="__codelineno-29-5" name="__codelineno-29-5" href="#__codelineno-29-5"></a><span class="w">  </span><span class="nt">data_dir</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">~/.cache/scripthut</span>
-<a id="__codelineno-29-6" name="__codelineno-29-6" href="#__codelineno-29-6"></a><span class="w">  </span><span class="nt">sources_cache_dir</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">~/.cache/scripthut/sources</span>
-<a id="__codelineno-29-7" name="__codelineno-29-7" href="#__codelineno-29-7"></a><span class="w">  </span><span class="nt">filter_user</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">your_username</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-32-1" name="__codelineno-32-1" href="#__codelineno-32-1"></a><span class="nt">settings</span><span class="p">:</span>
+<a id="__codelineno-32-2" name="__codelineno-32-2" href="#__codelineno-32-2"></a><span class="w">  </span><span class="nt">poll_interval</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">60</span>
+<a id="__codelineno-32-3" name="__codelineno-32-3" href="#__codelineno-32-3"></a><span class="w">  </span><span class="nt">server_host</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">127.0.0.1</span>
+<a id="__codelineno-32-4" name="__codelineno-32-4" href="#__codelineno-32-4"></a><span class="w">  </span><span class="nt">server_port</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">8000</span>
+<a id="__codelineno-32-5" name="__codelineno-32-5" href="#__codelineno-32-5"></a><span class="w">  </span><span class="nt">data_dir</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">~/.cache/scripthut</span>
+<a id="__codelineno-32-6" name="__codelineno-32-6" href="#__codelineno-32-6"></a><span class="w">  </span><span class="nt">sources_cache_dir</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">~/.cache/scripthut/sources</span>
+<a id="__codelineno-32-7" name="__codelineno-32-7" href="#__codelineno-32-7"></a><span class="w">  </span><span class="nt">filter_user</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">your_username</span>
 </code></pre></div>
 <table>
 <thead>
@@ -2626,72 +2956,76 @@
 <p>All path fields (e.g., <code>key_path</code>, <code>data_dir</code>, <code>deploy_key</code>) support <code>~</code> expansion to the user's home directory.</p>
 <hr />
 <h2 id="complete-example">Complete Example<a class="headerlink" href="#complete-example" title="Permanent link">&para;</a></h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-30-1" name="__codelineno-30-1" href="#__codelineno-30-1"></a><span class="nt">backends</span><span class="p">:</span>
-<a id="__codelineno-30-2" name="__codelineno-30-2" href="#__codelineno-30-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">hpc-cluster</span>
-<a id="__codelineno-30-3" name="__codelineno-30-3" href="#__codelineno-30-3"></a><span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">slurm</span>
-<a id="__codelineno-30-4" name="__codelineno-30-4" href="#__codelineno-30-4"></a><span class="w">    </span><span class="nt">ssh</span><span class="p">:</span>
-<a id="__codelineno-30-5" name="__codelineno-30-5" href="#__codelineno-30-5"></a><span class="w">      </span><span class="nt">host</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">slurm-login.cluster.edu</span>
-<a id="__codelineno-30-6" name="__codelineno-30-6" href="#__codelineno-30-6"></a><span class="w">      </span><span class="nt">port</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">22</span>
-<a id="__codelineno-30-7" name="__codelineno-30-7" href="#__codelineno-30-7"></a><span class="w">      </span><span class="nt">user</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">researcher</span>
-<a id="__codelineno-30-8" name="__codelineno-30-8" href="#__codelineno-30-8"></a><span class="w">      </span><span class="nt">key_path</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">~/.ssh/id_rsa</span>
-<a id="__codelineno-30-9" name="__codelineno-30-9" href="#__codelineno-30-9"></a><span class="w">    </span><span class="nt">account</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">pi-faculty</span>
-<a id="__codelineno-30-10" name="__codelineno-30-10" href="#__codelineno-30-10"></a><span class="w">    </span><span class="nt">login_shell</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
-<a id="__codelineno-30-11" name="__codelineno-30-11" href="#__codelineno-30-11"></a><span class="w">    </span><span class="nt">max_concurrent</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">50</span>
-<a id="__codelineno-30-12" name="__codelineno-30-12" href="#__codelineno-30-12"></a>
-<a id="__codelineno-30-13" name="__codelineno-30-13" href="#__codelineno-30-13"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">pbs-cluster</span>
-<a id="__codelineno-30-14" name="__codelineno-30-14" href="#__codelineno-30-14"></a><span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">pbs</span>
-<a id="__codelineno-30-15" name="__codelineno-30-15" href="#__codelineno-30-15"></a><span class="w">    </span><span class="nt">ssh</span><span class="p">:</span>
-<a id="__codelineno-30-16" name="__codelineno-30-16" href="#__codelineno-30-16"></a><span class="w">      </span><span class="nt">host</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">pbs-login.cluster.edu</span>
-<a id="__codelineno-30-17" name="__codelineno-30-17" href="#__codelineno-30-17"></a><span class="w">      </span><span class="nt">user</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">researcher</span>
-<a id="__codelineno-30-18" name="__codelineno-30-18" href="#__codelineno-30-18"></a><span class="w">      </span><span class="nt">key_path</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">~/.ssh/id_rsa</span>
-<a id="__codelineno-30-19" name="__codelineno-30-19" href="#__codelineno-30-19"></a><span class="w">    </span><span class="nt">queue</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">batch</span>
-<a id="__codelineno-30-20" name="__codelineno-30-20" href="#__codelineno-30-20"></a>
-<a id="__codelineno-30-21" name="__codelineno-30-21" href="#__codelineno-30-21"></a><span class="nt">sources</span><span class="p">:</span>
-<a id="__codelineno-30-22" name="__codelineno-30-22" href="#__codelineno-30-22"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ml-jobs</span>
-<a id="__codelineno-30-23" name="__codelineno-30-23" href="#__codelineno-30-23"></a><span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">git</span>
-<a id="__codelineno-30-24" name="__codelineno-30-24" href="#__codelineno-30-24"></a><span class="w">    </span><span class="nt">url</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">git@github.com:my-org/ml-pipelines.git</span>
-<a id="__codelineno-30-25" name="__codelineno-30-25" href="#__codelineno-30-25"></a><span class="w">    </span><span class="nt">branch</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">main</span>
-<a id="__codelineno-30-26" name="__codelineno-30-26" href="#__codelineno-30-26"></a><span class="w">    </span><span class="nt">deploy_key</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">~/.ssh/ml-deploy-key</span>
-<a id="__codelineno-30-27" name="__codelineno-30-27" href="#__codelineno-30-27"></a><span class="w">    </span><span class="nt">backend</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">hpc-cluster</span>
-<a id="__codelineno-30-28" name="__codelineno-30-28" href="#__codelineno-30-28"></a>
-<a id="__codelineno-30-29" name="__codelineno-30-29" href="#__codelineno-30-29"></a><span class="nt">workflows</span><span class="p">:</span>
-<a id="__codelineno-30-30" name="__codelineno-30-30" href="#__codelineno-30-30"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">simple-tasks</span>
-<a id="__codelineno-30-31" name="__codelineno-30-31" href="#__codelineno-30-31"></a><span class="w">    </span><span class="nt">backend</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">hpc-cluster</span>
-<a id="__codelineno-30-32" name="__codelineno-30-32" href="#__codelineno-30-32"></a><span class="w">    </span><span class="nt">command</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;python</span><span class="nv"> </span><span class="s">/shared/scripts/generate_tasks.py</span><span class="nv"> </span><span class="s">--count</span><span class="nv"> </span><span class="s">10&quot;</span>
-<a id="__codelineno-30-33" name="__codelineno-30-33" href="#__codelineno-30-33"></a><span class="w">    </span><span class="nt">max_concurrent</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">5</span>
-<a id="__codelineno-30-34" name="__codelineno-30-34" href="#__codelineno-30-34"></a><span class="w">    </span><span class="nt">description</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;Simple</span><span class="nv"> </span><span class="s">test</span><span class="nv"> </span><span class="s">tasks&quot;</span>
-<a id="__codelineno-30-35" name="__codelineno-30-35" href="#__codelineno-30-35"></a>
-<a id="__codelineno-30-36" name="__codelineno-30-36" href="#__codelineno-30-36"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ml-training</span>
-<a id="__codelineno-30-37" name="__codelineno-30-37" href="#__codelineno-30-37"></a><span class="w">    </span><span class="nt">backend</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">hpc-cluster</span>
-<a id="__codelineno-30-38" name="__codelineno-30-38" href="#__codelineno-30-38"></a><span class="w">    </span><span class="nt">git</span><span class="p">:</span>
-<a id="__codelineno-30-39" name="__codelineno-30-39" href="#__codelineno-30-39"></a><span class="w">      </span><span class="nt">repo</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">git@github.com:my-org/ml-pipelines.git</span>
-<a id="__codelineno-30-40" name="__codelineno-30-40" href="#__codelineno-30-40"></a><span class="w">      </span><span class="nt">branch</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">main</span>
-<a id="__codelineno-30-41" name="__codelineno-30-41" href="#__codelineno-30-41"></a><span class="w">      </span><span class="nt">deploy_key</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">~/.ssh/ml-deploy-key</span>
-<a id="__codelineno-30-42" name="__codelineno-30-42" href="#__codelineno-30-42"></a><span class="w">      </span><span class="nt">clone_dir</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">~/scripthut-repos</span>
-<a id="__codelineno-30-43" name="__codelineno-30-43" href="#__codelineno-30-43"></a><span class="w">    </span><span class="nt">command</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;python</span><span class="nv"> </span><span class="s">generate_tasks.py&quot;</span>
-<a id="__codelineno-30-44" name="__codelineno-30-44" href="#__codelineno-30-44"></a><span class="w">    </span><span class="nt">max_concurrent</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">3</span>
-<a id="__codelineno-30-45" name="__codelineno-30-45" href="#__codelineno-30-45"></a><span class="w">    </span><span class="nt">description</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;ML</span><span class="nv"> </span><span class="s">training</span><span class="nv"> </span><span class="s">pipeline</span><span class="nv"> </span><span class="s">from</span><span class="nv"> </span><span class="s">git&quot;</span>
-<a id="__codelineno-30-46" name="__codelineno-30-46" href="#__codelineno-30-46"></a>
-<a id="__codelineno-30-47" name="__codelineno-30-47" href="#__codelineno-30-47"></a><span class="nt">environments</span><span class="p">:</span>
-<a id="__codelineno-30-48" name="__codelineno-30-48" href="#__codelineno-30-48"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">julia-env</span>
-<a id="__codelineno-30-49" name="__codelineno-30-49" href="#__codelineno-30-49"></a><span class="w">    </span><span class="nt">variables</span><span class="p">:</span>
-<a id="__codelineno-30-50" name="__codelineno-30-50" href="#__codelineno-30-50"></a><span class="w">      </span><span class="nt">JULIA_DEPOT_PATH</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;/scratch/researcher/julia_depot&quot;</span>
-<a id="__codelineno-30-51" name="__codelineno-30-51" href="#__codelineno-30-51"></a><span class="w">      </span><span class="nt">JULIA_NUM_THREADS</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;8&quot;</span>
-<a id="__codelineno-30-52" name="__codelineno-30-52" href="#__codelineno-30-52"></a><span class="w">    </span><span class="nt">extra_init</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;module</span><span class="nv"> </span><span class="s">load</span><span class="nv"> </span><span class="s">julia/1.10&quot;</span>
-<a id="__codelineno-30-53" name="__codelineno-30-53" href="#__codelineno-30-53"></a>
-<a id="__codelineno-30-54" name="__codelineno-30-54" href="#__codelineno-30-54"></a><span class="nt">pricing</span><span class="p">:</span>
-<a id="__codelineno-30-55" name="__codelineno-30-55" href="#__codelineno-30-55"></a><span class="w">  </span><span class="nt">region</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">us-east-1</span>
-<a id="__codelineno-30-56" name="__codelineno-30-56" href="#__codelineno-30-56"></a><span class="w">  </span><span class="nt">price_type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">spot_avg</span>
-<a id="__codelineno-30-57" name="__codelineno-30-57" href="#__codelineno-30-57"></a><span class="w">  </span><span class="nt">partitions</span><span class="p">:</span>
-<a id="__codelineno-30-58" name="__codelineno-30-58" href="#__codelineno-30-58"></a><span class="w">    </span><span class="nt">normal</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">c5.xlarge</span>
-<a id="__codelineno-30-59" name="__codelineno-30-59" href="#__codelineno-30-59"></a><span class="w">    </span><span class="nt">gpu</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">p3.2xlarge</span>
-<a id="__codelineno-30-60" name="__codelineno-30-60" href="#__codelineno-30-60"></a>
-<a id="__codelineno-30-61" name="__codelineno-30-61" href="#__codelineno-30-61"></a><span class="nt">settings</span><span class="p">:</span>
-<a id="__codelineno-30-62" name="__codelineno-30-62" href="#__codelineno-30-62"></a><span class="w">  </span><span class="nt">poll_interval</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">30</span>
-<a id="__codelineno-30-63" name="__codelineno-30-63" href="#__codelineno-30-63"></a><span class="w">  </span><span class="nt">server_host</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">127.0.0.1</span>
-<a id="__codelineno-30-64" name="__codelineno-30-64" href="#__codelineno-30-64"></a><span class="w">  </span><span class="nt">server_port</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">8000</span>
-<a id="__codelineno-30-65" name="__codelineno-30-65" href="#__codelineno-30-65"></a><span class="w">  </span><span class="nt">data_dir</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">~/.cache/scripthut</span>
-<a id="__codelineno-30-66" name="__codelineno-30-66" href="#__codelineno-30-66"></a><span class="w">  </span><span class="nt">filter_user</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">researcher</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-33-1" name="__codelineno-33-1" href="#__codelineno-33-1"></a><span class="nt">backends</span><span class="p">:</span>
+<a id="__codelineno-33-2" name="__codelineno-33-2" href="#__codelineno-33-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">hpc-cluster</span>
+<a id="__codelineno-33-3" name="__codelineno-33-3" href="#__codelineno-33-3"></a><span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">slurm</span>
+<a id="__codelineno-33-4" name="__codelineno-33-4" href="#__codelineno-33-4"></a><span class="w">    </span><span class="nt">ssh</span><span class="p">:</span>
+<a id="__codelineno-33-5" name="__codelineno-33-5" href="#__codelineno-33-5"></a><span class="w">      </span><span class="nt">host</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">slurm-login.cluster.edu</span>
+<a id="__codelineno-33-6" name="__codelineno-33-6" href="#__codelineno-33-6"></a><span class="w">      </span><span class="nt">port</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">22</span>
+<a id="__codelineno-33-7" name="__codelineno-33-7" href="#__codelineno-33-7"></a><span class="w">      </span><span class="nt">user</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">researcher</span>
+<a id="__codelineno-33-8" name="__codelineno-33-8" href="#__codelineno-33-8"></a><span class="w">      </span><span class="nt">key_path</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">~/.ssh/id_rsa</span>
+<a id="__codelineno-33-9" name="__codelineno-33-9" href="#__codelineno-33-9"></a><span class="w">    </span><span class="nt">account</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">pi-faculty</span>
+<a id="__codelineno-33-10" name="__codelineno-33-10" href="#__codelineno-33-10"></a><span class="w">    </span><span class="nt">login_shell</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+<a id="__codelineno-33-11" name="__codelineno-33-11" href="#__codelineno-33-11"></a><span class="w">    </span><span class="nt">max_concurrent</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">50</span>
+<a id="__codelineno-33-12" name="__codelineno-33-12" href="#__codelineno-33-12"></a>
+<a id="__codelineno-33-13" name="__codelineno-33-13" href="#__codelineno-33-13"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">pbs-cluster</span>
+<a id="__codelineno-33-14" name="__codelineno-33-14" href="#__codelineno-33-14"></a><span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">pbs</span>
+<a id="__codelineno-33-15" name="__codelineno-33-15" href="#__codelineno-33-15"></a><span class="w">    </span><span class="nt">ssh</span><span class="p">:</span>
+<a id="__codelineno-33-16" name="__codelineno-33-16" href="#__codelineno-33-16"></a><span class="w">      </span><span class="nt">host</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">pbs-login.cluster.edu</span>
+<a id="__codelineno-33-17" name="__codelineno-33-17" href="#__codelineno-33-17"></a><span class="w">      </span><span class="nt">user</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">researcher</span>
+<a id="__codelineno-33-18" name="__codelineno-33-18" href="#__codelineno-33-18"></a><span class="w">      </span><span class="nt">key_path</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">~/.ssh/id_rsa</span>
+<a id="__codelineno-33-19" name="__codelineno-33-19" href="#__codelineno-33-19"></a><span class="w">    </span><span class="nt">queue</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">batch</span>
+<a id="__codelineno-33-20" name="__codelineno-33-20" href="#__codelineno-33-20"></a>
+<a id="__codelineno-33-21" name="__codelineno-33-21" href="#__codelineno-33-21"></a><span class="nt">sources</span><span class="p">:</span>
+<a id="__codelineno-33-22" name="__codelineno-33-22" href="#__codelineno-33-22"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ml-jobs</span>
+<a id="__codelineno-33-23" name="__codelineno-33-23" href="#__codelineno-33-23"></a><span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">git</span>
+<a id="__codelineno-33-24" name="__codelineno-33-24" href="#__codelineno-33-24"></a><span class="w">    </span><span class="nt">url</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">git@github.com:my-org/ml-pipelines.git</span>
+<a id="__codelineno-33-25" name="__codelineno-33-25" href="#__codelineno-33-25"></a><span class="w">    </span><span class="nt">branch</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">main</span>
+<a id="__codelineno-33-26" name="__codelineno-33-26" href="#__codelineno-33-26"></a><span class="w">    </span><span class="nt">deploy_key</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">~/.ssh/ml-deploy-key</span>
+<a id="__codelineno-33-27" name="__codelineno-33-27" href="#__codelineno-33-27"></a><span class="w">    </span><span class="nt">backend</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">hpc-cluster</span>
+<a id="__codelineno-33-28" name="__codelineno-33-28" href="#__codelineno-33-28"></a>
+<a id="__codelineno-33-29" name="__codelineno-33-29" href="#__codelineno-33-29"></a><span class="nt">workflows</span><span class="p">:</span>
+<a id="__codelineno-33-30" name="__codelineno-33-30" href="#__codelineno-33-30"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">simple-tasks</span>
+<a id="__codelineno-33-31" name="__codelineno-33-31" href="#__codelineno-33-31"></a><span class="w">    </span><span class="nt">backend</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">hpc-cluster</span>
+<a id="__codelineno-33-32" name="__codelineno-33-32" href="#__codelineno-33-32"></a><span class="w">    </span><span class="nt">command</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;python</span><span class="nv"> </span><span class="s">/shared/scripts/generate_tasks.py</span><span class="nv"> </span><span class="s">--count</span><span class="nv"> </span><span class="s">10&quot;</span>
+<a id="__codelineno-33-33" name="__codelineno-33-33" href="#__codelineno-33-33"></a><span class="w">    </span><span class="nt">max_concurrent</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">5</span>
+<a id="__codelineno-33-34" name="__codelineno-33-34" href="#__codelineno-33-34"></a><span class="w">    </span><span class="nt">description</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;Simple</span><span class="nv"> </span><span class="s">test</span><span class="nv"> </span><span class="s">tasks&quot;</span>
+<a id="__codelineno-33-35" name="__codelineno-33-35" href="#__codelineno-33-35"></a>
+<a id="__codelineno-33-36" name="__codelineno-33-36" href="#__codelineno-33-36"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ml-training</span>
+<a id="__codelineno-33-37" name="__codelineno-33-37" href="#__codelineno-33-37"></a><span class="w">    </span><span class="nt">backend</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">hpc-cluster</span>
+<a id="__codelineno-33-38" name="__codelineno-33-38" href="#__codelineno-33-38"></a><span class="w">    </span><span class="nt">git</span><span class="p">:</span>
+<a id="__codelineno-33-39" name="__codelineno-33-39" href="#__codelineno-33-39"></a><span class="w">      </span><span class="nt">repo</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">git@github.com:my-org/ml-pipelines.git</span>
+<a id="__codelineno-33-40" name="__codelineno-33-40" href="#__codelineno-33-40"></a><span class="w">      </span><span class="nt">branch</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">main</span>
+<a id="__codelineno-33-41" name="__codelineno-33-41" href="#__codelineno-33-41"></a><span class="w">      </span><span class="nt">deploy_key</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">~/.ssh/ml-deploy-key</span>
+<a id="__codelineno-33-42" name="__codelineno-33-42" href="#__codelineno-33-42"></a><span class="w">      </span><span class="nt">clone_dir</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">~/scripthut-repos</span>
+<a id="__codelineno-33-43" name="__codelineno-33-43" href="#__codelineno-33-43"></a><span class="w">    </span><span class="nt">command</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;python</span><span class="nv"> </span><span class="s">generate_tasks.py&quot;</span>
+<a id="__codelineno-33-44" name="__codelineno-33-44" href="#__codelineno-33-44"></a><span class="w">    </span><span class="nt">max_concurrent</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">3</span>
+<a id="__codelineno-33-45" name="__codelineno-33-45" href="#__codelineno-33-45"></a><span class="w">    </span><span class="nt">description</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;ML</span><span class="nv"> </span><span class="s">training</span><span class="nv"> </span><span class="s">pipeline</span><span class="nv"> </span><span class="s">from</span><span class="nv"> </span><span class="s">git&quot;</span>
+<a id="__codelineno-33-46" name="__codelineno-33-46" href="#__codelineno-33-46"></a>
+<a id="__codelineno-33-47" name="__codelineno-33-47" href="#__codelineno-33-47"></a><span class="nt">env_groups</span><span class="p">:</span>
+<a id="__codelineno-33-48" name="__codelineno-33-48" href="#__codelineno-33-48"></a><span class="w">  </span><span class="nt">julia-env</span><span class="p">:</span>
+<a id="__codelineno-33-49" name="__codelineno-33-49" href="#__codelineno-33-49"></a><span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">set</span><span class="p">:</span>
+<a id="__codelineno-33-50" name="__codelineno-33-50" href="#__codelineno-33-50"></a><span class="w">        </span><span class="nt">JULIA_DEPOT_PATH</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;/scratch/researcher/julia_depot&quot;</span>
+<a id="__codelineno-33-51" name="__codelineno-33-51" href="#__codelineno-33-51"></a><span class="w">        </span><span class="nt">JULIA_NUM_THREADS</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;8&quot;</span>
+<a id="__codelineno-33-52" name="__codelineno-33-52" href="#__codelineno-33-52"></a><span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">init</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;module</span><span class="nv"> </span><span class="s">load</span><span class="nv"> </span><span class="s">julia/1.10&quot;</span>
+<a id="__codelineno-33-53" name="__codelineno-33-53" href="#__codelineno-33-53"></a>
+<a id="__codelineno-33-54" name="__codelineno-33-54" href="#__codelineno-33-54"></a><span class="nt">env</span><span class="p">:</span>
+<a id="__codelineno-33-55" name="__codelineno-33-55" href="#__codelineno-33-55"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">set</span><span class="p">:</span>
+<a id="__codelineno-33-56" name="__codelineno-33-56" href="#__codelineno-33-56"></a><span class="w">      </span><span class="nt">LOG_LEVEL</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">info</span>
+<a id="__codelineno-33-57" name="__codelineno-33-57" href="#__codelineno-33-57"></a>
+<a id="__codelineno-33-58" name="__codelineno-33-58" href="#__codelineno-33-58"></a><span class="nt">pricing</span><span class="p">:</span>
+<a id="__codelineno-33-59" name="__codelineno-33-59" href="#__codelineno-33-59"></a><span class="w">  </span><span class="nt">region</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">us-east-1</span>
+<a id="__codelineno-33-60" name="__codelineno-33-60" href="#__codelineno-33-60"></a><span class="w">  </span><span class="nt">price_type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">spot_avg</span>
+<a id="__codelineno-33-61" name="__codelineno-33-61" href="#__codelineno-33-61"></a><span class="w">  </span><span class="nt">partitions</span><span class="p">:</span>
+<a id="__codelineno-33-62" name="__codelineno-33-62" href="#__codelineno-33-62"></a><span class="w">    </span><span class="nt">normal</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">c5.xlarge</span>
+<a id="__codelineno-33-63" name="__codelineno-33-63" href="#__codelineno-33-63"></a><span class="w">    </span><span class="nt">gpu</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">p3.2xlarge</span>
+<a id="__codelineno-33-64" name="__codelineno-33-64" href="#__codelineno-33-64"></a>
+<a id="__codelineno-33-65" name="__codelineno-33-65" href="#__codelineno-33-65"></a><span class="nt">settings</span><span class="p">:</span>
+<a id="__codelineno-33-66" name="__codelineno-33-66" href="#__codelineno-33-66"></a><span class="w">  </span><span class="nt">poll_interval</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">30</span>
+<a id="__codelineno-33-67" name="__codelineno-33-67" href="#__codelineno-33-67"></a><span class="w">  </span><span class="nt">server_host</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">127.0.0.1</span>
+<a id="__codelineno-33-68" name="__codelineno-33-68" href="#__codelineno-33-68"></a><span class="w">  </span><span class="nt">server_port</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">8000</span>
+<a id="__codelineno-33-69" name="__codelineno-33-69" href="#__codelineno-33-69"></a><span class="w">  </span><span class="nt">data_dir</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">~/.cache/scripthut</span>
+<a id="__codelineno-33-70" name="__codelineno-33-70" href="#__codelineno-33-70"></a><span class="w">  </span><span class="nt">filter_user</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">researcher</span>
 </code></pre></div>
 
 

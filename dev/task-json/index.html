@@ -676,10 +676,10 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#automatic-environment-variables" class="md-nav__link">
+  <a href="#automatic-seed-variables" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Automatic Environment Variables
+        Automatic seed variables
       
     </span>
   </a>
@@ -687,10 +687,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#named-environments" class="md-nav__link">
+  <a href="#task-level-env-rules" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Named Environments
+        Task-level env: rules
       
     </span>
   </a>
@@ -698,10 +698,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#per-task-environment-variables" class="md-nav__link">
+  <a href="#resolution-order-later-rules-win" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Per-Task Environment Variables
+        Resolution order — later rules win
       
     </span>
   </a>
@@ -709,10 +709,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#environment-variable-priority" class="md-nav__link">
+  <a href="#legacy-fields-removed" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Environment Variable Priority
+        Legacy fields (removed)
       
     </span>
   </a>
@@ -1026,10 +1026,10 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#automatic-environment-variables" class="md-nav__link">
+  <a href="#automatic-seed-variables" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Automatic Environment Variables
+        Automatic seed variables
       
     </span>
   </a>
@@ -1037,10 +1037,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#named-environments" class="md-nav__link">
+  <a href="#task-level-env-rules" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Named Environments
+        Task-level env: rules
       
     </span>
   </a>
@@ -1048,10 +1048,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#per-task-environment-variables" class="md-nav__link">
+  <a href="#resolution-order-later-rules-win" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Per-Task Environment Variables
+        Resolution order — later rules win
       
     </span>
   </a>
@@ -1059,10 +1059,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#environment-variable-priority" class="md-nav__link">
+  <a href="#legacy-fields-removed" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Environment Variable Priority
+        Legacy fields (removed)
       
     </span>
   </a>
@@ -1325,18 +1325,11 @@
 <td>Custom path for stderr log (Slurm/PBS only). If not set, defaults to <code>&lt;log_dir&gt;/scripthut_&lt;run_id&gt;_&lt;task_id&gt;.err</code>. Ignored on AWS Batch — stderr is merged into the CloudWatch stream.</td>
 </tr>
 <tr>
-<td><code>environment</code></td>
+<td><code>env</code></td>
 <td>no</td>
-<td>string</td>
-<td><code>null</code></td>
-<td>Name of a named environment from the <a href="../configuration/#environments">configuration</a>.</td>
-</tr>
-<tr>
-<td><code>env_vars</code></td>
-<td>no</td>
-<td>object</td>
-<td><code>{}</code></td>
-<td>Per-task environment variables as key-value pairs.</td>
+<td>array</td>
+<td><code>[]</code></td>
+<td>Task-level env rules. Each entry is an <code>EnvRule</code> with optional <code>if</code>, <code>set</code>, <code>append</code>, <code>init</code>, and <code>include</code> fields. Resolved together with backend/server/workflow rules — see <a href="#environment-variables">Environment Variables</a> and <a href="../configuration/#environments">the env model</a>.</td>
 </tr>
 <tr>
 <td><code>generates_source</code></td>
@@ -1374,14 +1367,13 @@
 <a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a><span class="w">      </span><span class="nt">&quot;time_limit&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;4:00:00&quot;</span><span class="p">,</span>
 <a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a><span class="w">      </span><span class="nt">&quot;output_file&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;/scratch/user/logs/train-v1.out&quot;</span><span class="p">,</span>
 <a id="__codelineno-3-13" name="__codelineno-3-13" href="#__codelineno-3-13"></a><span class="w">      </span><span class="nt">&quot;error_file&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;/scratch/user/logs/train-v1.err&quot;</span><span class="p">,</span>
-<a id="__codelineno-3-14" name="__codelineno-3-14" href="#__codelineno-3-14"></a><span class="w">      </span><span class="nt">&quot;environment&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;python-ml&quot;</span><span class="p">,</span>
-<a id="__codelineno-3-15" name="__codelineno-3-15" href="#__codelineno-3-15"></a><span class="w">      </span><span class="nt">&quot;env_vars&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-<a id="__codelineno-3-16" name="__codelineno-3-16" href="#__codelineno-3-16"></a><span class="w">        </span><span class="nt">&quot;MODEL_NAME&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;resnet50&quot;</span><span class="p">,</span>
-<a id="__codelineno-3-17" name="__codelineno-3-17" href="#__codelineno-3-17"></a><span class="w">        </span><span class="nt">&quot;DATA_DIR&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;/scratch/data/imagenet&quot;</span>
-<a id="__codelineno-3-18" name="__codelineno-3-18" href="#__codelineno-3-18"></a><span class="w">      </span><span class="p">}</span>
-<a id="__codelineno-3-19" name="__codelineno-3-19" href="#__codelineno-3-19"></a><span class="w">    </span><span class="p">}</span>
-<a id="__codelineno-3-20" name="__codelineno-3-20" href="#__codelineno-3-20"></a><span class="w">  </span><span class="p">]</span>
-<a id="__codelineno-3-21" name="__codelineno-3-21" href="#__codelineno-3-21"></a><span class="p">}</span>
+<a id="__codelineno-3-14" name="__codelineno-3-14" href="#__codelineno-3-14"></a><span class="w">      </span><span class="nt">&quot;env&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<a id="__codelineno-3-15" name="__codelineno-3-15" href="#__codelineno-3-15"></a><span class="w">        </span><span class="p">{</span><span class="nt">&quot;set&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;MODEL_NAME&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;resnet50&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;DATA_DIR&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;/scratch/data/imagenet&quot;</span><span class="p">}},</span>
+<a id="__codelineno-3-16" name="__codelineno-3-16" href="#__codelineno-3-16"></a><span class="w">        </span><span class="p">{</span><span class="nt">&quot;if&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;SCRIPTHUT_BACKEND&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;hpc-cluster&quot;</span><span class="p">},</span><span class="w"> </span><span class="nt">&quot;init&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;module load cuda/12&quot;</span><span class="p">}</span>
+<a id="__codelineno-3-17" name="__codelineno-3-17" href="#__codelineno-3-17"></a><span class="w">      </span><span class="p">]</span>
+<a id="__codelineno-3-18" name="__codelineno-3-18" href="#__codelineno-3-18"></a><span class="w">    </span><span class="p">}</span>
+<a id="__codelineno-3-19" name="__codelineno-3-19" href="#__codelineno-3-19"></a><span class="w">  </span><span class="p">]</span>
+<a id="__codelineno-3-20" name="__codelineno-3-20" href="#__codelineno-3-20"></a><span class="p">}</span>
 </code></pre></div>
 <hr />
 <h2 id="dependencies">Dependencies<a class="headerlink" href="#dependencies" title="Permanent link">&para;</a></h2>
@@ -1556,9 +1548,9 @@
 </ul>
 <hr />
 <h2 id="environment-variables">Environment Variables<a class="headerlink" href="#environment-variables" title="Permanent link">&para;</a></h2>
-<p>Tasks can receive environment variables from three sources, which are merged in a defined priority order.</p>
-<h3 id="automatic-environment-variables">Automatic Environment Variables<a class="headerlink" href="#automatic-environment-variables" title="Permanent link">&para;</a></h3>
-<p>ScriptHut automatically injects the following variables into every task:</p>
+<p>ScriptHut resolves a task's environment by walking an ordered chain of <strong>env rules</strong> from four layers — <strong>backend → server → workflow → task</strong> — against a seed of <code>SCRIPTHUT_*</code> runtime variables. For the full model (rule shape, conditionals, <code>${name}</code> expansion, reusable groups, <code>SCRIPTHUT_*</code> protection), see <a href="../configuration/#environments">Environments</a> in the configuration reference. This page covers only the <strong>task-level</strong> <code>env:</code> field that a generator can emit.</p>
+<h3 id="automatic-seed-variables">Automatic seed variables<a class="headerlink" href="#automatic-seed-variables" title="Permanent link">&para;</a></h3>
+<p>Every task starts with these variables already set (any task-level rule's <code>if:</code> can branch on them):</p>
 <table>
 <thead>
 <tr>
@@ -1567,6 +1559,10 @@
 </tr>
 </thead>
 <tbody>
+<tr>
+<td><code>SCRIPTHUT_BACKEND</code></td>
+<td>Name of the backend this task runs on.</td>
+</tr>
 <tr>
 <td><code>SCRIPTHUT_WORKFLOW</code></td>
 <td>Name of the workflow that created this run.</td>
@@ -1589,171 +1585,156 @@
 </tr>
 <tr>
 <td><code>SCRIPTHUT_GIT_SHA</code></td>
-<td><em>(git workflows only)</em> Commit hash.</td>
+<td><em>(git workflows only)</em> Resolved commit hash.</td>
 </tr>
 </tbody>
 </table>
-<p>These variables are always available and cannot be overridden.</p>
-<h3 id="named-environments">Named Environments<a class="headerlink" href="#named-environments" title="Permanent link">&para;</a></h3>
-<p>Tasks can reference a named environment from the <a href="../configuration/#environments">configuration</a> using the <code>environment</code> field:</p>
+<p>These keys are protected: any rule attempting to <code>set:</code> or <code>append:</code> to a <code>SCRIPTHUT_</code> key is ignored with a warning.</p>
+<h3 id="task-level-env-rules">Task-level <code>env:</code> rules<a class="headerlink" href="#task-level-env-rules" title="Permanent link">&para;</a></h3>
+<p>A task's <code>env:</code> is a list of <code>EnvRule</code> entries. Each entry can <code>set:</code> variables, <code>append:</code> to PATH-like variables (joined with <code>:</code>), <code>init:</code> bash lines that run before the task command, and <code>include:</code> named env-groups defined at any earlier layer. An optional <code>if:</code> guards the rule against the env-so-far.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="p">{</span>
 <a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="w">  </span><span class="nt">&quot;id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;train&quot;</span><span class="p">,</span>
 <a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="w">  </span><span class="nt">&quot;name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Train Model&quot;</span><span class="p">,</span>
-<a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="w">  </span><span class="nt">&quot;command&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;julia train.jl&quot;</span><span class="p">,</span>
-<a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a><span class="w">  </span><span class="nt">&quot;environment&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;julia-1.10&quot;</span>
-<a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a><span class="p">}</span>
+<a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="w">  </span><span class="nt">&quot;command&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;python train.py&quot;</span><span class="p">,</span>
+<a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a><span class="w">  </span><span class="nt">&quot;env&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a><span class="w">    </span><span class="p">{</span><span class="nt">&quot;set&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;LEARNING_RATE&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;0.001&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;BATCH_SIZE&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;64&quot;</span><span class="p">}},</span>
+<a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a><span class="w">    </span><span class="p">{</span><span class="nt">&quot;if&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;SCRIPTHUT_BACKEND&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;mercury&quot;</span><span class="p">},</span><span class="w"> </span><span class="nt">&quot;init&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;module load cuda/11&quot;</span><span class="p">},</span>
+<a id="__codelineno-9-8" name="__codelineno-9-8" href="#__codelineno-9-8"></a><span class="w">    </span><span class="p">{</span><span class="nt">&quot;include&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;monitoring&quot;</span><span class="p">]}</span>
+<a id="__codelineno-9-9" name="__codelineno-9-9" href="#__codelineno-9-9"></a><span class="w">  </span><span class="p">]</span>
+<a id="__codelineno-9-10" name="__codelineno-9-10" href="#__codelineno-9-10"></a><span class="p">}</span>
 </code></pre></div>
-<p>If the environment <code>julia-1.10</code> is defined in <code>scripthut.yaml</code> as:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="nt">environments</span><span class="p">:</span>
-<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">julia-1.10</span>
-<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="w">    </span><span class="nt">variables</span><span class="p">:</span>
-<a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="w">      </span><span class="nt">JULIA_DEPOT_PATH</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;/scratch/user/julia_depot&quot;</span>
-<a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a><span class="w">      </span><span class="nt">JULIA_NUM_THREADS</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;8&quot;</span>
-<a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a><span class="w">    </span><span class="nt">extra_init</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;module</span><span class="nv"> </span><span class="s">load</span><span class="nv"> </span><span class="s">julia/1.10&quot;</span>
+<p><code>${name}</code> substitution inside values references the env as resolved so far (seed + earlier layers + earlier rules in this list):</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="p">{</span>
+<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="w">  </span><span class="nt">&quot;env&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="w">    </span><span class="p">{</span><span class="nt">&quot;set&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;RUN_DIR&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;/scratch/${USER}/${SCRIPTHUT_RUN_ID}&quot;</span><span class="p">}}</span>
+<a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="w">  </span><span class="p">]</span>
+<a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a><span class="p">}</span>
 </code></pre></div>
-<p>Then the task will have <code>JULIA_DEPOT_PATH</code> and <code>JULIA_NUM_THREADS</code> exported, and <code>module load julia/1.10</code> will be run before the task command.</p>
-<h3 id="per-task-environment-variables">Per-Task Environment Variables<a class="headerlink" href="#per-task-environment-variables" title="Permanent link">&para;</a></h3>
-<p>Individual tasks can set environment variables using <code>env_vars</code>:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="p">{</span>
-<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="w">  </span><span class="nt">&quot;id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;train&quot;</span><span class="p">,</span>
-<a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a><span class="w">  </span><span class="nt">&quot;name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Train Model&quot;</span><span class="p">,</span>
-<a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a><span class="w">  </span><span class="nt">&quot;command&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;python train.py&quot;</span><span class="p">,</span>
-<a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a><span class="w">  </span><span class="nt">&quot;environment&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;python-ml&quot;</span><span class="p">,</span>
-<a id="__codelineno-11-6" name="__codelineno-11-6" href="#__codelineno-11-6"></a><span class="w">  </span><span class="nt">&quot;env_vars&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-<a id="__codelineno-11-7" name="__codelineno-11-7" href="#__codelineno-11-7"></a><span class="w">    </span><span class="nt">&quot;LEARNING_RATE&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;0.001&quot;</span><span class="p">,</span>
-<a id="__codelineno-11-8" name="__codelineno-11-8" href="#__codelineno-11-8"></a><span class="w">    </span><span class="nt">&quot;BATCH_SIZE&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;64&quot;</span>
-<a id="__codelineno-11-9" name="__codelineno-11-9" href="#__codelineno-11-9"></a><span class="w">  </span><span class="p">}</span>
-<a id="__codelineno-11-10" name="__codelineno-11-10" href="#__codelineno-11-10"></a><span class="p">}</span>
-</code></pre></div>
-<h3 id="environment-variable-priority">Environment Variable Priority<a class="headerlink" href="#environment-variable-priority" title="Permanent link">&para;</a></h3>
-<p>When the same variable is defined at multiple levels, later sources override earlier ones:</p>
-<ol>
-<li><strong>ScriptHut automatic variables</strong> (lowest priority)</li>
-<li><strong>Named environment variables</strong> (from <code>environments</code> config)</li>
-<li><strong>Per-task <code>env_vars</code></strong> (highest priority)</li>
-</ol>
-<p>For example, if a named environment sets <code>DATA_DIR=/shared/data</code> and the task sets <code>"env_vars": {"DATA_DIR": "/scratch/local"}</code>, the task will see <code>DATA_DIR=/scratch/local</code>.</p>
+<h3 id="resolution-order-later-rules-win">Resolution order — later rules win<a class="headerlink" href="#resolution-order-later-rules-win" title="Permanent link">&para;</a></h3>
+<p>Rules from each layer are concatenated and evaluated top to bottom: backend rules, then server, then workflow, then task. <code>set:</code> overwrites; <code>append:</code> extends. So if the workflow sets <code>DATA_DIR=/shared</code> and the task sets <code>DATA_DIR=/scratch/local</code>, the task wins. The Env tab on the task detail page in the UI shows the resolved env with per-key provenance (which layer / which group wrote each value) — use it to debug surprising values. The same data is exposed at <code>GET /runs/{run_id}/tasks/{task_id}/env</code>.</p>
+<h3 id="legacy-fields-removed">Legacy fields (removed)<a class="headerlink" href="#legacy-fields-removed" title="Permanent link">&para;</a></h3>
+<p>The earlier <code>environment:</code> (named-bundle reference) and <code>env_vars:</code> (per-task variable dict) fields are no longer accepted. Tasks emitting either field will fail at parse time with a clear migration message. Replace them with <code>env:</code> rule lists — a single <code>{"set": {...}}</code> rule reproduces the old <code>env_vars</code> behavior; a workflow-level <code>env_groups:</code> block plus <code>{"include": ["..."]}</code> reproduces the old named bundles.</p>
 <hr />
 <h2 id="writing-a-task-generator">Writing a Task Generator<a class="headerlink" href="#writing-a-task-generator" title="Permanent link">&para;</a></h2>
 <p>A task generator is any executable (script, binary, etc.) that prints valid JSON to stdout. Here are examples in different languages.</p>
 <h3 id="python">Python<a class="headerlink" href="#python" title="Permanent link">&para;</a></h3>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="ch">#!/usr/bin/env python3</span>
-<a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a><span class="sd">&quot;&quot;&quot;Generate tasks for ScriptHut.&quot;&quot;&quot;</span>
-<a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a>
-<a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a><span class="kn">import</span><span class="w"> </span><span class="nn">argparse</span>
-<a id="__codelineno-12-5" name="__codelineno-12-5" href="#__codelineno-12-5"></a><span class="kn">import</span><span class="w"> </span><span class="nn">json</span>
-<a id="__codelineno-12-6" name="__codelineno-12-6" href="#__codelineno-12-6"></a>
-<a id="__codelineno-12-7" name="__codelineno-12-7" href="#__codelineno-12-7"></a><span class="k">def</span><span class="w"> </span><span class="nf">main</span><span class="p">():</span>
-<a id="__codelineno-12-8" name="__codelineno-12-8" href="#__codelineno-12-8"></a>    <span class="n">parser</span> <span class="o">=</span> <span class="n">argparse</span><span class="o">.</span><span class="n">ArgumentParser</span><span class="p">()</span>
-<a id="__codelineno-12-9" name="__codelineno-12-9" href="#__codelineno-12-9"></a>    <span class="n">parser</span><span class="o">.</span><span class="n">add_argument</span><span class="p">(</span><span class="s2">&quot;--count&quot;</span><span class="p">,</span> <span class="nb">type</span><span class="o">=</span><span class="nb">int</span><span class="p">,</span> <span class="n">default</span><span class="o">=</span><span class="mi">5</span><span class="p">)</span>
-<a id="__codelineno-12-10" name="__codelineno-12-10" href="#__codelineno-12-10"></a>    <span class="n">parser</span><span class="o">.</span><span class="n">add_argument</span><span class="p">(</span><span class="s2">&quot;--partition&quot;</span><span class="p">,</span> <span class="n">default</span><span class="o">=</span><span class="s2">&quot;normal&quot;</span><span class="p">)</span>
-<a id="__codelineno-12-11" name="__codelineno-12-11" href="#__codelineno-12-11"></a>    <span class="n">args</span> <span class="o">=</span> <span class="n">parser</span><span class="o">.</span><span class="n">parse_args</span><span class="p">()</span>
-<a id="__codelineno-12-12" name="__codelineno-12-12" href="#__codelineno-12-12"></a>
-<a id="__codelineno-12-13" name="__codelineno-12-13" href="#__codelineno-12-13"></a>    <span class="n">tasks</span> <span class="o">=</span> <span class="p">[]</span>
-<a id="__codelineno-12-14" name="__codelineno-12-14" href="#__codelineno-12-14"></a>    <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">args</span><span class="o">.</span><span class="n">count</span> <span class="o">+</span> <span class="mi">1</span><span class="p">):</span>
-<a id="__codelineno-12-15" name="__codelineno-12-15" href="#__codelineno-12-15"></a>        <span class="n">tasks</span><span class="o">.</span><span class="n">append</span><span class="p">({</span>
-<a id="__codelineno-12-16" name="__codelineno-12-16" href="#__codelineno-12-16"></a>            <span class="s2">&quot;id&quot;</span><span class="p">:</span> <span class="sa">f</span><span class="s2">&quot;task-</span><span class="si">{</span><span class="n">i</span><span class="si">:</span><span class="s2">03d</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span>
-<a id="__codelineno-12-17" name="__codelineno-12-17" href="#__codelineno-12-17"></a>            <span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="sa">f</span><span class="s2">&quot;Task </span><span class="si">{</span><span class="n">i</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span>
-<a id="__codelineno-12-18" name="__codelineno-12-18" href="#__codelineno-12-18"></a>            <span class="s2">&quot;command&quot;</span><span class="p">:</span> <span class="sa">f</span><span class="s2">&quot;python process.py --index </span><span class="si">{</span><span class="n">i</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span>
-<a id="__codelineno-12-19" name="__codelineno-12-19" href="#__codelineno-12-19"></a>            <span class="s2">&quot;partition&quot;</span><span class="p">:</span> <span class="n">args</span><span class="o">.</span><span class="n">partition</span><span class="p">,</span>
-<a id="__codelineno-12-20" name="__codelineno-12-20" href="#__codelineno-12-20"></a>            <span class="s2">&quot;cpus&quot;</span><span class="p">:</span> <span class="mi">2</span><span class="p">,</span>
-<a id="__codelineno-12-21" name="__codelineno-12-21" href="#__codelineno-12-21"></a>            <span class="s2">&quot;memory&quot;</span><span class="p">:</span> <span class="s2">&quot;8G&quot;</span><span class="p">,</span>
-<a id="__codelineno-12-22" name="__codelineno-12-22" href="#__codelineno-12-22"></a>            <span class="s2">&quot;time_limit&quot;</span><span class="p">:</span> <span class="s2">&quot;2:00:00&quot;</span><span class="p">,</span>
-<a id="__codelineno-12-23" name="__codelineno-12-23" href="#__codelineno-12-23"></a>        <span class="p">})</span>
-<a id="__codelineno-12-24" name="__codelineno-12-24" href="#__codelineno-12-24"></a>
-<a id="__codelineno-12-25" name="__codelineno-12-25" href="#__codelineno-12-25"></a>    <span class="nb">print</span><span class="p">(</span><span class="n">json</span><span class="o">.</span><span class="n">dumps</span><span class="p">({</span><span class="s2">&quot;tasks&quot;</span><span class="p">:</span> <span class="n">tasks</span><span class="p">},</span> <span class="n">indent</span><span class="o">=</span><span class="mi">2</span><span class="p">))</span>
-<a id="__codelineno-12-26" name="__codelineno-12-26" href="#__codelineno-12-26"></a>
-<a id="__codelineno-12-27" name="__codelineno-12-27" href="#__codelineno-12-27"></a><span class="k">if</span> <span class="vm">__name__</span> <span class="o">==</span> <span class="s2">&quot;__main__&quot;</span><span class="p">:</span>
-<a id="__codelineno-12-28" name="__codelineno-12-28" href="#__codelineno-12-28"></a>    <span class="n">main</span><span class="p">()</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="ch">#!/usr/bin/env python3</span>
+<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="sd">&quot;&quot;&quot;Generate tasks for ScriptHut.&quot;&quot;&quot;</span>
+<a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a>
+<a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a><span class="kn">import</span><span class="w"> </span><span class="nn">argparse</span>
+<a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a><span class="kn">import</span><span class="w"> </span><span class="nn">json</span>
+<a id="__codelineno-11-6" name="__codelineno-11-6" href="#__codelineno-11-6"></a>
+<a id="__codelineno-11-7" name="__codelineno-11-7" href="#__codelineno-11-7"></a><span class="k">def</span><span class="w"> </span><span class="nf">main</span><span class="p">():</span>
+<a id="__codelineno-11-8" name="__codelineno-11-8" href="#__codelineno-11-8"></a>    <span class="n">parser</span> <span class="o">=</span> <span class="n">argparse</span><span class="o">.</span><span class="n">ArgumentParser</span><span class="p">()</span>
+<a id="__codelineno-11-9" name="__codelineno-11-9" href="#__codelineno-11-9"></a>    <span class="n">parser</span><span class="o">.</span><span class="n">add_argument</span><span class="p">(</span><span class="s2">&quot;--count&quot;</span><span class="p">,</span> <span class="nb">type</span><span class="o">=</span><span class="nb">int</span><span class="p">,</span> <span class="n">default</span><span class="o">=</span><span class="mi">5</span><span class="p">)</span>
+<a id="__codelineno-11-10" name="__codelineno-11-10" href="#__codelineno-11-10"></a>    <span class="n">parser</span><span class="o">.</span><span class="n">add_argument</span><span class="p">(</span><span class="s2">&quot;--partition&quot;</span><span class="p">,</span> <span class="n">default</span><span class="o">=</span><span class="s2">&quot;normal&quot;</span><span class="p">)</span>
+<a id="__codelineno-11-11" name="__codelineno-11-11" href="#__codelineno-11-11"></a>    <span class="n">args</span> <span class="o">=</span> <span class="n">parser</span><span class="o">.</span><span class="n">parse_args</span><span class="p">()</span>
+<a id="__codelineno-11-12" name="__codelineno-11-12" href="#__codelineno-11-12"></a>
+<a id="__codelineno-11-13" name="__codelineno-11-13" href="#__codelineno-11-13"></a>    <span class="n">tasks</span> <span class="o">=</span> <span class="p">[]</span>
+<a id="__codelineno-11-14" name="__codelineno-11-14" href="#__codelineno-11-14"></a>    <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">args</span><span class="o">.</span><span class="n">count</span> <span class="o">+</span> <span class="mi">1</span><span class="p">):</span>
+<a id="__codelineno-11-15" name="__codelineno-11-15" href="#__codelineno-11-15"></a>        <span class="n">tasks</span><span class="o">.</span><span class="n">append</span><span class="p">({</span>
+<a id="__codelineno-11-16" name="__codelineno-11-16" href="#__codelineno-11-16"></a>            <span class="s2">&quot;id&quot;</span><span class="p">:</span> <span class="sa">f</span><span class="s2">&quot;task-</span><span class="si">{</span><span class="n">i</span><span class="si">:</span><span class="s2">03d</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span>
+<a id="__codelineno-11-17" name="__codelineno-11-17" href="#__codelineno-11-17"></a>            <span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="sa">f</span><span class="s2">&quot;Task </span><span class="si">{</span><span class="n">i</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span>
+<a id="__codelineno-11-18" name="__codelineno-11-18" href="#__codelineno-11-18"></a>            <span class="s2">&quot;command&quot;</span><span class="p">:</span> <span class="sa">f</span><span class="s2">&quot;python process.py --index </span><span class="si">{</span><span class="n">i</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span>
+<a id="__codelineno-11-19" name="__codelineno-11-19" href="#__codelineno-11-19"></a>            <span class="s2">&quot;partition&quot;</span><span class="p">:</span> <span class="n">args</span><span class="o">.</span><span class="n">partition</span><span class="p">,</span>
+<a id="__codelineno-11-20" name="__codelineno-11-20" href="#__codelineno-11-20"></a>            <span class="s2">&quot;cpus&quot;</span><span class="p">:</span> <span class="mi">2</span><span class="p">,</span>
+<a id="__codelineno-11-21" name="__codelineno-11-21" href="#__codelineno-11-21"></a>            <span class="s2">&quot;memory&quot;</span><span class="p">:</span> <span class="s2">&quot;8G&quot;</span><span class="p">,</span>
+<a id="__codelineno-11-22" name="__codelineno-11-22" href="#__codelineno-11-22"></a>            <span class="s2">&quot;time_limit&quot;</span><span class="p">:</span> <span class="s2">&quot;2:00:00&quot;</span><span class="p">,</span>
+<a id="__codelineno-11-23" name="__codelineno-11-23" href="#__codelineno-11-23"></a>        <span class="p">})</span>
+<a id="__codelineno-11-24" name="__codelineno-11-24" href="#__codelineno-11-24"></a>
+<a id="__codelineno-11-25" name="__codelineno-11-25" href="#__codelineno-11-25"></a>    <span class="nb">print</span><span class="p">(</span><span class="n">json</span><span class="o">.</span><span class="n">dumps</span><span class="p">({</span><span class="s2">&quot;tasks&quot;</span><span class="p">:</span> <span class="n">tasks</span><span class="p">},</span> <span class="n">indent</span><span class="o">=</span><span class="mi">2</span><span class="p">))</span>
+<a id="__codelineno-11-26" name="__codelineno-11-26" href="#__codelineno-11-26"></a>
+<a id="__codelineno-11-27" name="__codelineno-11-27" href="#__codelineno-11-27"></a><span class="k">if</span> <span class="vm">__name__</span> <span class="o">==</span> <span class="s2">&quot;__main__&quot;</span><span class="p">:</span>
+<a id="__codelineno-11-28" name="__codelineno-11-28" href="#__codelineno-11-28"></a>    <span class="n">main</span><span class="p">()</span>
 </code></pre></div>
 <p>Configure in <code>scripthut.yaml</code>:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="nt">workflows</span><span class="p">:</span>
-<a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">batch-processing</span>
-<a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a><span class="w">    </span><span class="nt">backend</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">hpc-cluster</span>
-<a id="__codelineno-13-4" name="__codelineno-13-4" href="#__codelineno-13-4"></a><span class="w">    </span><span class="nt">command</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;python</span><span class="nv"> </span><span class="s">/path/to/generate_tasks.py</span><span class="nv"> </span><span class="s">--count</span><span class="nv"> </span><span class="s">20</span><span class="nv"> </span><span class="s">--partition</span><span class="nv"> </span><span class="s">gpu&quot;</span>
-<a id="__codelineno-13-5" name="__codelineno-13-5" href="#__codelineno-13-5"></a><span class="w">    </span><span class="nt">max_concurrent</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">5</span>
-<a id="__codelineno-13-6" name="__codelineno-13-6" href="#__codelineno-13-6"></a><span class="w">    </span><span class="nt">description</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;Batch</span><span class="nv"> </span><span class="s">processing</span><span class="nv"> </span><span class="s">pipeline&quot;</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="nt">workflows</span><span class="p">:</span>
+<a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">batch-processing</span>
+<a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a><span class="w">    </span><span class="nt">backend</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">hpc-cluster</span>
+<a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a><span class="w">    </span><span class="nt">command</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;python</span><span class="nv"> </span><span class="s">/path/to/generate_tasks.py</span><span class="nv"> </span><span class="s">--count</span><span class="nv"> </span><span class="s">20</span><span class="nv"> </span><span class="s">--partition</span><span class="nv"> </span><span class="s">gpu&quot;</span>
+<a id="__codelineno-12-5" name="__codelineno-12-5" href="#__codelineno-12-5"></a><span class="w">    </span><span class="nt">max_concurrent</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">5</span>
+<a id="__codelineno-12-6" name="__codelineno-12-6" href="#__codelineno-12-6"></a><span class="w">    </span><span class="nt">description</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;Batch</span><span class="nv"> </span><span class="s">processing</span><span class="nv"> </span><span class="s">pipeline&quot;</span>
 </code></pre></div>
 <h3 id="bash">Bash<a class="headerlink" href="#bash" title="Permanent link">&para;</a></h3>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="ch">#!/bin/bash</span>
-<a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a><span class="c1"># Generate tasks as JSON using heredoc</span>
-<a id="__codelineno-14-3" name="__codelineno-14-3" href="#__codelineno-14-3"></a>
-<a id="__codelineno-14-4" name="__codelineno-14-4" href="#__codelineno-14-4"></a>cat<span class="w"> </span><span class="s">&lt;&lt;&#39;EOF&#39;</span>
-<a id="__codelineno-14-5" name="__codelineno-14-5" href="#__codelineno-14-5"></a><span class="s">{</span>
-<a id="__codelineno-14-6" name="__codelineno-14-6" href="#__codelineno-14-6"></a><span class="s">  &quot;tasks&quot;: [</span>
-<a id="__codelineno-14-7" name="__codelineno-14-7" href="#__codelineno-14-7"></a><span class="s">    {</span>
-<a id="__codelineno-14-8" name="__codelineno-14-8" href="#__codelineno-14-8"></a><span class="s">      &quot;id&quot;: &quot;step-1&quot;,</span>
-<a id="__codelineno-14-9" name="__codelineno-14-9" href="#__codelineno-14-9"></a><span class="s">      &quot;name&quot;: &quot;Download&quot;,</span>
-<a id="__codelineno-14-10" name="__codelineno-14-10" href="#__codelineno-14-10"></a><span class="s">      &quot;command&quot;: &quot;wget https://example.com/data.csv&quot;,</span>
-<a id="__codelineno-14-11" name="__codelineno-14-11" href="#__codelineno-14-11"></a><span class="s">      &quot;time_limit&quot;: &quot;00:30:00&quot;</span>
-<a id="__codelineno-14-12" name="__codelineno-14-12" href="#__codelineno-14-12"></a><span class="s">    },</span>
-<a id="__codelineno-14-13" name="__codelineno-14-13" href="#__codelineno-14-13"></a><span class="s">    {</span>
-<a id="__codelineno-14-14" name="__codelineno-14-14" href="#__codelineno-14-14"></a><span class="s">      &quot;id&quot;: &quot;step-2&quot;,</span>
-<a id="__codelineno-14-15" name="__codelineno-14-15" href="#__codelineno-14-15"></a><span class="s">      &quot;name&quot;: &quot;Process&quot;,</span>
-<a id="__codelineno-14-16" name="__codelineno-14-16" href="#__codelineno-14-16"></a><span class="s">      &quot;command&quot;: &quot;python process.py data.csv&quot;,</span>
-<a id="__codelineno-14-17" name="__codelineno-14-17" href="#__codelineno-14-17"></a><span class="s">      &quot;deps&quot;: [&quot;step-1&quot;],</span>
-<a id="__codelineno-14-18" name="__codelineno-14-18" href="#__codelineno-14-18"></a><span class="s">      &quot;cpus&quot;: 4,</span>
-<a id="__codelineno-14-19" name="__codelineno-14-19" href="#__codelineno-14-19"></a><span class="s">      &quot;memory&quot;: &quot;16G&quot;</span>
-<a id="__codelineno-14-20" name="__codelineno-14-20" href="#__codelineno-14-20"></a><span class="s">    }</span>
-<a id="__codelineno-14-21" name="__codelineno-14-21" href="#__codelineno-14-21"></a><span class="s">  ]</span>
-<a id="__codelineno-14-22" name="__codelineno-14-22" href="#__codelineno-14-22"></a><span class="s">}</span>
-<a id="__codelineno-14-23" name="__codelineno-14-23" href="#__codelineno-14-23"></a><span class="s">EOF</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="ch">#!/bin/bash</span>
+<a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a><span class="c1"># Generate tasks as JSON using heredoc</span>
+<a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a>
+<a id="__codelineno-13-4" name="__codelineno-13-4" href="#__codelineno-13-4"></a>cat<span class="w"> </span><span class="s">&lt;&lt;&#39;EOF&#39;</span>
+<a id="__codelineno-13-5" name="__codelineno-13-5" href="#__codelineno-13-5"></a><span class="s">{</span>
+<a id="__codelineno-13-6" name="__codelineno-13-6" href="#__codelineno-13-6"></a><span class="s">  &quot;tasks&quot;: [</span>
+<a id="__codelineno-13-7" name="__codelineno-13-7" href="#__codelineno-13-7"></a><span class="s">    {</span>
+<a id="__codelineno-13-8" name="__codelineno-13-8" href="#__codelineno-13-8"></a><span class="s">      &quot;id&quot;: &quot;step-1&quot;,</span>
+<a id="__codelineno-13-9" name="__codelineno-13-9" href="#__codelineno-13-9"></a><span class="s">      &quot;name&quot;: &quot;Download&quot;,</span>
+<a id="__codelineno-13-10" name="__codelineno-13-10" href="#__codelineno-13-10"></a><span class="s">      &quot;command&quot;: &quot;wget https://example.com/data.csv&quot;,</span>
+<a id="__codelineno-13-11" name="__codelineno-13-11" href="#__codelineno-13-11"></a><span class="s">      &quot;time_limit&quot;: &quot;00:30:00&quot;</span>
+<a id="__codelineno-13-12" name="__codelineno-13-12" href="#__codelineno-13-12"></a><span class="s">    },</span>
+<a id="__codelineno-13-13" name="__codelineno-13-13" href="#__codelineno-13-13"></a><span class="s">    {</span>
+<a id="__codelineno-13-14" name="__codelineno-13-14" href="#__codelineno-13-14"></a><span class="s">      &quot;id&quot;: &quot;step-2&quot;,</span>
+<a id="__codelineno-13-15" name="__codelineno-13-15" href="#__codelineno-13-15"></a><span class="s">      &quot;name&quot;: &quot;Process&quot;,</span>
+<a id="__codelineno-13-16" name="__codelineno-13-16" href="#__codelineno-13-16"></a><span class="s">      &quot;command&quot;: &quot;python process.py data.csv&quot;,</span>
+<a id="__codelineno-13-17" name="__codelineno-13-17" href="#__codelineno-13-17"></a><span class="s">      &quot;deps&quot;: [&quot;step-1&quot;],</span>
+<a id="__codelineno-13-18" name="__codelineno-13-18" href="#__codelineno-13-18"></a><span class="s">      &quot;cpus&quot;: 4,</span>
+<a id="__codelineno-13-19" name="__codelineno-13-19" href="#__codelineno-13-19"></a><span class="s">      &quot;memory&quot;: &quot;16G&quot;</span>
+<a id="__codelineno-13-20" name="__codelineno-13-20" href="#__codelineno-13-20"></a><span class="s">    }</span>
+<a id="__codelineno-13-21" name="__codelineno-13-21" href="#__codelineno-13-21"></a><span class="s">  ]</span>
+<a id="__codelineno-13-22" name="__codelineno-13-22" href="#__codelineno-13-22"></a><span class="s">}</span>
+<a id="__codelineno-13-23" name="__codelineno-13-23" href="#__codelineno-13-23"></a><span class="s">EOF</span>
 </code></pre></div>
 <h3 id="static-json-file">Static JSON File<a class="headerlink" href="#static-json-file" title="Permanent link">&para;</a></h3>
 <p>The simplest approach — just <code>cat</code> a pre-existing JSON file:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a><span class="nt">workflows</span><span class="p">:</span>
-<a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">static-tasks</span>
-<a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a><span class="w">    </span><span class="nt">backend</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">hpc-cluster</span>
-<a id="__codelineno-15-4" name="__codelineno-15-4" href="#__codelineno-15-4"></a><span class="w">    </span><span class="nt">command</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;cat</span><span class="nv"> </span><span class="s">/shared/tasks/my_pipeline.json&quot;</span>
-<a id="__codelineno-15-5" name="__codelineno-15-5" href="#__codelineno-15-5"></a><span class="w">    </span><span class="nt">description</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;Run</span><span class="nv"> </span><span class="s">predefined</span><span class="nv"> </span><span class="s">pipeline&quot;</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="nt">workflows</span><span class="p">:</span>
+<a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">static-tasks</span>
+<a id="__codelineno-14-3" name="__codelineno-14-3" href="#__codelineno-14-3"></a><span class="w">    </span><span class="nt">backend</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">hpc-cluster</span>
+<a id="__codelineno-14-4" name="__codelineno-14-4" href="#__codelineno-14-4"></a><span class="w">    </span><span class="nt">command</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;cat</span><span class="nv"> </span><span class="s">/shared/tasks/my_pipeline.json&quot;</span>
+<a id="__codelineno-14-5" name="__codelineno-14-5" href="#__codelineno-14-5"></a><span class="w">    </span><span class="nt">description</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;Run</span><span class="nv"> </span><span class="s">predefined</span><span class="nv"> </span><span class="s">pipeline&quot;</span>
 </code></pre></div>
 <h3 id="julia">Julia<a class="headerlink" href="#julia" title="Permanent link">&para;</a></h3>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a><span class="c">#!/usr/bin/env julia</span>
-<a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a><span class="k">using</span><span class="w"> </span><span class="n">JSON</span>
-<a id="__codelineno-16-3" name="__codelineno-16-3" href="#__codelineno-16-3"></a>
-<a id="__codelineno-16-4" name="__codelineno-16-4" href="#__codelineno-16-4"></a><span class="n">tasks</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span>
-<a id="__codelineno-16-5" name="__codelineno-16-5" href="#__codelineno-16-5"></a><span class="w">    </span><span class="kt">Dict</span><span class="p">(</span>
-<a id="__codelineno-16-6" name="__codelineno-16-6" href="#__codelineno-16-6"></a><span class="w">        </span><span class="s">&quot;id&quot;</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="s">&quot;sim-</span><span class="si">$i</span><span class="s">&quot;</span><span class="p">,</span>
-<a id="__codelineno-16-7" name="__codelineno-16-7" href="#__codelineno-16-7"></a><span class="w">        </span><span class="s">&quot;name&quot;</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="s">&quot;Simulation </span><span class="si">$i</span><span class="s">&quot;</span><span class="p">,</span>
-<a id="__codelineno-16-8" name="__codelineno-16-8" href="#__codelineno-16-8"></a><span class="w">        </span><span class="s">&quot;command&quot;</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="s">&quot;julia run_sim.jl --seed </span><span class="si">$i</span><span class="s">&quot;</span><span class="p">,</span>
-<a id="__codelineno-16-9" name="__codelineno-16-9" href="#__codelineno-16-9"></a><span class="w">        </span><span class="s">&quot;partition&quot;</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="s">&quot;normal&quot;</span><span class="p">,</span>
-<a id="__codelineno-16-10" name="__codelineno-16-10" href="#__codelineno-16-10"></a><span class="w">        </span><span class="s">&quot;cpus&quot;</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="mi">4</span><span class="p">,</span>
-<a id="__codelineno-16-11" name="__codelineno-16-11" href="#__codelineno-16-11"></a><span class="w">        </span><span class="s">&quot;memory&quot;</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="s">&quot;8G&quot;</span><span class="p">,</span>
-<a id="__codelineno-16-12" name="__codelineno-16-12" href="#__codelineno-16-12"></a><span class="w">        </span><span class="s">&quot;time_limit&quot;</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="s">&quot;6:00:00&quot;</span><span class="p">,</span>
-<a id="__codelineno-16-13" name="__codelineno-16-13" href="#__codelineno-16-13"></a><span class="w">        </span><span class="s">&quot;environment&quot;</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="s">&quot;julia-1.10&quot;</span>
-<a id="__codelineno-16-14" name="__codelineno-16-14" href="#__codelineno-16-14"></a><span class="w">    </span><span class="p">)</span>
-<a id="__codelineno-16-15" name="__codelineno-16-15" href="#__codelineno-16-15"></a><span class="w">    </span><span class="k">for</span><span class="w"> </span><span class="n">i</span><span class="w"> </span><span class="k">in</span><span class="w"> </span><span class="mi">1</span><span class="o">:</span><span class="mi">10</span>
-<a id="__codelineno-16-16" name="__codelineno-16-16" href="#__codelineno-16-16"></a><span class="p">]</span>
-<a id="__codelineno-16-17" name="__codelineno-16-17" href="#__codelineno-16-17"></a>
-<a id="__codelineno-16-18" name="__codelineno-16-18" href="#__codelineno-16-18"></a><span class="n">println</span><span class="p">(</span><span class="n">JSON</span><span class="o">.</span><span class="n">json</span><span class="p">(</span><span class="kt">Dict</span><span class="p">(</span><span class="s">&quot;tasks&quot;</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="n">tasks</span><span class="p">),</span><span class="w"> </span><span class="mi">2</span><span class="p">))</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a><span class="c">#!/usr/bin/env julia</span>
+<a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a><span class="k">using</span><span class="w"> </span><span class="n">JSON</span>
+<a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a>
+<a id="__codelineno-15-4" name="__codelineno-15-4" href="#__codelineno-15-4"></a><span class="n">tasks</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span>
+<a id="__codelineno-15-5" name="__codelineno-15-5" href="#__codelineno-15-5"></a><span class="w">    </span><span class="kt">Dict</span><span class="p">(</span>
+<a id="__codelineno-15-6" name="__codelineno-15-6" href="#__codelineno-15-6"></a><span class="w">        </span><span class="s">&quot;id&quot;</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="s">&quot;sim-</span><span class="si">$i</span><span class="s">&quot;</span><span class="p">,</span>
+<a id="__codelineno-15-7" name="__codelineno-15-7" href="#__codelineno-15-7"></a><span class="w">        </span><span class="s">&quot;name&quot;</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="s">&quot;Simulation </span><span class="si">$i</span><span class="s">&quot;</span><span class="p">,</span>
+<a id="__codelineno-15-8" name="__codelineno-15-8" href="#__codelineno-15-8"></a><span class="w">        </span><span class="s">&quot;command&quot;</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="s">&quot;julia run_sim.jl --seed </span><span class="si">$i</span><span class="s">&quot;</span><span class="p">,</span>
+<a id="__codelineno-15-9" name="__codelineno-15-9" href="#__codelineno-15-9"></a><span class="w">        </span><span class="s">&quot;partition&quot;</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="s">&quot;normal&quot;</span><span class="p">,</span>
+<a id="__codelineno-15-10" name="__codelineno-15-10" href="#__codelineno-15-10"></a><span class="w">        </span><span class="s">&quot;cpus&quot;</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="mi">4</span><span class="p">,</span>
+<a id="__codelineno-15-11" name="__codelineno-15-11" href="#__codelineno-15-11"></a><span class="w">        </span><span class="s">&quot;memory&quot;</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="s">&quot;8G&quot;</span><span class="p">,</span>
+<a id="__codelineno-15-12" name="__codelineno-15-12" href="#__codelineno-15-12"></a><span class="w">        </span><span class="s">&quot;time_limit&quot;</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="s">&quot;6:00:00&quot;</span><span class="p">,</span>
+<a id="__codelineno-15-13" name="__codelineno-15-13" href="#__codelineno-15-13"></a><span class="w">        </span><span class="s">&quot;env&quot;</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="p">[</span><span class="kt">Dict</span><span class="p">(</span><span class="s">&quot;include&quot;</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="p">[</span><span class="s">&quot;julia-1.10&quot;</span><span class="p">])]</span>
+<a id="__codelineno-15-14" name="__codelineno-15-14" href="#__codelineno-15-14"></a><span class="w">    </span><span class="p">)</span>
+<a id="__codelineno-15-15" name="__codelineno-15-15" href="#__codelineno-15-15"></a><span class="w">    </span><span class="k">for</span><span class="w"> </span><span class="n">i</span><span class="w"> </span><span class="k">in</span><span class="w"> </span><span class="mi">1</span><span class="o">:</span><span class="mi">10</span>
+<a id="__codelineno-15-16" name="__codelineno-15-16" href="#__codelineno-15-16"></a><span class="p">]</span>
+<a id="__codelineno-15-17" name="__codelineno-15-17" href="#__codelineno-15-17"></a>
+<a id="__codelineno-15-18" name="__codelineno-15-18" href="#__codelineno-15-18"></a><span class="n">println</span><span class="p">(</span><span class="n">JSON</span><span class="o">.</span><span class="n">json</span><span class="p">(</span><span class="kt">Dict</span><span class="p">(</span><span class="s">&quot;tasks&quot;</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="n">tasks</span><span class="p">),</span><span class="w"> </span><span class="mi">2</span><span class="p">))</span>
 </code></pre></div>
 <h3 id="r">R<a class="headerlink" href="#r" title="Permanent link">&para;</a></h3>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a><span class="c1">#!/usr/bin/env Rscript</span>
-<a id="__codelineno-17-2" name="__codelineno-17-2" href="#__codelineno-17-2"></a><span class="nf">library</span><span class="p">(</span><span class="n">jsonlite</span><span class="p">)</span>
-<a id="__codelineno-17-3" name="__codelineno-17-3" href="#__codelineno-17-3"></a>
-<a id="__codelineno-17-4" name="__codelineno-17-4" href="#__codelineno-17-4"></a><span class="n">tasks</span><span class="w"> </span><span class="o">&lt;-</span><span class="w"> </span><span class="nf">lapply</span><span class="p">(</span><span class="m">1</span><span class="o">:</span><span class="m">10</span><span class="p">,</span><span class="w"> </span><span class="kr">function</span><span class="p">(</span><span class="n">i</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
-<a id="__codelineno-17-5" name="__codelineno-17-5" href="#__codelineno-17-5"></a><span class="w">  </span><span class="nf">list</span><span class="p">(</span>
-<a id="__codelineno-17-6" name="__codelineno-17-6" href="#__codelineno-17-6"></a><span class="w">    </span><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nf">sprintf</span><span class="p">(</span><span class="s">&quot;analysis-%03d&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">i</span><span class="p">),</span>
-<a id="__codelineno-17-7" name="__codelineno-17-7" href="#__codelineno-17-7"></a><span class="w">    </span><span class="n">name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nf">sprintf</span><span class="p">(</span><span class="s">&quot;Analysis %d&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">i</span><span class="p">),</span>
-<a id="__codelineno-17-8" name="__codelineno-17-8" href="#__codelineno-17-8"></a><span class="w">    </span><span class="n">command</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nf">sprintf</span><span class="p">(</span><span class="s">&quot;Rscript run_analysis.R --chunk %d&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">i</span><span class="p">),</span>
-<a id="__codelineno-17-9" name="__codelineno-17-9" href="#__codelineno-17-9"></a><span class="w">    </span><span class="n">partition</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">&quot;normal&quot;</span><span class="p">,</span>
-<a id="__codelineno-17-10" name="__codelineno-17-10" href="#__codelineno-17-10"></a><span class="w">    </span><span class="n">cpus</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="m">1</span><span class="p">,</span>
-<a id="__codelineno-17-11" name="__codelineno-17-11" href="#__codelineno-17-11"></a><span class="w">    </span><span class="n">memory</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">&quot;4G&quot;</span><span class="p">,</span>
-<a id="__codelineno-17-12" name="__codelineno-17-12" href="#__codelineno-17-12"></a><span class="w">    </span><span class="n">time_limit</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">&quot;1:00:00&quot;</span>
-<a id="__codelineno-17-13" name="__codelineno-17-13" href="#__codelineno-17-13"></a><span class="w">  </span><span class="p">)</span>
-<a id="__codelineno-17-14" name="__codelineno-17-14" href="#__codelineno-17-14"></a><span class="p">})</span>
-<a id="__codelineno-17-15" name="__codelineno-17-15" href="#__codelineno-17-15"></a>
-<a id="__codelineno-17-16" name="__codelineno-17-16" href="#__codelineno-17-16"></a><span class="nf">cat</span><span class="p">(</span><span class="nf">toJSON</span><span class="p">(</span><span class="nf">list</span><span class="p">(</span><span class="n">tasks</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">tasks</span><span class="p">),</span><span class="w"> </span><span class="n">auto_unbox</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">TRUE</span><span class="p">,</span><span class="w"> </span><span class="n">pretty</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">TRUE</span><span class="p">))</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a><span class="c1">#!/usr/bin/env Rscript</span>
+<a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a><span class="nf">library</span><span class="p">(</span><span class="n">jsonlite</span><span class="p">)</span>
+<a id="__codelineno-16-3" name="__codelineno-16-3" href="#__codelineno-16-3"></a>
+<a id="__codelineno-16-4" name="__codelineno-16-4" href="#__codelineno-16-4"></a><span class="n">tasks</span><span class="w"> </span><span class="o">&lt;-</span><span class="w"> </span><span class="nf">lapply</span><span class="p">(</span><span class="m">1</span><span class="o">:</span><span class="m">10</span><span class="p">,</span><span class="w"> </span><span class="kr">function</span><span class="p">(</span><span class="n">i</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-16-5" name="__codelineno-16-5" href="#__codelineno-16-5"></a><span class="w">  </span><span class="nf">list</span><span class="p">(</span>
+<a id="__codelineno-16-6" name="__codelineno-16-6" href="#__codelineno-16-6"></a><span class="w">    </span><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nf">sprintf</span><span class="p">(</span><span class="s">&quot;analysis-%03d&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">i</span><span class="p">),</span>
+<a id="__codelineno-16-7" name="__codelineno-16-7" href="#__codelineno-16-7"></a><span class="w">    </span><span class="n">name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nf">sprintf</span><span class="p">(</span><span class="s">&quot;Analysis %d&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">i</span><span class="p">),</span>
+<a id="__codelineno-16-8" name="__codelineno-16-8" href="#__codelineno-16-8"></a><span class="w">    </span><span class="n">command</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nf">sprintf</span><span class="p">(</span><span class="s">&quot;Rscript run_analysis.R --chunk %d&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">i</span><span class="p">),</span>
+<a id="__codelineno-16-9" name="__codelineno-16-9" href="#__codelineno-16-9"></a><span class="w">    </span><span class="n">partition</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">&quot;normal&quot;</span><span class="p">,</span>
+<a id="__codelineno-16-10" name="__codelineno-16-10" href="#__codelineno-16-10"></a><span class="w">    </span><span class="n">cpus</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="m">1</span><span class="p">,</span>
+<a id="__codelineno-16-11" name="__codelineno-16-11" href="#__codelineno-16-11"></a><span class="w">    </span><span class="n">memory</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">&quot;4G&quot;</span><span class="p">,</span>
+<a id="__codelineno-16-12" name="__codelineno-16-12" href="#__codelineno-16-12"></a><span class="w">    </span><span class="n">time_limit</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">&quot;1:00:00&quot;</span>
+<a id="__codelineno-16-13" name="__codelineno-16-13" href="#__codelineno-16-13"></a><span class="w">  </span><span class="p">)</span>
+<a id="__codelineno-16-14" name="__codelineno-16-14" href="#__codelineno-16-14"></a><span class="p">})</span>
+<a id="__codelineno-16-15" name="__codelineno-16-15" href="#__codelineno-16-15"></a>
+<a id="__codelineno-16-16" name="__codelineno-16-16" href="#__codelineno-16-16"></a><span class="nf">cat</span><span class="p">(</span><span class="nf">toJSON</span><span class="p">(</span><span class="nf">list</span><span class="p">(</span><span class="n">tasks</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">tasks</span><span class="p">),</span><span class="w"> </span><span class="n">auto_unbox</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">TRUE</span><span class="p">,</span><span class="w"> </span><span class="n">pretty</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">TRUE</span><span class="p">))</span>
 </code></pre></div>
 <hr />
 <h2 id="task-lifecycle">Task Lifecycle<a class="headerlink" href="#task-lifecycle" title="Permanent link">&para;</a></h2>
 <p>Once tasks are submitted via a workflow, they go through the following states:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a>PENDING ──→ SUBMITTED ──→ RUNNING ──→ COMPLETED
-<a id="__codelineno-18-2" name="__codelineno-18-2" href="#__codelineno-18-2"></a>                │              │
-<a id="__codelineno-18-3" name="__codelineno-18-3" href="#__codelineno-18-3"></a>                │              └──→ FAILED
-<a id="__codelineno-18-4" name="__codelineno-18-4" href="#__codelineno-18-4"></a>                └──→ FAILED
-<a id="__codelineno-18-5" name="__codelineno-18-5" href="#__codelineno-18-5"></a>
-<a id="__codelineno-18-6" name="__codelineno-18-6" href="#__codelineno-18-6"></a>          DEP_FAILED (dependency failed, never submitted)
+<div class="highlight"><pre><span></span><code><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a>PENDING ──→ SUBMITTED ──→ RUNNING ──→ COMPLETED
+<a id="__codelineno-17-2" name="__codelineno-17-2" href="#__codelineno-17-2"></a>                │              │
+<a id="__codelineno-17-3" name="__codelineno-17-3" href="#__codelineno-17-3"></a>                │              └──→ FAILED
+<a id="__codelineno-17-4" name="__codelineno-17-4" href="#__codelineno-17-4"></a>                └──→ FAILED
+<a id="__codelineno-17-5" name="__codelineno-17-5" href="#__codelineno-17-5"></a>
+<a id="__codelineno-17-6" name="__codelineno-17-6" href="#__codelineno-17-6"></a>          DEP_FAILED (dependency failed, never submitted)
 </code></pre></div>
 <table>
 <thead>
