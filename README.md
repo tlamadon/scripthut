@@ -631,8 +631,7 @@ The command must return JSON in one of these formats:
 | `time_limit` | No | Time limit (default: `1:00:00`) |
 | `output_file` | No | Custom stdout log path |
 | `error_file` | No | Custom stderr log path |
-| `environment` | No | Name of an environment defined in `scripthut.yaml` |
-| `env_vars` | No | Per-task environment variables as a `{"KEY": "VALUE"}` object |
+| `env` | No | Task-level env rules (list of `EnvRule` entries with `set` / `append` / `init` / `if` / `include`). See [Environments](docs/configuration.md#environments) |
 | `generates_source` | No | Path to a JSON file this task creates on the backend; new tasks are appended to the run on completion |
 
 #### Task Dependencies
@@ -740,107 +739,70 @@ If a generated task references a dependency that doesn't exist in the run, the e
 
 ### Environments
 
-Environments let you define reusable sets of environment variables and initialization commands in `scripthut.yaml`. Tasks reference an environment by name, and the corresponding variables and init lines are injected into the generated submission script.
+ScriptHut resolves a task's environment by walking an ordered chain of **env rules** from four layers — **backend → server → workflow → task** — against a seed of `SCRIPTHUT_*` runtime variables. The full reference lives in [docs/configuration.md → Environments](docs/configuration.md#environments). What follows is a quick tour.
 
-#### Defining Environments
+#### One primitive: the `EnvRule`
 
-Add an `environments` section to your `scripthut.yaml`:
+Every `env:` entry, at any layer, is a rule:
 
 ```yaml
-environments:
-  - name: julia-1.10
-    variables:
-      JULIA_DEPOT_PATH: "/scratch/user/julia_depot"
-      JULIA_NUM_THREADS: "8"
-    extra_init: "module load julia/1.10"
-
-  - name: python-ml
-    variables:
-      CUDA_VISIBLE_DEVICES: "0,1"
-      OMP_NUM_THREADS: "4"
-    extra_init: |
-      module load cuda/12.0
-      source ~/envs/ml/bin/activate
+env:
+  - set: { LOG_LEVEL: info }                           # always-applied
+  - if: { SCRIPTHUT_BACKEND: mercury }                  # AND across keys
+    set: { SCRATCH: /scratch/${USER} }                 # ${name} expanded
+    init: "module load gcc/12 cuda/11"                 # bash before the task
+  - if: { SCRIPTHUT_BACKEND: [anvil, delta] }           # list = OR
+    init: "module load gcc cuda-toolkit"
+  - append: { PATH: /opt/custom/bin }                  # joined with ":"
 ```
 
-| Field | Required | Description |
-|-------|----------|-------------|
-| `name` | Yes | Unique identifier referenced by tasks |
-| `variables` | No | Key-value pairs exported as `export KEY="VALUE"` |
-| `extra_init` | No | Raw bash lines inserted before the task command (e.g. `module load`, `source activate`) |
+Conditionals see the env as resolved so far, so a rule's `if:` can branch on the seed (`SCRIPTHUT_BACKEND`, etc.) or on values written by earlier rules.
 
-#### Using Environments in Tasks
+#### Where rules live
 
-Tasks declare which environment to use via the `environment` field in their JSON definition:
+| Layer | Defined in | Typical use |
+|-------|------------|-------------|
+| Backend | `env:` on each backend in `scripthut.yaml` | Cluster facts: scratch path, modules bootstrap |
+| Server | top-level `env:` in `scripthut.yaml` | Org-wide defaults |
+| Workflow | `env:` on each workflow in `scripthut.yaml` | Workflow-specific overrides |
+| Task | `env:` array in the generator's JSON output | Per-task adjustments |
 
-```json
-[
-  {"id": "solve", "name": "Solve Model", "command": "julia solve.jl", "environment": "julia-1.10"}
-]
+Rules concatenate in that order. `set:` overwrites, `append:` extends — later layers naturally override earlier ones.
+
+#### Automatic seed (`SCRIPTHUT_*`)
+
+These are populated before any user rule runs and are **protected** — rules cannot overwrite them:
+
+| Variable | Always present | Description |
+|----------|----------------|-------------|
+| `SCRIPTHUT_BACKEND` | yes | Backend name |
+| `SCRIPTHUT_WORKFLOW` | yes | Workflow name |
+| `SCRIPTHUT_RUN_ID` | yes | 8-char run id |
+| `SCRIPTHUT_CREATED_AT` | yes | ISO timestamp |
+| `SCRIPTHUT_GIT_REPO` | git workflows | Repo URL |
+| `SCRIPTHUT_GIT_BRANCH` | git workflows | Branch |
+| `SCRIPTHUT_GIT_SHA` | git workflows | Commit |
+
+#### Reusable groups
+
+Define a rule list once with `env_groups:` and inline it from any `env:` rule:
+
+```yaml
+backends:
+  - name: mercury
+    env_groups:
+      gpu-stack:                       # mercury's flavor of "gpu-stack"
+        - init: "module load gcc/12 cuda/11"
+        - append: { PATH: /opt/cuda/bin }
+    env:
+      - include: [gpu-stack]
 ```
 
-This produces a submission script like:
+`env_groups:` is accepted on backends, the server, and workflows. A group defined at layer X is visible to that layer and all later layers; later layers shadow earlier ones by name. The `include:` rule can carry its own `if:` to gate the inlined rules.
 
-```bash
-#!/bin/bash -l
-#SBATCH --job-name="Solve Model"    # Slurm
-#PBS -N Solve Model                  # or PBS
-...
+#### Inspecting the resolved env
 
-export JULIA_DEPOT_PATH="/scratch/user/julia_depot"
-export JULIA_NUM_THREADS="8"
-
-module load julia/1.10
-
-cd ~/projects/jmp
-julia solve.jl
-```
-
-If a task references an environment name that doesn't exist in the config, a warning is logged and the script is generated without any environment setup.
-
-#### Per-Task Environment Variables
-
-In addition to named environments, generators can specify inline environment variables per task via the `env_vars` field:
-
-```json
-[
-  {
-    "id": "sim-1", "name": "Sim 1",
-    "command": "python sim.py",
-    "env_vars": {"MY_PARAM": "42", "DATA_DIR": "/scratch/data"}
-  }
-]
-```
-
-When both a named `environment` and per-task `env_vars` are set, they are merged. Per-task values override named-environment values when keys collide.
-
-#### Automatic ScriptHut Variables
-
-ScriptHut automatically injects environment variables into every submission script. These are always present:
-
-| Variable | Description | Example |
-|----------|-------------|---------|
-| `SCRIPTHUT_WORKFLOW` | Name of the workflow | `jmp-grid-pure` |
-| `SCRIPTHUT_RUN_ID` | Unique run identifier | `a1b2c3d4` |
-| `SCRIPTHUT_CREATED_AT` | ISO timestamp of run creation | `2026-02-19T14:30:00` |
-
-For **git workflows**, these additional variables are also set:
-
-| Variable | Description | Example |
-|----------|-------------|---------|
-| `SCRIPTHUT_GIT_REPO` | Repository URL | `git@github.com:org/repo.git` |
-| `SCRIPTHUT_GIT_BRANCH` | Branch name | `main` |
-| `SCRIPTHUT_GIT_SHA` | Full commit hash used for the run | `abc123def456...` |
-
-#### Variable Priority
-
-Environment variables are merged in the following order (later entries win):
-
-1. **ScriptHut automatic variables** (`SCRIPTHUT_*`)
-2. **Named environment** (from `environments` config)
-3. **Per-task `env_vars`** (from generator JSON)
-
-This means a generator can override any variable, including the automatic ones, if needed.
+The task detail page in the UI has an **Env** tab that shows every key with full provenance (which layer / group / op contributed each value). The same data is exposed at `GET /runs/{run_id}/tasks/{task_id}/env`. Use this when a value isn't what you expect.
 
 ### Cost Estimation
 

@@ -67,8 +67,7 @@ Each task object supports the following fields:
 | `deps` | no | array | `[]` | List of task IDs this task depends on. Supports wildcard patterns. See [Dependencies](#dependencies). |
 | `output_file` | no | string | auto | Custom path for stdout log (Slurm/PBS only). If not set, defaults to `<log_dir>/scripthut_<run_id>_<task_id>.out`. Ignored on AWS Batch — logs are routed to CloudWatch. |
 | `error_file` | no | string | auto | Custom path for stderr log (Slurm/PBS only). If not set, defaults to `<log_dir>/scripthut_<run_id>_<task_id>.err`. Ignored on AWS Batch — stderr is merged into the CloudWatch stream. |
-| `environment` | no | string | `null` | Name of a named environment from the [configuration](configuration.md#environments). |
-| `env_vars` | no | object | `{}` | Per-task environment variables as key-value pairs. |
+| `env` | no | array | `[]` | Task-level env rules. Each entry is an `EnvRule` with optional `if`, `set`, `append`, `init`, and `include` fields. Resolved together with backend/server/workflow rules — see [Environment Variables](#environment-variables) and [the env model](configuration.md#environments). |
 | `generates_source` | no | string | `null` | Path to a JSON file this task creates on the backend containing additional tasks. See [Dynamic Task Generation](#dynamic-task-generation). |
 
 ### Minimal Example
@@ -105,11 +104,10 @@ This task will run with default resources: 1 CPU, 4G memory, 1 hour time limit, 
       "time_limit": "4:00:00",
       "output_file": "/scratch/user/logs/train-v1.out",
       "error_file": "/scratch/user/logs/train-v1.err",
-      "environment": "python-ml",
-      "env_vars": {
-        "MODEL_NAME": "resnet50",
-        "DATA_DIR": "/scratch/data/imagenet"
-      }
+      "env": [
+        {"set": {"MODEL_NAME": "resnet50", "DATA_DIR": "/scratch/data/imagenet"}},
+        {"if": {"SCRIPTHUT_BACKEND": "hpc-cluster"}, "init": "module load cuda/12"}
+      ]
     }
   ]
 }
@@ -305,75 +303,58 @@ The dynamically generated tasks can:
 
 ## Environment Variables
 
-Tasks can receive environment variables from three sources, which are merged in a defined priority order.
+ScriptHut resolves a task's environment by walking an ordered chain of **env rules** from four layers — **backend → server → workflow → task** — against a seed of `SCRIPTHUT_*` runtime variables. For the full model (rule shape, conditionals, `${name}` expansion, reusable groups, `SCRIPTHUT_*` protection), see [Environments](configuration.md#environments) in the configuration reference. This page covers only the **task-level** `env:` field that a generator can emit.
 
-### Automatic Environment Variables
+### Automatic seed variables
 
-ScriptHut automatically injects the following variables into every task:
+Every task starts with these variables already set (any task-level rule's `if:` can branch on them):
 
 | Variable | Description |
 |----------|-------------|
+| `SCRIPTHUT_BACKEND` | Name of the backend this task runs on. |
 | `SCRIPTHUT_WORKFLOW` | Name of the workflow that created this run. |
 | `SCRIPTHUT_RUN_ID` | Unique identifier for this run. |
 | `SCRIPTHUT_CREATED_AT` | ISO 8601 timestamp of when the run was created. |
 | `SCRIPTHUT_GIT_REPO` | *(git workflows only)* Repository URL. |
 | `SCRIPTHUT_GIT_BRANCH` | *(git workflows only)* Branch name. |
-| `SCRIPTHUT_GIT_SHA` | *(git workflows only)* Commit hash. |
+| `SCRIPTHUT_GIT_SHA` | *(git workflows only)* Resolved commit hash. |
 
-These variables are always available and cannot be overridden.
+These keys are protected: any rule attempting to `set:` or `append:` to a `SCRIPTHUT_` key is ignored with a warning.
 
-### Named Environments
+### Task-level `env:` rules
 
-Tasks can reference a named environment from the [configuration](configuration.md#environments) using the `environment` field:
-
-```json
-{
-  "id": "train",
-  "name": "Train Model",
-  "command": "julia train.jl",
-  "environment": "julia-1.10"
-}
-```
-
-If the environment `julia-1.10` is defined in `scripthut.yaml` as:
-
-```yaml
-environments:
-  - name: julia-1.10
-    variables:
-      JULIA_DEPOT_PATH: "/scratch/user/julia_depot"
-      JULIA_NUM_THREADS: "8"
-    extra_init: "module load julia/1.10"
-```
-
-Then the task will have `JULIA_DEPOT_PATH` and `JULIA_NUM_THREADS` exported, and `module load julia/1.10` will be run before the task command.
-
-### Per-Task Environment Variables
-
-Individual tasks can set environment variables using `env_vars`:
+A task's `env:` is a list of `EnvRule` entries. Each entry can `set:` variables, `append:` to PATH-like variables (joined with `:`), `init:` bash lines that run before the task command, and `include:` named env-groups defined at any earlier layer. An optional `if:` guards the rule against the env-so-far.
 
 ```json
 {
   "id": "train",
   "name": "Train Model",
   "command": "python train.py",
-  "environment": "python-ml",
-  "env_vars": {
-    "LEARNING_RATE": "0.001",
-    "BATCH_SIZE": "64"
-  }
+  "env": [
+    {"set": {"LEARNING_RATE": "0.001", "BATCH_SIZE": "64"}},
+    {"if": {"SCRIPTHUT_BACKEND": "mercury"}, "init": "module load cuda/11"},
+    {"include": ["monitoring"]}
+  ]
 }
 ```
 
-### Environment Variable Priority
+`${name}` substitution inside values references the env as resolved so far (seed + earlier layers + earlier rules in this list):
 
-When the same variable is defined at multiple levels, later sources override earlier ones:
+```json
+{
+  "env": [
+    {"set": {"RUN_DIR": "/scratch/${USER}/${SCRIPTHUT_RUN_ID}"}}
+  ]
+}
+```
 
-1. **ScriptHut automatic variables** (lowest priority)
-2. **Named environment variables** (from `environments` config)
-3. **Per-task `env_vars`** (highest priority)
+### Resolution order — later rules win
 
-For example, if a named environment sets `DATA_DIR=/shared/data` and the task sets `"env_vars": {"DATA_DIR": "/scratch/local"}`, the task will see `DATA_DIR=/scratch/local`.
+Rules from each layer are concatenated and evaluated top to bottom: backend rules, then server, then workflow, then task. `set:` overwrites; `append:` extends. So if the workflow sets `DATA_DIR=/shared` and the task sets `DATA_DIR=/scratch/local`, the task wins. The Env tab on the task detail page in the UI shows the resolved env with per-key provenance (which layer / which group wrote each value) — use it to debug surprising values. The same data is exposed at `GET /runs/{run_id}/tasks/{task_id}/env`.
+
+### Legacy fields (removed)
+
+The earlier `environment:` (named-bundle reference) and `env_vars:` (per-task variable dict) fields are no longer accepted. Tasks emitting either field will fail at parse time with a clear migration message. Replace them with `env:` rule lists — a single `{"set": {...}}` rule reproduces the old `env_vars` behavior; a workflow-level `env_groups:` block plus `{"include": ["..."]}` reproduces the old named bundles.
 
 ---
 
@@ -480,7 +461,7 @@ tasks = [
         "cpus" => 4,
         "memory" => "8G",
         "time_limit" => "6:00:00",
-        "environment" => "julia-1.10"
+        "env" => [Dict("include" => ["julia-1.10"])]
     )
     for i in 1:10
 ]

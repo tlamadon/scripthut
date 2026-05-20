@@ -9,10 +9,13 @@ backends: [...]       # Remote compute backends (Slurm, PBS, AWS Batch, AWS EC2)
 sources: [...]        # Git repository sources
 workflows: [...]      # Task generators (SSH commands returning JSON)
 projects: [...]       # Git projects with sflow.json files
-environments: [...]   # Named environment variable sets
+env: [...]            # Server-level env rules (see Environments)
+env_groups: {...}     # Named, reusable rule lists
 pricing: {...}        # EC2-equivalent cost estimation
 settings: {...}       # Global application settings
 ```
+
+Both `env:` and `env_groups:` can also appear inside individual backend and workflow entries — see [Environments](#environments).
 
 All sections are optional and default to empty lists or sensible defaults.
 
@@ -23,6 +26,8 @@ All sections are optional and default to empty lists or sensible defaults.
 Backends define the remote compute systems where jobs are submitted. ScriptHut supports **Slurm**, **PBS/Torque**, **AWS Batch**, and **AWS EC2** backend types (plus ECS, which is planned). Each backend is identified by a unique `name` and discriminated by its `type` field.
 
 Slurm and PBS backends connect to a cluster login node over SSH. AWS Batch is API-based (boto3). AWS EC2 is API-based for launch/terminate but uses SSH tunnelled through SSM Session Manager for per-instance probes and logs — see [AWS Batch Backend](#aws-batch-backend) and [AWS EC2 Backend](#aws-ec2-backend) for credential setup.
+
+All backend types accept two extra optional fields not shown in the per-type tables below: `env:` (a list of env rules applied to every task on that backend) and `env_groups:` (named, reusable rule lists). See [Environments](#environments).
 
 ### Slurm Backend
 
@@ -626,6 +631,8 @@ workflows:
 | `max_concurrent` | integer | `null` | Max concurrent tasks per run. If `null`, only the backend-level limit applies. |
 | `description` | string | `""` | Human-readable description shown in the UI. |
 | `git` | object | `null` | Optional git repository to clone on the backend before running the command. |
+| `env` | list | `[]` | Workflow-level env rules applied to every task in the workflow. See [Environments](#environments). |
+| `env_groups` | object | `{}` | Named, reusable env-rule lists local to this workflow (also visible to its tasks). |
 
 ### Git Workflows
 
@@ -689,43 +696,153 @@ projects:
 
 ## Environments
 
-Named environments define sets of environment variables and initialization commands that can be referenced by tasks. This is useful for loading modules, setting up language-specific paths, or configuring runtime parameters.
+ScriptHut resolves the environment for each task by walking an ordered chain of **env rules** from four layers — **backend → server → workflow → task** — against a seed of `SCRIPTHUT_*` runtime variables. Every layer contributes rules to the same list; later rules see earlier rules' effects, so conditionals can branch on any value set upstream (including the seed).
+
+### The `EnvRule` shape
+
+Every entry in any `env:` list is an `EnvRule`:
 
 ```yaml
-environments:
-  - name: julia-1.10
-    variables:
-      JULIA_DEPOT_PATH: "/scratch/user/julia_depot"
-      JULIA_NUM_THREADS: "8"
-    extra_init: "module load julia/1.10"
+env:
+  - set:                              # always-applied
+      PROJECT: training
+      LOG_LEVEL: info
 
-  - name: python-ml
-    variables:
-      CUDA_VISIBLE_DEVICES: "0,1"
-      PYTHONPATH: "/home/user/libs"
-    extra_init: |
-      module load cuda/12.0
-      source /home/user/venvs/ml/bin/activate
+  - if:                               # optional guard
+      SCRIPTHUT_BACKEND: mercury      # single value = equality
+    set:
+      SCRATCH: /scratch/${USER}       # ${name} expanded against env-so-far
+    init: "module load gcc/12 cuda/11"
+
+  - if:
+      SCRIPTHUT_BACKEND: [anvil, delta]   # list value = OR
+    set:
+      SCRATCH: /tmp/work/${USER}
+    init: "module load gcc cuda-toolkit"
+
+  - if:
+      SCRIPTHUT_BACKEND: mercury
+      GPU: "1"                        # multiple keys = AND
+    append:
+      PATH: /opt/cuda/bin             # joined with ":" to existing value
 ```
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `name` | string | **required** | Unique identifier. Referenced by the `environment` field in task definitions. |
-| `variables` | object | `{}` | Key-value pairs exported as environment variables before the task command. |
-| `extra_init` | string | `""` | Raw bash lines to run before the task command (e.g., `module load` commands). Runs after environment variable exports. |
+| Field | Type | Description |
+|-------|------|-------------|
+| `if` | object | Optional guard. Each key must match the env-so-far. A list value matches if the actual value is in the list (OR). When all keys match, the rule applies. |
+| `set` | object | Variables to write. Overwrites any prior value. `${name}` is expanded against env-so-far. |
+| `append` | object | Variables to extend. Joined to the existing value with `:` (creates the value if absent). `${name}` is expanded. |
+| `init` | string | Bash text appended (newline-joined) into the `extra_init` block that runs before the task command. `${name}` is expanded. |
+| `include` | list of strings | Names of `env_groups` to inline at this position. See [Reusable groups](#reusable-groups). |
 
-Tasks reference environments by name in their JSON definition:
+### Where rules live
 
-```json
-{
-  "id": "train-model",
-  "name": "Train Model",
-  "command": "julia train.jl",
-  "environment": "julia-1.10"
-}
+`env:` is a list of rules accepted at four locations, evaluated in this order:
+
+| Layer | Defined in | Typical use |
+|-------|------------|-------------|
+| **Backend** | `env:` on each backend entry | Cluster-specific facts — scratch paths, module-system bootstrap |
+| **Server** | top-level `env:` | Org-wide defaults across all clusters |
+| **Workflow** | `env:` on each workflow entry | Workflow-specific overrides applied to every task in it |
+| **Task** | `env:` on each task in the JSON generator output | Per-task adjustments |
+
+Rules from each layer are concatenated in that order, then evaluated top-to-bottom. There is no separate "merge" step — `set` overwrites and `append` extends, so layer X overrides layer X-1 simply by being written later.
+
+### `SCRIPTHUT_*` runtime seed
+
+Before any user rule runs, ScriptHut seeds the env with run-context variables. Any rule's `if:` can branch on these:
+
+| Variable | Always present | Description |
+|----------|----------------|-------------|
+| `SCRIPTHUT_BACKEND` | yes | Name of the backend this task runs on. |
+| `SCRIPTHUT_WORKFLOW` | yes | Name of the workflow. |
+| `SCRIPTHUT_RUN_ID` | yes | Unique 8-char run identifier. |
+| `SCRIPTHUT_CREATED_AT` | yes | ISO 8601 timestamp of run creation. |
+| `SCRIPTHUT_GIT_REPO` | git workflows only | Repository URL. |
+| `SCRIPTHUT_GIT_BRANCH` | git workflows only | Branch name. |
+| `SCRIPTHUT_GIT_SHA` | git workflows only | Resolved commit hash. |
+
+These keys are **protected**: any rule attempting to `set:` or `append:` to a key starting with `SCRIPTHUT_` is rejected with a warning and ignored.
+
+### `${name}` expansion
+
+String values in `set:`, `append:`, and `init:` may reference other variables with `${name}`. Expansion happens against the env as resolved *so far*, so it sees the seed plus everything earlier rules have written. Unknown names expand to an empty string and log a warning. Only the `${name}` form is interpolated — bare `$name` is left alone, so shell expressions written into `init:` are passed through unchanged.
+
+### Reusable groups
+
+Define a rule list once with `env_groups:` and inline it from any `env:` rule using `include:`:
+
+```yaml
+env_groups:
+  monitoring:
+    - set:
+        OTEL_EXPORTER: otlp
+        OTEL_ENDPOINT: "http://collector:4318"
+
+backends:
+  - name: mercury
+    env_groups:
+      gpu-stack:                      # mercury's flavor of "gpu-stack"
+        - init: "module load gcc/12 cuda/11"
+        - append: { PATH: /opt/cuda/bin }
+    env:
+      - include: [gpu-stack, monitoring]
 ```
 
-See [Environment Variable Priority](task-json.md#environment-variable-priority) for how environment variables from different sources are merged.
+`env_groups:` is accepted on each backend, on the server (top-level), and on each workflow. **Scoping**: a group defined at layer X is visible to that layer's own `env:` and to all later layers. Names defined at a later layer shadow earlier ones, so each backend can declare its own `gpu-stack` group and any workflow's `include: [gpu-stack]` resolves to the right one based on `SCRIPTHUT_BACKEND`.
+
+Includes can be guarded — an `if:` clause on the include-rule is inherited by every inlined rule (ANDed with any guard the inlined rule already carries):
+
+```yaml
+env:
+  - if:
+      SCRIPTHUT_BACKEND: mercury
+    include: [gpu-stack]              # only fires on mercury
+```
+
+Cycles between groups are detected and raise a clear error. Unknown group names log a warning and are skipped.
+
+### Inspecting the resolved env
+
+The task detail page in the UI has an **Env** tab that shows the resolved env for the selected task, with **per-key provenance** — every `set` / `append` operation lists its source layer (and which group, if any) and contribution. The same information is available as JSON at:
+
+```
+GET /runs/{run_id}/tasks/{task_id}/env
+```
+
+Use this when a value isn't what you expect: the provenance pinpoints which layer wrote it.
+
+### Worked example: cluster-specific module loads
+
+The canonical case — "Mercury needs `module load gcc/12 cuda/11`, Anvil needs `module load gcc cuda-toolkit`, the laptop needs nothing":
+
+```yaml
+backends:
+  - name: mercury
+    type: slurm
+    ssh: { host: mercury.example.edu, user: alice }
+    env:
+      - set: { SCRATCH: /scratch/${USER} }
+      - init: "source /etc/profile.d/modules.sh"
+
+  - name: anvil
+    type: pbs
+    ssh: { host: anvil.example.edu, user: alice }
+    env:
+      - set: { SCRATCH: /tmp/work/${USER} }
+
+workflows:
+  - name: train
+    backend: mercury                  # this workflow targets mercury
+    command: "python generate_tasks.py"
+    env:
+      - if: { SCRIPTHUT_BACKEND: mercury }
+        init: "module load gcc/12 cuda/11"
+      - if: { SCRIPTHUT_BACKEND: anvil }
+        init: "module load gcc cuda-toolkit"
+```
+
+The same workflow definition, ported to a different backend (e.g. by adding a second `train-anvil` workflow that points to `anvil`), gets the right module loads automatically — no per-backend duplication of the workflow.
 
 ---
 
@@ -839,12 +956,16 @@ workflows:
     max_concurrent: 3
     description: "ML training pipeline from git"
 
-environments:
-  - name: julia-env
-    variables:
-      JULIA_DEPOT_PATH: "/scratch/researcher/julia_depot"
-      JULIA_NUM_THREADS: "8"
-    extra_init: "module load julia/1.10"
+env_groups:
+  julia-env:
+    - set:
+        JULIA_DEPOT_PATH: "/scratch/researcher/julia_depot"
+        JULIA_NUM_THREADS: "8"
+    - init: "module load julia/1.10"
+
+env:
+  - set:
+      LOG_LEVEL: info
 
 pricing:
   region: us-east-1
