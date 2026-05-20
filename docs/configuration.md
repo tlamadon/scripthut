@@ -737,13 +737,14 @@ env:
 
 ### Where rules live
 
-`env:` is a list of rules accepted at four locations, evaluated in this order:
+`env:` is a list of rules accepted at five locations, evaluated in this order:
 
 | Layer | Defined in | Typical use |
 |-------|------------|-------------|
-| **Backend** | `env:` on each backend entry | Cluster-specific facts — scratch paths, module-system bootstrap |
-| **Server** | top-level `env:` | Org-wide defaults across all clusters |
-| **Workflow** | `env:` on each workflow entry | Workflow-specific overrides applied to every task in it |
+| **Backend** | `env:` on each backend entry in `scripthut.yaml` | Cluster-specific facts — scratch paths, module-system bootstrap |
+| **Server** | top-level `env:` in `scripthut.yaml` | Org-wide defaults across all clusters |
+| **Workflow (config)** | `env:` on each workflow entry in `scripthut.yaml` | Workflow-specific overrides for ops-controlled config |
+| **Workflow (document)** | top-level `env:` inside the JSON the generator emits | Project-controlled config — lives in your repo, ships with your code. See [task-json reference](task-json.md#document-level-env-and-env_groups) |
 | **Task** | `env:` on each task in the JSON generator output | Per-task adjustments |
 
 Rules from each layer are concatenated in that order, then evaluated top-to-bottom. There is no separate "merge" step — `set` overwrites and `append` extends, so layer X overrides layer X-1 simply by being written later.
@@ -789,7 +790,7 @@ backends:
       - include: [gpu-stack, monitoring]
 ```
 
-`env_groups:` is accepted on each backend, on the server (top-level), and on each workflow. **Scoping**: a group defined at layer X is visible to that layer's own `env:` and to all later layers. Names defined at a later layer shadow earlier ones, so each backend can declare its own `gpu-stack` group and any workflow's `include: [gpu-stack]` resolves to the right one based on `SCRIPTHUT_BACKEND`.
+`env_groups:` is accepted on each backend, on the server (top-level), on each workflow in `scripthut.yaml`, and on the workflow JSON document itself (top-level alongside `tasks:` — see [task-json reference](task-json.md#document-level-env-and-env_groups)). **Scoping**: a group defined at layer X is visible to that layer's own `env:` and to all later layers. Names defined at a later layer shadow earlier ones, so each backend can declare its own `gpu-stack` group and any workflow's `include: [gpu-stack]` resolves to the right one based on `SCRIPTHUT_BACKEND`.
 
 Includes can be guarded — an `if:` clause on the include-rule is inherited by every inlined rule (ANDed with any guard the inlined rule already carries):
 

@@ -185,8 +185,13 @@ def collect_rules(
     backend_name: str,
     workflow_name: str,
     task: TaskDefinition,
+    doc_env: list[EnvRule] | None = None,
 ) -> list[LabeledRule]:
-    """Concatenate rules from every layer in fixed order, with source labels."""
+    """Concatenate rules from every layer in fixed order, with source labels.
+
+    Layer order: backend → server → workflow (config) → workflow-doc (the
+    generator's JSON top-level ``env:``) → task.
+    """
     out: list[LabeledRule] = []
     backend = config.get_backend(backend_name)
     if backend is not None and getattr(backend, "env", None):
@@ -195,6 +200,8 @@ def collect_rules(
     workflow = config.get_workflow(workflow_name)
     if workflow is not None and workflow.env:
         out.extend(LabeledRule(r, f"workflow:{workflow_name}") for r in workflow.env)
+    if doc_env:
+        out.extend(LabeledRule(r, "workflow-doc") for r in doc_env)
     out.extend(LabeledRule(r, "task") for r in task.env)
     return out
 
@@ -204,8 +211,13 @@ def collect_groups(
     *,
     backend_name: str,
     workflow_name: str,
+    doc_env_groups: dict[str, list[EnvRule]] | None = None,
 ) -> dict[str, list[EnvRule]]:
-    """Merge env_groups from every layer; later layers shadow earlier by name."""
+    """Merge env_groups from every layer; later layers shadow earlier by name.
+
+    Order: backend → server → workflow (config) → workflow-doc (the JSON
+    document's top-level ``env_groups:``). Later definitions win.
+    """
     groups: dict[str, list[EnvRule]] = {}
     backend = config.get_backend(backend_name)
     if backend is not None:
@@ -214,6 +226,8 @@ def collect_groups(
     workflow = config.get_workflow(workflow_name)
     if workflow is not None:
         groups.update(getattr(workflow, "env_groups", {}) or {})
+    if doc_env_groups:
+        groups.update(doc_env_groups)
     return groups
 
 
@@ -272,8 +286,15 @@ def resolve_for_task(
     git_repo: str | None = None,
     git_branch: str | None = None,
     git_sha: str | None = None,
+    doc_env: list[EnvRule] | None = None,
+    doc_env_groups: dict[str, list[EnvRule]] | None = None,
 ) -> tuple[dict[str, str], str]:
-    """Resolve env for a task by chaining backend → server → workflow → task rules."""
+    """Resolve env for a task by chaining all layers.
+
+    ``doc_env`` / ``doc_env_groups`` come from the workflow JSON document
+    itself (top-level ``env:`` and ``env_groups:`` on the generator's output)
+    and slot between the workflow config layer and the task layer.
+    """
     seed = build_seed(
         backend_name=backend_name,
         workflow_name=workflow_name,
@@ -284,10 +305,12 @@ def resolve_for_task(
         git_sha=git_sha,
     )
     rules = collect_rules(
-        config, backend_name=backend_name, workflow_name=workflow_name, task=task,
+        config, backend_name=backend_name, workflow_name=workflow_name,
+        task=task, doc_env=doc_env,
     )
     groups = collect_groups(
         config, backend_name=backend_name, workflow_name=workflow_name,
+        doc_env_groups=doc_env_groups,
     )
     rules = flatten(rules, groups)
     return resolve(rules, seed)
@@ -304,6 +327,8 @@ def resolve_for_task_detailed(
     git_repo: str | None = None,
     git_branch: str | None = None,
     git_sha: str | None = None,
+    doc_env: list[EnvRule] | None = None,
+    doc_env_groups: dict[str, list[EnvRule]] | None = None,
 ) -> tuple[dict[str, str], str, dict[str, Provenance]]:
     """Same as ``resolve_for_task`` but also returns per-key provenance."""
     seed = build_seed(
@@ -316,10 +341,12 @@ def resolve_for_task_detailed(
         git_sha=git_sha,
     )
     rules = collect_rules(
-        config, backend_name=backend_name, workflow_name=workflow_name, task=task,
+        config, backend_name=backend_name, workflow_name=workflow_name,
+        task=task, doc_env=doc_env,
     )
     groups = collect_groups(
         config, backend_name=backend_name, workflow_name=workflow_name,
+        doc_env_groups=doc_env_groups,
     )
     rules = flatten(rules, groups)
     return resolve_detailed(rules, seed)

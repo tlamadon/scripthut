@@ -88,6 +88,35 @@ class TaskDefinition:
             "image": self.image,
         }
 
+    @staticmethod
+    def parse_document(
+        data: dict[str, Any] | list[Any],
+    ) -> tuple[list["TaskDefinition"], list[EnvRule], dict[str, list[EnvRule]]]:
+        """Parse a workflow-JSON document into tasks + doc-level env + env_groups.
+
+        Accepts either the wrapped form ``{"tasks": [...], "env": [...], "env_groups": {...}}``
+        or the bare list form ``[...]`` (env and env_groups are empty in that case).
+        Top-level keys other than tasks/env/env_groups are ignored.
+        """
+        if isinstance(data, list):
+            tasks_data = data
+            env_raw: list[Any] = []
+            groups_raw: dict[str, Any] = {}
+        elif isinstance(data, dict) and "tasks" in data:
+            tasks_data = data["tasks"]
+            env_raw = data.get("env", []) or []
+            groups_raw = data.get("env_groups", {}) or {}
+        else:
+            raise ValueError("JSON must be a list or dict with 'tasks' key")
+
+        tasks = [TaskDefinition.from_dict(t) for t in tasks_data]
+        doc_env = [EnvRule.model_validate(r) for r in env_raw]
+        doc_groups: dict[str, list[EnvRule]] = {
+            name: [EnvRule.model_validate(r) for r in rules]
+            for name, rules in groups_raw.items()
+        }
+        return tasks, doc_env, doc_groups
+
     def get_output_path(self, run_id: str, log_dir: str) -> str:
         """Get the output log file path."""
         if self.output_file:
@@ -263,6 +292,11 @@ class Run:
     commit_hash: str | None = None  # Git commit hash if run from a git workflow
     git_repo: str | None = None  # Git repo URL if run from a git workflow or git source
     git_branch: str | None = None  # Git branch if run from a git workflow or git source
+    # Document-level env rules / groups parsed from the workflow JSON itself
+    # (the generator's stdout, or a generates_source JSON). Slot between the
+    # workflow-config env and the per-task env in the resolver chain.
+    doc_env: list[EnvRule] = field(default_factory=list)
+    doc_env_groups: dict[str, list[EnvRule]] = field(default_factory=dict)
 
     @property
     def status(self) -> RunStatus:

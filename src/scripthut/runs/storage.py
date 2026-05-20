@@ -101,6 +101,11 @@ class RunStorageManager:
             "commit_hash": run.commit_hash,
             "git_repo": run.git_repo,
             "git_branch": run.git_branch,
+            "doc_env": [r.model_dump(by_alias=True, exclude_defaults=True) for r in run.doc_env],
+            "doc_env_groups": {
+                name: [r.model_dump(by_alias=True, exclude_defaults=True) for r in rules]
+                for name, rules in run.doc_env_groups.items()
+            },
             "items": [item.to_dict() for item in run.items],
         }
 
@@ -125,6 +130,13 @@ class RunStorageManager:
 
             items = [RunItem.from_dict(item_data) for item_data in data.get("items", [])]
 
+            from scripthut.config_schema import EnvRule
+
+            doc_env = [EnvRule.model_validate(r) for r in data.get("doc_env", [])]
+            doc_env_groups = {
+                name: [EnvRule.model_validate(r) for r in rules]
+                for name, rules in data.get("doc_env_groups", {}).items()
+            }
             return Run(
                 id=data["id"],
                 workflow_name=data["workflow_name"],
@@ -138,6 +150,8 @@ class RunStorageManager:
                 commit_hash=data.get("commit_hash"),
                 git_repo=data.get("git_repo"),
                 git_branch=data.get("git_branch"),
+                doc_env=doc_env,
+                doc_env_groups=doc_env_groups,
             )
         except Exception as e:
             logger.error(f"Failed to load run from {run_dir}: {e}")

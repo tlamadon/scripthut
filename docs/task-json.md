@@ -303,7 +303,7 @@ The dynamically generated tasks can:
 
 ## Environment Variables
 
-ScriptHut resolves a task's environment by walking an ordered chain of **env rules** from four layers — **backend → server → workflow → task** — against a seed of `SCRIPTHUT_*` runtime variables. For the full model (rule shape, conditionals, `${name}` expansion, reusable groups, `SCRIPTHUT_*` protection), see [Environments](configuration.md#environments) in the configuration reference. This page covers only the **task-level** `env:` field that a generator can emit.
+ScriptHut resolves a task's environment by walking an ordered chain of **env rules**: **backend → server → workflow (config) → workflow JSON document → task** — against a seed of `SCRIPTHUT_*` runtime variables. For the full model (rule shape, conditionals, `${name}` expansion, reusable groups, `SCRIPTHUT_*` protection), see [Environments](configuration.md#environments) in the configuration reference. This page covers the two places env rules can appear inside the **workflow JSON document itself**: at the top level (`"env"` / `"env_groups"`), and per task.
 
 ### Automatic seed variables
 
@@ -320,6 +320,38 @@ Every task starts with these variables already set (any task-level rule's `if:` 
 | `SCRIPTHUT_GIT_SHA` | *(git workflows only)* Resolved commit hash. |
 
 These keys are protected: any rule attempting to `set:` or `append:` to a `SCRIPTHUT_` key is ignored with a warning.
+
+### Document-level `env:` and `env_groups:`
+
+The workflow JSON itself can carry an `env:` rule list and an `env_groups:` dictionary at the top level — alongside `tasks:`. These apply to every task the document produces. This is the natural home for env config that lives **in the project's repo** (the generator script that emits the JSON ships in your repo, so anything it writes is repo-versioned).
+
+```json
+{
+  "title": "Grid over 2 params",
+  "env_groups": {
+    "julia-1.12": [
+      {"set": {"JULIA_DEPOT_PATH": "/scratch/${USER}/julia_depot"}},
+      {"init": "module load julia/1.12 awscli/2.10/2.10.3"}
+    ]
+  },
+  "env": [
+    {"include": ["julia-1.12"]}
+  ],
+  "tasks": [
+    {"id": "prepare",  "name": "Prepare",  "command": "julia --project -e 'using Pkg; Pkg.instantiate()'"},
+    {"id": "generate", "name": "Generate", "command": "python3 generate_tasks.py > tasks.json",
+     "deps": ["prepare"], "generates_source": "tasks.json"}
+  ]
+}
+```
+
+In the resolver chain, document-level rules sit between the workflow-config layer (from `scripthut.yaml`) and the task layer:
+
+```
+backend → server → workflow (config) → workflow-doc → task
+```
+
+A `generates_source` child JSON can also carry its own top-level `env:` and `env_groups:`. New env rules append to the run's existing list; new groups merge in (later definitions shadow earlier). So a generator can dynamically add env config alongside the dynamic tasks it produces.
 
 ### Task-level `env:` rules
 

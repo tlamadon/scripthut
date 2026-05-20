@@ -286,6 +286,112 @@ def test_env_groups_guarded_include_through_full_chain():
     assert init == ""
 
 
+def test_parse_document_extracts_tasks_env_and_groups():
+    """Top-level env: and env_groups: are pulled off the workflow JSON document."""
+    data = {
+        "tasks": [
+            {"id": "t1", "name": "x", "command": "true"},
+            {"id": "t2", "name": "y", "command": "true"},
+        ],
+        "env": [
+            {"set": {"FROM_DOC": "1"}},
+            {"if": {"SCRIPTHUT_BACKEND": "mercury"}, "init": "module load cuda"},
+        ],
+        "env_groups": {
+            "julia": [{"init": "module load julia/1.12"}],
+        },
+    }
+    tasks, doc_env, doc_groups = TaskDefinition.parse_document(data)
+    assert [t.id for t in tasks] == ["t1", "t2"]
+    assert len(doc_env) == 2
+    assert doc_env[0].set == {"FROM_DOC": "1"}
+    assert doc_env[1].if_ == {"SCRIPTHUT_BACKEND": "mercury"}
+    assert "julia" in doc_groups
+    assert doc_groups["julia"][0].init == "module load julia/1.12"
+
+
+def test_parse_document_bare_list_form_has_empty_env():
+    """Bare-list form is still accepted; env/env_groups default to empty."""
+    tasks, doc_env, doc_groups = TaskDefinition.parse_document(
+        [{"id": "t1", "name": "x", "command": "true"}],
+    )
+    assert [t.id for t in tasks] == ["t1"]
+    assert doc_env == []
+    assert doc_groups == {}
+
+
+def test_doc_env_applies_to_every_task_in_the_run():
+    """A doc-level set: rule shows up on every task without per-task duplication."""
+    config = _make_config()
+    mgr = RunManager(config=config, backends={})
+    run = _make_run()
+    run.doc_env = [EnvRule(set={"DATA_DIR": "/scratch/${USER}"})]
+    task_a = TaskDefinition(id="a", name="a", command="true")
+    task_b = TaskDefinition(id="b", name="b", command="true",
+                            env=[EnvRule(set={"USER": "alice"})])
+
+    # Task A has no per-task USER, so ${USER} expands to ""
+    env, _ = mgr._resolve_environment(run, task_a)
+    assert env["DATA_DIR"] == "/scratch/"
+
+    # Task B sets USER itself, so its own DATA_DIR resolves at task time would
+    # need to be set again (doc-level ${USER} was resolved against env-so-far).
+    # Confirm the doc DATA_DIR is still there for task B (without USER expansion).
+    env, _ = mgr._resolve_environment(run, task_b)
+    assert env["USER"] == "alice"
+    assert env["DATA_DIR"] == "/scratch/"
+
+
+def test_doc_env_layer_overridden_by_task():
+    """Per-task env wins over doc-level env."""
+    config = _make_config()
+    mgr = RunManager(config=config, backends={})
+    run = _make_run()
+    run.doc_env = [EnvRule(set={"MODE": "doc"})]
+    task = TaskDefinition(id="t", name="t", command="true",
+                          env=[EnvRule(set={"MODE": "task"})])
+
+    env, _ = mgr._resolve_environment(run, task)
+    assert env["MODE"] == "task"
+
+
+def test_doc_env_groups_visible_to_task_includes():
+    """A group defined in the JSON document is reachable from a task's include:."""
+    config = _make_config()
+    mgr = RunManager(config=config, backends={})
+    run = _make_run()
+    run.doc_env_groups = {
+        "julia": [
+            EnvRule(set={"JULIA_DEPOT_PATH": "/scratch/julia"}),
+            EnvRule(init="module load julia/1.12"),
+        ],
+    }
+    task = TaskDefinition(id="t", name="t", command="true",
+                          env=[EnvRule(include=["julia"])])
+
+    env, init = mgr._resolve_environment(run, task)
+    assert env["JULIA_DEPOT_PATH"] == "/scratch/julia"
+    assert init == "module load julia/1.12"
+
+
+def test_doc_env_groups_shadow_workflow_config_groups():
+    """When both layers define the same group name, the doc layer wins."""
+    config = _make_config()
+    config.workflows[0].env_groups = {
+        "x": [EnvRule(set={"FROM": "workflow"})],
+    }
+    mgr = RunManager(config=config, backends={})
+    run = _make_run()
+    run.doc_env_groups = {
+        "x": [EnvRule(set={"FROM": "doc"})],
+    }
+    task = TaskDefinition(id="t", name="t", command="true",
+                          env=[EnvRule(include=["x"])])
+
+    env, _ = mgr._resolve_environment(run, task)
+    assert env["FROM"] == "doc"
+
+
 def test_resolve_for_task_with_unknown_workflow_or_backend():
     """Resolution must not crash if a name is missing from config."""
     config = ScriptHutConfig()  # empty
@@ -303,6 +409,8 @@ def test_resolve_for_task_with_unknown_workflow_or_backend():
     run.git_repo = None
     run.git_branch = None
     run.commit_hash = None
+    run.doc_env = []
+    run.doc_env_groups = {}
 
     env, init = mgr._resolve_environment(run, task)
     assert env["FOO"] == "bar"

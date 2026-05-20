@@ -2110,6 +2110,8 @@ async def get_task_env(run_id: str, task_id: str) -> JSONResponse:
         git_repo=git_repo,
         git_branch=git_branch,
         git_sha=run.commit_hash,
+        doc_env=run.doc_env,
+        doc_env_groups=run.doc_env_groups,
     )
 
     return JSONResponse(

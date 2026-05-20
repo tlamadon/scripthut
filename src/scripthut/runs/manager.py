@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 
 from scripthut.backends.base import JobBackend
 from scripthut.config_schema import (
+    EnvRule,
     GitSourceConfig,
     PathSourceConfig,
     ProjectConfig,
@@ -117,6 +118,8 @@ class RunManager:
             git_repo=git_repo,
             git_branch=git_branch,
             git_sha=run.commit_hash,
+            doc_env=run.doc_env,
+            doc_env_groups=run.doc_env_groups,
         )
 
     @staticmethod
@@ -217,18 +220,21 @@ class RunManager:
             )
             return
 
-        if isinstance(data, dict) and "tasks" in data:
-            tasks_data = data["tasks"]
-        elif isinstance(data, list):
-            tasks_data = data
-        else:
-            logger.error(
-                f"Unexpected JSON structure in generates_source '{path}': "
-                f"expected dict with 'tasks' key or a list"
+        try:
+            new_tasks, child_doc_env, child_doc_groups = (
+                TaskDefinition.parse_document(data)
             )
+        except ValueError as e:
+            logger.error(f"Invalid generates_source JSON '{path}': {e}")
             return
 
-        new_tasks = [TaskDefinition.from_dict(t) for t in tasks_data]
+        # Generated docs can extend the run's doc-level env in addition to
+        # adding new tasks. New rules append after the existing ones; new
+        # groups merge in (later definitions shadow earlier).
+        if child_doc_env:
+            run.doc_env.extend(child_doc_env)
+        if child_doc_groups:
+            run.doc_env_groups.update(child_doc_groups)
 
         # Resolve working_dir relative to the parent task's working_dir
         # (same as _resolve_working_dirs does with clone_dir)
@@ -469,14 +475,20 @@ class RunManager:
         self,
         workflow: WorkflowConfig,
         *,
-        return_raw: bool = False,
         clone_dir: str | None = None,
-    ) -> list[TaskDefinition] | tuple[list[TaskDefinition], str]:
-        """Fetch task list from a workflow.
+    ) -> tuple[list[TaskDefinition], list[EnvRule], dict[str, list[EnvRule]], str]:
+        """Fetch task list (plus doc-level env rules) from a workflow.
 
         Runs the workflow command on the backend via SSH for SSH-based backends;
         for API-based backends (no SSH) the command is executed locally as a
         subprocess of the scripthut server.
+
+        Returns ``(tasks, doc_env, doc_env_groups, raw_stdout)``. ``doc_env``
+        and ``doc_env_groups`` come from the JSON document's top-level ``env:``
+        and ``env_groups:`` and are attached to the resulting ``Run`` so they
+        slot into the resolver chain between the workflow-config layer and
+        per-task env. ``raw_stdout`` is the unmodified generator output for
+        display in the dry-run UI.
         """
         logger.info(
             f"Fetching tasks from workflow '{workflow.name}' on backend '{workflow.backend}'"
@@ -501,19 +513,12 @@ class RunManager:
         except json.JSONDecodeError as e:
             raise ValueError(f"Invalid JSON response: {e}")
 
-        if isinstance(data, dict) and "tasks" in data:
-            tasks_data = data["tasks"]
-        elif isinstance(data, list):
-            tasks_data = data
-        else:
-            raise ValueError("JSON must be a list or object with 'tasks' key")
-
-        tasks = [TaskDefinition.from_dict(t) for t in tasks_data]
+        try:
+            tasks, doc_env, doc_groups = TaskDefinition.parse_document(data)
+        except ValueError as e:
+            raise ValueError(f"Invalid workflow JSON for '{workflow.name}': {e}")
         logger.info(f"Fetched {len(tasks)} tasks from workflow '{workflow.name}'")
-
-        if return_raw:
-            return tasks, stdout
-        return tasks
+        return tasks, doc_env, doc_groups, stdout
 
     async def dry_run(
         self, workflow_name: str, *, backend: str | None = None,
@@ -541,9 +546,9 @@ class RunManager:
                     ssh_client, workflow
                 )
 
-        result = await self.fetch_tasks(workflow, return_raw=True, clone_dir=clone_dir)
-        tasks: list[TaskDefinition] = result[0]  # type: ignore[index]
-        raw_output: str = result[1]  # type: ignore[index]
+        tasks, doc_env, doc_env_groups, raw_output = await self.fetch_tasks(
+            workflow, clone_dir=clone_dir,
+        )
 
         # Resolve tasks' working_dir relative to clone directory
         if clone_dir:
@@ -585,6 +590,8 @@ class RunManager:
                 git_repo=git_repo,
                 git_branch=git_branch,
                 git_sha=commit_hash,
+                doc_env=doc_env,
+                doc_env_groups=doc_env_groups,
             )
             if job_backend:
                 script = job_backend.generate_script(
@@ -648,6 +655,8 @@ class RunManager:
         git_repo: str | None = None,
         git_branch: str | None = None,
         commit_hash: str | None = None,
+        doc_env: list[EnvRule] | None = None,
+        doc_env_groups: dict[str, list[EnvRule]] | None = None,
     ) -> Run:
         """Build a Run: resolve deps, validate, create, persist, and start processing.
 
@@ -693,6 +702,8 @@ class RunManager:
             git_repo=git_repo,
             git_branch=git_branch,
             commit_hash=commit_hash,
+            doc_env=list(doc_env or []),
+            doc_env_groups=dict(doc_env_groups or {}),
         )
 
         self.runs[run_id] = run
@@ -743,8 +754,8 @@ class RunManager:
             else:
                 commit_hash = await self._resolve_commit_locally(workflow)
 
-        tasks: list[TaskDefinition] = await self.fetch_tasks(  # type: ignore[assignment]
-            workflow, clone_dir=clone_dir
+        tasks, doc_env, doc_env_groups, _ = await self.fetch_tasks(
+            workflow, clone_dir=clone_dir,
         )
 
         # Resolve tasks' working_dir relative to the clone directory
@@ -756,6 +767,7 @@ class RunManager:
         run = await self._build_run(
             tasks, workflow_name, backend_name, workflow.max_concurrent, ssh_client,
             git_repo=git_repo, git_branch=git_branch, commit_hash=commit_hash,
+            doc_env=doc_env, doc_env_groups=doc_env_groups,
         )
         return run
 
@@ -789,19 +801,24 @@ class RunManager:
         line = stdout.strip().split("\n", 1)[0]
         return line.split()[0] if line else None
 
-    def _parse_tasks_json(self, tasks_json: str, label: str) -> list[TaskDefinition]:
-        """Parse a JSON task list string into TaskDefinition objects."""
+    def _parse_tasks_json(
+        self, tasks_json: str, label: str,
+    ) -> tuple[list[TaskDefinition], list, dict]:
+        """Parse a JSON workflow document string.
+
+        Returns ``(tasks, doc_env, doc_env_groups)``. ``doc_env`` /
+        ``doc_env_groups`` are populated from the top-level ``env:`` and
+        ``env_groups:`` fields when the document uses the wrapped form.
+        """
         try:
             data = json.loads(tasks_json)
         except json.JSONDecodeError as e:
             raise ValueError(f"Invalid JSON in {label}: {e}")
 
-        if isinstance(data, dict) and "tasks" in data:
-            tasks_data = data["tasks"]
-        elif isinstance(data, list):
-            tasks_data = data
-        else:
-            raise ValueError(f"JSON in {label} must be a list or dict with 'tasks' key")
+        try:
+            return TaskDefinition.parse_document(data)
+        except ValueError as e:
+            raise ValueError(f"Invalid workflow JSON in {label}: {e}")
 
         return [TaskDefinition.from_dict(t) for t in tasks_data]
 
@@ -860,7 +877,7 @@ class RunManager:
         workflow_name = f"{source_name}/{stem}"
         label = f"source '{source_name}' workflow '{workflow_filename}'"
 
-        tasks = self._parse_tasks_json(tasks_json, label)
+        tasks, doc_env, doc_env_groups = self._parse_tasks_json(tasks_json, label)
 
         clone_dir: str | None = None
         commit_hash: str | None = None
@@ -892,6 +909,7 @@ class RunManager:
         run = await self._build_run(
             tasks, workflow_name, backend_name, None, ssh_client,
             git_repo=git_repo, git_branch=git_branch, commit_hash=commit_hash,
+            doc_env=doc_env, doc_env_groups=doc_env_groups,
         )
         return run
 
@@ -994,8 +1012,8 @@ class RunManager:
                         )
 
         # Re-fetch tasks from the workflow command in the clone dir
-        tasks: list[TaskDefinition] = await self.fetch_tasks(  # type: ignore[assignment]
-            workflow, clone_dir=clone_dir
+        tasks, doc_env, doc_env_groups, _ = await self.fetch_tasks(
+            workflow, clone_dir=clone_dir,
         )
 
         # Resolve working_dir relative to clone directory
@@ -1013,6 +1031,8 @@ class RunManager:
             git_repo=git_repo,
             git_branch=git_branch,
             commit_hash=commit_hash,
+            doc_env=doc_env,
+            doc_env_groups=doc_env_groups,
         )
         return run
 
@@ -1030,7 +1050,7 @@ class RunManager:
         workflow_name = f"{source_name}/{stem}"
         label = f"source '{source_name}' workflow '{workflow_filename}'"
 
-        tasks = self._parse_tasks_json(tasks_json, label)
+        tasks, doc_env, doc_env_groups = self._parse_tasks_json(tasks_json, label)
 
         # Resolve working dirs for preview
         warnings: list[str] = []
@@ -1083,6 +1103,8 @@ class RunManager:
                 run_id=preview_run_id,
                 created_at=preview_created_at,
                 task=task,
+                doc_env=doc_env,
+                doc_env_groups=doc_env_groups,
             )
             if job_backend:
                 script = job_backend.generate_script(
