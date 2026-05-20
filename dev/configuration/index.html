@@ -2693,7 +2693,7 @@
 <tr>
 <td><code>init</code></td>
 <td>string</td>
-<td>Bash text appended (newline-joined) into the <code>extra_init</code> block that runs before the task command. <code>${name}</code> is expanded.</td>
+<td>Bash text appended (newline-joined) into the <code>extra_init</code> block. Runs <strong>before</strong> <code>set:</code>/<code>append:</code> exports in the generated script, so user-set vars override anything <code>module load</code> / <code>source</code> placed into the env. Followed by <code>cd &lt;working_dir&gt;</code> and the task command. <code>${name}</code> is expanded.</td>
 </tr>
 <tr>
 <td><code>include</code></td>
