@@ -732,7 +732,7 @@ env:
 | `if` | object | Optional guard. Each key must match the env-so-far. A list value matches if the actual value is in the list (OR). When all keys match, the rule applies. |
 | `set` | object | Variables to write. Overwrites any prior value. `${name}` is expanded against env-so-far. |
 | `append` | object | Variables to extend. Joined to the existing value with `:` (creates the value if absent). `${name}` is expanded. |
-| `init` | string | Bash text appended (newline-joined) into the `extra_init` block that runs before the task command. `${name}` is expanded. |
+| `init` | string | Bash text appended (newline-joined) into the `extra_init` block. Runs **before** `set:`/`append:` exports in the generated script, so user-set vars override anything `module load` / `source` placed into the env. Followed by `cd <working_dir>` and the task command. `${name}` is expanded. |
 | `include` | list of strings | Names of `env_groups` to inline at this position. See [Reusable groups](#reusable-groups). |
 
 ### Where rules live

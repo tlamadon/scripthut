@@ -178,7 +178,7 @@ echo "Working dir: {self.working_dir}"
 echo "=================================="
 echo ""
 
-{env_lines}{extra_init_lines}cd {self.working_dir}
+{extra_init_lines}{env_lines}cd {self.working_dir}
 {self.command}
 EXIT_CODE=$?
 

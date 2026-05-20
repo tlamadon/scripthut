@@ -175,6 +175,22 @@ class TestGenerateScript:
         )
         assert "module load python" in script
 
+    def test_extra_init_runs_before_env_exports(self):
+        """``module load`` must run before ``export`` so user vars override module env."""
+        backend = self._make_backend()
+        task = TaskDefinition(id="t1", name="test", command="pwd")
+        script = backend.generate_script(
+            task, "r1", "/logs",
+            env_vars={"JULIA_DEPOT_PATH": "/scratch/me"},
+            extra_init="module load julia/1.12",
+        )
+        init_pos = script.index("module load julia/1.12")
+        export_pos = script.index('export JULIA_DEPOT_PATH="/scratch/me"')
+        assert init_pos < export_pos, (
+            "extra_init must precede env exports so user overrides win "
+            "after module load resets the variable"
+        )
+
     def test_gres_gpu_count(self):
         backend = self._make_backend()
         task = TaskDefinition(

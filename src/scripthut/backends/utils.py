@@ -161,11 +161,19 @@ def generate_script_body(
 ) -> str:
     """Generate the common body of an HPC submission script.
 
-    This produces the shared portion after scheduler-specific directives:
-    echo header, environment variable exports, extra init, cd, command, exit code.
+    Order in the produced bash:
+        1. ``extra_init`` (e.g. ``module load``, ``source activate``)
+        2. ``export`` lines from ``env_vars``
+        3. ``cd`` into the working dir
+        4. The task command
+
+    Init runs first so any env vars the user sets via ``set:`` rules override
+    whatever ``module load`` / ``source`` placed into the environment — the
+    common case being module loads that forcibly set ``PATH`` / ``JULIA_*`` /
+    ``CUDA_*`` that the workflow wants to refine.
 
     If interactive_wait is True, a tmux session is started after environment
-    setup and the script blocks until a continue signal is sent.  This lets
+    setup and the script blocks until a continue signal is sent. This lets
     users attach to the job interactively before the heavy command runs.
     """
     env_lines = ""
@@ -211,7 +219,7 @@ echo "Working dir: {working_dir}"
 echo "=================================="
 echo ""
 
-{env_lines}{extra_init_lines}cd {working_dir}
+{extra_init_lines}{env_lines}cd {working_dir}
 {tmux_block}{command}
 EXIT_CODE=$?
 
