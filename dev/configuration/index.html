@@ -2703,7 +2703,7 @@
 </tbody>
 </table>
 <h3 id="where-rules-live">Where rules live<a class="headerlink" href="#where-rules-live" title="Permanent link">&para;</a></h3>
-<p><code>env:</code> is a list of rules accepted at four locations, evaluated in this order:</p>
+<p><code>env:</code> is a list of rules accepted at five locations, evaluated in this order:</p>
 <table>
 <thead>
 <tr>
@@ -2715,18 +2715,23 @@
 <tbody>
 <tr>
 <td><strong>Backend</strong></td>
-<td><code>env:</code> on each backend entry</td>
+<td><code>env:</code> on each backend entry in <code>scripthut.yaml</code></td>
 <td>Cluster-specific facts — scratch paths, module-system bootstrap</td>
 </tr>
 <tr>
 <td><strong>Server</strong></td>
-<td>top-level <code>env:</code></td>
+<td>top-level <code>env:</code> in <code>scripthut.yaml</code></td>
 <td>Org-wide defaults across all clusters</td>
 </tr>
 <tr>
-<td><strong>Workflow</strong></td>
-<td><code>env:</code> on each workflow entry</td>
-<td>Workflow-specific overrides applied to every task in it</td>
+<td><strong>Workflow (config)</strong></td>
+<td><code>env:</code> on each workflow entry in <code>scripthut.yaml</code></td>
+<td>Workflow-specific overrides for ops-controlled config</td>
+</tr>
+<tr>
+<td><strong>Workflow (document)</strong></td>
+<td>top-level <code>env:</code> inside the JSON the generator emits</td>
+<td>Project-controlled config — lives in your repo, ships with your code. See <a href="../task-json/#document-level-env-and-env_groups">task-json reference</a></td>
 </tr>
 <tr>
 <td><strong>Task</strong></td>
@@ -2804,7 +2809,7 @@
 <a id="__codelineno-27-13" name="__codelineno-27-13" href="#__codelineno-27-13"></a><span class="w">    </span><span class="nt">env</span><span class="p">:</span>
 <a id="__codelineno-27-14" name="__codelineno-27-14" href="#__codelineno-27-14"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">include</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">gpu-stack</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">monitoring</span><span class="p p-Indicator">]</span>
 </code></pre></div>
-<p><code>env_groups:</code> is accepted on each backend, on the server (top-level), and on each workflow. <strong>Scoping</strong>: a group defined at layer X is visible to that layer's own <code>env:</code> and to all later layers. Names defined at a later layer shadow earlier ones, so each backend can declare its own <code>gpu-stack</code> group and any workflow's <code>include: [gpu-stack]</code> resolves to the right one based on <code>SCRIPTHUT_BACKEND</code>.</p>
+<p><code>env_groups:</code> is accepted on each backend, on the server (top-level), on each workflow in <code>scripthut.yaml</code>, and on the workflow JSON document itself (top-level alongside <code>tasks:</code> — see <a href="../task-json/#document-level-env-and-env_groups">task-json reference</a>). <strong>Scoping</strong>: a group defined at layer X is visible to that layer's own <code>env:</code> and to all later layers. Names defined at a later layer shadow earlier ones, so each backend can declare its own <code>gpu-stack</code> group and any workflow's <code>include: [gpu-stack]</code> resolves to the right one based on <code>SCRIPTHUT_BACKEND</code>.</p>
 <p>Includes can be guarded — an <code>if:</code> clause on the include-rule is inherited by every inlined rule (ANDed with any guard the inlined rule already carries):</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-28-1" name="__codelineno-28-1" href="#__codelineno-28-1"></a><span class="nt">env</span><span class="p">:</span>
 <a id="__codelineno-28-2" name="__codelineno-28-2" href="#__codelineno-28-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">if</span><span class="p">:</span>
