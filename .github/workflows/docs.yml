@@ -11,6 +11,14 @@ on:
 permissions:
   contents: write
 
+# Serialize docs deploys: a tag push and the corresponding main push fire
+# at the same instant and both want to push to gh-pages, which races and
+# fails with "cannot lock ref". Queue instead of canceling so both the
+# versioned and the dev docs eventually land.
+concurrency:
+  group: docs-deploy
+  cancel-in-progress: false
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
