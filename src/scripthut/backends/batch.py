@@ -9,7 +9,13 @@ import re
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
-from scripthut.backends.base import JobBackend, JobStats, SubmitResult
+from scripthut.backends.base import (
+    ClusterInfo,
+    JobBackend,
+    JobStats,
+    PartitionInfo,
+    SubmitResult,
+)
 from scripthut.backends.utils import generate_script_body
 from scripthut.models import HPCJob, JobState
 
@@ -682,13 +688,15 @@ class BatchBackend(JobBackend):
 
     # -- cluster info --
 
-    async def get_cluster_info(self) -> tuple[int, int] | None:
-        """Return ``(total_vcpus, idle_vcpus)`` across the queue's compute envs.
+    async def get_cluster_info(self, user: str | None = None) -> ClusterInfo | None:
+        """Return cluster availability as a single ``"default"`` partition.
 
-        Idle is approximated as ``total`` for now — Batch doesn't expose in-use
+        ``idle`` is approximated as ``total`` — Batch doesn't expose in-use
         vCPU counts directly, and computing it would require summing
-        resourceRequirements across all RUNNING jobs.
+        ``resourceRequirements`` across all RUNNING jobs. Per-user quota
+        is not implemented; ``user`` is accepted for interface compatibility.
         """
+        _ = user  # unused
         batch, _ = self._get_clients()
         try:
             q_resp = await self._run(
@@ -715,7 +723,17 @@ class BatchBackend(JobBackend):
                         total += int(cr.get("maxvCpus", 0) or 0)
                     except (ValueError, TypeError):
                         pass
-            return total, total
+            partition = PartitionInfo(
+                name="default",
+                state="up",
+                cpus_allocated=0,
+                cpus_idle=total,
+                cpus_other=0,
+                cpus_total=total,
+                nodes_total=0,
+                is_default=True,
+            )
+            return ClusterInfo(partitions=[partition], pending_reasons={})
         except Exception as e:
             logger.warning(f"Batch get_cluster_info failed: {e}")
             return None

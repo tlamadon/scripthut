@@ -833,7 +833,11 @@ class TestClusterInfo:
             ]
         }
         info = await backend.get_cluster_info()
-        assert info == (192, 192)
+        assert info is not None
+        assert info.cpus_total == 192
+        assert info.cpus_idle == 192
+        assert len(info.partitions) == 1
+        assert info.partitions[0].name == "default"
 
     @pytest.mark.asyncio
     async def test_missing_queue_returns_none(self):

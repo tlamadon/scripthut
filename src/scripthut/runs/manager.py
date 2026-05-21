@@ -44,6 +44,16 @@ logger = logging.getLogger(__name__)
 # between two poll cycles).
 DISAPPEARED_BEFORE_RUNNING_MARKER = "Job vanished before being observed running"
 
+# Grace period (seconds) before declaring a SUBMITTED job FAILED when it's
+# missing from the scheduler queue. Ultra-fast jobs can submit, run, and
+# clear out of squeue between two poll cycles; without a grace period they
+# get marked FAILED and incorrectly cascade DEP_FAILED to downstream items
+# (the sacct correction eventually flips the parent back, but the cascade
+# still has to be unwound). 60s covers typical poll intervals (5–60s) with
+# headroom; genuine sbatch validation failures still surface — just one
+# poll later.
+SUBMIT_TO_FAIL_GRACE_SECONDS = 60.0
+
 
 async def _run_local_shell(command: str, timeout: float = 60.0) -> tuple[str, str, int]:
     """Run ``command`` locally (``sh -c``) and return ``(stdout, stderr, exit_code)``.
@@ -1461,19 +1471,35 @@ class RunManager:
                 elif item.status == RunItemStatus.SUBMITTED:
                     # Never seen running and now missing from the queue —
                     # the job most likely never made it past sbatch validation
-                    # or was rejected by the scheduler. Mark FAILED so the
-                    # user gets a loud signal; the polling layer will revert
-                    # this if sacct confirms the job actually ran fine
-                    # (e.g. an ultra-fast job that finished between polls).
+                    # or was rejected by the scheduler. But ultra-fast jobs
+                    # can also submit, run, and clear out of squeue between
+                    # two polls; we don't want to wrongly mark those FAILED
+                    # and trigger a DEP_FAILED cascade. Give the job a brief
+                    # grace period to let sacct catch up before declaring it
+                    # vanished.
+                    now = datetime.now(timezone.utc)
+                    submit_age = (
+                        (now - item.submitted_at).total_seconds()
+                        if item.submitted_at
+                        else float("inf")
+                    )
+                    if submit_age < SUBMIT_TO_FAIL_GRACE_SECONDS:
+                        logger.debug(
+                            f"Task '{item.task.id}' (job {item.job_id}) "
+                            f"missing from queue {submit_age:.0f}s after submit — "
+                            f"within grace ({SUBMIT_TO_FAIL_GRACE_SECONDS:.0f}s), "
+                            f"deferring"
+                        )
+                        continue
                     item.started_at = item.submitted_at
                     item.status = RunItemStatus.FAILED
                     item.error = DISAPPEARED_BEFORE_RUNNING_MARKER
-                    item.finished_at = datetime.now(timezone.utc)
+                    item.finished_at = now
                     changed = True
                     changed_items.append(item)
                     logger.warning(
                         f"Task '{item.task.id}' (job {item.job_id}) vanished from "
-                        f"queue before being observed running — marking FAILED"
+                        f"queue {submit_age:.0f}s after submit — marking FAILED"
                     )
             else:
                 if job_state in (JobState.RUNNING, JobState.COMPLETING):

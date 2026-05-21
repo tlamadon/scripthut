@@ -401,6 +401,33 @@ class Run:
                 return item
         return None
 
+    def uncascade_dep_failures(self) -> list[RunItem]:
+        """Reset DEP_FAILED items whose dependencies are no longer failed.
+
+        Runs to a fixed point so a chain of corrections propagates (e.g.
+        a sacct correction on the root un-fails a child, which then
+        un-fails its own child). An item is eligible iff every dep is
+        present in the run and not in {FAILED, DEP_FAILED}.
+
+        Returns the items that were reset to PENDING so the caller can
+        persist / log them.
+        """
+        reset_items: list[RunItem] = []
+        changed = True
+        while changed:
+            changed = False
+            for item in self.items:
+                if item.status != RunItemStatus.DEP_FAILED:
+                    continue
+                if self.get_failed_deps(item):
+                    continue
+                item.status = RunItemStatus.PENDING
+                item.error = None
+                item.finished_at = None
+                reset_items.append(item)
+                changed = True
+        return reset_items
+
     def get_item_by_job_id(self, job_id: str) -> RunItem | None:
         """Get a run item by its scheduler job ID."""
         for item in self.items:

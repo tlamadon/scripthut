@@ -27,7 +27,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from scripthut.backends.base import JobBackend, JobStats, SubmitResult
+from scripthut.backends.base import (
+    ClusterInfo,
+    JobBackend,
+    JobStats,
+    PartitionInfo,
+    SubmitResult,
+)
 from scripthut.backends.ec2_ssm import SSMSSHSession
 from scripthut.backends.utils import (
     fetch_log_via_ssh,
@@ -555,12 +561,28 @@ echo "$EXIT" > /var/run/scripthut/done
             )
         return stats
 
-    async def get_cluster_info(self) -> tuple[int, int] | None:
-        """Approximate cluster info: (max_slots, idle_slots) in task units."""
+    async def get_cluster_info(self, user: str | None = None) -> ClusterInfo | None:
+        """Approximate cluster info as one ``"default"`` partition.
+
+        Counts are in *task slots* (one instance per task), not CPUs.
+        Per-user quota is not implemented; ``user`` is accepted for
+        interface compatibility.
+        """
+        _ = user  # unused
         used = len(self._instances)
         total = self._config.max_instances
         idle = max(0, total - used)
-        return total, idle
+        partition = PartitionInfo(
+            name="default",
+            state="up",
+            cpus_allocated=used,
+            cpus_idle=idle,
+            cpus_other=0,
+            cpus_total=total,
+            nodes_total=total,
+            is_default=True,
+        )
+        return ClusterInfo(partitions=[partition], pending_reasons={})
 
     # -- log fetching (UI) --
 

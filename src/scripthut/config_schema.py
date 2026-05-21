@@ -125,6 +125,21 @@ class SlurmBackendConfig(BaseModel):
         default=None,
         description="Slurm account to charge jobs to (e.g., phd, pi-faculty)",
     )
+    partition_map: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Map logical task partition names to this cluster's actual partition "
+            "names (e.g. {standard: cpu, gpu: gpu-a100}). Tasks keep a portable "
+            "logical name; each backend translates at submit time."
+        ),
+    )
+    default_partition: str | None = Field(
+        default=None,
+        description=(
+            "Partition to use when the task's partition isn't in partition_map. "
+            "If unset, the task's literal partition value is used."
+        ),
+    )
     login_shell: bool = Field(
         default=False,
         description="Use login shell (#!/bin/bash -l) in sbatch scripts to source profile",

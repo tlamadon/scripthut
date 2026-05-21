@@ -600,9 +600,12 @@ class TestClusterInfo:
             instance_id="i-b", task_id="t2", run_id="r2",
             launched_at=datetime.now(timezone.utc),
         )
-        total, idle = await backend.get_cluster_info() or (0, 0)
-        assert total == 10
-        assert idle == 8
+        info = await backend.get_cluster_info()
+        assert info is not None
+        assert info.cpus_total == 10
+        assert info.cpus_idle == 8
+        assert len(info.partitions) == 1
+        assert info.partitions[0].name == "default"
 
 
 # -- state constants exposed via JobBackend interface --

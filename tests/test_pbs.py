@@ -472,9 +472,17 @@ class TestGetClusterInfo:
 
         result = await backend.get_cluster_info()
         assert result is not None
-        total, idle = result
-        assert total == 40  # 16 + 16 + 8
-        assert idle == 24   # 16 + 8 (free nodes)
+        assert len(result.partitions) == 1
+        p = result.partitions[0]
+        assert p.name == "default"
+        assert p.cpus_total == 40  # 16 + 16 + 8
+        assert p.cpus_idle == 24   # 16 + 8 (free nodes)
+        assert p.cpus_allocated == 16  # job-exclusive
+        assert p.nodes_total == 3
+        # Aggregate accessors still work
+        assert result.cpus_total == 40
+        assert result.cpus_idle == 24
+        assert result.pending_reasons == {}
 
     @pytest.mark.asyncio
     async def test_pbsnodes_failure(self):
@@ -484,6 +492,40 @@ class TestGetClusterInfo:
 
         result = await backend.get_cluster_info()
         assert result is None
+
+    @pytest.mark.asyncio
+    async def test_aggregates_gpus(self):
+        pbsnodes_output = (
+            "node1\n"
+            "     state = free\n"
+            "     np = 16\n"
+            "     resources_available.ngpus = 4\n"
+            "     resources_assigned.ngpus = 0\n"
+            "\n"
+            "node2\n"
+            "     state = job-busy\n"
+            "     np = 16\n"
+            "     resources_available.ngpus = 4\n"
+            "     resources_assigned.ngpus = 3\n"
+            "\n"
+            "node3\n"
+            "     state = down\n"
+            "     np = 16\n"
+            "     resources_available.ngpus = 4\n"
+            "     resources_assigned.ngpus = 0\n"
+            "\n"
+        )
+        ssh = AsyncMock()
+        ssh.run_command = AsyncMock(return_value=(pbsnodes_output, "", 0))
+        backend = PBSBackend(ssh)
+
+        result = await backend.get_cluster_info()
+        assert result is not None
+        p = result.partitions[0]
+        # 4 + 4 + 4 = 12 total
+        assert p.gpus_total == 12
+        # node1: 4 free; node2: 4-3=1 free; node3: down -> 0
+        assert p.gpus_idle == 4 + 1
 
 
 # -- Properties --

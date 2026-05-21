@@ -172,7 +172,12 @@ async def init_backend(backend_config: SlurmBackendConfig | PBSBackendConfig) ->
         backend = PBSBackend(ssh_client, default_queue=backend_config.queue)
         backend_type = "pbs"
     else:
-        backend = SlurmBackend(ssh_client)
+        backend = SlurmBackend(
+            ssh_client,
+            account=backend_config.account,
+            partition_map=backend_config.partition_map,
+            default_partition=backend_config.default_partition,
+        )
         backend_type = "slurm"
 
     backend_state = BackendState(

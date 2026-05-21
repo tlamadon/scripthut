@@ -71,6 +71,100 @@
         {{ backend.status.error }}
     </div>
     {% endif %}
+    {% if backend.enabled and backend.status.connected and backend.status.cluster_info and backend.status.cluster_info.user_quota %}
+    {% set q = backend.status.cluster_info.user_quota %}
+    <div class="ml-4 mt-1 text-xs text-gray-600 flex flex-wrap gap-x-3 gap-y-0.5">
+        <span class="text-gray-400">Your usage:</span>
+        {% if q.jobs_used is not none or q.jobs_max is not none %}
+        <span class="font-mono"
+            {% if q.jobs_max and q.jobs_used and q.jobs_used >= q.jobs_max %}class="text-red-600"{% endif %}>
+            jobs <span class="font-medium">{{ q.jobs_used if q.jobs_used is not none else '?' }}</span>{% if q.jobs_max %}<span class="text-gray-400">/{{ q.jobs_max }}</span>{% endif %}
+        </span>
+        {% endif %}
+        {% if q.cpus_used is not none or q.cpus_max is not none %}
+        <span class="font-mono {% if q.cpus_max and q.cpus_used and q.cpus_used >= q.cpus_max %}text-red-600{% elif q.cpus_max and q.cpus_used and q.cpus_used * 4 >= q.cpus_max * 3 %}text-yellow-700{% endif %}">
+            cpus <span class="font-medium">{{ q.cpus_used if q.cpus_used is not none else '?' }}</span>{% if q.cpus_max %}<span class="text-gray-400">/{{ q.cpus_max }}</span>{% endif %}
+        </span>
+        {% endif %}
+        {% if q.gpus_used is not none and q.gpus_used > 0 or q.gpus_max is not none %}
+        <span class="font-mono {% if q.gpus_max and q.gpus_used and q.gpus_used >= q.gpus_max %}text-red-600{% elif q.gpus_max and q.gpus_used and q.gpus_used * 4 >= q.gpus_max * 3 %}text-yellow-700{% endif %}">
+            gpus <span class="font-medium">{{ q.gpus_used if q.gpus_used is not none else '?' }}</span>{% if q.gpus_max %}<span class="text-gray-400">/{{ q.gpus_max }}</span>{% endif %}
+        </span>
+        {% endif %}
+        {% if q.fair_share is not none %}
+        <span class="font-mono" title="Slurm fair-share priority weight (0.0-1.0, higher = better)">
+            fair-share <span class="font-medium {% if q.fair_share < 0.3 %}text-red-600{% elif q.fair_share < 0.5 %}text-yellow-700{% else %}text-green-700{% endif %}">{{ '%.2f'|format(q.fair_share) }}</span>
+        </span>
+        {% endif %}
+        {% if q.account %}
+        <span class="text-gray-400">account <span class="font-mono text-gray-600">{{ q.account }}</span></span>
+        {% endif %}
+    </div>
+    {% endif %}
+    {% if backend.enabled and backend.status.connected and backend.status.cluster_info %}
+    {% set ci = backend.status.cluster_info %}
+    {% set has_gpus = ci.partitions|selectattr('gpus_total', 'gt', 0)|list|length > 0 %}
+    {% if ci.partitions|length > 1 or ci.pending_reasons or has_gpus %}
+    <details class="ml-4 mt-1">
+        <summary class="text-xs text-gray-500 cursor-pointer hover:text-gray-700 select-none">
+            Partition details
+            {% if ci.pending_reasons %}
+            <span class="ml-1 text-yellow-700">• {{ ci.pending_reasons.values()|sum }} pending</span>
+            {% endif %}
+        </summary>
+        <div class="mt-1 overflow-x-auto">
+            <table class="text-xs w-full">
+                <thead>
+                    <tr class="text-gray-400 border-b">
+                        <th class="text-left pr-3 font-normal py-1">Partition</th>
+                        <th class="text-right pr-3 font-normal py-1">Idle/Total CPUs</th>
+                        {% if has_gpus %}
+                        <th class="text-right pr-3 font-normal py-1">Idle/Total GPUs</th>
+                        {% endif %}
+                        <th class="text-right pr-3 font-normal py-1">Nodes</th>
+                        <th class="text-right pr-3 font-normal py-1">Mem/Node</th>
+                        <th class="text-right pr-3 font-normal py-1">Timelimit</th>
+                        <th class="text-left font-normal py-1">Features</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for p in ci.partitions %}
+                    <tr class="border-b border-gray-100">
+                        <td class="pr-3 py-0.5">
+                            <span class="font-medium">{{ p.name }}</span>{% if p.is_default %}<span class="text-gray-400" title="Default partition">*</span>{% endif %}
+                            {% if p.state and p.state != 'up' %}<span class="ml-1 text-red-500">({{ p.state }})</span>{% endif %}
+                        </td>
+                        <td class="text-right pr-3 py-0.5 font-mono {% if p.cpus_idle == 0 %}text-red-600{% elif p.cpus_total and p.cpus_idle * 10 < p.cpus_total %}text-yellow-600{% else %}text-green-700{% endif %}">
+                            {{ p.cpus_idle }} / {{ p.cpus_total }}
+                        </td>
+                        {% if has_gpus %}
+                        <td class="text-right pr-3 py-0.5 font-mono {% if p.gpus_total == 0 %}text-gray-400{% elif p.gpus_idle == 0 %}text-red-600{% elif p.gpus_idle * 4 < p.gpus_total %}text-yellow-600{% else %}text-green-700{% endif %}"
+                            {% if p.gpu_types %}title="{{ p.gpu_types }}"{% endif %}>
+                            {% if p.gpus_total %}{{ p.gpus_idle }} / {{ p.gpus_total }}{% if p.gpu_types %}<span class="text-gray-400 ml-1">{{ p.gpu_types }}</span>{% endif %}{% else %}—{% endif %}
+                        </td>
+                        {% endif %}
+                        <td class="text-right pr-3 py-0.5 font-mono text-gray-600">{{ p.nodes_total }}</td>
+                        <td class="text-right pr-3 py-0.5 font-mono text-gray-600">
+                            {% if p.mem_per_node_mb %}{{ (p.mem_per_node_mb // 1024) }}G{% else %}—{% endif %}
+                        </td>
+                        <td class="text-right pr-3 py-0.5 font-mono text-gray-600">{{ p.timelimit or '—' }}</td>
+                        <td class="py-0.5 font-mono text-gray-500">{{ p.features or '—' }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% if ci.pending_reasons %}
+            <div class="mt-2 text-xs">
+                <span class="text-gray-400">Pending jobs by reason:</span>
+                {% for reason, count in ci.pending_reasons.items()|sort(attribute=1, reverse=true) %}
+                <span class="inline-block ml-1 px-1.5 py-0.5 rounded bg-yellow-50 text-yellow-700 font-mono">{{ reason }} × {{ count }}</span>
+                {% endfor %}
+            </div>
+            {% endif %}
+        </div>
+    </details>
+    {% endif %}
+    {% endif %}
     {% endfor %}
 </div>
 {% else %}

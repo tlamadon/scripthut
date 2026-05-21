@@ -47,6 +47,68 @@ class DiskInfo:
     path: str
 
 
+@dataclass
+class PartitionInfo:
+    """Resource availability for a single scheduler partition/queue."""
+
+    name: str
+    state: str  # "up", "down", "drain", "inact", etc.
+    cpus_allocated: int
+    cpus_idle: int
+    cpus_other: int  # drained/down/reserved
+    cpus_total: int
+    nodes_total: int
+    timelimit: str | None = None  # e.g. "1-00:00:00" or "infinite"
+    mem_per_node_mb: int | None = None
+    features: str | None = None  # comma-separated, e.g. "gpu,a100"
+    is_default: bool = False
+    gpus_total: int = 0  # 0 means "no GPUs in this partition"
+    gpus_idle: int = 0
+    gpu_types: str | None = None  # comma-separated GPU type labels, e.g. "a100,v100"
+
+
+@dataclass
+class QuotaInfo:
+    """Per-user fair-share, current usage, and scheduling limits.
+
+    All fields are optional; the backend populates whatever it can
+    determine. ``*_max == None`` means "no limit set" or "limit unknown".
+    ``*_used`` is the user's current consumption across all running jobs
+    (only counted when the backend has a cheap way to compute it).
+    """
+
+    account: str | None = None
+    fair_share: float | None = None  # 0.0-1.0; higher = better priority weight
+    norm_usage: float | None = None  # Recent usage as fraction of parent
+    jobs_used: int | None = None
+    jobs_max: int | None = None
+    cpus_used: int | None = None
+    cpus_max: int | None = None
+    gpus_used: int | None = None
+    gpus_max: int | None = None
+
+
+@dataclass
+class ClusterInfo:
+    """Aggregate cluster resource snapshot.
+
+    Backends with no partition concept (Batch, EC2) return a single
+    pseudo-partition named ``"default"``.
+    """
+
+    partitions: list[PartitionInfo]
+    pending_reasons: dict[str, int]  # squeue reason -> count of pending jobs
+    user_quota: QuotaInfo | None = None  # Only populated when get_cluster_info(user=...) is given
+
+    @property
+    def cpus_total(self) -> int:
+        return sum(p.cpus_total for p in self.partitions)
+
+    @property
+    def cpus_idle(self) -> int:
+        return sum(p.cpus_idle for p in self.partitions)
+
+
 class JobBackend(ABC):
     """Abstract base class for job management backends (Slurm, PBS, ECS, etc.)."""
 
@@ -130,11 +192,21 @@ class JobBackend(ABC):
         ...
 
     @abstractmethod
-    async def get_cluster_info(self) -> tuple[int, int] | None:
-        """Fetch cluster resource info.
+    async def get_cluster_info(self, user: str | None = None) -> ClusterInfo | None:
+        """Fetch cluster resource availability.
+
+        Returns a snapshot with one entry per partition/queue plus a
+        breakdown of why pending jobs are waiting. Backends without a
+        partition concept (Batch, EC2) return a single ``"default"``
+        pseudo-partition.
+
+        Args:
+            user: When given, populate ``user_quota`` with this user's
+                fair-share / scheduling limits. Backends that don't
+                support per-user quota leave the field as ``None``.
 
         Returns:
-            (total_cpus, idle_cpus) tuple, or None on failure.
+            ClusterInfo, or None on failure.
         """
         ...
 

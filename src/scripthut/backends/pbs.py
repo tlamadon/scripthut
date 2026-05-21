@@ -8,7 +8,14 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
-from scripthut.backends.base import DiskInfo, JobBackend, JobStats, SubmitResult
+from scripthut.backends.base import (
+    ClusterInfo,
+    DiskInfo,
+    JobBackend,
+    JobStats,
+    PartitionInfo,
+    SubmitResult,
+)
 from scripthut.backends.utils import (
     fetch_disk_info,
     fetch_log_via_ssh,
@@ -538,8 +545,14 @@ class PBSBackend(JobBackend):
 
         return None
 
-    async def get_cluster_info(self) -> tuple[int, int] | None:
-        """Fetch total and free CPU counts from pbsnodes."""
+    async def get_cluster_info(self, user: str | None = None) -> ClusterInfo | None:
+        """Fetch cluster availability from pbsnodes.
+
+        PBS doesn't have Slurm-style partitions, so all nodes roll up into
+        a single ``"default"`` pseudo-partition. Per-user quota is not
+        implemented — ``user`` is accepted for interface compatibility.
+        """
+        _ = user  # unused
         cmd = "pbsnodes -a 2>/dev/null"
         try:
             stdout, stderr, exit_code = await self._ssh.run_command(cmd, timeout=15)
@@ -553,19 +566,45 @@ class PBSBackend(JobBackend):
 
         total_cpus = 0
         free_cpus = 0
+        other_cpus = 0
+        total_gpus = 0
+        idle_gpus = 0
+        node_count = 0
         current_ncpus = 0
         current_state = ""
+        current_ngpus_avail = 0
+        current_ngpus_assigned = 0
+
+        def _flush():
+            nonlocal total_cpus, free_cpus, other_cpus, node_count
+            nonlocal total_gpus, idle_gpus
+            if current_ncpus == 0:
+                return
+            total_cpus += current_ncpus
+            node_count += 1
+            is_free = "free" in current_state
+            is_other = any(
+                s in current_state for s in ("down", "offline", "drain", "unknown")
+            )
+            if is_free:
+                free_cpus += current_ncpus
+            elif is_other:
+                other_cpus += current_ncpus
+            if current_ngpus_avail > 0:
+                total_gpus += current_ngpus_avail
+                if not is_other:
+                    idle_gpus += max(
+                        0, current_ngpus_avail - current_ngpus_assigned
+                    )
 
         for line in stdout.split("\n"):
             line = line.strip()
             if not line:
-                # End of a node record — tally up
-                if current_ncpus > 0:
-                    total_cpus += current_ncpus
-                    if "free" in current_state:
-                        free_cpus += current_ncpus
+                _flush()
                 current_ncpus = 0
                 current_state = ""
+                current_ngpus_avail = 0
+                current_ngpus_assigned = 0
                 continue
             if "=" in line:
                 key, _, value = line.partition("=")
@@ -578,16 +617,37 @@ class PBSBackend(JobBackend):
                         pass
                 elif key == "state":
                     current_state = value.lower()
+                elif key == "resources_available.ngpus":
+                    try:
+                        current_ngpus_avail = int(value)
+                    except ValueError:
+                        pass
+                elif key == "resources_assigned.ngpus":
+                    try:
+                        current_ngpus_assigned = int(value)
+                    except ValueError:
+                        pass
 
         # Flush last node
-        if current_ncpus > 0:
-            total_cpus += current_ncpus
-            if "free" in current_state:
-                free_cpus += current_ncpus
+        _flush()
 
         if total_cpus == 0:
             return None
-        return total_cpus, free_cpus
+
+        allocated = max(0, total_cpus - free_cpus - other_cpus)
+        partition = PartitionInfo(
+            name="default",
+            state="up",
+            cpus_allocated=allocated,
+            cpus_idle=free_cpus,
+            cpus_other=other_cpus,
+            cpus_total=total_cpus,
+            nodes_total=node_count,
+            is_default=True,
+            gpus_total=total_gpus,
+            gpus_idle=idle_gpus,
+        )
+        return ClusterInfo(partitions=[partition], pending_reasons={})
 
     async def get_disk_info(self, path: str) -> DiskInfo | None:
         """Fetch disk usage for ``path`` on the backend via ``df -Pk``."""

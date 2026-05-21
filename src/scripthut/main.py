@@ -172,18 +172,24 @@ async def poll_backend(backend_state: BackendState, filter_user: str | None = No
     start_time = time.perf_counter()
     try:
         jobs = await backend_state.backend.get_jobs(user=filter_user)
-        cluster_cpus = await backend_state.backend.get_cluster_info()
+        cluster_info = await backend_state.backend.get_cluster_info(user=filter_user)
         disk_info = await backend_state.backend.get_disk_info(backend_state.clone_dir)
         duration_ms = int((time.perf_counter() - start_time) * 1000)
         backend_state.jobs = jobs
 
-        # Compute CPUs used by the filtered user's running jobs
+        # Prefer the scheduler's AllocTRES count for the user (matches what
+        # the scheduler itself sees and includes GPUs); fall back to summing
+        # the cpus field on RUNNING jobs from the local list.
         cpus_user: int | None = None
         if filter_user:
-            cpus_user = sum(
-                j.cpus for j in jobs
-                if j.state == JobState.RUNNING
-            )
+            quota = cluster_info.user_quota if cluster_info else None
+            if quota is not None and quota.cpus_used is not None:
+                cpus_user = quota.cpus_used
+            else:
+                cpus_user = sum(
+                    j.cpus for j in jobs
+                    if j.state == JobState.RUNNING
+                )
 
         backend_state.status = ConnectionStatus(
             connected=True,
@@ -191,8 +197,7 @@ async def poll_backend(backend_state: BackendState, filter_user: str | None = No
             last_poll=datetime.now(UTC),
             last_poll_duration_ms=duration_ms,
             job_count=len(jobs),
-            cpus_total=cluster_cpus[0] if cluster_cpus else None,
-            cpus_idle=cluster_cpus[1] if cluster_cpus else None,
+            cluster_info=cluster_info,
             cpus_user=cpus_user,
             disk_clone_dir=backend_state.clone_dir,
             disk_total_bytes=disk_info.total_bytes if disk_info else None,
@@ -264,7 +269,9 @@ async def poll_backend(backend_state: BackendState, filter_user: str | None = No
                         # it vanished from the queue without ever being seen
                         # running may actually have completed successfully —
                         # this happens for ultra-fast jobs that finish between
-                        # two poll cycles. If sacct confirms COMPLETED, flip back.
+                        # two poll cycles. If sacct confirms COMPLETED, flip
+                        # back and unwind any downstream DEP_FAILED cascade
+                        # that fired during the false-failure window.
                         elif (
                             s.state == "COMPLETED"
                             and item.status == RunItemStatus.FAILED
@@ -276,6 +283,12 @@ async def poll_backend(backend_state: BackendState, filter_user: str | None = No
                                 f"Corrected task '{item.task.id}' "
                                 f"(job {item.job_id}): sacct confirms COMPLETED"
                             )
+                            reset = run.uncascade_dep_failures()
+                            for r in reset:
+                                logger.info(
+                                    f"Unwound DEP_FAILED on '{r.task.id}' "
+                                    f"(parent '{item.task.id}' was corrected)"
+                                )
                         elif s.state:
                             logger.debug(
                                 f"sacct state for '{item.task.id}' "

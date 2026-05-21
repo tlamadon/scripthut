@@ -12,7 +12,7 @@ Covers:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 
 import pytest
@@ -23,6 +23,7 @@ from scripthut.backends.slurm import SlurmBackend
 from scripthut.models import JobState
 from scripthut.runs.manager import (
     DISAPPEARED_BEFORE_RUNNING_MARKER,
+    SUBMIT_TO_FAIL_GRACE_SECONDS,
     RunManager,
 )
 from scripthut.runs.models import (
@@ -210,11 +211,16 @@ def _make_manager_with_run(item: RunItem) -> tuple[RunManager, Run]:
 class TestManagerDisappearance:
     @pytest.mark.asyncio
     async def test_submitted_disappearance_marks_failed_with_marker(self):
+        # Age the submission past the grace period so the FAILED transition
+        # actually fires.
+        aged = datetime.now(timezone.utc) - timedelta(
+            seconds=SUBMIT_TO_FAIL_GRACE_SECONDS + 5
+        )
         item = RunItem(
             task=TaskDefinition(id="t1", name="t1", command="echo hi"),
             status=RunItemStatus.SUBMITTED,
             job_id="12345",
-            submitted_at=datetime.now(timezone.utc),
+            submitted_at=aged,
         )
         manager, run = _make_manager_with_run(item)
 
@@ -225,6 +231,24 @@ class TestManagerDisappearance:
         assert item.error == DISAPPEARED_BEFORE_RUNNING_MARKER
         assert item.started_at is not None  # set to submitted_at for accounting
         assert item.finished_at is not None
+
+    @pytest.mark.asyncio
+    async def test_submitted_disappearance_within_grace_period_deferred(self):
+        # Fresh submission missing from the queue should NOT be marked FAILED
+        # — it might be an ultra-fast job that finished between two polls.
+        item = RunItem(
+            task=TaskDefinition(id="t1", name="t1", command="echo hi"),
+            status=RunItemStatus.SUBMITTED,
+            job_id="12345",
+            submitted_at=datetime.now(timezone.utc),  # just now
+        )
+        manager, run = _make_manager_with_run(item)
+
+        await manager.update_run_status(run, slurm_jobs={})
+
+        assert item.status == RunItemStatus.SUBMITTED
+        assert item.error is None
+        assert item.finished_at is None
 
     @pytest.mark.asyncio
     async def test_running_disappearance_still_marks_completed(self):

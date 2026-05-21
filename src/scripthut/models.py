@@ -3,6 +3,10 @@
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from scripthut.backends.base import ClusterInfo
 
 
 class JobState(str, Enum):
@@ -102,12 +106,19 @@ class ConnectionStatus:
     error: str | None = None
     last_poll_duration_ms: int | None = None  # How long the last poll took in milliseconds
     job_count: int = 0  # Number of jobs returned by last poll
-    cpus_total: int | None = None  # Total CPUs on the cluster
-    cpus_idle: int | None = None  # Idle (free) CPUs on the cluster
+    cluster_info: "ClusterInfo | None" = None  # Per-partition availability + pending reasons
     cpus_user: int | None = None  # CPUs used by the filtered user
     disk_clone_dir: str | None = None  # Path whose disk usage is reported
     disk_total_bytes: int | None = None
     disk_avail_bytes: int | None = None
+
+    @property
+    def cpus_total(self) -> int | None:
+        return self.cluster_info.cpus_total if self.cluster_info else None
+
+    @property
+    def cpus_idle(self) -> int | None:
+        return self.cluster_info.cpus_idle if self.cluster_info else None
 
 
 # Backward-compat alias
