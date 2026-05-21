@@ -266,6 +266,17 @@ class LocalClient:
         run = await self.runtime.run_manager.create_run(name, backend=backend)
         return _summary_from_run(run)
 
+    async def run_task(
+        self, task_dict: dict, backend: str, run_name: str | None = None,
+    ) -> dict[str, Any]:
+        from scripthut.runs.models import TaskDefinition
+
+        task = TaskDefinition.from_dict(task_dict)
+        run = await self.runtime.run_manager.create_adhoc_run(
+            task, backend, run_name=run_name,
+        )
+        return _summary_from_run(run)
+
     async def run_project_workflow(
         self, project: str, workflow: str, *, backend: str | None = None,
     ) -> dict[str, Any]:
@@ -399,6 +410,20 @@ class RemoteClient:
         self, name: str, *, backend: str | None = None,
     ) -> dict[str, Any]:
         return await self._post(f"/workflows/{name}/run", backend=backend)
+
+    async def run_task(
+        self, task_dict: dict, backend: str, run_name: str | None = None,
+    ) -> dict[str, Any]:
+        # Server endpoint takes a JSON body via POST; the rest of the
+        # RemoteClient uses query params so we need the raw httpx call here.
+        body: dict[str, Any] = {"task": task_dict, "backend": backend}
+        if run_name is not None:
+            body["run_name"] = run_name
+        if self._client is None:
+            raise RuntimeError("RemoteClient not entered")
+        resp = await self._client.post("/tasks/run", json=body)
+        resp.raise_for_status()
+        return resp.json()
 
     async def run_project_workflow(
         self, project: str, workflow: str, *, backend: str | None = None,
@@ -602,6 +627,104 @@ async def _run_per_backend(
             finally:
                 await ssh.disconnect()
     return results
+
+
+def _build_adhoc_task_dict(args: argparse.Namespace) -> dict:
+    """Assemble a TaskDefinition-shaped dict from CLI args / stdin / file.
+
+    Precedence: ``--from-file`` > ``--from-stdin`` > positional ``command``
+    plus the per-field flags. Each source provides a *base* dict; per-flag
+    overrides are then layered on top so an agent can pipe a JSON template
+    and tweak just one field via flags. ``id`` and ``name`` default to a
+    short ULID-style label so two ad-hoc runs don't collide on disk.
+    """
+    import hashlib
+    import time
+
+    base: dict = {}
+    if args.from_file:
+        path = Path(args.from_file).expanduser()
+        base = json.loads(path.read_text())
+    elif args.from_stdin:
+        base = json.loads(sys.stdin.read())
+    elif args.command:
+        base = {"command": args.command}
+    else:
+        raise RuntimeError(
+            "Provide a command argument, --from-stdin, or --from-file"
+        )
+
+    # Per-flag overrides (only set if the user passed the flag).
+    for key, attr in (
+        ("name", "name"),
+        ("id", "id"),
+        ("cpus", "cpus"),
+        ("memory", "memory"),
+        ("time_limit", "time_limit"),
+        ("partition", "partition"),
+        ("working_dir", "working_dir"),
+        ("gres", "gres"),
+        ("image", "image"),
+    ):
+        val = getattr(args, attr, None)
+        if val is not None:
+            base[key] = val
+
+    # --env KEY=VAL stays simple here: collected into a set: {...} EnvRule.
+    if args.env:
+        env_rules = list(base.get("env", []))
+        env_kv: dict = {}
+        for item in args.env:
+            if "=" not in item:
+                raise RuntimeError(
+                    f"--env value '{item}' must be KEY=VALUE"
+                )
+            k, _, v = item.partition("=")
+            env_kv[k.strip()] = v
+        if env_kv:
+            env_rules.append({"set": env_kv})
+        base["env"] = env_rules
+
+    # Defaults for the two required fields if not yet present.
+    if "command" not in base:
+        raise RuntimeError(
+            "Task has no 'command' — provide one as a positional arg, "
+            "via --from-file/--from-stdin, or in the JSON body"
+        )
+    if "id" not in base:
+        # 12-char hash of (command + monotonic time) — stable enough for
+        # idempotent re-submission within the same second, unique across.
+        seed = f"{base['command']}|{time.time_ns()}".encode()
+        base["id"] = "adhoc-" + hashlib.sha256(seed).hexdigest()[:8]
+    if "name" not in base:
+        base["name"] = base["id"]
+
+    return base
+
+
+async def _cmd_task_run(args: argparse.Namespace) -> int:
+    task_dict = _build_adhoc_task_dict(args)
+
+    if args.dry_run:
+        # Print the assembled TaskDefinition and exit without hitting any
+        # backend — lets agents verify the payload before committing.
+        print(json.dumps({"task": task_dict, "backend": args.backend}, indent=2))
+        return 0
+
+    async with _make_client(args) as client:
+        summary = await client.run_task(
+            task_dict, backend=args.backend, run_name=args.run_name,
+        )
+
+    if args.json:
+        print(json.dumps(summary, indent=2))
+        return 0
+    print(
+        f"Run {summary['id']} submitted to {args.backend} "
+        f"(task '{task_dict['id']}')."
+    )
+    print(f"  scripthut run view {summary['id']}")
+    return 0
 
 
 async def _cmd_stack_list(args: argparse.Namespace) -> int:
@@ -1085,6 +1208,73 @@ def build_parser() -> argparse.ArgumentParser:
     p_be_list.add_argument("--json", action="store_true")
     _add_common(p_be_list)
     p_be_list.set_defaults(handler=_cmd_backend_list)
+
+    # ----- task -------------------------------------------------------------
+    p_tk = sub.add_parser(
+        "task",
+        help="Submit one-off ad-hoc tasks (no workflow / git repo needed)",
+    )
+    tk_sub = p_tk.add_subparsers(dest="task_cmd", required=True)
+
+    p_tk_run = tk_sub.add_parser(
+        "run",
+        help="Submit a single task described inline (great for coding agents)",
+    )
+    p_tk_run.add_argument(
+        "command", nargs="?",
+        help="Bash command to run. Omit when using --from-stdin or --from-file.",
+    )
+    p_tk_run.add_argument(
+        "--backend", required=True,
+        help="Backend to submit to (must be configured)",
+    )
+    p_tk_run.add_argument(
+        "--name", default=None,
+        help="Human-readable label (default: derived from --id)",
+    )
+    p_tk_run.add_argument(
+        "--id", dest="id", default=None,
+        help="Task id (default: 'adhoc-<8-char-hash>')",
+    )
+    p_tk_run.add_argument(
+        "--run-name", default=None,
+        help="Override the synthetic '_adhoc/<id>' workflow label",
+    )
+    p_tk_run.add_argument("--cpus", type=int, default=None)
+    p_tk_run.add_argument("--memory", default=None, help="e.g. '4G'")
+    p_tk_run.add_argument(
+        "--time", dest="time_limit", default=None,
+        help="Wall-clock limit, e.g. '1:00:00'",
+    )
+    p_tk_run.add_argument("--partition", default=None)
+    p_tk_run.add_argument(
+        "--gres", default=None,
+        help="Slurm-style generic resources, e.g. 'gpu:1'",
+    )
+    p_tk_run.add_argument("--working-dir", dest="working_dir", default=None)
+    p_tk_run.add_argument(
+        "--image", default=None,
+        help="Container image (AWS Batch / EC2 backends)",
+    )
+    p_tk_run.add_argument(
+        "--env", action="append", default=[],
+        help="KEY=VALUE env var (repeatable)",
+    )
+    p_tk_run.add_argument(
+        "--from-stdin", action="store_true",
+        help="Read a TaskDefinition JSON body from stdin (other flags override)",
+    )
+    p_tk_run.add_argument(
+        "--from-file", default=None,
+        help="Read a TaskDefinition JSON body from this file (other flags override)",
+    )
+    p_tk_run.add_argument(
+        "--dry-run", action="store_true",
+        help="Print the assembled task + backend as JSON without submitting",
+    )
+    p_tk_run.add_argument("--json", action="store_true")
+    _add_common(p_tk_run)
+    p_tk_run.set_defaults(handler=_cmd_task_run)
 
     # ----- stack ------------------------------------------------------------
     p_st = sub.add_parser("stack", help="Manage reusable software stacks")

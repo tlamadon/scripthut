@@ -727,6 +727,42 @@ class RunManager:
 
         return run
 
+    async def create_adhoc_run(
+        self,
+        task: TaskDefinition,
+        backend_name: str,
+        *,
+        run_name: str | None = None,
+    ) -> Run:
+        """Create a one-task run from an inline ``TaskDefinition``.
+
+        Unlike :meth:`create_run`, this skips the workflow lookup and
+        task-generator round-trip — useful for ad-hoc CLI submissions
+        and coding agents that synthesize a TaskDefinition directly.
+
+        ``run_name`` becomes the run's ``workflow_name``; if omitted, a
+        synthetic ``_adhoc/<task_id>`` label is used so the run can be
+        located later via :meth:`get_workflow`-style queries returning
+        ``None`` (the run still appears in `run list` and on the
+        dashboard, just without a configured workflow behind it).
+
+        Raises ``ValueError`` if the backend isn't in the config or
+        doesn't have an available driver.
+        """
+        if self.config.get_backend(backend_name) is None:
+            raise ValueError(f"Backend '{backend_name}' not found in config")
+
+        ssh_client = self.get_ssh_client(backend_name)
+        job_backend = self.get_job_backend(backend_name)
+        if ssh_client is None and job_backend is None:
+            raise ValueError(f"Backend '{backend_name}' is not available")
+
+        workflow_name = run_name or f"_adhoc/{task.id}"
+        return await self._build_run(
+            [task], workflow_name, backend_name, max_concurrent=None,
+            ssh_client=ssh_client,
+        )
+
     async def create_run(
         self, workflow_name: str, *, backend: str | None = None,
     ) -> Run:

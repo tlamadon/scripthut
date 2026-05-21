@@ -1,6 +1,6 @@
 # CLI
 
-ScriptHut ships a `gh`-style CLI for triggering workflows, managing stacks, inspecting runs, and tailing logs without opening the web UI. The single binary is the same `scripthut` entry point that runs the server — when called with a subcommand (`workflow`, `run`, `backend`, `project`, `stack`) it dispatches to the CLI instead.
+ScriptHut ships a `gh`-style CLI for triggering workflows, managing stacks, firing one-off tasks, inspecting runs, and tailing logs without opening the web UI. The single binary is the same `scripthut` entry point that runs the server — when called with a subcommand (`workflow`, `run`, `backend`, `project`, `stack`, `task`) it dispatches to the CLI instead.
 
 ```bash
 scripthut workflow list          # CLI
@@ -91,6 +91,101 @@ scripthut backend list                        # connection status, max_concurren
 ```
 
 Useful when a workflow hangs at submission to confirm the right backend is actually reachable.
+
+## `task` — submit ad-hoc tasks
+
+Sometimes you don't want to commit a task definition to a git repo or wire a workflow generator — you just want to fire a single command at a configured backend. `task run` is the shortest path to that, and is the entry point that's friendliest for coding agents.
+
+```bash
+# Simplest form: a one-line command on a configured backend.
+scripthut task run "python train.py" --backend mercury-nb
+
+# With explicit resource shape.
+scripthut task run "python train.py" \
+  --backend mercury-nb \
+  --cpus 8 --memory 32G --time 4:00:00 \
+  --partition gpu --gres gpu:1 \
+  --working-dir /scratch/me/repo \
+  --env CUDA_VISIBLE_DEVICES=0 --env WANDB_PROJECT=demo
+
+# Feed a full TaskDefinition JSON via stdin — handy for agents.
+echo '{
+  "id": "exp-42",
+  "name": "exp 42",
+  "command": "python train.py --lr 1e-3",
+  "cpus": 8,
+  "partition": "gpu",
+  "gres": "gpu:1"
+}' | scripthut task run --from-stdin --backend mercury-nb --json
+
+# Or from a JSON file (CLI flags still override individual fields).
+scripthut task run --from-file experiment.json --backend mercury-nb --cpus 16
+
+# Verify the assembled task body without submitting.
+scripthut task run "echo hi" --backend mercury-nb --dry-run
+```
+
+### What it does
+
+`task run` builds a single `TaskDefinition` (the same shape used by workflow generators) and submits it as a one-item run. The run shows up in the dashboard and in `scripthut run list` like any other; behind the scenes its `workflow_name` is `_adhoc/<task-id>` (override with `--run-name <label>` if you want something more memorable).
+
+| Source | When it's used |
+|--------|----------------|
+| `command` (positional) | Bare-bones: just the bash. |
+| `--from-stdin` | Pipe a full TaskDefinition JSON. Useful for agents that already construct the payload programmatically. |
+| `--from-file <path>` | Same JSON shape, from a file. CLI flags layered on top still override individual fields. |
+
+`--dry-run` prints the assembled `{"task": ..., "backend": ...}` and exits without touching any backend — let an agent verify the payload before committing.
+
+### Default id and name
+
+If you don't pass `--id`, the task gets `adhoc-<8-hex-chars>` derived from the command and a nanosecond timestamp. Two consecutive runs with the same command get different ids, so they don't collide on disk. `--name` defaults to whatever `--id` resolves to.
+
+### Output
+
+Without `--json`, prints a single human-readable line and the command to inspect the run:
+
+```
+Run a1b2c3d4 submitted to mercury-nb (task 'adhoc-1f2e3d4a').
+  scripthut run view a1b2c3d4
+```
+
+With `--json`, prints the full run summary:
+
+```json
+{
+  "id": "a1b2c3d4",
+  "workflow_name": "_adhoc/adhoc-1f2e3d4a",
+  "backend_name": "mercury-nb",
+  "task_count": 1,
+  "submitted_count": 1,
+  "status_counts": {"submitted": 1},
+  ...
+}
+```
+
+The shape matches `workflow run --json`, so an agent can pipe straight into `scripthut run watch "$ID"` or other automation built around that contract.
+
+### Use with stacks
+
+Tasks that need a particular runtime should be paired with a [stack](configuration/stacks.md):
+
+```bash
+scripthut stack install julia-1.11 --backend mercury-nb
+scripthut task run "julia --project=. scripts/run.jl" \
+  --backend mercury-nb \
+  --working-dir /home/me/balke-jmp \
+  --cpus 16 --memory 64G
+```
+
+Stacks are installed once; ad-hoc tasks reference them via their resolved `STACK_DIR` in the command or working directory.
+
+### Notes for coding agents
+
+- The CLI is the supported entry point — there's no separate "agent API." The `--json` flag plus stable exit codes (`0` submitted, `1` error) are the contract.
+- `--dry-run` is a good safety check before submission; pair it with `scripthut backend list` to verify the target backend is reachable.
+- The HTTP form is `POST /api/v1/tasks/run` with a body of `{"task": {...}, "backend": "...", "run_name": "..."}` — use it directly if you're talking to a running scripthut server (set `SCRIPTHUT_SERVER` and the CLI picks remote mode automatically).
+- Tasks submitted this way still respect the layered config — `working_dir` resolution, env rules, partition mapping, and account selection from `scripthut.yaml` all apply.
 
 ## `stack` — manage reusable software stacks
 

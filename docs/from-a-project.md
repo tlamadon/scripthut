@@ -181,6 +181,19 @@ scripthut backend list      # but your backends still are
 
 If you forget to `cd` into the project before running a CLI command, ScriptHut quietly uses just the global config — no error, no surprise. You'll see "stack 'julia' not found" and the missing context becomes obvious.
 
+### Ad-hoc tasks
+
+You don't have to wire a workflow into the project's `scripthut.yaml` to send work to a backend. From inside the project, [`scripthut task run`](cli.md) submits a single inline task — pair it with a stack and the project's working directory and you have a one-liner that's especially handy for coding agents and quick experiments:
+
+```bash
+scripthut task run "julia --project=. scripts/sweep.jl --n 100" \
+  --backend mercury-nb \
+  --working-dir /home/me/balke-jmp \
+  --cpus 16 --memory 64G --time 2:00:00
+```
+
+The submission goes through the same env / partition-map / account resolution as a workflow run; the only difference is that there's no JSON generator step.
+
 ---
 
 ## Where files are resolved from

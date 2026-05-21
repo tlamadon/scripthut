@@ -230,6 +230,40 @@ def make_api_router(state: AppState) -> APIRouter:
         state.notify_poll()
         return _run_summary(run)
 
+    @router.post("/tasks/run")
+    async def run_adhoc_task(payload: dict) -> dict[str, Any]:
+        """Submit a single ad-hoc task as a one-item run.
+
+        ``payload`` must contain a ``task`` object matching the
+        TaskDefinition JSON shape (id, name, command, plus any optional
+        fields) and a ``backend`` name. Optional ``run_name`` overrides
+        the synthetic ``_adhoc/<id>`` label used otherwise.
+        """
+        from scripthut.runs.models import TaskDefinition
+
+        rm = _require_manager()
+        task_dict = payload.get("task")
+        backend = payload.get("backend")
+        run_name = payload.get("run_name")
+        if not isinstance(task_dict, dict) or not backend:
+            raise HTTPException(
+                status_code=422,
+                detail="payload must contain 'task' (dict) and 'backend' (str)",
+            )
+        try:
+            task = TaskDefinition.from_dict(task_dict)
+        except (KeyError, ValueError) as e:
+            raise HTTPException(status_code=422, detail=f"invalid task: {e}")
+        try:
+            run = await rm.create_adhoc_run(task, backend, run_name=run_name)
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+        except Exception as e:
+            logger.error(f"Failed to create adhoc run: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+        state.notify_poll()
+        return _run_summary(run)
+
     @router.get("/workflows/{name}/dry-run")
     async def dry_run_workflow(name: str, backend: str | None = None) -> dict[str, Any]:
         rm = _require_manager()
