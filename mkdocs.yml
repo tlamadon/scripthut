@@ -57,11 +57,13 @@ extra:
 nav:
   - Home: index.md
   - Installation: installation.md
+  - From a project: from-a-project.md
   - Configuration:
       - Overview: configuration/index.md
       - Backends: configuration/backends.md
       - Workflows: configuration/workflows.md
       - Environments: configuration/environments.md
+      - Stacks: configuration/stacks.md
   - Task JSON:
       - Overview: task-json/index.md
       - Environment Variables: task-json/environments.md

@@ -1,6 +1,6 @@
 # YAML Configuration
 
-ScriptHut is configured via a `scripthut.yaml` file. By default, the application looks for this file in the current working directory. You can also specify a custom path when starting the server.
+ScriptHut is configured via one or two `scripthut.yaml` files. The simplest setup is a single file in the current directory; the recommended setup for day-to-day use is **two layers**: a user-global file for your infrastructure and a project-local file for each repo's workflows and stacks. See [From a project](../from-a-project.md) for the layered model end-to-end.
 
 The configuration file has the following top-level sections:
 
@@ -9,6 +9,7 @@ backends: [...]       # Remote compute backends (Slurm, PBS, AWS Batch, AWS EC2)
 sources: [...]        # Git repository sources
 workflows: [...]      # Task generators (SSH commands returning JSON)
 projects: [...]       # Git projects with sflow.json files
+stacks: [...]         # Reusable software environments installed once per backend
 env: [...]            # Server-level env rules (see Environments)
 env_groups: {...}     # Named, reusable rule lists
 pricing: {...}        # EC2-equivalent cost estimation
@@ -24,18 +25,25 @@ This page covers the small top-level concerns — file lookup, pricing, settings
 - [Backends](backends.md) — Slurm, PBS, AWS Batch, AWS EC2, SSH config
 - [Workflows](workflows.md) — workflows (incl. git), sources, projects
 - [Environments](environments.md) — the env-rule resolver and `env_groups`
+- [Stacks](stacks.md) — reusable software environments (Python/Julia/Conda…)
 
 ---
 
 ## Configuration File Lookup
 
-ScriptHut searches for configuration in the following order:
+ScriptHut supports a layered model: a user-global file for infrastructure and an optional project-local file at the repo root. Both are optional; if only one exists, behavior matches the single-file setup.
 
-1. Explicit path passed via command-line argument
-2. `./scripthut.yaml` in the current directory
-3. `./scripthut.yml` in the current directory
+Resolution order:
 
-All path fields (e.g., `key_path`, `data_dir`, `deploy_key`) support `~` expansion to the user's home directory.
+1. **Explicit path** via `--config <path>` — loads exactly that file with no merging.
+2. **User-global config** at `~/.config/scripthut/scripthut.yaml` (or the legacy `~/.scripthut.yaml`).
+3. **Project-local config** found by walking up from the current working directory until a `scripthut.yaml` (or `.yml`) is hit.
+4. **Merge** when both 2 and 3 exist: project-local overrides global by name in `stacks` / `workflows` / `projects`, env lists concatenate (global first), and `env_groups` dict-merge. Infrastructure fields (`backends`, `sources`, `settings`, `pricing`) come strictly from the global file and are **rejected** in a project-local file.
+5. **Legacy `.env`** fallback if no YAML is found anywhere (deprecated).
+
+All path fields (e.g., `key_path`, `data_dir`, `deploy_key`, `input_files`) support `~` expansion. Relative paths inside a YAML are resolved against **that file's directory**, not the process CWD — so a project-local `input_files: [requirements.txt]` always refers to the project's `requirements.txt`, regardless of where the CLI was invoked from.
+
+See [From a project](../from-a-project.md) for a full walkthrough of how the two layers compose in practice.
 
 ---
 

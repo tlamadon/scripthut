@@ -1,11 +1,13 @@
 # CLI
 
-ScriptHut ships a `gh`-style CLI for triggering workflows, inspecting runs, and tailing logs without opening the web UI. The single binary is the same `scripthut` entry point that runs the server — when called with a subcommand (`workflow`, `run`, `backend`, `project`) it dispatches to the CLI instead.
+ScriptHut ships a `gh`-style CLI for triggering workflows, managing stacks, inspecting runs, and tailing logs without opening the web UI. The single binary is the same `scripthut` entry point that runs the server — when called with a subcommand (`workflow`, `run`, `backend`, `project`, `stack`) it dispatches to the CLI instead.
 
 ```bash
 scripthut workflow list          # CLI
 scripthut --port 8000            # server (no subcommand)
 ```
+
+The CLI is designed to feel native from inside a project directory: it walks up from the current working directory looking for a `scripthut.yaml`, merges it with your user-global config (`~/.config/scripthut/scripthut.yaml`), and gives every subcommand the right context automatically. See [From a project](from-a-project.md) for the full layered-config model and a worked example.
 
 ## Transports — local vs remote
 
@@ -37,8 +39,17 @@ Every subcommand accepts these:
 | Flag | Description |
 |------|-------------|
 | `--server <url>` | Server URL to target. Pass `local` to force local mode. |
-| `--config <path>`, `-c <path>` | Path to `scripthut.yaml`. Used in local mode and to look up `cli_server`. |
+| `--config <path>`, `-c <path>` | Path to `scripthut.yaml`. Loads **exactly that file** and skips the layered discovery. Useful in tests and one-off scripts. |
 | `--json` | Print machine-readable JSON instead of a formatted table (where supported). |
+
+### Config discovery (without `--config`)
+
+When you don't pass `--config`, the CLI loads up to two files and merges them:
+
+1. **User-global**: `~/.config/scripthut/scripthut.yaml` (or `~/.scripthut.yaml`).
+2. **Project-local**: the first `scripthut.yaml` found by walking up from `$PWD`.
+
+Project-local files may **only** define `stacks`, `workflows`, `projects`, `env`, `env_groups`. Infrastructure fields (`backends`, `sources`, `settings`, `pricing`) come from the global file and are rejected in a project-local file with a clear error. Full details and examples in [From a project](from-a-project.md).
 
 ## `workflow` — manage workflows
 
@@ -80,6 +91,32 @@ scripthut backend list                        # connection status, max_concurren
 ```
 
 Useful when a workflow hangs at submission to confirm the right backend is actually reachable.
+
+## `stack` — manage reusable software stacks
+
+A stack is a software environment (Python venv, Julia depot, Conda env, …) ScriptHut installs once per backend and reuses across runs. The CLI is the lifecycle interface — see [Stacks](configuration/stacks.md) for the model and YAML schema.
+
+```bash
+scripthut stack list                                  # configured stacks (no SSH)
+scripthut stack check [<name>] [--backend X]          # per-backend state table
+scripthut stack install <name> [--backend X] [--rebuild]
+scripthut stack delete <name> [--backend X]
+```
+
+Each command opens an SSH connection per (stack × selected backend). Without `--backend`, the command iterates every backend the stack declares (or every SSH-capable backend if the stack's `backends:` list is empty). Non-SSH backends (Batch, EC2) are silently skipped for now.
+
+- `check` exits non-zero if any stack on any selected backend is not `ready` — handy as a CI gate before submitting work.
+- `install` is idempotent: a no-op when the stack is already ready at the current hash. `--rebuild` forces a fresh build even when the hash matches.
+- `delete` removes the entire `<cache_dir>/<name>/` directory on the backend (every hash, not just the current one). A subsequent `install` rebuilds from scratch.
+
+Example session from inside a project:
+
+```bash
+cd ~/git/my-project
+scripthut stack check julia-1.11        # is it built on every backend?
+scripthut stack install julia-1.11      # build any that aren't
+scripthut workflow run grid-search      # submit work that relies on the stack
+```
 
 ## `project` — inspect git projects
 
