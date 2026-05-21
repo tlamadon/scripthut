@@ -604,6 +604,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Typical session">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#ad-hoc-tasks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Ad-hoc tasks
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -1140,6 +1157,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Typical session">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#ad-hoc-tasks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Ad-hoc tasks
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -1385,6 +1419,14 @@
 <a id="__codelineno-4-22" name="__codelineno-4-22" href="#__codelineno-4-22"></a>scripthut<span class="w"> </span>backend<span class="w"> </span>list<span class="w">      </span><span class="c1"># but your backends still are</span>
 </code></pre></div>
 <p>If you forget to <code>cd</code> into the project before running a CLI command, ScriptHut quietly uses just the global config — no error, no surprise. You'll see "stack 'julia' not found" and the missing context becomes obvious.</p>
+<h3 id="ad-hoc-tasks">Ad-hoc tasks<a class="headerlink" href="#ad-hoc-tasks" title="Permanent link">&para;</a></h3>
+<p>You don't have to wire a workflow into the project's <code>scripthut.yaml</code> to send work to a backend. From inside the project, <a href="../cli/"><code>scripthut task run</code></a> submits a single inline task — pair it with a stack and the project's working directory and you have a one-liner that's especially handy for coding agents and quick experiments:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>scripthut<span class="w"> </span>task<span class="w"> </span>run<span class="w"> </span><span class="s2">&quot;julia --project=. scripts/sweep.jl --n 100&quot;</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">  </span>--backend<span class="w"> </span>mercury-nb<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="w">  </span>--working-dir<span class="w"> </span>/home/me/balke-jmp<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="w">  </span>--cpus<span class="w"> </span><span class="m">16</span><span class="w"> </span>--memory<span class="w"> </span>64G<span class="w"> </span>--time<span class="w"> </span><span class="m">2</span>:00:00
+</code></pre></div>
+<p>The submission goes through the same env / partition-map / account resolution as a workflow run; the only difference is that there's no JSON generator step.</p>
 <hr />
 <h2 id="where-files-are-resolved-from">Where files are resolved from<a class="headerlink" href="#where-files-are-resolved-from" title="Permanent link">&para;</a></h2>
 <p><code>Stack.input_files</code> (and any other path field in a YAML) is resolved <strong>relative to the directory of the file that declared it</strong>, not the process CWD. That means <code>input_files: [requirements.txt]</code> in a project-local config always refers to the project's <code>requirements.txt</code>, no matter where you invoke the CLI from. Absolute paths and <code>~</code>-prefixed paths pass through unchanged.</p>
