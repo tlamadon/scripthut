@@ -10,13 +10,13 @@
       
       
       
-        <link rel="canonical" href="https://tlamadon.github.io/scripthut/dev/configuration/workflows/">
+        <link rel="canonical" href="https://tlamadon.github.io/scripthut/dev/configuration/stacks/">
       
       
-        <link rel="prev" href="../backends/">
+        <link rel="prev" href="../environments/">
       
       
-        <link rel="next" href="../environments/">
+        <link rel="next" href="../../task-json/">
       
       
         
@@ -27,7 +27,7 @@
     
     
       
-        <title>Workflows - ScriptHut</title>
+        <title>Stacks - ScriptHut</title>
       
     
     
@@ -78,7 +78,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#workflows-sources-and-projects" class="md-skip">
+        <a href="#stacks" class="md-skip">
           Skip to content
         </a>
       
@@ -116,7 +116,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Workflows
+              Stacks
             
           </span>
         </div>
@@ -584,37 +584,10 @@
                 
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Workflows
-  
-
-    
-  </span>
-  
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href="../workflows/" class="md-nav__link">
         
   
   
@@ -630,115 +603,6 @@
   
 
       </a>
-      
-        
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#workflows" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Workflows
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Workflows">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#basic-workflow" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Basic Workflow
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#git-workflows" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Git Workflows
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#sources" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Sources
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Sources">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#git-source" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Git Source
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#path-source" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Path Source
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#projects" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Projects
-      
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
     </li>
   
 
@@ -776,10 +640,37 @@
                 
   
   
+    
   
   
-    <li class="md-nav__item">
-      <a href="../stacks/" class="md-nav__link">
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Stacks
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
         
   
   
@@ -795,6 +686,187 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#when-to-use-one" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        When to use one
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#defining-a-stack" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Defining a stack
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Defining a stack">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#fields" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fields
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#lifecycle" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Lifecycle
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Lifecycle">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#states" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        States
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cli" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CLI
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="CLI">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#list" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        list
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#check" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        check
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#install" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        install
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#delete" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        delete
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#hashing-in-detail" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Hashing in detail
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#tying-stacks-to-tasks-future" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Tying stacks to tasks (future)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#whats-not-supported-yet" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What's not supported yet
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
     </li>
   
 
@@ -1004,33 +1076,33 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#workflows" class="md-nav__link">
+  <a href="#when-to-use-one" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Workflows
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Workflows">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#basic-workflow" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Basic Workflow
+        When to use one
       
     </span>
   </a>
   
 </li>
-        
-          <li class="md-nav__item">
-  <a href="#git-workflows" class="md-nav__link">
+      
+        <li class="md-nav__item">
+  <a href="#defining-a-stack" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Git Workflows
+        Defining a stack
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Defining a stack">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#fields" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fields
       
     </span>
   </a>
@@ -1043,33 +1115,22 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#sources" class="md-nav__link">
+  <a href="#lifecycle" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Sources
+        Lifecycle
       
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Sources">
+    <nav class="md-nav" aria-label="Lifecycle">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#git-source" class="md-nav__link">
+  <a href="#states" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Git Source
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#path-source" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Path Source
+        States
       
     </span>
   </a>
@@ -1082,10 +1143,93 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#projects" class="md-nav__link">
+  <a href="#cli" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Projects
+        CLI
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="CLI">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#list" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        list
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#check" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        check
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#install" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        install
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#delete" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        delete
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#hashing-in-detail" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Hashing in detail
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#tying-stacks-to-tasks-future" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Tying stacks to tasks (future)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#whats-not-supported-yet" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What's not supported yet
       
     </span>
   </a>
@@ -1112,25 +1256,40 @@
   
 
 
-<h1 id="workflows-sources-and-projects">Workflows, Sources, and Projects<a class="headerlink" href="#workflows-sources-and-projects" title="Permanent link">&para;</a></h1>
-<p>These three sections of <code>scripthut.yaml</code> all configure <em>task generators</em> — different mechanisms for telling ScriptHut "here's a way to get a list of tasks to run".</p>
-<ul>
-<li><strong>Workflows</strong> — a fixed SSH command (optionally inside a cloned git repo) that prints task JSON</li>
-<li><strong>Sources</strong> — a git repo or backend filesystem path containing one or more workflow JSON files, discovered via glob</li>
-<li><strong>Projects</strong> — a git repo on the backend with <code>sflow.json</code> files in it</li>
-</ul>
-<p>See <a href="../../task-json/">Task JSON Format</a> for the JSON shape every generator must emit.</p>
+<h1 id="stacks">Stacks<a class="headerlink" href="#stacks" title="Permanent link">&para;</a></h1>
+<p>A <strong>stack</strong> is a reusable software environment (Python venv, Julia depot, Conda env, …) installed once on a backend and reused across many task runs. ScriptHut handles the bookkeeping: detecting when the stack needs to rebuild, where to put it on each backend, and how to expose it to tasks.</p>
+<p>You write the install script. ScriptHut hashes its inputs, caches the result, and runs the script again only when something changes.</p>
 <hr />
-<h2 id="workflows">Workflows<a class="headerlink" href="#workflows" title="Permanent link">&para;</a></h2>
-<p>Workflows are the primary mechanism for submitting batch jobs. A workflow defines an SSH command that runs on a backend and returns a JSON list of tasks.</p>
-<h3 id="basic-workflow">Basic Workflow<a class="headerlink" href="#basic-workflow" title="Permanent link">&para;</a></h3>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nt">workflows</span><span class="p">:</span>
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ml-training</span>
-<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">    </span><span class="nt">backend</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">hpc-cluster</span>
-<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">    </span><span class="nt">command</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;python</span><span class="nv"> </span><span class="s">/shared/scripts/get_training_tasks.py&quot;</span>
-<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="w">    </span><span class="nt">max_concurrent</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">5</span>
-<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="w">    </span><span class="nt">description</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;ML</span><span class="nv"> </span><span class="s">model</span><span class="nv"> </span><span class="s">training</span><span class="nv"> </span><span class="s">pipeline&quot;</span>
+<h2 id="when-to-use-one">When to use one<a class="headerlink" href="#when-to-use-one" title="Permanent link">&para;</a></h2>
+<p>You probably want a stack when:</p>
+<ul>
+<li>A task's first step is "set up the runtime" (<code>pip install -r requirements.txt</code>, <code>julia --project=. -e 'Pkg.instantiate()'</code>, <code>conda env create -f env.yml</code>).</li>
+<li>The same runtime is needed by many tasks (a parameter sweep, a multi-step pipeline).</li>
+<li>You want collaborators to get the same environment without coordinating manual setup.</li>
+</ul>
+<p>You don't need one if the task's runtime is already pre-built (a container image with everything baked in, or modules pre-installed on the cluster).</p>
+<hr />
+<h2 id="defining-a-stack">Defining a stack<a class="headerlink" href="#defining-a-stack" title="Permanent link">&para;</a></h2>
+<p>Stacks live under the top-level <code>stacks:</code> section of <code>scripthut.yaml</code>. They can be defined globally or in a project-local config (see <a href="../../from-a-project/">From a project</a>).</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nt">stacks</span><span class="p">:</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">julia-1.11</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">    </span><span class="nt">backends</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">mercury-nb</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">pythia-nb</span><span class="p p-Indicator">]</span><span class="w">   </span><span class="c1"># empty = every SSH backend</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">    </span><span class="nt">cache_dir</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">/scratch/me/stacks</span><span class="w">       </span><span class="c1"># parent dir on the backend</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="w">    </span><span class="nt">inputs</span><span class="p">:</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="w">      </span><span class="nt">julia_version</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;1.11.3&quot;</span><span class="w">           </span><span class="c1"># literal values; any change forces rebuild</span>
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="w">    </span><span class="nt">input_files</span><span class="p">:</span>
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Manifest.toml</span><span class="w">                   </span><span class="c1"># contents hashed; resolved relative to this yaml</span>
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Project.toml</span>
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="w">    </span><span class="nt">prep</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">|</span>
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="w">      </span><span class="no">module load julia/1.11.3</span>
+<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="w">      </span><span class="no">mkdir -p ${STACK_DIR}/depot</span>
+<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="w">      </span><span class="no">JULIA_DEPOT_PATH=&quot;${STACK_DIR}/depot:&quot; \</span>
+<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a><span class="w">        </span><span class="no">julia --project=. -e &#39;using Pkg; Pkg.instantiate()&#39;</span>
+<a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a><span class="w">    </span><span class="nt">init</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">|</span>
+<a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a><span class="w">      </span><span class="no">module load julia/1.11.3</span>
+<a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a><span class="w">      </span><span class="no">export JULIA_DEPOT_PATH=&quot;${STACK_DIR}/depot:&quot;</span>
 </code></pre></div>
+<h3 id="fields">Fields<a class="headerlink" href="#fields" title="Permanent link">&para;</a></h3>
 <table>
 <thead>
 <tr>
@@ -1144,302 +1303,148 @@
 <tr>
 <td><code>name</code></td>
 <td>string</td>
-<td><strong>required</strong></td>
-<td>Unique identifier for this workflow. Shown in the UI.</td>
+<td>required</td>
+<td>Identifier referenced by CLI commands.</td>
 </tr>
 <tr>
-<td><code>backend</code></td>
+<td><code>backends</code></td>
+<td>list of strings</td>
+<td><code>[]</code> (all SSH backends)</td>
+<td>Which backends this stack is available on. Non-SSH backends (Batch, EC2) are skipped silently for now.</td>
+</tr>
+<tr>
+<td><code>cache_dir</code></td>
 <td>string</td>
-<td><strong>required</strong></td>
-<td>Name of a backend defined in the <code>backends</code> section.</td>
+<td><code>~/.cache/scripthut/stacks</code></td>
+<td>Parent directory on the backend. <code>~</code> is expanded <strong>remotely</strong>, so it refers to the backend user's <code>$HOME</code>.</td>
 </tr>
 <tr>
-<td><code>command</code></td>
-<td>string</td>
-<td><strong>required</strong></td>
-<td>Shell command executed via SSH that must print JSON to stdout.</td>
-</tr>
-<tr>
-<td><code>max_concurrent</code></td>
-<td>integer</td>
-<td><code>null</code></td>
-<td>Max concurrent tasks per run. If <code>null</code>, only the backend-level limit applies.</td>
-</tr>
-<tr>
-<td><code>description</code></td>
-<td>string</td>
-<td><code>""</code></td>
-<td>Human-readable description shown in the UI.</td>
-</tr>
-<tr>
-<td><code>git</code></td>
-<td>object</td>
-<td><code>null</code></td>
-<td>Optional git repository to clone on the backend before running the command.</td>
-</tr>
-<tr>
-<td><code>env</code></td>
-<td>list</td>
-<td><code>[]</code></td>
-<td>Workflow-level env rules applied to every task in the workflow. See <a href="../environments/">Environments</a>.</td>
-</tr>
-<tr>
-<td><code>env_groups</code></td>
-<td>object</td>
+<td><code>inputs</code></td>
+<td>dict</td>
 <td><code>{}</code></td>
-<td>Named, reusable env-rule lists local to this workflow (also visible to its tasks).</td>
-</tr>
-</tbody>
-</table>
-<h3 id="git-workflows">Git Workflows<a class="headerlink" href="#git-workflows" title="Permanent link">&para;</a></h3>
-<p>Git workflows clone a repository on the remote backend before executing the command. The command runs inside the cloned directory. This is useful when your task generator script lives in a repository.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nt">workflows</span><span class="p">:</span>
-<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ml-training-git</span>
-<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">    </span><span class="nt">backend</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">hpc-cluster</span>
-<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">    </span><span class="nt">git</span><span class="p">:</span>
-<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="w">      </span><span class="nt">repo</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">git@github.com:your-org/ml-pipelines.git</span>
-<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="w">      </span><span class="nt">branch</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">main</span>
-<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="w">      </span><span class="nt">deploy_key</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">~/.ssh/ml-deploy-key</span>
-<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="w">      </span><span class="nt">clone_dir</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">~/scripthut-repos</span>
-<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="w">      </span><span class="nt">postclone</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;rm</span><span class="nv"> </span><span class="s">-rf</span><span class="nv"> </span><span class="s">large_files&quot;</span>
-<a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="w">    </span><span class="nt">command</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;python</span><span class="nv"> </span><span class="s">get_tasks.py&quot;</span>
-<a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="w">    </span><span class="nt">max_concurrent</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">5</span>
-<a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a><span class="w">    </span><span class="nt">description</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;ML</span><span class="nv"> </span><span class="s">training</span><span class="nv"> </span><span class="s">from</span><span class="nv"> </span><span class="s">git</span><span class="nv"> </span><span class="s">repo&quot;</span>
-</code></pre></div>
-<p><strong>Git Config Fields:</strong></p>
-<table>
-<thead>
-<tr>
-<th>Field</th>
-<th>Type</th>
-<th>Default</th>
-<th>Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>repo</code></td>
-<td>string</td>
-<td><strong>required</strong></td>
-<td>Git repository URL. SSH format recommended.</td>
+<td>Named literal values hashed into the stack identity. Use this for versions, flags, anything the install depends on that isn't a file.</td>
 </tr>
 <tr>
-<td><code>branch</code></td>
-<td>string</td>
-<td><code>"main"</code></td>
-<td>Branch to clone.</td>
+<td><code>input_files</code></td>
+<td>list of paths</td>
+<td><code>[]</code></td>
+<td>Local files whose <strong>contents</strong> are hashed in. Relative paths are resolved against the directory of the YAML that declared the stack.</td>
 </tr>
 <tr>
-<td><code>deploy_key</code></td>
-<td>path</td>
-<td><code>null</code></td>
-<td>Path to deploy key on the <strong>local</strong> machine. It is uploaded to the backend temporarily during the clone operation.</td>
-</tr>
-<tr>
-<td><code>clone_dir</code></td>
-<td>string</td>
-<td><code>"~/scripthut-repos"</code></td>
-<td>Parent directory on the backend. The repo is cloned into <code>&lt;clone_dir&gt;/&lt;commit_hash&gt;/</code>.</td>
-</tr>
-<tr>
-<td><code>postclone</code></td>
-<td>string</td>
-<td><code>null</code></td>
-<td>Shell command to run in the clone directory after cloning (e.g., to remove large files or install dependencies).</td>
-</tr>
-</tbody>
-</table>
-<p>When using a git workflow:</p>
-<ul>
-<li>The <code>command</code> runs with the clone directory as its working directory.</li>
-<li>Task <code>working_dir</code> values using <code>~</code> or relative paths are resolved relative to the clone directory.</li>
-<li>Git metadata is injected as environment variables into every task (see <a href="../environments/#scripthut_-runtime-seed">Environments → <code>SCRIPTHUT_*</code> runtime seed</a>).</li>
-</ul>
-<hr />
-<h2 id="sources">Sources<a class="headerlink" href="#sources" title="Permanent link">&para;</a></h2>
-<p>Sources are git repositories or backend filesystem paths containing workflow definitions. ScriptHut discovers workflow JSON files using the <code>workflows_glob</code> pattern (default: <code>.hut/workflows/*.json</code>). You can use glob wildcards like <code>**/*.hut.json</code> to match files recursively across any subdirectory. Each matched JSON file appears as a triggerable workflow on the Sources page.</p>
-<p>For <strong>git sources</strong>, the repository is cloned locally for workflow discovery, and also cloned on the backend when a workflow is triggered (tasks run inside the cloned directory, just like git-based workflows).</p>
-<p>For <strong>path sources</strong>, workflows are discovered via SSH on the backend, and tasks run with <code>working_dir</code> resolved relative to the source path.</p>
-<h3 id="git-source">Git Source<a class="headerlink" href="#git-source" title="Permanent link">&para;</a></h3>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="nt">sources</span><span class="p">:</span>
-<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ml-jobs</span>
-<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">git</span>
-<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">    </span><span class="nt">url</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">git@github.com:your-org/ml-pipelines.git</span>
-<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="w">    </span><span class="nt">branch</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">main</span>
-<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="w">    </span><span class="nt">deploy_key</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">~/.ssh/ml-jobs-deploy-key</span>
-<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="w">    </span><span class="nt">backend</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">hpc-cluster</span>
-<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="w">    </span><span class="c1"># workflows_glob: &quot;**/*.hut.json&quot;  # default: .hut/workflows/*.json</span>
-<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="w">    </span><span class="c1"># clone_dir: ~/scripthut-repos     # default</span>
-<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="w">    </span><span class="c1"># postclone: &quot;rm -rf large_files&quot;  # optional</span>
-</code></pre></div>
-<table>
-<thead>
-<tr>
-<th>Field</th>
-<th>Type</th>
-<th>Default</th>
-<th>Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>name</code></td>
-<td>string</td>
-<td><strong>required</strong></td>
-<td>Unique identifier for this source.</td>
-</tr>
-<tr>
-<td><code>type</code></td>
-<td>string</td>
-<td><strong>required</strong></td>
-<td>Must be <code>"git"</code>.</td>
-</tr>
-<tr>
-<td><code>url</code></td>
-<td>string</td>
-<td><strong>required</strong></td>
-<td>Git repository URL. SSH format recommended.</td>
-</tr>
-<tr>
-<td><code>branch</code></td>
-<td>string</td>
-<td><code>"main"</code></td>
-<td>Branch to track.</td>
-</tr>
-<tr>
-<td><code>deploy_key</code></td>
-<td>path</td>
-<td><code>null</code></td>
-<td>Path to deploy key for this repository.</td>
-</tr>
-<tr>
-<td><code>backend</code></td>
-<td>string</td>
-<td><strong>required</strong></td>
-<td>Backend to submit discovered workflow tasks to.</td>
-</tr>
-<tr>
-<td><code>workflows_glob</code></td>
-<td>string</td>
-<td><code>".hut/workflows/*.json"</code></td>
-<td>Glob pattern to find workflow JSON files (supports <code>**</code> for recursive matching).</td>
-</tr>
-<tr>
-<td><code>clone_dir</code></td>
-<td>string</td>
-<td><code>"~/scripthut-repos"</code></td>
-<td>Parent directory on the backend. The repo is cloned into <code>&lt;clone_dir&gt;/&lt;commit_hash&gt;/</code>.</td>
-</tr>
-<tr>
-<td><code>postclone</code></td>
-<td>string</td>
-<td><code>null</code></td>
-<td>Shell command to run in the clone directory after cloning.</td>
-</tr>
-</tbody>
-</table>
-<h3 id="path-source">Path Source<a class="headerlink" href="#path-source" title="Permanent link">&para;</a></h3>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="nt">sources</span><span class="p">:</span>
-<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">shared-workflows</span>
-<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">path</span>
-<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="w">    </span><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">/shared/project-workflows</span>
-<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="w">    </span><span class="nt">backend</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">hpc-cluster</span>
-<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="w">    </span><span class="c1"># workflows_glob: &quot;**/*.hut.json&quot;  # default: .hut/workflows/*.json</span>
-</code></pre></div>
-<table>
-<thead>
-<tr>
-<th>Field</th>
-<th>Type</th>
-<th>Default</th>
-<th>Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>name</code></td>
-<td>string</td>
-<td><strong>required</strong></td>
-<td>Unique identifier for this source.</td>
-</tr>
-<tr>
-<td><code>type</code></td>
-<td>string</td>
-<td><strong>required</strong></td>
-<td>Must be <code>"path"</code>.</td>
-</tr>
-<tr>
-<td><code>path</code></td>
-<td>string</td>
-<td><strong>required</strong></td>
-<td>Directory on the backend filesystem.</td>
-</tr>
-<tr>
-<td><code>backend</code></td>
-<td>string</td>
-<td><strong>required</strong></td>
-<td>Backend where this path exists and where tasks are submitted.</td>
-</tr>
-<tr>
-<td><code>workflows_glob</code></td>
-<td>string</td>
-<td><code>".hut/workflows/*.json"</code></td>
-<td>Glob pattern to find workflow JSON files (supports <code>**</code> for recursive matching).</td>
-</tr>
-</tbody>
-</table>
-<hr />
-<h2 id="projects">Projects<a class="headerlink" href="#projects" title="Permanent link">&para;</a></h2>
-<p>Projects reference git repositories that already exist on the backend and contain <code>sflow.json</code> workflow definition files.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="nt">projects</span><span class="p">:</span>
-<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">my-project</span>
-<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">    </span><span class="nt">backend</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">hpc-cluster</span>
-<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="w">    </span><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">/home/user/my-project</span>
-<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="w">    </span><span class="nt">max_concurrent</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">10</span>
-<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="w">    </span><span class="nt">description</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;My</span><span class="nv"> </span><span class="s">research</span><span class="nv"> </span><span class="s">project&quot;</span>
-</code></pre></div>
-<table>
-<thead>
-<tr>
-<th>Field</th>
-<th>Type</th>
-<th>Default</th>
-<th>Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>name</code></td>
-<td>string</td>
-<td><strong>required</strong></td>
-<td>Unique identifier for this project.</td>
-</tr>
-<tr>
-<td><code>backend</code></td>
-<td>string</td>
-<td><strong>required</strong></td>
-<td>Name of the backend where the project lives.</td>
-</tr>
-<tr>
-<td><code>path</code></td>
-<td>string</td>
-<td><strong>required</strong></td>
-<td>Path to the git repository on the backend.</td>
-</tr>
-<tr>
-<td><code>max_concurrent</code></td>
-<td>integer</td>
-<td><code>null</code></td>
-<td>Default max concurrent tasks per run.</td>
-</tr>
-<tr>
-<td><code>description</code></td>
-<td>string</td>
+<td><code>prep</code></td>
+<td>string (bash)</td>
 <td><code>""</code></td>
-<td>Human-readable description.</td>
+<td>One-time install script. Runs with <code>STACK_DIR</code> set to the cache directory; <code>set -euo pipefail</code> is applied so any failure aborts.</td>
+</tr>
+<tr>
+<td><code>init</code></td>
+<td>string (bash)</td>
+<td><code>""</code></td>
+<td>Per-task env layer exported on every task that uses this stack. Same <code>${STACK_DIR}</code> is available.</td>
 </tr>
 </tbody>
 </table>
+<hr />
+<h2 id="lifecycle">Lifecycle<a class="headerlink" href="#lifecycle" title="Permanent link">&para;</a></h2>
+<p>A stack lives at <code>&lt;cache_dir&gt;/&lt;name&gt;/&lt;hash&gt;/</code> on the backend, where <code>&lt;hash&gt;</code> is a 12-character SHA-256 of <code>(name, prep, sorted inputs, input_files contents)</code>. A successful install leaves a <code>.ready</code> sentinel file inside; that's the marker ScriptHut uses to know it can skip the install.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>~/.cache/scripthut/stacks/julia-1.11/
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>├── 9b2f1c7d4ae3/      ← old build (different Manifest.toml)
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>└── e6a08f3b15c2/      ← current build
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>    ├── .ready          ← sentinel; only written on success
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>    └── depot/          ← whatever `prep` populated
+</code></pre></div>
+<p>When you change any input (literal value, file contents, prep script, or stack name), the hash changes, the old directory becomes "stale", and the next install builds into a new directory next to it. Old hash directories don't auto-evict — you remove them with <code>scripthut stack delete &lt;name&gt;</code> (which clears every hash for that stack at once).</p>
+<h3 id="states">States<a class="headerlink" href="#states" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>State</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>missing</code></td>
+<td>No directory at the current hash. Next install runs <code>prep</code> from scratch.</td>
+</tr>
+<tr>
+<td><code>installing</code></td>
+<td>The hash directory exists but no <code>.ready</code> sentinel — a previous <code>prep</code> started and didn't finish (most often because it failed). <code>scripthut stack install --rebuild</code> recovers.</td>
+</tr>
+<tr>
+<td><code>ready</code></td>
+<td>Directory + sentinel both present. Safe to reference from tasks.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="cli">CLI<a class="headerlink" href="#cli" title="Permanent link">&para;</a></h2>
+<p>All four commands compose with <code>--backend X</code> to scope to one backend; without it, they run against every backend the stack declares (or every SSH-based backend if the list is empty).</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>scripthut<span class="w"> </span>stack<span class="w"> </span>list<span class="w">                              </span><span class="c1"># configured stacks (no SSH)</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>scripthut<span class="w"> </span>stack<span class="w"> </span>check<span class="w"> </span><span class="o">[</span>&lt;name&gt;<span class="o">]</span><span class="w"> </span><span class="o">[</span>--backend<span class="w"> </span>X<span class="o">]</span><span class="w">      </span><span class="c1"># per-backend state table</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>scripthut<span class="w"> </span>stack<span class="w"> </span>install<span class="w"> </span>&lt;name&gt;<span class="w"> </span><span class="o">[</span>--backend<span class="w"> </span>X<span class="o">]</span><span class="w"> </span><span class="o">[</span>--rebuild<span class="o">]</span>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>scripthut<span class="w"> </span>stack<span class="w"> </span>delete<span class="w"> </span>&lt;name&gt;<span class="w"> </span><span class="o">[</span>--backend<span class="w"> </span>X<span class="o">]</span>
+</code></pre></div>
+<h3 id="list"><code>list</code><a class="headerlink" href="#list" title="Permanent link">&para;</a></h3>
+<p>Prints the configured stacks and their declared backends. Doesn't touch any backend — pure config view.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>NAME                 BACKENDS                       INPUTS
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>julia-1.11           mercury-nb,pythia-nb           julia_version=1.11.3
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>python-ml            (all SSH)                      python_version=3.12
+</code></pre></div>
+<h3 id="check"><code>check</code><a class="headerlink" href="#check" title="Permanent link">&para;</a></h3>
+<p>For each (stack × backend) pair, opens an SSH connection and probes for the cache directory and sentinel. Reports:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>STACK                BACKEND              STATE        HASH           BUILT        SIZE     NOTE
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>julia-1.11           mercury-nb           ready        e6a08f3b15c2   2d ago       1.4G
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>julia-1.11           pythia-nb            missing      e6a08f3b15c2   -            -
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>python-ml            mercury-nb           installing   1ad3f7c92e58   -            -        prep exit 1: ...
+</code></pre></div>
+<p><code>check</code> exits non-zero if any stack is missing or installing — handy as a CI gate before submitting work.</p>
+<h3 id="install"><code>install</code><a class="headerlink" href="#install" title="Permanent link">&para;</a></h3>
+<p>Idempotent: a no-op if the stack is already <code>ready</code> at the current hash. Otherwise:</p>
+<ol>
+<li>Wipes the hash directory if it's in <code>installing</code> state (or if <code>--rebuild</code> is passed).</li>
+<li>Creates the hash directory.</li>
+<li>Runs <code>prep</code> via <code>bash -s</code> with <code>STACK_DIR</code> exported and <code>set -euo pipefail</code> in effect.</li>
+<li>Writes <code>.ready</code> only if <code>prep</code> exits 0.</li>
+</ol>
+<p>Failed installs leave the directory in <code>installing</code> state so <code>check</code> reports it; recover with <code>install --rebuild</code>.</p>
+<h3 id="delete"><code>delete</code><a class="headerlink" href="#delete" title="Permanent link">&para;</a></h3>
+<p>Removes the <strong>whole <code>&lt;cache_dir&gt;/&lt;name&gt;/</code> directory</strong>, not just the current hash. Use this to free disk on a backend or to force a clean reinstall.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>scripthut<span class="w"> </span>stack<span class="w"> </span>delete<span class="w"> </span>julia-1.11<span class="w"> </span>--backend<span class="w"> </span>mercury-nb
+</code></pre></div>
+<hr />
+<h2 id="hashing-in-detail">Hashing in detail<a class="headerlink" href="#hashing-in-detail" title="Permanent link">&para;</a></h2>
+<p>The hash is computed from:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>name=&lt;stack name&gt;
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>prep=&lt;full prep script text&gt;
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>inputs=&lt;sorted key=value pairs&gt;
+<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>files=&lt;for each input_file: path + contents&gt;
+</code></pre></div>
+<p>A few corollaries that matter in practice:</p>
+<ul>
+<li><strong>Whitespace in <code>prep</code> matters.</strong> Reformatting the script changes the hash. Use comments to record intent rather than restructuring the script.</li>
+<li><strong>Sorting of <code>inputs</code> is stable.</strong> YAML dict order doesn't affect the hash; you can reorder freely.</li>
+<li><strong>Missing input files hash to <code>&lt;missing&gt;</code>.</strong> A typo in <code>input_files: [requirments.txt]</code> (sic) produces a stable but wrong hash; once you fix the typo, the hash changes and the stack reinstalls.</li>
+<li><strong>The hash is 12 hex chars (~48 bits of entropy)</strong> — plenty for cache distinctness on a single backend, but not a cryptographic guarantee.</li>
+</ul>
+<p>You can inspect the current hash for a stack without touching any backend by reading <code>scripthut stack check &lt;name&gt; --json</code>.</p>
+<hr />
+<h2 id="tying-stacks-to-tasks-future">Tying stacks to tasks (future)<a class="headerlink" href="#tying-stacks-to-tasks-future" title="Permanent link">&para;</a></h2>
+<p>Today the CLI verbs are the integration point: you <code>install</code> the stack manually before submitting work, and tasks reference its installed binaries via <code>${STACK_DIR}</code> or by re-<code>module load</code>ing the same modules in their own commands. A follow-up will let tasks declare <code>stack: julia-1.11</code> and have ScriptHut:</p>
+<ol>
+<li>Lazily install the stack on the target backend if it's not ready.</li>
+<li>Splice the stack's <code>init:</code> block into the task's resolved env (after backend env, before workflow env).</li>
+<li>Expose <code>STACK_DIR</code> to the task automatically.</li>
+</ol>
+<p>Until that lands, treat stacks as a managed cache you populate explicitly with <code>scripthut stack install</code>.</p>
+<hr />
+<h2 id="whats-not-supported-yet">What's not supported yet<a class="headerlink" href="#whats-not-supported-yet" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>EC2 / AWS Batch backends.</strong> Stacks are filesystem-based for v1; a Docker-image variant keyed on the same hash is planned for these backends but not implemented.</li>
+<li><strong>Lazy auto-install at submission.</strong> You currently install explicitly; the lazy path will come with task-stack binding.</li>
+<li><strong>Locks across concurrent installs.</strong> If two <code>scripthut stack install</code> invocations race on the same hash, they may both write into the same directory. Practically rare — for now, run one install at a time per backend.</li>
+<li><strong>Garbage-collecting old hashes.</strong> Only the current hash is kept fresh; old ones accumulate until you <code>delete</code>. A future GC command will prune everything except the current hash for each named stack.</li>
+</ul>
 
 
 
