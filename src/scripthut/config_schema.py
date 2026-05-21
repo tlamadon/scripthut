@@ -606,6 +606,59 @@ class GlobalSettings(BaseModel):
         return self.data_dir_resolved / "sources"
 
 
+class Stack(BaseModel):
+    """A reusable software environment installed once on a backend.
+
+    A stack is the user's own bash script (``prep``) plus a content-hashed
+    cache: scripthut runs ``prep`` once per (backend × hash), stores the
+    result under ``<cache_dir>/<name>/<hash>/``, and exports ``init`` on
+    every task that uses the stack. Inputs (``inputs`` literals + the
+    contents of ``input_files``) feed the hash so any meaningful change
+    forces a rebuild.
+    """
+
+    name: str = Field(description="Stack identifier referenced by tasks")
+    backends: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Backend names this stack is available on. Empty means every "
+            "SSH-based backend in the config."
+        ),
+    )
+    cache_dir: str = Field(
+        default="~/.cache/scripthut/stacks",
+        description="Parent directory on the backend (~ expanded remotely).",
+    )
+    inputs: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Named literal inputs hashed into the stack identity, e.g. "
+            "{python_version: '3.12'}. Any change forces a rebuild."
+        ),
+    )
+    input_files: list[Path] = Field(
+        default_factory=list,
+        description=(
+            "Local files whose contents are hashed into the identity "
+            "(e.g. requirements.txt, Manifest.toml)."
+        ),
+    )
+    prep: str = Field(
+        default="",
+        description=(
+            "Bash script run once per hash. Sees ``STACK_DIR`` (the cache "
+            "directory) and any env from the task that triggered install."
+        ),
+    )
+    init: str = Field(
+        default="",
+        description=(
+            "Bash text exported on every task that uses this stack. "
+            "``${STACK_DIR}`` is the resolved cache directory."
+        ),
+    )
+
+
 class ScriptHutConfig(BaseModel):
     """Root configuration model for scripthut.yaml."""
 
@@ -632,6 +685,10 @@ class ScriptHutConfig(BaseModel):
     env_groups: dict[str, list[EnvRule]] = Field(
         default_factory=dict,
         description="Named, reusable rule lists. Visible to server env: and to all workflows / tasks.",
+    )
+    stacks: list[Stack] = Field(
+        default_factory=list,
+        description="Reusable software stacks (Python venv, Julia depot, etc.) installed once per backend",
     )
     pricing: PricingConfig | None = Field(
         default=None,
@@ -668,6 +725,13 @@ class ScriptHutConfig(BaseModel):
         for project in self.projects:
             if project.name == name:
                 return project
+        return None
+
+    def get_stack(self, name: str) -> Stack | None:
+        """Get a stack by name."""
+        for stack in self.stacks:
+            if stack.name == name:
+                return stack
         return None
 
     @property

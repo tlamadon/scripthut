@@ -29,8 +29,11 @@ from typing import Any
 import httpx
 
 from scripthut.config import load_config
+from scripthut.config_schema import PBSBackendConfig, SlurmBackendConfig, Stack
 from scripthut.runs.models import Run, RunItemStatus, RunStatus
 from scripthut.runtime import Runtime, init_runtime, shutdown_runtime
+from scripthut.ssh.client import SSHClient
+from scripthut.stacks import StackManager, StackState, StackStatus
 
 logger = logging.getLogger(__name__)
 
@@ -467,6 +470,242 @@ def _make_client(args: argparse.Namespace) -> Any:
 
 
 # ---------------------------------------------------------------------------
+# `stack` subcommands
+# ---------------------------------------------------------------------------
+
+
+def _select_ssh_backends(
+    config, stack: Stack, backend_filter: str | None,
+) -> list[SlurmBackendConfig | PBSBackendConfig]:
+    """Pick which SSH-capable backends a stack operation should run against.
+
+    - If ``--backend`` is given, only that one (must exist and be SSH-based).
+    - Else if ``stack.backends`` lists names, those (each must be SSH-based).
+    - Else every Slurm/PBS backend in the config.
+    """
+    ssh_types = (SlurmBackendConfig, PBSBackendConfig)
+
+    if backend_filter:
+        b = config.get_backend(backend_filter)
+        if b is None:
+            raise RuntimeError(f"Backend '{backend_filter}' not found in config")
+        if not isinstance(b, ssh_types):
+            raise RuntimeError(
+                f"Backend '{backend_filter}' ({b.type}) doesn't support stacks "
+                f"(SSH-based only for now)"
+            )
+        return [b]
+
+    if stack.backends:
+        out = []
+        for name in stack.backends:
+            b = config.get_backend(name)
+            if b is None:
+                raise RuntimeError(
+                    f"Stack '{stack.name}' references backend '{name}', "
+                    f"which is not in the config"
+                )
+            if not isinstance(b, ssh_types):
+                # Silently skip non-SSH; surfacing this per-call would be noisy
+                continue
+            out.append(b)
+        return out
+
+    return [b for b in config.backends if isinstance(b, ssh_types)]
+
+
+def _ssh_client_for(backend_cfg: SlurmBackendConfig | PBSBackendConfig) -> SSHClient:
+    """Build an SSHClient from a backend's SSH config (CLI-only; no shared pool)."""
+    return SSHClient(
+        host=backend_cfg.ssh.host,
+        user=backend_cfg.ssh.user,
+        key_path=backend_cfg.ssh.key_path_resolved,
+        port=backend_cfg.ssh.port,
+        cert_path=backend_cfg.ssh.cert_path_resolved,
+        known_hosts=backend_cfg.ssh.known_hosts_resolved,
+    )
+
+
+def _format_size(n: int | None) -> str:
+    if n is None:
+        return "-"
+    size = float(n)
+    for unit in ("B", "K", "M", "G", "T"):
+        if size < 1024 or unit == "T":
+            return f"{size:.0f}{unit}" if unit == "B" else f"{size:.1f}{unit}"
+        size /= 1024
+    return f"{size}"
+
+
+def _format_age(dt) -> str:
+    if dt is None:
+        return "-"
+    from datetime import datetime, timezone
+    delta = datetime.now(timezone.utc) - dt
+    s = int(delta.total_seconds())
+    if s < 60:
+        return f"{s}s ago"
+    if s < 3600:
+        return f"{s // 60}m ago"
+    if s < 86400:
+        return f"{s // 3600}h ago"
+    return f"{s // 86400}d ago"
+
+
+def _print_status_table(statuses: list[tuple[str, str, StackStatus | None, str | None]]) -> None:
+    """Render ``(stack_name, backend_name, status, error_or_skip)`` rows."""
+    print(f"{'STACK':<20} {'BACKEND':<20} {'STATE':<12} {'HASH':<14} "
+          f"{'BUILT':<12} {'SIZE':<8} NOTE")
+    for name, backend, status, note in statuses:
+        if status is None:
+            print(f"{name[:20]:<20} {backend[:20]:<20} {'-':<12} {'-':<14} "
+                  f"{'-':<12} {'-':<8} {note or ''}")
+            continue
+        print(
+            f"{name[:20]:<20} {backend[:20]:<20} "
+            f"{status.state.value:<12} {status.hash:<14} "
+            f"{_format_age(status.last_built):<12} "
+            f"{_format_size(status.size_bytes):<8} "
+            f"{status.error or ''}"
+        )
+
+
+async def _run_per_backend(
+    config,
+    stacks: list[Stack],
+    backend_filter: str | None,
+    fn,
+) -> list[tuple[str, str, StackStatus | None, str | None]]:
+    """Iterate (stack × selected backend), open an SSH client, call ``fn``."""
+    results: list[tuple[str, str, StackStatus | None, str | None]] = []
+    for stack in stacks:
+        try:
+            backends = _select_ssh_backends(config, stack, backend_filter)
+        except RuntimeError as e:
+            results.append((stack.name, backend_filter or "-", None, str(e)))
+            continue
+        if not backends:
+            results.append((stack.name, "-", None, "no SSH backends matched"))
+            continue
+        for backend_cfg in backends:
+            ssh = _ssh_client_for(backend_cfg)
+            try:
+                await ssh.connect()
+            except Exception as e:
+                results.append((stack.name, backend_cfg.name, None, f"connect: {e}"))
+                continue
+            try:
+                status = await fn(stack, backend_cfg.name, ssh)
+                results.append((stack.name, backend_cfg.name, status, None))
+            except Exception as e:
+                results.append((stack.name, backend_cfg.name, None, str(e)))
+            finally:
+                await ssh.disconnect()
+    return results
+
+
+async def _cmd_stack_list(args: argparse.Namespace) -> int:
+    config = load_config(getattr(args, "config", None))
+    if not config.stacks:
+        print("No stacks configured.")
+        return 0
+    if args.json:
+        print(json.dumps([s.model_dump(mode="json") for s in config.stacks], indent=2))
+        return 0
+    print(f"{'NAME':<20} {'BACKENDS':<30} INPUTS")
+    for s in config.stacks:
+        be = ",".join(s.backends) if s.backends else "(all SSH)"
+        inputs = ",".join(f"{k}={v}" for k, v in s.inputs.items()) or "-"
+        print(f"{s.name[:20]:<20} {be[:30]:<30} {inputs}")
+    return 0
+
+
+async def _cmd_stack_check(args: argparse.Namespace) -> int:
+    config = load_config(getattr(args, "config", None))
+    if args.name:
+        stack = config.get_stack(args.name)
+        if stack is None:
+            print(f"Stack '{args.name}' not found", file=sys.stderr)
+            return 2
+        stacks = [stack]
+    else:
+        stacks = list(config.stacks)
+    if not stacks:
+        print("No stacks configured.")
+        return 0
+
+    mgr = StackManager()
+    results = await _run_per_backend(
+        config, stacks, args.backend, mgr.check,
+    )
+    if args.json:
+        print(json.dumps([
+            {
+                "stack": name,
+                "backend": be,
+                "status": (
+                    {
+                        "state": s.state.value,
+                        "hash": s.hash,
+                        "path": s.path,
+                        "last_built": s.last_built.isoformat() if s.last_built else None,
+                        "size_bytes": s.size_bytes,
+                        "error": s.error,
+                    } if s else None
+                ),
+                "note": note,
+            }
+            for name, be, s, note in results
+        ], indent=2))
+        return 0
+    _print_status_table(results)
+    # Exit non-zero if any stack is missing/installing — useful for CI gates.
+    bad = any(s is None or s.state != StackState.READY for _, _, s, _ in results)
+    return 1 if bad else 0
+
+
+async def _cmd_stack_install(args: argparse.Namespace) -> int:
+    config = load_config(getattr(args, "config", None))
+    stack = config.get_stack(args.name)
+    if stack is None:
+        print(f"Stack '{args.name}' not found", file=sys.stderr)
+        return 2
+
+    mgr = StackManager()
+
+    async def do_install(stack, backend_name, ssh):
+        return await mgr.install(stack, backend_name, ssh, rebuild=args.rebuild)
+
+    results = await _run_per_backend(config, [stack], args.backend, do_install)
+    _print_status_table(results)
+    failed = any(
+        s is None or s.state != StackState.READY
+        for _, _, s, _ in results
+    )
+    return 1 if failed else 0
+
+
+async def _cmd_stack_delete(args: argparse.Namespace) -> int:
+    config = load_config(getattr(args, "config", None))
+    stack = config.get_stack(args.name)
+    if stack is None:
+        print(f"Stack '{args.name}' not found", file=sys.stderr)
+        return 2
+
+    mgr = StackManager()
+
+    async def do_delete(stack, backend_name, ssh):
+        await mgr.delete(stack, backend_name, ssh)
+        # Re-check to reflect the new state in the table.
+        return await mgr.check(stack, backend_name, ssh)
+
+    results = await _run_per_backend(config, [stack], args.backend, do_delete)
+    _print_status_table(results)
+    failed = any(note is not None for _, _, _, note in results)
+    return 1 if failed else 0
+
+
+# ---------------------------------------------------------------------------
 # `workflow` subcommands
 # ---------------------------------------------------------------------------
 
@@ -846,6 +1085,48 @@ def build_parser() -> argparse.ArgumentParser:
     p_be_list.add_argument("--json", action="store_true")
     _add_common(p_be_list)
     p_be_list.set_defaults(handler=_cmd_backend_list)
+
+    # ----- stack ------------------------------------------------------------
+    p_st = sub.add_parser("stack", help="Manage reusable software stacks")
+    st_sub = p_st.add_subparsers(dest="stack_cmd", required=True)
+
+    p_st_list = st_sub.add_parser("list", help="List configured stacks")
+    p_st_list.add_argument("--json", action="store_true")
+    _add_common(p_st_list)
+    p_st_list.set_defaults(handler=_cmd_stack_list)
+
+    p_st_check = st_sub.add_parser(
+        "check",
+        help="Show per-backend state of one or all stacks (state/hash/age/size)",
+    )
+    p_st_check.add_argument("name", nargs="?", help="Stack name (default: all)")
+    p_st_check.add_argument("--backend", help="Limit to a single backend")
+    p_st_check.add_argument("--json", action="store_true")
+    _add_common(p_st_check)
+    p_st_check.set_defaults(handler=_cmd_stack_check)
+
+    p_st_install = st_sub.add_parser(
+        "install",
+        help="Build a stack on each configured backend (idempotent)",
+    )
+    p_st_install.add_argument("name")
+    p_st_install.add_argument("--backend", help="Install on a single backend only")
+    p_st_install.add_argument(
+        "--rebuild",
+        action="store_true",
+        help="Force a rebuild even when the input hash matches the cached build",
+    )
+    _add_common(p_st_install)
+    p_st_install.set_defaults(handler=_cmd_stack_install)
+
+    p_st_delete = st_sub.add_parser(
+        "delete",
+        help="Remove a stack's cache on each backend (all hashes for that name)",
+    )
+    p_st_delete.add_argument("name")
+    p_st_delete.add_argument("--backend", help="Delete on a single backend only")
+    _add_common(p_st_delete)
+    p_st_delete.set_defaults(handler=_cmd_stack_delete)
 
     # ----- project ----------------------------------------------------------
     p_pr = sub.add_parser("project", help="Inspect git projects")
