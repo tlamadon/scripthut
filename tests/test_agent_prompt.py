@@ -42,21 +42,23 @@ class TestPromptStructure:
         )
         prompt = _render_agent_prompt(cfg)
 
-        # Headings we care about:
+        # Headings we care about — pinned so renames are deliberate.
         for heading in (
             "# ScriptHut Agent Brief",
             "## What's available here",
             "### Backends",
             "### Stacks (reusable software environments)",
             "### Workflows",
-            "## Submitting work",
-            "### One-off command",
-            "### Structured submission (JSON on stdin)",
+            "## Submitting work — pick the smallest tool that fits",
+            "### A) `--inline-script <local-file>`",
+            "### B) Positional command (one-liner)",
+            "### C) `--from-stdin`",
             "### TaskDefinition shape",
+            "## Resource sizing — default small, escalate deliberately",
             "## Inspecting state",
             "## Exit codes",
             "## Gotchas",
-            "## Typical agent loop",
+            "## Typical agent loop — verify, then submit",
         ):
             assert heading in prompt, f"missing heading: {heading!r}"
 
@@ -67,13 +69,16 @@ class TestPromptStructure:
         prompt = _render_agent_prompt(cfg)
         for snippet in (
             "scripthut task run",
+            "--inline-script",
             "--from-stdin",
+            "--dry-run",
             "--backend",
             "--json",
             "scripthut run view",
             "scripthut run logs",
             "scripthut stack check",
             "scripthut backend list",
+            "scripthut workflow view",
         ):
             assert snippet in prompt, f"missing pattern: {snippet!r}"
 

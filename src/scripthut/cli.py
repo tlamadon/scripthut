@@ -719,27 +719,42 @@ def _render_agent_prompt(config: ScriptHutConfig | None) -> str:
 
     # ---------- static reference ------------------------------------------
 
-    out.append("## Submitting work\n")
+    out.append("## Submitting work — pick the smallest tool that fits\n")
     out.append(
-        "**Default to `scripthut task run` with `--from-stdin --json`** for "
-        "anything you synthesize yourself. It's the most robust path: a "
-        "TaskDefinition JSON on stdin, machine-readable summary on stdout, "
-        "exit 0 on success.\n"
+        "There are three input modes to `scripthut task run`. Pick the one "
+        "that matches what you're trying to do — they're mutually exclusive.\n"
     )
 
-    out.append("### One-off command (positional, with resource flags)\n")
+    out.append("### A) `--inline-script <local-file>` (your file → the backend)\n")
+    out.append(
+        "Use this when you wrote a script locally and want to run it on the "
+        "backend **without staging files first**. ScriptHut reads the local "
+        "file, base64-embeds it into the task command, and the backend "
+        "decodes and runs it. No git, no scp.\n"
+        "\n"
+        "```bash\n"
+        "# Wrote /tmp/probe.py locally, want it to run on mercury-nb:\n"
+        "scripthut task run --inline-script /tmp/probe.py \\\n"
+        "  --backend mercury-nb --partition standard \\\n"
+        "  --cpus 1 --memory 1G --time 0:05:00 --json\n"
+        "```\n"
+        "If your file has no `#!` line, `#!/bin/bash` is prepended for you. "
+        "Best for files up to a few hundred KB; over that, fall back to a "
+        "workflow with a git repo.\n"
+    )
+
+    out.append("### B) Positional command (one-liner)\n")
     out.append(
         "```bash\n"
-        "scripthut task run \"python train.py --lr 1e-3\" \\\n"
-        "  --backend mercury-nb --cpus 8 --memory 32G --time 4:00:00 \\\n"
-        "  --partition gpu --gres gpu:1 \\\n"
-        "  --working-dir /scratch/me/repo \\\n"
-        "  --env CUDA_VISIBLE_DEVICES=0 \\\n"
-        "  --json\n"
+        "scripthut task run \"python -c 'print(2 + 2)'\" \\\n"
+        "  --backend mercury-nb --partition standard \\\n"
+        "  --cpus 1 --memory 1G --time 0:05:00 --json\n"
         "```\n"
+        "Good for genuine one-liners. If you find yourself quoting a multi-"
+        "line script, switch to `--inline-script`.\n"
     )
 
-    out.append("### Structured submission (JSON on stdin)\n")
+    out.append("### C) `--from-stdin` (you've built a full TaskDefinition JSON)\n")
     out.append(
         "```bash\n"
         "scripthut task run --from-stdin --backend mercury-nb --json <<'JSON'\n"
@@ -760,17 +775,6 @@ def _render_agent_prompt(config: ScriptHutConfig | None) -> str:
         "template and override single fields per submission.\n"
     )
 
-    out.append("### TaskDefinition shape\n")
-    out.append(
-        "- **Required**: `id` (string), `name` (string), `command` (bash).\n"
-        "- **Resources**: `cpus` (int), `memory` (str, e.g. `\"4G\"`), "
-        "`time_limit` (str, e.g. `\"1:00:00\"`), `partition` (str), "
-        "`gres` (str, e.g. `\"gpu:1\"`), `working_dir` (str — use absolute paths).\n"
-        "- **Behavior**: `dependencies` (list of other task ids), "
-        "`env` (list of `{set: {KEY: VAL}}` rules), `image` (container "
-        "URI for AWS Batch/EC2).\n"
-    )
-
     out.append("### Configured workflow (when one matches the task)\n")
     out.append(
         "```bash\n"
@@ -781,15 +785,46 @@ def _render_agent_prompt(config: ScriptHutConfig | None) -> str:
         "and stack assumptions.\n"
     )
 
+    out.append("### TaskDefinition shape\n")
+    out.append(
+        "- **Required**: `id` (string), `name` (string), `command` (bash).\n"
+        "- **Resources**: `cpus` (int), `memory` (str, e.g. `\"4G\"`), "
+        "`time_limit` (str, e.g. `\"1:00:00\"`), `partition` (str), "
+        "`gres` (str, e.g. `\"gpu:1\"`), `working_dir` (str — absolute path "
+        "on the *backend*, not your local CWD).\n"
+        "- **Behavior**: `dependencies` (list of other task ids), "
+        "`env` (list of `{set: {KEY: VAL}}` rules), `image` (container "
+        "URI for AWS Batch/EC2).\n"
+    )
+
+    out.append("## Resource sizing — default small, escalate deliberately\n")
+    out.append(
+        "Cluster allocations are charged by reservation, not actual use, "
+        "and oversized requests get queued behind tighter ones. Start "
+        "conservative:\n"
+        "\n"
+        "| Task type           | cpus | memory | time     |\n"
+        "|---------------------|------|--------|----------|\n"
+        "| Probe / sanity check| 1    | 1G     | 0:05:00  |\n"
+        "| Small Python script | 1–2  | 2G–4G  | 0:30:00  |\n"
+        "| Single-GPU train    | 4–8  | 16G–32G| 1:00:00–4:00:00 |\n"
+        "| Multi-GPU train     | 8–16 | 64G+   | size for the job |\n"
+        "\n"
+        "Bump these only when an earlier run actually hit OOM or timed out. "
+        "Check the backend's partition list (see the inventory above) for "
+        "the max wall-clock you can request on each partition.\n"
+    )
+
     out.append("## Inspecting state\n")
     out.append(
         "```bash\n"
+        "scripthut backend list --json               # backend connectivity/health\n"
+        "scripthut stack check [<name>] --json       # stacks ready / missing / installing\n"
         "scripthut run list --json --limit 10        # recent runs\n"
         "scripthut run view <id> --json              # one run with item statuses\n"
         "scripthut run logs <id> <task_id> --tail 100         # stdout\n"
         "scripthut run logs <id> <task_id> --error --tail 100 # stderr\n"
-        "scripthut backend list --json               # connection/health summary\n"
-        "scripthut stack check [<name>] --json       # stacks ready / missing / installing\n"
+        "scripthut workflow view <name> --json       # preview a workflow's tasks\n"
         "```\n"
     )
 
@@ -802,33 +837,53 @@ def _render_agent_prompt(config: ScriptHutConfig | None) -> str:
 
     out.append("## Gotchas\n")
     out.append(
-        "- **Paths are resolved relative to the YAML file that defined them**, "
-        "not your CWD. Use absolute paths in TaskDefinition fields you build "
-        "yourself.\n"
+        "- **`working_dir` is a path on the backend**, not your local "
+        "filesystem. If you need files on the backend, either use a stack, "
+        "use a workflow that clones a git repo, or use `--inline-script` "
+        "for self-contained code.\n"
+        "- **Partition names are remapped per backend** via `partition_map` "
+        "(see the inventory above). Use the *logical* name (e.g. `gpu`, "
+        "`standard`) from the project YAML, not the cluster's raw name.\n"
         "- **Stacks need to be `ready` before tasks that use them can run.** "
         "Always `stack check` first; install if needed; only then submit.\n"
-        "- **Partition names may be remapped per backend** via the backend's "
-        "`partition_map`. Use the logical name from the project YAML, not the "
-        "raw cluster partition.\n"
+        "- **Paths in YAML are resolved relative to that YAML file**, not "
+        "your CWD. Use absolute paths in TaskDefinition fields you build.\n"
         "- **The `--json` shape from `task run` matches `workflow run`** — "
         "capture `id` and pipe it to `run view` / `run watch`.\n"
-        "- **In local mode**, `run watch` and live status updates don't poll "
-        "the backend continuously; re-run `scripthut run view <id> --json` "
-        "to refresh. Against a running server (set `SCRIPTHUT_SERVER`), live "
-        "tracking works.\n"
+        "- **In local mode, status doesn't refresh on its own.** Re-run "
+        "`scripthut run view <id> --json` to poll. Against a running server "
+        "(`SCRIPTHUT_SERVER` set), live tracking works.\n"
     )
 
-    out.append("## Typical agent loop\n")
+    out.append("## Typical agent loop — verify, then submit\n")
     out.append(
-        "1. `scripthut agent prompt` (this command) — re-read whenever the "
-        "user's context changes.\n"
-        "2. `scripthut backend list --json` — confirm the target is up.\n"
-        "3. If using a stack: `scripthut stack check <name> --json`; install "
-        "if not ready.\n"
-        "4. Submit: `scripthut task run --from-stdin --backend X --json <<JSON ...`. "
-        "Capture `id`.\n"
-        "5. Poll: `scripthut run view <id> --json` until the run is terminal.\n"
-        "6. On failure: `scripthut run logs <id> <task_id> --error --tail 200`.\n"
+        "Always do the verify phase first; submitting blind to a backend "
+        "the user thought was down or to a partition that doesn't exist on "
+        "this cluster is a bad time.\n"
+        "\n"
+        "**Verify** (cheap, read-only):\n"
+        "1. `scripthut agent prompt` — re-read whenever the user's project "
+        "context changes.\n"
+        "2. `scripthut backend list --json` — confirm targets are connected.\n"
+        "3. `scripthut workflow view <name> --json` if you might use an "
+        "existing workflow instead of ad-hoc — saves work.\n"
+        "4. If using a stack: `scripthut stack check <name> --json`; install "
+        "with `scripthut stack install <name>` if not `ready`.\n"
+        "5. `scripthut task run ... --dry-run` to print the assembled "
+        "TaskDefinition. Show it to the user for anything non-trivial.\n"
+        "\n"
+        "**Submit + track**:\n"
+        "6. Submit with `--json`, capture `id`:\n"
+        "   ```bash\n"
+        "   RUN_ID=$(scripthut task run ... --json | jq -r .id)\n"
+        "   ```\n"
+        "7. Poll: `scripthut run view $RUN_ID --json` until the run is "
+        "terminal. Against a running server, `scripthut run watch $RUN_ID "
+        "--exit-status` blocks until done.\n"
+        "8. On failure: `scripthut run logs $RUN_ID <task_id> --error "
+        "--tail 200`. If the issue is a stack, re-run `stack check`. "
+        "If it's a resource issue (OOM, TIMEOUT), bump the relevant field "
+        "and resubmit a new run.\n"
     )
 
     return "\n".join(out)
@@ -843,17 +898,80 @@ async def _cmd_agent_prompt(args: argparse.Namespace) -> int:
     return 0
 
 
+_INLINE_SCRIPT_SIZE_WARN = 200 * 1024  # bytes; warn above this (base64 inflates ~1.33x)
+
+
+def _build_inline_script_command(script_path: Path) -> str:
+    """Return a one-liner that decodes a local script and runs it on the backend.
+
+    Layout: base64-encode the file's bytes, embed in a shell snippet that
+    writes them to ``mktemp``, ``chmod +x``, executes, and propagates the
+    exit code (cleaning up the temp file in all cases). If the file
+    doesn't start with ``#!``, ``#!/bin/bash`` is prepended so it's
+    self-executable regardless of how the OS invokes scripts without a
+    shebang.
+
+    Trade-off: very large scripts inflate the sbatch command line.
+    Slurm typically accepts ~64KB scripts comfortably; over a few
+    hundred KB you should use git or a real file-push instead.
+    """
+    import base64
+
+    if not script_path.exists():
+        raise RuntimeError(f"--inline-script: file not found: {script_path}")
+    data = script_path.read_bytes()
+    if not data.startswith(b"#!"):
+        data = b"#!/bin/bash\n" + data
+    if len(data) > _INLINE_SCRIPT_SIZE_WARN:
+        logger.warning(
+            f"--inline-script: {script_path} is {len(data) // 1024} KB — "
+            f"large inline scripts inflate the submission payload; consider "
+            f"staging via git or a shared filesystem if it grows further."
+        )
+    encoded = base64.b64encode(data).decode("ascii")
+    # Use a single-quoted blob so $-expansion doesn't run on the base64;
+    # mktemp + trap for cleanup. The trap fires on EXIT so the temp file
+    # is removed regardless of which exit path the script takes.
+    return (
+        f'__SH_TMP=$(mktemp /tmp/scripthut-script-XXXXXX) && '
+        f"trap 'rm -f \"$__SH_TMP\"' EXIT && "
+        f"echo '{encoded}' | base64 -d > \"$__SH_TMP\" && "
+        f'chmod +x "$__SH_TMP" && "$__SH_TMP"'
+    )
+
+
 def _build_adhoc_task_dict(args: argparse.Namespace) -> dict:
     """Assemble a TaskDefinition-shaped dict from CLI args / stdin / file.
 
-    Precedence: ``--from-file`` > ``--from-stdin`` > positional ``command``
-    plus the per-field flags. Each source provides a *base* dict; per-flag
-    overrides are then layered on top so an agent can pipe a JSON template
-    and tweak just one field via flags. ``id`` and ``name`` default to a
-    short ULID-style label so two ad-hoc runs don't collide on disk.
+    Input sources (mutually exclusive — at most one of these):
+
+    - positional ``command`` string
+    - ``--from-stdin``: TaskDefinition JSON on stdin
+    - ``--from-file <path>``: TaskDefinition JSON in a local file
+    - ``--inline-script <path>``: local script file, base64-bootstrapped
+      so the backend can execute it without any prior file staging
+
+    Per-field flags (``--cpus``, ``--memory``, …) are layered on top of
+    whichever source provided the base, so an agent can pipe a JSON
+    template and tweak individual fields per submission. ``id`` and
+    ``name`` default to a short hash so two ad-hoc runs don't collide.
     """
     import hashlib
     import time
+
+    # At most one source. Empty positional is the "not given" sentinel
+    # because argparse `nargs="?"` yields None when absent.
+    sources_given = [
+        bool(args.command),
+        bool(args.from_stdin),
+        bool(args.from_file),
+        bool(getattr(args, "inline_script", None)),
+    ]
+    if sum(sources_given) > 1:
+        raise RuntimeError(
+            "Specify exactly one of: positional command, --from-stdin, "
+            "--from-file, --inline-script"
+        )
 
     base: dict = {}
     if args.from_file:
@@ -861,11 +979,15 @@ def _build_adhoc_task_dict(args: argparse.Namespace) -> dict:
         base = json.loads(path.read_text())
     elif args.from_stdin:
         base = json.loads(sys.stdin.read())
+    elif getattr(args, "inline_script", None):
+        script_path = Path(args.inline_script).expanduser()
+        base = {"command": _build_inline_script_command(script_path)}
     elif args.command:
         base = {"command": args.command}
     else:
         raise RuntimeError(
-            "Provide a command argument, --from-stdin, or --from-file"
+            "Provide a command argument, --from-stdin, --from-file, "
+            "or --inline-script"
         )
 
     # Per-flag overrides (only set if the user passed the flag).
@@ -1495,6 +1617,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_tk_run.add_argument(
         "--from-file", default=None,
         help="Read a TaskDefinition JSON body from this file (other flags override)",
+    )
+    p_tk_run.add_argument(
+        "--inline-script", dest="inline_script", default=None,
+        help=(
+            "Local script file to run on the backend. Contents are "
+            "base64-embedded into the task command so the backend can "
+            "execute it without any prior file staging. Mutually "
+            "exclusive with positional command / --from-stdin / --from-file."
+        ),
     )
     p_tk_run.add_argument(
         "--dry-run", action="store_true",

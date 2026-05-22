@@ -133,6 +133,7 @@ def _ns(**kwargs) -> argparse.Namespace:
         "command": None,
         "from_stdin": False,
         "from_file": None,
+        "inline_script": None,
         "name": None,
         "id": None,
         "cpus": None,
@@ -225,20 +226,17 @@ class TestBuildAdhocTaskDict:
         with pytest.raises(RuntimeError, match="command argument"):
             _build_adhoc_task_dict(_ns())
 
-    def test_from_file_takes_precedence_over_stdin(self, tmp_path: Path, monkeypatch):
-        # If both --from-file and --from-stdin are passed, --from-file wins.
-        # (stdin body would still be readable but should be ignored.)
+    def test_combining_from_file_and_from_stdin_raises(self, tmp_path: Path):
+        # The four input sources are mutually exclusive — silent precedence
+        # would let an agent assume one mode while another quietly took
+        # effect. Better to fail loud.
+        import pytest
         path = tmp_path / "task.json"
         path.write_text(
             json.dumps({"id": "from-file", "name": "f", "command": "true"})
         )
-        monkeypatch.setattr(
-            "sys.stdin",
-            io.StringIO(json.dumps({"id": "from-stdin", "name": "s", "command": "x"})),
-        )
-
-        td = _build_adhoc_task_dict(_ns(from_file=str(path), from_stdin=True))
-        assert td["id"] == "from-file"
+        with pytest.raises(RuntimeError, match="exactly one of"):
+            _build_adhoc_task_dict(_ns(from_file=str(path), from_stdin=True))
 
     def test_id_default_is_deterministic_per_command(self):
         # The auto-id seeds on (command + time_ns), so two consecutive
@@ -247,3 +245,82 @@ class TestBuildAdhocTaskDict:
         b = _build_adhoc_task_dict(_ns(command="echo hi"))
         assert a["id"] != b["id"]
         assert a["id"].startswith("adhoc-")
+
+    def test_conflicting_sources_raise(self):
+        import pytest
+        with pytest.raises(RuntimeError, match="exactly one of"):
+            _build_adhoc_task_dict(_ns(command="echo", from_stdin=True))
+
+
+# ---------- CLI: --inline-script ----------------------------------------
+
+
+class TestInlineScript:
+    def test_includes_base64_of_file_in_command(self, tmp_path: Path):
+        import base64
+        script = tmp_path / "probe.py"
+        body = b"#!/usr/bin/env python3\nprint('hello from inline')\n"
+        script.write_bytes(body)
+
+        td = _build_adhoc_task_dict(_ns(inline_script=str(script)))
+        expected_b64 = base64.b64encode(body).decode()
+        assert expected_b64 in td["command"]
+
+    def test_no_shebang_gets_bash_prepended(self, tmp_path: Path):
+        import base64
+        script = tmp_path / "noshebang.sh"
+        script.write_text("echo hi\n")  # no shebang
+
+        td = _build_adhoc_task_dict(_ns(inline_script=str(script)))
+        # The encoded blob in the bootstrap must include the injected shebang.
+        injected = b"#!/bin/bash\necho hi\n"
+        assert base64.b64encode(injected).decode() in td["command"]
+
+    def test_existing_shebang_preserved(self, tmp_path: Path):
+        import base64
+        script = tmp_path / "p.py"
+        script.write_text("#!/usr/bin/env python3\nprint(1)\n")
+
+        td = _build_adhoc_task_dict(_ns(inline_script=str(script)))
+        # The original bytes go through unmodified — no extra shebang.
+        original = b"#!/usr/bin/env python3\nprint(1)\n"
+        assert base64.b64encode(original).decode() in td["command"]
+
+    def test_bootstrap_uses_mktemp_and_cleans_up(self, tmp_path: Path):
+        script = tmp_path / "p.sh"
+        script.write_text("#!/bin/bash\necho hi\n")
+
+        td = _build_adhoc_task_dict(_ns(inline_script=str(script)))
+        # Key bootstrap markers — pin them since the runtime safety
+        # (cleanup on exit, base64 decode, exec) depends on them.
+        for marker in ("mktemp", "base64 -d", "chmod +x", "trap", "EXIT"):
+            assert marker in td["command"], f"missing bootstrap marker: {marker}"
+
+    def test_missing_file_raises(self, tmp_path: Path):
+        import pytest
+        nonexistent = tmp_path / "no-such-file.sh"
+        with pytest.raises(RuntimeError, match="file not found"):
+            _build_adhoc_task_dict(_ns(inline_script=str(nonexistent)))
+
+    def test_inline_script_conflicts_with_positional_command(self, tmp_path: Path):
+        import pytest
+        script = tmp_path / "p.sh"
+        script.write_text("#!/bin/bash\necho hi\n")
+        with pytest.raises(RuntimeError, match="exactly one of"):
+            _build_adhoc_task_dict(_ns(
+                command="echo hi", inline_script=str(script),
+            ))
+
+    def test_resource_flags_layer_on_top(self, tmp_path: Path):
+        script = tmp_path / "p.sh"
+        script.write_text("#!/bin/bash\necho hi\n")
+
+        td = _build_adhoc_task_dict(_ns(
+            inline_script=str(script),
+            cpus=2, memory="4G", time_limit="0:10:00",
+        ))
+        assert td["cpus"] == 2
+        assert td["memory"] == "4G"
+        assert td["time_limit"] == "0:10:00"
+        # auto-id still applied
+        assert td["id"].startswith("adhoc-")

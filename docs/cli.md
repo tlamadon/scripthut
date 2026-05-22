@@ -118,7 +118,12 @@ Sometimes you don't want to commit a task definition to a git repo or wire a wor
 
 ```bash
 # Simplest form: a one-line command on a configured backend.
-scripthut task run "python train.py" --backend mercury-nb
+scripthut task run "python -c 'print(2+2)'" --backend mercury-nb
+
+# Run a local script on the backend WITHOUT staging files first
+# (script is base64-embedded into the task command).
+scripthut task run --inline-script ./probe.py \
+  --backend mercury-nb --cpus 1 --memory 1G --time 0:05:00
 
 # With explicit resource shape.
 scripthut task run "python train.py" \
@@ -149,11 +154,16 @@ scripthut task run "echo hi" --backend mercury-nb --dry-run
 
 `task run` builds a single `TaskDefinition` (the same shape used by workflow generators) and submits it as a one-item run. The run shows up in the dashboard and in `scripthut run list` like any other; behind the scenes its `workflow_name` is `_adhoc/<task-id>` (override with `--run-name <label>` if you want something more memorable).
 
+### Input modes (mutually exclusive)
+
 | Source | When it's used |
 |--------|----------------|
-| `command` (positional) | Bare-bones: just the bash. |
-| `--from-stdin` | Pipe a full TaskDefinition JSON. Useful for agents that already construct the payload programmatically. |
+| `command` (positional) | Genuine one-liners. If you find yourself quoting a multi-line script, switch to `--inline-script`. |
+| `--inline-script <local-path>` | A local script file you want to run on the backend without copying or git-committing it first. ScriptHut base64-embeds the file into the task command and the backend decodes + executes it. Files without a `#!` line get `#!/bin/bash` prepended. Best for files up to a few hundred KB. |
+| `--from-stdin` | Pipe a full TaskDefinition JSON. Most reliable for agents that construct the payload programmatically. |
 | `--from-file <path>` | Same JSON shape, from a file. CLI flags layered on top still override individual fields. |
+
+Passing more than one of these is an error — silent precedence would mean you thought you were submitting one thing and you weren't.
 
 `--dry-run` prints the assembled `{"task": ..., "backend": ...}` and exits without touching any backend — let an agent verify the payload before committing.
 
@@ -203,9 +213,12 @@ Stacks are installed once; ad-hoc tasks reference them via their resolved `STACK
 ### Notes for coding agents
 
 - The CLI is the supported entry point — there's no separate "agent API." The `--json` flag plus stable exit codes (`0` submitted, `1` error) are the contract.
+- **Default pattern**: write your script to a local file → submit with `--inline-script <path>` → capture `id` from `--json` → poll `scripthut run view <id> --json`. No file staging, no scp, no git commit needed for small scripts.
+- For large or multi-file work, fall back to a workflow with a git repo — `--inline-script` is for "run this file" not "run my whole repo."
 - `--dry-run` is a good safety check before submission; pair it with `scripthut backend list` to verify the target backend is reachable.
 - The HTTP form is `POST /api/v1/tasks/run` with a body of `{"task": {...}, "backend": "...", "run_name": "..."}` — use it directly if you're talking to a running scripthut server (set `SCRIPTHUT_SERVER` and the CLI picks remote mode automatically).
 - Tasks submitted this way still respect the layered config — `working_dir` resolution, env rules, partition mapping, and account selection from `scripthut.yaml` all apply.
+- For a self-contained briefing you can paste into your context window, run `scripthut agent prompt` (see the `agent` section above).
 
 ## `stack` — manage reusable software stacks
 
