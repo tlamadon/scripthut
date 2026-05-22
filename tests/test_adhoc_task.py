@@ -311,6 +311,24 @@ class TestInlineScript:
                 command="echo hi", inline_script=str(script),
             ))
 
+    def test_crlf_normalized_to_lf_before_encoding(self, tmp_path: Path):
+        # A Windows editor saving the script with CRLF would ship \r
+        # bytes into Linux bash, which gives errors like
+        # "/usr/bin/env: 'python3\r': No such file or directory".
+        # The reader normalizes line endings before base64 so this
+        # never reaches the backend.
+        import base64
+        script = tmp_path / "crlf.sh"
+        script.write_bytes(b"#!/bin/bash\r\necho hi\r\n")
+
+        td = _build_adhoc_task_dict(_ns(inline_script=str(script)))
+        # The decoded payload must be LF-only.
+        normalized = b"#!/bin/bash\necho hi\n"
+        assert base64.b64encode(normalized).decode() in td["command"]
+        # And the \r-bearing form must not be present.
+        crlf_b64 = base64.b64encode(b"#!/bin/bash\r\necho hi\r\n").decode()
+        assert crlf_b64 not in td["command"]
+
     def test_resource_flags_layer_on_top(self, tmp_path: Path):
         script = tmp_path / "p.sh"
         script.write_text("#!/bin/bash\necho hi\n")

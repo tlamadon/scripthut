@@ -919,7 +919,11 @@ def _build_inline_script_command(script_path: Path) -> str:
 
     if not script_path.exists():
         raise RuntimeError(f"--inline-script: file not found: {script_path}")
-    data = script_path.read_bytes()
+    # Normalize line endings to LF: the target is always a Linux backend's
+    # bash, which fails noisily on \r in shebangs ("/usr/bin/env: 'python3\r'").
+    # Doing this in the script-reader instead of relying on the user's
+    # editor settings makes Windows -> Linux submissions just work.
+    data = script_path.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
     if not data.startswith(b"#!"):
         data = b"#!/bin/bash\n" + data
     if len(data) > _INLINE_SCRIPT_SIZE_WARN:
@@ -1028,9 +1032,16 @@ def _build_adhoc_task_dict(args: argparse.Namespace) -> dict:
             "via --from-file/--from-stdin, or in the JSON body"
         )
     if "id" not in base:
-        # 12-char hash of (command + monotonic time) — stable enough for
-        # idempotent re-submission within the same second, unique across.
-        seed = f"{base['command']}|{time.time_ns()}".encode()
+        # 8-char id hashed over (command + time + cryptographic randomness).
+        # Time alone isn't enough — Windows' time.time_ns() resolution is
+        # coarse (~15 ms), so back-to-back calls with the same command
+        # would collide. os.urandom guarantees uniqueness regardless of
+        # clock resolution.
+        import os
+        seed = (
+            f"{base['command']}|{time.time_ns()}".encode()
+            + os.urandom(8)
+        )
         base["id"] = "adhoc-" + hashlib.sha256(seed).hexdigest()[:8]
     if "name" not in base:
         base["name"] = base["id"]
