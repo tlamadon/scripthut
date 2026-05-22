@@ -44,15 +44,26 @@ logger = logging.getLogger(__name__)
 # between two poll cycles).
 DISAPPEARED_BEFORE_RUNNING_MARKER = "Job vanished before being observed running"
 
-# Grace period (seconds) before declaring a SUBMITTED job FAILED when it's
-# missing from the scheduler queue. Ultra-fast jobs can submit, run, and
-# clear out of squeue between two poll cycles; without a grace period they
-# get marked FAILED and incorrectly cascade DEP_FAILED to downstream items
-# (the sacct correction eventually flips the parent back, but the cascade
-# still has to be unwound). 60s covers typical poll intervals (5–60s) with
-# headroom; genuine sbatch validation failures still surface — just one
-# poll later.
+# Grace period (seconds) before *consulting sacct* for a SUBMITTED item
+# that's missing from squeue. We don't mark it FAILED on absence; we
+# only start asking accounting whether the job ran or never made it.
+# 60s covers typical poll intervals (5–60s) with headroom.
 SUBMIT_TO_FAIL_GRACE_SECONDS = 60.0
+
+# How long (seconds) we'll keep a SUBMITTED item alive when *neither*
+# squeue nor sacct has any record of it. The rare real "vanished"
+# case: sbatch returned an id but the scheduler dropped the job. After
+# this we mark FAILED with an actionable message rather than wait
+# indefinitely.
+SUBMITTED_NO_RECORD_TIMEOUT_SECONDS = 300.0
+
+# Message used for items that sbatch accepted but neither squeue nor
+# sacct ever acknowledged. Different from the legacy "vanished before
+# running" marker — that one was speculative; this one is evidence-based
+# (we asked sacct and it had no record).
+SCHEDULER_NO_RECORD_MARKER = (
+    "sbatch accepted the job but the scheduler has no record of it"
+)
 
 
 async def _run_local_shell(command: str, timeout: float = 60.0) -> tuple[str, str, int]:
@@ -1484,98 +1495,100 @@ class RunManager:
         # COMPLETED.  Only iterate over the pre-existing items.
         items_snapshot = list(run.items)
 
+        # State transitions are driven by *evidence*: what squeue reported
+        # for the job. We deliberately never mark SUBMITTED as FAILED on
+        # absence-from-squeue here — that's an absence-of-evidence, not
+        # evidence-of-failure, and it triggers exactly the false-failure
+        # cascade we're trying to avoid. The evidence-based sacct path
+        # (in main.poll_backend) resolves those cases.
         for item in items_snapshot:
             if item.job_id is None:
                 continue
 
-            if item.status in (RunItemStatus.COMPLETED, RunItemStatus.FAILED):
+            if item.status in (
+                RunItemStatus.COMPLETED,
+                RunItemStatus.FAILED,
+                RunItemStatus.DEP_FAILED,
+            ):
                 continue
 
             job_state = slurm_jobs.get(item.job_id)
 
             if job_state is None:
-                if item.status == RunItemStatus.RUNNING:
-                    # We saw it run; gone now means it finished. sacct may
-                    # later flip this to FAILED if it was actually a failure.
-                    item.status = RunItemStatus.COMPLETED
-                    item.finished_at = datetime.now(timezone.utc)
-                    changed = True
-                    changed_items.append(item)
-                    logger.info(f"Task '{item.task.id}' (job {item.job_id}) completed")
-                    if item.task.generates_source:
-                        await self._handle_generates_source(run, item)
-                elif item.status == RunItemStatus.SUBMITTED:
-                    # Never seen running and now missing from the queue —
-                    # the job most likely never made it past sbatch validation
-                    # or was rejected by the scheduler. But ultra-fast jobs
-                    # can also submit, run, and clear out of squeue between
-                    # two polls; we don't want to wrongly mark those FAILED
-                    # and trigger a DEP_FAILED cascade. Give the job a brief
-                    # grace period to let sacct catch up before declaring it
-                    # vanished.
-                    now = datetime.now(timezone.utc)
-                    submit_age = (
-                        (now - item.submitted_at).total_seconds()
-                        if item.submitted_at
-                        else float("inf")
-                    )
-                    if submit_age < SUBMIT_TO_FAIL_GRACE_SECONDS:
-                        logger.debug(
-                            f"Task '{item.task.id}' (job {item.job_id}) "
-                            f"missing from queue {submit_age:.0f}s after submit — "
-                            f"within grace ({SUBMIT_TO_FAIL_GRACE_SECONDS:.0f}s), "
-                            f"deferring"
-                        )
-                        continue
-                    item.started_at = item.submitted_at
-                    item.status = RunItemStatus.FAILED
-                    item.error = DISAPPEARED_BEFORE_RUNNING_MARKER
-                    item.finished_at = now
-                    changed = True
-                    changed_items.append(item)
-                    logger.warning(
-                        f"Task '{item.task.id}' (job {item.job_id}) vanished from "
-                        f"queue {submit_age:.0f}s after submit — marking FAILED"
-                    )
-            else:
-                if job_state in (JobState.RUNNING, JobState.COMPLETING):
-                    if item.status != RunItemStatus.RUNNING:
-                        item.status = RunItemStatus.RUNNING
-                        item.started_at = item.started_at or datetime.now(timezone.utc)
-                        changed = True
-                        changed_items.append(item)
-                        logger.info(f"Task '{item.task.id}' (job {item.job_id}) started running")
-                elif job_state == JobState.PENDING:
-                    if item.status != RunItemStatus.SUBMITTED:
-                        item.status = RunItemStatus.SUBMITTED
-                        changed = True
-                        changed_items.append(item)
-                elif job_state == JobState.COMPLETED:
+                # Missing from squeue. Action depends on whether we
+                # *ever* saw the scheduler hold this job.
+                if item.status in (RunItemStatus.QUEUED, RunItemStatus.RUNNING):
+                    # We observed the scheduler had it; gone now means
+                    # it finished. Optimistic COMPLETED; sacct will
+                    # correct to FAILED if accounting disagrees.
                     item.started_at = item.started_at or item.submitted_at
                     item.status = RunItemStatus.COMPLETED
                     item.finished_at = datetime.now(timezone.utc)
                     changed = True
                     changed_items.append(item)
-                    logger.info(f"Task '{item.task.id}' (job {item.job_id}) completed")
+                    logger.info(
+                        f"Task '{item.task.id}' (job {item.job_id}) "
+                        f"left scheduler queue — marking COMPLETED (sacct may correct)"
+                    )
                     if item.task.generates_source:
                         await self._handle_generates_source(run, item)
-                elif job_state in (
-                    JobState.FAILED,
-                    JobState.CANCELLED,
-                    JobState.TIMEOUT,
-                    JobState.NODE_FAIL,
-                    JobState.PREEMPTED,
-                    JobState.BOOT_FAIL,
-                    JobState.DEADLINE,
-                    JobState.OUT_OF_MEMORY,
-                ):
-                    item.started_at = item.started_at or item.submitted_at
-                    item.status = RunItemStatus.FAILED
-                    item.error = f"Slurm job {job_state.value}"
-                    item.finished_at = datetime.now(timezone.utc)
+                # SUBMITTED + missing: do nothing here. The item stays
+                # SUBMITTED until either it shows up in squeue or the
+                # sacct-evidence path resolves it. No timer, no marker,
+                # no false FAILED.
+                continue
+
+            # squeue gave us something — translate to our state.
+            if job_state in (JobState.RUNNING, JobState.COMPLETING):
+                if item.status != RunItemStatus.RUNNING:
+                    item.status = RunItemStatus.RUNNING
+                    item.started_at = item.started_at or datetime.now(timezone.utc)
                     changed = True
                     changed_items.append(item)
-                    logger.info(f"Task '{item.task.id}' (job {item.job_id}) failed: {job_state.value}")
+                    logger.info(
+                        f"Task '{item.task.id}' (job {item.job_id}) started running"
+                    )
+            elif job_state == JobState.PENDING:
+                # SUBMITTED -> QUEUED: scheduler now confirms the job
+                # is in its queue. Stay QUEUED on re-observation; flip
+                # back from RUNNING only logs, doesn't usually happen.
+                if item.status not in (RunItemStatus.QUEUED, RunItemStatus.RUNNING):
+                    item.status = RunItemStatus.QUEUED
+                    changed = True
+                    changed_items.append(item)
+                    logger.info(
+                        f"Task '{item.task.id}' (job {item.job_id}) "
+                        f"acknowledged by scheduler — QUEUED"
+                    )
+            elif job_state == JobState.COMPLETED:
+                item.started_at = item.started_at or item.submitted_at
+                item.status = RunItemStatus.COMPLETED
+                item.finished_at = datetime.now(timezone.utc)
+                changed = True
+                changed_items.append(item)
+                logger.info(f"Task '{item.task.id}' (job {item.job_id}) completed")
+                if item.task.generates_source:
+                    await self._handle_generates_source(run, item)
+            elif job_state in (
+                JobState.FAILED,
+                JobState.CANCELLED,
+                JobState.TIMEOUT,
+                JobState.NODE_FAIL,
+                JobState.PREEMPTED,
+                JobState.BOOT_FAIL,
+                JobState.DEADLINE,
+                JobState.OUT_OF_MEMORY,
+            ):
+                item.started_at = item.started_at or item.submitted_at
+                item.status = RunItemStatus.FAILED
+                item.error = f"Slurm job {job_state.value}"
+                item.finished_at = datetime.now(timezone.utc)
+                changed = True
+                changed_items.append(item)
+                logger.info(
+                    f"Task '{item.task.id}' (job {item.job_id}) "
+                    f"failed: {job_state.value}"
+                )
 
         if changed:
             self._persist_run(run)

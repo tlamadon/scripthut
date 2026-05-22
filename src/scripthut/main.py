@@ -30,7 +30,12 @@ from scripthut.config_schema import (
 )
 from scripthut.models import ConnectionStatus, HPCJob, JobState
 from scripthut.runs import Run, RunManager
-from scripthut.runs.manager import DISAPPEARED_BEFORE_RUNNING_MARKER
+from scripthut.runs.manager import (
+    DISAPPEARED_BEFORE_RUNNING_MARKER,
+    SCHEDULER_NO_RECORD_MARKER,
+    SUBMIT_TO_FAIL_GRACE_SECONDS,
+    SUBMITTED_NO_RECORD_TIMEOUT_SECONDS,
+)
 from scripthut.runs.models import RunItemStatus
 from scripthut.runs.storage import RunStorageManager
 from scripthut.runtime import (
@@ -205,18 +210,45 @@ async def poll_backend(backend_state: BackendState, filter_user: str | None = No
         )
         logger.debug(f"Polled {len(jobs)} jobs from '{backend_state.name}' in {duration_ms}ms")
 
-        # Collect job_ids that need accounting stats data.
-        # Keep querying sacct until each item's sacct_state is confirmed.
+        # Collect job_ids that need an accounting (sacct) lookup. Two
+        # phases share the same query so the SSH round-trip is shared:
+        #
+        #   A) Items already in a terminal state (COMPLETED/FAILED) whose
+        #      scheduler_state isn't confirmed yet — we want resource
+        #      stats and a chance to correct a false COMPLETED to FAILED.
+        #
+        #   B) Items still in SUBMITTED that have been missing from
+        #      squeue past the grace period — *evidence-based* resolution
+        #      of the "vanished" case (replaces the speculative FAILED-
+        #      with-marker pattern). sacct will tell us whether they
+        #      ran to completion, failed for a real reason, or were
+        #      dropped by the scheduler entirely.
         sacct_ids: list[str] = []
+        live_job_ids: set[str] = {j.job_id for j in jobs if j.job_id}
+        now_utc = datetime.now(UTC)
         if state.run_manager:
             for run in state.run_manager.runs.values():
                 if run.backend_name != backend_state.name:
                     continue
                 for item in run.items:
-                    if (item.job_id
-                        and item.status in (RunItemStatus.COMPLETED, RunItemStatus.FAILED)
-                        and item.scheduler_state is None):
+                    if not item.job_id:
+                        continue
+                    # Phase A
+                    if (
+                        item.status in (RunItemStatus.COMPLETED, RunItemStatus.FAILED)
+                        and item.scheduler_state is None
+                    ):
                         sacct_ids.append(item.job_id)
+                        continue
+                    # Phase B
+                    if (
+                        item.status == RunItemStatus.SUBMITTED
+                        and item.job_id not in live_job_ids
+                        and item.submitted_at is not None
+                    ):
+                        submit_age = (now_utc - item.submitted_at).total_seconds()
+                        if submit_age > SUBMIT_TO_FAIL_GRACE_SECONDS:
+                            sacct_ids.append(item.job_id)
 
         # Query accounting for resource utilization
         job_stats: dict[str, JobStats] = {}
@@ -236,6 +268,10 @@ async def poll_backend(backend_state: BackendState, filter_user: str | None = No
                 if run.backend_name != backend_state.name:
                     continue
                 run_updated = False
+                # Set when a symmetric correction unwinds DEP_FAILED items
+                # to PENDING — the run needs another process_run pass for
+                # those newly-eligible items to actually get submitted.
+                needs_reprocess = False
                 for item in run.items:
                     if item.job_id and item.job_id in job_stats:
                         s = job_stats[item.job_id]
@@ -265,13 +301,39 @@ async def poll_backend(backend_state: BackendState, filter_user: str | None = No
                                 f"Corrected task '{item.task.id}' "
                                 f"(job {item.job_id}): {reason}"
                             )
-                        # Symmetric correction: an item we marked FAILED because
-                        # it vanished from the queue without ever being seen
-                        # running may actually have completed successfully —
-                        # this happens for ultra-fast jobs that finish between
-                        # two poll cycles. If sacct confirms COMPLETED, flip
-                        # back and unwind any downstream DEP_FAILED cascade
-                        # that fired during the false-failure window.
+                        # SUBMITTED-past-grace resolution: the item was
+                        # missing from squeue and we asked sacct what
+                        # actually happened. Move directly to the right
+                        # terminal state — no FAILED-then-correct dance.
+                        elif item.status == RunItemStatus.SUBMITTED and s.state:
+                            if s.state == "COMPLETED":
+                                item.started_at = item.started_at or item.submitted_at
+                                item.status = RunItemStatus.COMPLETED
+                                item.finished_at = s.end_time or datetime.now(UTC)
+                                logger.info(
+                                    f"Task '{item.task.id}' (job {item.job_id}) "
+                                    f"resolved via sacct: COMPLETED"
+                                )
+                                if item.task.generates_source and state.run_manager:
+                                    await state.run_manager._handle_generates_source(
+                                        run, item,
+                                    )
+                                needs_reprocess = True
+                            elif s.state in backend_state.backend.failure_states:
+                                reason = backend_state.backend.failure_states[s.state]
+                                item.started_at = item.started_at or item.submitted_at
+                                item.status = RunItemStatus.FAILED
+                                item.error = f"Scheduler: {reason}"
+                                item.finished_at = s.end_time or datetime.now(UTC)
+                                logger.info(
+                                    f"Task '{item.task.id}' (job {item.job_id}) "
+                                    f"resolved via sacct: {reason}"
+                                )
+                                needs_reprocess = True
+                        # Legacy symmetric correction kept as a backstop
+                        # for runs persisted before the evidence-based
+                        # path existed. New runs never reach this branch
+                        # because they never get FAILED-with-marker.
                         elif (
                             s.state == "COMPLETED"
                             and item.status == RunItemStatus.FAILED
@@ -280,7 +342,7 @@ async def poll_backend(backend_state: BackendState, filter_user: str | None = No
                             item.status = RunItemStatus.COMPLETED
                             item.error = None
                             logger.info(
-                                f"Corrected task '{item.task.id}' "
+                                f"Corrected legacy FAILED task '{item.task.id}' "
                                 f"(job {item.job_id}): sacct confirms COMPLETED"
                             )
                             reset = run.uncascade_dep_failures()
@@ -289,12 +351,59 @@ async def poll_backend(backend_state: BackendState, filter_user: str | None = No
                                     f"Unwound DEP_FAILED on '{r.task.id}' "
                                     f"(parent '{item.task.id}' was corrected)"
                                 )
+                            if reset:
+                                needs_reprocess = True
                         elif s.state:
                             logger.debug(
                                 f"sacct state for '{item.task.id}' "
                                 f"(job {item.job_id}): {s.state}"
                             )
                 if run_updated:
+                    state.run_manager._persist_run(run)
+                    state.run_manager.notify_run(run.id)
+                    if needs_reprocess:
+                        # Newly-eligible items (parents un-failed, their
+                        # children no longer DEP_FAILED) won't get
+                        # submitted until process_run walks the items
+                        # again — without this the run gets stuck.
+                        await state.run_manager.process_run(run)
+
+        # "No record anywhere" timeout: an item still SUBMITTED whose
+        # job_id is in neither squeue nor sacct, well past the long
+        # timeout, was almost certainly dropped by the scheduler —
+        # sbatch returned an id but the scheduler never accepted it.
+        # This block runs unconditionally because, by definition, sacct
+        # returned nothing for these jobs (so they're absent from
+        # job_stats); we only care whether their age has exceeded the
+        # timeout. Mark FAILED with the evidence-based marker so the
+        # user gets an actionable message.
+        if state.run_manager:
+            for run in state.run_manager.runs.values():
+                if run.backend_name != backend_state.name:
+                    continue
+                dropped_any = False
+                for item in run.items:
+                    if (
+                        item.status == RunItemStatus.SUBMITTED
+                        and item.job_id
+                        and item.job_id not in live_job_ids
+                        and item.job_id not in job_stats
+                        and item.submitted_at is not None
+                    ):
+                        age = (now_utc - item.submitted_at).total_seconds()
+                        if age > SUBMITTED_NO_RECORD_TIMEOUT_SECONDS:
+                            item.started_at = item.submitted_at
+                            item.status = RunItemStatus.FAILED
+                            item.error = SCHEDULER_NO_RECORD_MARKER
+                            item.finished_at = now_utc
+                            dropped_any = True
+                            logger.warning(
+                                f"Task '{item.task.id}' (job {item.job_id}): "
+                                f"no record in squeue or sacct after "
+                                f"{age:.0f}s — marking FAILED "
+                                f"(scheduler dropped the job)"
+                            )
+                if dropped_any:
                     state.run_manager._persist_run(run)
                     state.run_manager.notify_run(run.id)
 
@@ -307,7 +416,10 @@ async def poll_backend(backend_state: BackendState, filter_user: str | None = No
                         known_slurm_ids.add(item.job_id)
 
             slurm_state_to_run_status = {
-                JobState.PENDING: "submitted",
+                # External jobs we observe in squeue PENDING are "queued"
+                # (the scheduler has them); we never have a "submitted but
+                # not yet observed" state for jobs we didn't sbatch.
+                JobState.PENDING: "queued",
                 JobState.RUNNING: "running",
                 JobState.COMPLETING: "running",
                 JobState.COMPLETED: "completed",
@@ -783,7 +895,8 @@ class JobView:
         state_classes = {
             "running": "text-green-600",
             "pending": "text-gray-500",
-            "submitted": "text-yellow-600",
+            "submitted": "text-yellow-500",
+            "queued": "text-yellow-700",
             "completed": "text-blue-600",
             "failed": "text-red-600",
             "dep_failed": "text-orange-600",

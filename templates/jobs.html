@@ -110,7 +110,8 @@
                     <span class="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-full
                         {% if job.state == 'running' %}bg-green-100 text-green-700
                         {% elif job.state == 'pending' %}bg-gray-100 text-gray-600
-                        {% elif job.state == 'submitted' %}bg-yellow-100 text-yellow-700
+                        {% elif job.state == 'submitted' %}bg-yellow-50 text-yellow-700
+                        {% elif job.state == 'queued' %}bg-yellow-100 text-yellow-800
                         {% elif job.state == 'completed' %}bg-blue-100 text-blue-700
                         {% elif job.state == 'failed' %}bg-red-100 text-red-700
                         {% else %}bg-gray-100 text-gray-600{% endif %}">
@@ -119,7 +120,9 @@
                         {% elif job.state == 'pending' %}
                         <span class="w-2 h-2 bg-gray-400 rounded-full"></span>
                         {% elif job.state == 'submitted' %}
-                        <span class="w-2 h-2 bg-yellow-500 rounded-full"></span>
+                        <span class="w-2 h-2 bg-yellow-400 rounded-full"></span>
+                        {% elif job.state == 'queued' %}
+                        <span class="w-2 h-2 bg-yellow-600 rounded-full"></span>
                         {% elif job.state == 'completed' %}
                         <span class="w-2 h-2 bg-blue-500 rounded-full"></span>
                         {% elif job.state == 'failed' %}

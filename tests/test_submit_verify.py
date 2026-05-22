@@ -210,37 +210,19 @@ def _make_manager_with_run(item: RunItem) -> tuple[RunManager, Run]:
 
 class TestManagerDisappearance:
     @pytest.mark.asyncio
-    async def test_submitted_disappearance_marks_failed_with_marker(self):
-        # Age the submission past the grace period so the FAILED transition
-        # actually fires.
+    async def test_submitted_missing_from_queue_does_not_mark_failed(self):
+        # New evidence-based contract: a SUBMITTED item missing from squeue
+        # is NOT marked FAILED here — that requires positive evidence from
+        # sacct. Stays SUBMITTED until sacct resolves it via the main.py
+        # polling path.
         aged = datetime.now(timezone.utc) - timedelta(
-            seconds=SUBMIT_TO_FAIL_GRACE_SECONDS + 5
+            seconds=SUBMIT_TO_FAIL_GRACE_SECONDS + 5,
         )
         item = RunItem(
             task=TaskDefinition(id="t1", name="t1", command="echo hi"),
             status=RunItemStatus.SUBMITTED,
             job_id="12345",
             submitted_at=aged,
-        )
-        manager, run = _make_manager_with_run(item)
-
-        # Empty job dict simulates the job not being in squeue.
-        await manager.update_run_status(run, slurm_jobs={})
-
-        assert item.status == RunItemStatus.FAILED
-        assert item.error == DISAPPEARED_BEFORE_RUNNING_MARKER
-        assert item.started_at is not None  # set to submitted_at for accounting
-        assert item.finished_at is not None
-
-    @pytest.mark.asyncio
-    async def test_submitted_disappearance_within_grace_period_deferred(self):
-        # Fresh submission missing from the queue should NOT be marked FAILED
-        # — it might be an ultra-fast job that finished between two polls.
-        item = RunItem(
-            task=TaskDefinition(id="t1", name="t1", command="echo hi"),
-            status=RunItemStatus.SUBMITTED,
-            job_id="12345",
-            submitted_at=datetime.now(timezone.utc),  # just now
         )
         manager, run = _make_manager_with_run(item)
 
@@ -252,9 +234,9 @@ class TestManagerDisappearance:
 
     @pytest.mark.asyncio
     async def test_running_disappearance_still_marks_completed(self):
-        # Job we observed running but is now gone — the existing optimistic
-        # COMPLETED behavior is unchanged for that case (sacct can correct it
-        # to FAILED if accounting says so).
+        # We observed it RUNNING; gone now means it finished. Optimistic
+        # COMPLETED — sacct can correct to FAILED if accounting disagrees.
+        # This path is unchanged by the QUEUED refactor.
         item = RunItem(
             task=TaskDefinition(id="t1", name="t1", command="echo hi"),
             status=RunItemStatus.RUNNING,
@@ -267,7 +249,28 @@ class TestManagerDisappearance:
         assert item.status == RunItemStatus.COMPLETED
 
     @pytest.mark.asyncio
-    async def test_pending_state_in_queue_keeps_submitted(self):
+    async def test_queued_disappearance_marks_completed(self):
+        # A QUEUED item missing from squeue is treated like RUNNING-
+        # disappeared (the scheduler had it, then doesn't): optimistic
+        # COMPLETED; sacct may correct.
+        item = RunItem(
+            task=TaskDefinition(id="t1", name="t1", command="echo hi"),
+            status=RunItemStatus.QUEUED,
+            job_id="12345",
+            submitted_at=datetime.now(timezone.utc),
+        )
+        manager, run = _make_manager_with_run(item)
+
+        await manager.update_run_status(run, slurm_jobs={})
+
+        assert item.status == RunItemStatus.COMPLETED
+        assert item.started_at is not None  # filled from submitted_at
+        assert item.finished_at is not None
+
+    @pytest.mark.asyncio
+    async def test_pending_in_queue_transitions_submitted_to_queued(self):
+        # The key evidence-based transition: SUBMITTED + observed in squeue
+        # as PENDING → QUEUED. Now we *know* the scheduler has it.
         item = RunItem(
             task=TaskDefinition(id="t1", name="t1", command="echo hi"),
             status=RunItemStatus.SUBMITTED,
@@ -278,5 +281,34 @@ class TestManagerDisappearance:
 
         await manager.update_run_status(run, slurm_jobs={"12345": JobState.PENDING})
 
-        assert item.status == RunItemStatus.SUBMITTED
+        assert item.status == RunItemStatus.QUEUED
         assert item.error is None
+
+    @pytest.mark.asyncio
+    async def test_queued_stays_queued_when_still_pending_in_queue(self):
+        item = RunItem(
+            task=TaskDefinition(id="t1", name="t1", command="echo hi"),
+            status=RunItemStatus.QUEUED,
+            job_id="12345",
+            submitted_at=datetime.now(timezone.utc),
+        )
+        manager, run = _make_manager_with_run(item)
+
+        await manager.update_run_status(run, slurm_jobs={"12345": JobState.PENDING})
+
+        assert item.status == RunItemStatus.QUEUED
+
+    @pytest.mark.asyncio
+    async def test_queued_transitions_to_running_when_observed_running(self):
+        item = RunItem(
+            task=TaskDefinition(id="t1", name="t1", command="echo hi"),
+            status=RunItemStatus.QUEUED,
+            job_id="12345",
+            submitted_at=datetime.now(timezone.utc),
+        )
+        manager, run = _make_manager_with_run(item)
+
+        await manager.update_run_status(run, slurm_jobs={"12345": JobState.RUNNING})
+
+        assert item.status == RunItemStatus.RUNNING
+        assert item.started_at is not None

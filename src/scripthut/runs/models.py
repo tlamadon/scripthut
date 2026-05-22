@@ -9,14 +9,25 @@ from scripthut.config_schema import EnvRule
 
 
 class RunItemStatus(str, Enum):
-    """Status of a run item."""
+    """Status of a run item.
 
-    PENDING = "pending"  # Waiting to be submitted
-    SUBMITTED = "submitted"  # Submitted to Slurm, waiting to run
-    RUNNING = "running"  # Currently running
-    COMPLETED = "completed"  # Finished successfully
-    FAILED = "failed"  # Failed or cancelled
-    DEP_FAILED = "dep_failed"  # Skipped because a dependency failed
+    The submitted/queued split exists because they communicate very
+    different operational signals: a SUBMITTED job is one the scheduler
+    has not yet acknowledged (sbatch returned an id but we haven't seen
+    it in squeue), while a QUEUED job is positively known to be in the
+    scheduler's queue. Treating "missing from squeue" as failure only
+    makes sense once we've ever observed the job — otherwise we have no
+    evidence either way, and the right move is to ask sacct rather than
+    guess.
+    """
+
+    PENDING = "pending"           # Waiting to be submitted
+    SUBMITTED = "submitted"       # sbatch returned; not yet observed in squeue
+    QUEUED = "queued"             # Observed in squeue (PENDING); awaiting resources
+    RUNNING = "running"           # Currently running
+    COMPLETED = "completed"       # Finished successfully
+    FAILED = "failed"             # Failed or cancelled
+    DEP_FAILED = "dep_failed"     # Skipped because a dependency failed
 
 
 @dataclass
@@ -257,7 +268,12 @@ class RunItem:
         """Return CSS class for status styling."""
         status_classes = {
             RunItemStatus.PENDING: "text-gray-500",
-            RunItemStatus.SUBMITTED: "text-yellow-600",
+            # SUBMITTED is intentionally dimmer than QUEUED — it
+            # signals "we don't have positive evidence the scheduler
+            # has this yet"; QUEUED says "scheduler has it, waiting
+            # for resources." Different operational signals.
+            RunItemStatus.SUBMITTED: "text-yellow-500",
+            RunItemStatus.QUEUED: "text-yellow-700",
             RunItemStatus.RUNNING: "text-blue-600",
             RunItemStatus.COMPLETED: "text-green-600",
             RunItemStatus.FAILED: "text-red-600",
@@ -321,8 +337,12 @@ class Run:
         if all(s == RunItemStatus.COMPLETED for s in statuses):
             return RunStatus.COMPLETED
 
-        # Check if any running or submitted
-        if any(s in (RunItemStatus.RUNNING, RunItemStatus.SUBMITTED) for s in statuses):
+        # Check if any running, queued, or submitted (all "in flight" for
+        # the purposes of the run's overall status).
+        if any(
+            s in (RunItemStatus.RUNNING, RunItemStatus.QUEUED, RunItemStatus.SUBMITTED)
+            for s in statuses
+        ):
             return RunStatus.RUNNING
 
         # All pending
@@ -347,10 +367,21 @@ class Run:
 
     @property
     def running_count(self) -> int:
-        """Count of currently running items."""
+        """Count of items that consume a concurrency slot.
+
+        Includes SUBMITTED (waiting for scheduler ack), QUEUED (in
+        scheduler queue), and RUNNING. The concurrency cap exists to
+        avoid drowning the scheduler in submissions, so anything we've
+        already submitted counts — even if the scheduler hasn't picked
+        it up yet.
+        """
         return sum(
             1 for item in self.items
-            if item.status in (RunItemStatus.RUNNING, RunItemStatus.SUBMITTED)
+            if item.status in (
+                RunItemStatus.RUNNING,
+                RunItemStatus.QUEUED,
+                RunItemStatus.SUBMITTED,
+            )
         )
 
     @property
