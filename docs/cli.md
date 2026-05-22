@@ -1,6 +1,6 @@
 # CLI
 
-ScriptHut ships a `gh`-style CLI for triggering workflows, managing stacks, firing one-off tasks, inspecting runs, and tailing logs without opening the web UI. The single binary is the same `scripthut` entry point that runs the server — when called with a subcommand (`workflow`, `run`, `backend`, `project`, `stack`, `task`) it dispatches to the CLI instead.
+ScriptHut ships a `gh`-style CLI for triggering workflows, managing stacks, firing one-off tasks, inspecting runs, and tailing logs without opening the web UI. The single binary is the same `scripthut` entry point that runs the server — when called with a subcommand (`workflow`, `run`, `backend`, `project`, `stack`, `task`, `agent`) it dispatches to the CLI instead.
 
 ```bash
 scripthut workflow list          # CLI
@@ -91,6 +91,26 @@ scripthut backend list                        # connection status, max_concurren
 ```
 
 Useful when a workflow hangs at submission to confirm the right backend is actually reachable.
+
+## `agent` — coding-agent helpers
+
+```bash
+scripthut agent prompt                        # markdown briefing for an agent
+```
+
+`agent prompt` emits a markdown document that teaches a coding agent how to use this scripthut from the current project. It's a mix of a **static reference** (CLI patterns, TaskDefinition shape, exit codes, common gotchas) and a **live inventory** (the backends, stacks, and workflows the layered config currently exposes) so the agent's suggestions reference real names rather than placeholders.
+
+Typical use is to pipe it into the agent's context:
+
+```bash
+# Capture once and feed to your agent of choice
+scripthut agent prompt > .agent-brief.md
+
+# Or pipe through xclip / pbcopy / etc.
+scripthut agent prompt | pbcopy
+```
+
+Re-run whenever the user adds a backend, stack, or workflow — the inventory is read fresh each invocation.
 
 ## `task` — submit ad-hoc tasks
 

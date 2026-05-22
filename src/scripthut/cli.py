@@ -28,8 +28,13 @@ from typing import Any
 
 import httpx
 
-from scripthut.config import load_config
-from scripthut.config_schema import PBSBackendConfig, SlurmBackendConfig, Stack
+from scripthut.config import ConfigError, load_config
+from scripthut.config_schema import (
+    PBSBackendConfig,
+    ScriptHutConfig,
+    SlurmBackendConfig,
+    Stack,
+)
 from scripthut.runs.models import Run, RunItemStatus, RunStatus
 from scripthut.runtime import Runtime, init_runtime, shutdown_runtime
 from scripthut.ssh.client import SSHClient
@@ -629,6 +634,215 @@ async def _run_per_backend(
     return results
 
 
+# ---------------------------------------------------------------------------
+# `agent` subcommand — emit a prompt teaching a coding agent how to use the CLI
+# ---------------------------------------------------------------------------
+
+
+def _render_agent_prompt(config: ScriptHutConfig | None) -> str:
+    """Compose a markdown briefing for a coding agent.
+
+    The output mixes a static reference (CLI patterns the agent should
+    use) with a live inventory of the current context (backends,
+    stacks, workflows the user has actually configured) so the agent's
+    suggestions reference real names. ``config=None`` produces a
+    "no config found" variant that still teaches the CLI shape.
+    """
+    out: list[str] = []
+    out.append("# ScriptHut Agent Brief\n")
+    out.append(
+        "ScriptHut submits compute jobs to remote backends (Slurm, PBS, "
+        "AWS Batch, AWS EC2). Interact with it via the `scripthut` CLI. "
+        "This briefing tells you what's available in the current project "
+        "context and the minimum set of commands you need to be useful.\n"
+    )
+
+    out.append("## What's available here\n")
+    if config is None:
+        out.append(
+            "_No `scripthut.yaml` was discovered in the current directory "
+            "or in `~/.config/scripthut/`. Ask the user to create one or "
+            "run `scripthut backend list` to confirm._\n"
+        )
+    else:
+        # ---- Backends -----------------------------------------------------
+        out.append("### Backends")
+        if not config.backends:
+            out.append("_No backends configured. Submitting work won't work until one is added._\n")
+        else:
+            for b in config.backends:
+                bits = [f"`{b.name}` ({b.type})"]
+                # Each backend type has different surfacing fields; keep
+                # the prompt readable rather than dumping the whole model.
+                if isinstance(b, (SlurmBackendConfig, PBSBackendConfig)):
+                    bits.append(f"ssh `{b.ssh.user}@{b.ssh.host}`")
+                    if b.account:
+                        bits.append(f"account `{b.account}`")
+                if isinstance(b, SlurmBackendConfig) and b.partition_map:
+                    pairs = ", ".join(
+                        f"{k}→{v}" for k, v in b.partition_map.items()
+                    )
+                    bits.append(f"partition map: {pairs}")
+                out.append(f"- {' · '.join(bits)}")
+            out.append("")
+
+        # ---- Stacks -------------------------------------------------------
+        out.append("### Stacks (reusable software environments)")
+        if not config.stacks:
+            out.append("_No stacks configured._\n")
+        else:
+            for s in config.stacks:
+                where = ", ".join(s.backends) if s.backends else "all SSH backends"
+                inputs = ", ".join(
+                    f"`{k}={v}`" for k, v in s.inputs.items()
+                )
+                bits = [f"`{s.name}` — backends: {where}"]
+                if inputs:
+                    bits.append(f"inputs: {inputs}")
+                out.append(f"- {' · '.join(bits)}")
+            out.append(
+                "\nRun `scripthut stack check <name> --json` before "
+                "submitting a task that needs one — install with "
+                "`scripthut stack install <name>` if it's not `ready`."
+            )
+            out.append("")
+
+        # ---- Workflows ----------------------------------------------------
+        out.append("### Workflows")
+        if not config.workflows:
+            out.append("_No workflows configured (use `scripthut task run` for one-off work)._\n")
+        else:
+            for w in config.workflows:
+                desc = f" — {w.description}" if w.description else ""
+                out.append(f"- `{w.name}` (backend: `{w.backend}`){desc}")
+            out.append("")
+
+    # ---------- static reference ------------------------------------------
+
+    out.append("## Submitting work\n")
+    out.append(
+        "**Default to `scripthut task run` with `--from-stdin --json`** for "
+        "anything you synthesize yourself. It's the most robust path: a "
+        "TaskDefinition JSON on stdin, machine-readable summary on stdout, "
+        "exit 0 on success.\n"
+    )
+
+    out.append("### One-off command (positional, with resource flags)\n")
+    out.append(
+        "```bash\n"
+        "scripthut task run \"python train.py --lr 1e-3\" \\\n"
+        "  --backend mercury-nb --cpus 8 --memory 32G --time 4:00:00 \\\n"
+        "  --partition gpu --gres gpu:1 \\\n"
+        "  --working-dir /scratch/me/repo \\\n"
+        "  --env CUDA_VISIBLE_DEVICES=0 \\\n"
+        "  --json\n"
+        "```\n"
+    )
+
+    out.append("### Structured submission (JSON on stdin)\n")
+    out.append(
+        "```bash\n"
+        "scripthut task run --from-stdin --backend mercury-nb --json <<'JSON'\n"
+        "{\n"
+        '  "id": "exp-42",\n'
+        '  "name": "experiment 42",\n'
+        '  "command": "python train.py --lr 1e-3",\n'
+        '  "cpus": 8,\n'
+        '  "memory": "32G",\n'
+        '  "time_limit": "4:00:00",\n'
+        '  "partition": "gpu",\n'
+        '  "gres": "gpu:1",\n'
+        '  "working_dir": "/scratch/me/repo"\n'
+        "}\n"
+        "JSON\n"
+        "```\n"
+        "CLI flags layer on top of stdin/file bodies, so you can pipe a "
+        "template and override single fields per submission.\n"
+    )
+
+    out.append("### TaskDefinition shape\n")
+    out.append(
+        "- **Required**: `id` (string), `name` (string), `command` (bash).\n"
+        "- **Resources**: `cpus` (int), `memory` (str, e.g. `\"4G\"`), "
+        "`time_limit` (str, e.g. `\"1:00:00\"`), `partition` (str), "
+        "`gres` (str, e.g. `\"gpu:1\"`), `working_dir` (str — use absolute paths).\n"
+        "- **Behavior**: `dependencies` (list of other task ids), "
+        "`env` (list of `{set: {KEY: VAL}}` rules), `image` (container "
+        "URI for AWS Batch/EC2).\n"
+    )
+
+    out.append("### Configured workflow (when one matches the task)\n")
+    out.append(
+        "```bash\n"
+        "scripthut workflow run <name> --json\n"
+        "```\n"
+        "Prefer a configured workflow over ad-hoc when one already does what "
+        "you need — it carries the project's resolved env, partition map, "
+        "and stack assumptions.\n"
+    )
+
+    out.append("## Inspecting state\n")
+    out.append(
+        "```bash\n"
+        "scripthut run list --json --limit 10        # recent runs\n"
+        "scripthut run view <id> --json              # one run with item statuses\n"
+        "scripthut run logs <id> <task_id> --tail 100         # stdout\n"
+        "scripthut run logs <id> <task_id> --error --tail 100 # stderr\n"
+        "scripthut backend list --json               # connection/health summary\n"
+        "scripthut stack check [<name>] --json       # stacks ready / missing / installing\n"
+        "```\n"
+    )
+
+    out.append("## Exit codes\n")
+    out.append(
+        "- `0` — command succeeded.\n"
+        "- `1` — error (bad arguments, unknown name, backend unreachable).\n"
+        "- `2` — `run watch --exit-status` only: the run terminated FAILED/CANCELLED.\n"
+    )
+
+    out.append("## Gotchas\n")
+    out.append(
+        "- **Paths are resolved relative to the YAML file that defined them**, "
+        "not your CWD. Use absolute paths in TaskDefinition fields you build "
+        "yourself.\n"
+        "- **Stacks need to be `ready` before tasks that use them can run.** "
+        "Always `stack check` first; install if needed; only then submit.\n"
+        "- **Partition names may be remapped per backend** via the backend's "
+        "`partition_map`. Use the logical name from the project YAML, not the "
+        "raw cluster partition.\n"
+        "- **The `--json` shape from `task run` matches `workflow run`** — "
+        "capture `id` and pipe it to `run view` / `run watch`.\n"
+        "- **In local mode**, `run watch` and live status updates don't poll "
+        "the backend continuously; re-run `scripthut run view <id> --json` "
+        "to refresh. Against a running server (set `SCRIPTHUT_SERVER`), live "
+        "tracking works.\n"
+    )
+
+    out.append("## Typical agent loop\n")
+    out.append(
+        "1. `scripthut agent prompt` (this command) — re-read whenever the "
+        "user's context changes.\n"
+        "2. `scripthut backend list --json` — confirm the target is up.\n"
+        "3. If using a stack: `scripthut stack check <name> --json`; install "
+        "if not ready.\n"
+        "4. Submit: `scripthut task run --from-stdin --backend X --json <<JSON ...`. "
+        "Capture `id`.\n"
+        "5. Poll: `scripthut run view <id> --json` until the run is terminal.\n"
+        "6. On failure: `scripthut run logs <id> <task_id> --error --tail 200`.\n"
+    )
+
+    return "\n".join(out)
+
+
+async def _cmd_agent_prompt(args: argparse.Namespace) -> int:
+    try:
+        config: ScriptHutConfig | None = load_config(getattr(args, "config", None))
+    except (FileNotFoundError, ConfigError):
+        config = None
+    print(_render_agent_prompt(config))
+    return 0
+
+
 def _build_adhoc_task_dict(args: argparse.Namespace) -> dict:
     """Assemble a TaskDefinition-shaped dict from CLI args / stdin / file.
 
@@ -1208,6 +1422,20 @@ def build_parser() -> argparse.ArgumentParser:
     p_be_list.add_argument("--json", action="store_true")
     _add_common(p_be_list)
     p_be_list.set_defaults(handler=_cmd_backend_list)
+
+    # ----- agent ------------------------------------------------------------
+    p_ag = sub.add_parser(
+        "agent",
+        help="Helpers for coding agents (prompt generation, etc.)",
+    )
+    ag_sub = p_ag.add_subparsers(dest="agent_cmd", required=True)
+
+    p_ag_prompt = ag_sub.add_parser(
+        "prompt",
+        help="Print a markdown briefing teaching an agent how to use this scripthut",
+    )
+    _add_common(p_ag_prompt)
+    p_ag_prompt.set_defaults(handler=_cmd_agent_prompt)
 
     # ----- task -------------------------------------------------------------
     p_tk = sub.add_parser(
