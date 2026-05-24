@@ -2828,14 +2828,14 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-_SUBCOMMANDS = {"setup-aws-ec2", "workflow", "run", "backend", "project"}
+_SUBCOMMANDS = {"setup-aws-ec2", "workflow", "run", "backend", "project", "stack"}
 
 
 def _dispatch_subcommand(name: str, argv_rest: list[str]) -> int:
     if name == "setup-aws-ec2":
         from scripthut.setup.aws_ec2 import main as setup_main
         return setup_main(argv_rest)
-    if name in {"workflow", "run", "backend", "project"}:
+    if name in {"workflow", "run", "backend", "project", "stack"}:
         from scripthut.cli import main as cli_main
         return cli_main([name, *argv_rest])
     raise SystemExit(f"Unknown subcommand: {name}")
