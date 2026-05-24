@@ -2809,6 +2809,12 @@ def parse_args() -> argparse.Namespace:
         description="ScriptHut - Remote job management",
     )
     parser.add_argument(
+        "--version",
+        "-V",
+        action="version",
+        version=f"scripthut {__version__}",
+    )
+    parser.add_argument(
         "--config",
         "-c",
         type=Path,
