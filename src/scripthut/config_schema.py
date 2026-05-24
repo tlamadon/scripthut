@@ -657,6 +657,30 @@ class Stack(BaseModel):
             "``${STACK_DIR}`` is the resolved cache directory."
         ),
     )
+    # Resources used to run ``prep`` itself. Building a stack can require
+    # real CPU/memory (compiling, conda solves, large pip resolutions);
+    # running it on the login node is a portability and politeness issue.
+    # On Slurm these are passed through to ``srun`` so the build lands on
+    # a worker node. PBS doesn't honor these yet — see manager.install.
+    cpus: int = Field(
+        default=1,
+        description="CPUs requested for the prep job (Slurm: --cpus-per-task)",
+    )
+    memory: str = Field(
+        default="4G",
+        description="Memory requested for the prep job (Slurm: --mem)",
+    )
+    time_limit: str = Field(
+        default="1:00:00",
+        description="Wall-clock limit for the prep job (Slurm: --time)",
+    )
+    partition: str | None = Field(
+        default=None,
+        description=(
+            "Partition/queue for the prep job. None lets the scheduler "
+            "pick its default (Slurm: --partition omitted)."
+        ),
+    )
 
 
 class ScriptHutConfig(BaseModel):

@@ -185,11 +185,19 @@ class StackManager:
         backend_name: str,
         ssh: SSHClient,
         rebuild: bool = False,
+        scheduler: str | None = None,
     ) -> StackStatus:
         """Run ``prep`` if the stack isn't ready (or if ``rebuild=True``).
 
         Idempotent: a second call with ``rebuild=False`` after a successful
         install is a no-op. Reports the resulting state.
+
+        ``scheduler`` controls where prep executes. When ``"slurm"``, the
+        prep script is wrapped with ``srun`` so it lands on a worker node
+        using the stack's ``cpus``/``memory``/``time_limit``/``partition``
+        — login nodes are not the right place to compile or solve envs.
+        When ``"pbs"`` or ``None``, prep runs inline over SSH as today
+        (PBS scheduler-side build is not wired yet).
         """
         status = await self.check(stack, backend_name, ssh)
         if status.state == StackState.READY and not rebuild:
@@ -230,11 +238,32 @@ class StackManager:
             f"{prep_body}\n"
             f"touch {ready_q}\n"
         )
-        # ``bash -s`` reads the script from stdin; we pipe it via run_command's
-        # `input=` if supported, else fall back to printf | bash.
+
+        # Build the runner. srun is synchronous and propagates exit code,
+        # so the rest of the flow is unchanged — we just land on a worker.
+        if scheduler == "slurm":
+            srun_parts = [
+                "srun",
+                f"--job-name=scripthut-stack-{stack.name}",
+                f"--cpus-per-task={stack.cpus}",
+                f"--mem={stack.memory}",
+                f"--time={stack.time_limit}",
+            ]
+            if stack.partition:
+                srun_parts.append(f"--partition={shlex.quote(stack.partition)}")
+            runner = " ".join(srun_parts) + " bash -s"
+        else:
+            if scheduler == "pbs":
+                logger.warning(
+                    f"Stack '{stack.name}': PBS scheduler-side build is not "
+                    f"implemented; running prep inline on the SSH host "
+                    f"(cpus/memory/time_limit/partition ignored)"
+                )
+            runner = "bash -s"
+
         try:
             stdout, stderr, exit_code = await ssh.run_command(
-                f"bash -s <<'__SCRIPTHUT_PREP__'\n{script}\n__SCRIPTHUT_PREP__",
+                f"{runner} <<'__SCRIPTHUT_PREP__'\n{script}\n__SCRIPTHUT_PREP__",
                 timeout=3600,
             )
         except Exception as e:

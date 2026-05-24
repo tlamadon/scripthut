@@ -220,6 +220,65 @@ class TestInstall:
         assert any(c.startswith("rm -rf") for c in ssh.commands)
 
     @pytest.mark.asyncio
+    async def test_slurm_wraps_prep_with_srun(self):
+        # On Slurm, prep must land on a worker — not the login node.
+        # Verify the bash invocation is wrapped with srun and that the
+        # stack's resource fields are passed through.
+        ssh = _ScriptedSSH([
+            ("MISSING\n", "", 0),
+            ("", "", 0),                # mkdir
+            ("ok\n", "", 0),            # srun bash -s heredoc
+            ("READY\n0\n42\n", "", 0),  # final check
+        ])
+        stack = Stack(
+            name="x", prep="pip install foo",
+            cpus=8, memory="32G", time_limit="2:00:00", partition="bigmem",
+        )
+        status = await StackManager().install(
+            stack, "slurm-be", ssh, scheduler="slurm",
+        )
+        assert status.state == StackState.READY
+        runner_cmd = next(c for c in ssh.commands if "bash -s" in c)
+        assert runner_cmd.startswith("srun")
+        assert "--cpus-per-task=8" in runner_cmd
+        assert "--mem=32G" in runner_cmd
+        assert "--time=2:00:00" in runner_cmd
+        assert "--partition=bigmem" in runner_cmd
+        # Prep still inlined via the heredoc.
+        assert "pip install foo" in runner_cmd
+
+    @pytest.mark.asyncio
+    async def test_slurm_omits_partition_flag_when_unset(self):
+        # Default partition is None — let Slurm pick its default rather
+        # than passing an empty --partition= flag.
+        ssh = _ScriptedSSH([
+            ("MISSING\n", "", 0), ("", "", 0), ("", "", 0),
+            ("READY\n0\n1\n", "", 0),
+        ])
+        await StackManager().install(
+            Stack(name="x", prep="echo hi"), "slurm-be", ssh, scheduler="slurm",
+        )
+        runner_cmd = next(c for c in ssh.commands if "bash -s" in c)
+        assert runner_cmd.startswith("srun")
+        assert "--partition" not in runner_cmd
+
+    @pytest.mark.asyncio
+    async def test_no_scheduler_runs_inline_as_before(self):
+        # When scheduler is None (or PBS, which isn't wired yet), prep
+        # runs inline — preserves the existing v1 behavior for any caller
+        # that doesn't pass a scheduler kind.
+        ssh = _ScriptedSSH([
+            ("MISSING\n", "", 0), ("", "", 0), ("", "", 0),
+            ("READY\n0\n1\n", "", 0),
+        ])
+        await StackManager().install(
+            Stack(name="x", prep="echo hi", cpus=8, memory="32G"),
+            "be", ssh,
+        )
+        runner_cmd = next(c for c in ssh.commands if "bash -s" in c)
+        assert not runner_cmd.startswith("srun")
+
+    @pytest.mark.asyncio
     async def test_empty_prep_just_marks_ready(self):
         # An init-only stack with no prep should still end up READY so
         # downstream "is it ready?" gating works uniformly.

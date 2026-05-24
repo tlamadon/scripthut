@@ -600,13 +600,27 @@ def _print_status_table(statuses: list[tuple[str, str, StackStatus | None, str |
         )
 
 
+def _scheduler_kind(backend_cfg) -> str | None:
+    """Map a backend config to the scheduler tag StackManager understands."""
+    if isinstance(backend_cfg, SlurmBackendConfig):
+        return "slurm"
+    if isinstance(backend_cfg, PBSBackendConfig):
+        return "pbs"
+    return None
+
+
 async def _run_per_backend(
     config,
     stacks: list[Stack],
     backend_filter: str | None,
     fn,
 ) -> list[tuple[str, str, StackStatus | None, str | None]]:
-    """Iterate (stack × selected backend), open an SSH client, call ``fn``."""
+    """Iterate (stack × selected backend), open an SSH client, call ``fn``.
+
+    ``fn`` is ``async (stack, backend_name, ssh, scheduler) -> StackStatus``.
+    ``scheduler`` is "slurm"/"pbs"/None so the install path can decide
+    whether to wrap prep with srun/qsub.
+    """
     results: list[tuple[str, str, StackStatus | None, str | None]] = []
     for stack in stacks:
         try:
@@ -625,7 +639,9 @@ async def _run_per_backend(
                 results.append((stack.name, backend_cfg.name, None, f"connect: {e}"))
                 continue
             try:
-                status = await fn(stack, backend_cfg.name, ssh)
+                status = await fn(
+                    stack, backend_cfg.name, ssh, _scheduler_kind(backend_cfg),
+                )
                 results.append((stack.name, backend_cfg.name, status, None))
             except Exception as e:
                 results.append((stack.name, backend_cfg.name, None, str(e)))
@@ -1105,8 +1121,13 @@ async def _cmd_stack_check(args: argparse.Namespace) -> int:
         return 0
 
     mgr = StackManager()
+
+    async def do_check(stack, backend_name, ssh, scheduler):
+        # check is read-only; the scheduler kind is irrelevant here.
+        return await mgr.check(stack, backend_name, ssh)
+
     results = await _run_per_backend(
-        config, stacks, args.backend, mgr.check,
+        config, stacks, args.backend, do_check,
     )
     if args.json:
         print(json.dumps([
@@ -1143,8 +1164,11 @@ async def _cmd_stack_install(args: argparse.Namespace) -> int:
 
     mgr = StackManager()
 
-    async def do_install(stack, backend_name, ssh):
-        return await mgr.install(stack, backend_name, ssh, rebuild=args.rebuild)
+    async def do_install(stack, backend_name, ssh, scheduler):
+        return await mgr.install(
+            stack, backend_name, ssh,
+            rebuild=args.rebuild, scheduler=scheduler,
+        )
 
     results = await _run_per_backend(config, [stack], args.backend, do_install)
     _print_status_table(results)
@@ -1164,9 +1188,9 @@ async def _cmd_stack_delete(args: argparse.Namespace) -> int:
 
     mgr = StackManager()
 
-    async def do_delete(stack, backend_name, ssh):
+    async def do_delete(stack, backend_name, ssh, scheduler):
+        # delete is rm -rf over SSH; scheduler kind doesn't matter.
         await mgr.delete(stack, backend_name, ssh)
-        # Re-check to reflect the new state in the table.
         return await mgr.check(stack, backend_name, ssh)
 
     results = await _run_per_backend(config, [stack], args.backend, do_delete)
