@@ -19,7 +19,6 @@ from scripthut.config_schema import (
     PathSourceConfig,
     ProjectConfig,
     ScriptHutConfig,
-    WorkflowConfig,
 )
 from scripthut.models import JobState
 from scripthut.runs.env import resolve_for_task
@@ -120,15 +119,8 @@ class RunManager:
         merged env dict (ready to pass to ``generate_script``) and the
         concatenated extra_init bash text.
         """
-        # Prefer git info stored on the run; fall back to the workflow config
-        # for older runs that predate the run-level fields.
         git_repo = run.git_repo
         git_branch = run.git_branch
-        if git_repo is None:
-            workflow = self.config.get_workflow(run.workflow_name)
-            if workflow and workflow.git:
-                git_repo = workflow.git.repo
-                git_branch = workflow.git.branch
         return resolve_for_task(
             self.config,
             backend_name=run.backend_name,
@@ -304,10 +296,6 @@ class RunManager:
 
         await self.process_run(run)
 
-    def get_workflow(self, name: str) -> WorkflowConfig | None:
-        """Get a workflow by name."""
-        return self.config.get_workflow(name)
-
     def get_ssh_client(self, backend_name: str) -> SSHClient | None:
         """Get SSH client for a backend."""
         return self.backends.get(backend_name)
@@ -475,182 +463,6 @@ class RunManager:
             if remote_key is not None:
                 await self._cleanup_deploy_key(ssh_client, remote_key)
 
-    async def _ensure_repo_cloned(
-        self, ssh_client: SSHClient, workflow: WorkflowConfig
-    ) -> tuple[str, str]:
-        """Clone a workflow's git repo on the backend if not already present."""
-        git_cfg = workflow.git
-        if git_cfg is None:
-            raise ValueError("Workflow has no git configuration")
-
-        return await self._clone_git_repo(
-            ssh_client,
-            repo=git_cfg.repo,
-            branch=git_cfg.branch,
-            deploy_key=git_cfg.deploy_key,
-            clone_dir=git_cfg.clone_dir,
-            postclone=git_cfg.postclone,
-        )
-
-    async def fetch_tasks(
-        self,
-        workflow: WorkflowConfig,
-        *,
-        clone_dir: str | None = None,
-    ) -> tuple[list[TaskDefinition], list[EnvRule], dict[str, list[EnvRule]], str]:
-        """Fetch task list (plus doc-level env rules) from a workflow.
-
-        Runs the workflow command on the backend via SSH for SSH-based backends;
-        for API-based backends (no SSH) the command is executed locally as a
-        subprocess of the scripthut server.
-
-        Returns ``(tasks, doc_env, doc_env_groups, raw_stdout)``. ``doc_env``
-        and ``doc_env_groups`` come from the JSON document's top-level ``env:``
-        and ``env_groups:`` and are attached to the resulting ``Run`` so they
-        slot into the resolver chain between the workflow-config layer and
-        per-task env. ``raw_stdout`` is the unmodified generator output for
-        display in the dry-run UI.
-        """
-        logger.info(
-            f"Fetching tasks from workflow '{workflow.name}' on backend '{workflow.backend}'"
-        )
-
-        command = workflow.command
-        if clone_dir:
-            command = f"cd {clone_dir} && {command}"
-
-        ssh_client = self.get_ssh_client(workflow.backend)
-        if ssh_client is not None:
-            stdout, stderr, exit_code = await ssh_client.run_command(command)
-        else:
-            # API-based backend — run the generator locally so we still get a task list.
-            stdout, stderr, exit_code = await _run_local_shell(command)
-
-        if exit_code != 0:
-            raise ValueError(f"Command failed (exit {exit_code}): {stderr}")
-
-        try:
-            data = json.loads(stdout)
-        except json.JSONDecodeError as e:
-            raise ValueError(f"Invalid JSON response: {e}")
-
-        try:
-            tasks, doc_env, doc_groups = TaskDefinition.parse_document(data)
-        except ValueError as e:
-            raise ValueError(f"Invalid workflow JSON for '{workflow.name}': {e}")
-        logger.info(f"Fetched {len(tasks)} tasks from workflow '{workflow.name}'")
-        return tasks, doc_env, doc_groups, stdout
-
-    async def dry_run(
-        self, workflow_name: str, *, backend: str | None = None,
-    ) -> dict:
-        """Perform a dry run - fetch tasks and show what would be submitted.
-
-        ``backend`` overrides the workflow's configured backend (mirrors
-        the same flag on ``create_run``).
-        """
-        workflow = self.get_workflow(workflow_name)
-        if workflow is None:
-            raise ValueError(f"Workflow '{workflow_name}' not found")
-
-        if backend and self.config.get_backend(backend) is None:
-            raise ValueError(f"Backend '{backend}' not found in config")
-        backend_name = backend or workflow.backend
-
-        # Clone git repo on backend if configured
-        clone_dir: str | None = None
-        commit_hash: str | None = None
-        if workflow.git is not None:
-            ssh_client = self.get_ssh_client(backend_name)
-            if ssh_client is not None:
-                clone_dir, commit_hash = await self._ensure_repo_cloned(
-                    ssh_client, workflow
-                )
-
-        tasks, doc_env, doc_env_groups, raw_output = await self.fetch_tasks(
-            workflow, clone_dir=clone_dir,
-        )
-
-        # Resolve tasks' working_dir relative to clone directory
-        if clone_dir:
-            for task in tasks:
-                if task.working_dir == "~":
-                    task.working_dir = clone_dir
-                elif not task.working_dir.startswith(("/", "~")):
-                    task.working_dir = f"{clone_dir}/{task.working_dir}"
-
-        self._resolve_wildcard_deps(tasks)
-        self._validate_dependencies(tasks)
-
-        preview_run_id = "preview"
-        log_dir = "~/.cache/scripthut/logs"
-
-        ssh_client = self.get_ssh_client(backend_name)
-        if ssh_client and log_dir.startswith("~"):
-            stdout, _, _ = await ssh_client.run_command("echo $HOME")
-            home_dir = stdout.strip()
-            log_dir = log_dir.replace("~", home_dir, 1)
-
-        account = self.get_backend_account(backend_name)
-        login_shell = self.get_backend_login_shell(backend_name)
-
-        preview_created_at = datetime.now(timezone.utc)
-        git_repo = workflow.git.repo if workflow.git else None
-        git_branch = workflow.git.branch if workflow.git else None
-        job_backend = self.get_job_backend(backend_name)
-
-        task_details = []
-        for task in tasks:
-            merged_env, extra_init = resolve_for_task(
-                self.config,
-                backend_name=backend_name,
-                workflow_name=workflow_name,
-                run_id=preview_run_id,
-                created_at=preview_created_at,
-                task=task,
-                git_repo=git_repo,
-                git_branch=git_branch,
-                git_sha=commit_hash,
-                doc_env=doc_env,
-                doc_env_groups=doc_env_groups,
-            )
-            if job_backend:
-                script = job_backend.generate_script(
-                    task, preview_run_id, log_dir,
-                    account=account, login_shell=login_shell,
-                    env_vars=merged_env, extra_init=extra_init,
-                )
-            else:
-                script = task.to_sbatch_script(
-                    preview_run_id, log_dir,
-                    account=account, login_shell=login_shell,
-                    env_vars=merged_env, extra_init=extra_init,
-                )
-            task_details.append({
-                "task": task,
-                "submit_script": script,
-                "output_path": task.get_output_path(preview_run_id, log_dir),
-                "error_path": task.get_error_path(preview_run_id, log_dir),
-            })
-
-        logger.info(f"Dry run for workflow '{workflow_name}': {len(tasks)} tasks")
-
-        try:
-            raw_output_formatted = json.dumps(json.loads(raw_output), indent=2)
-        except (json.JSONDecodeError, TypeError):
-            raw_output_formatted = raw_output
-
-        return {
-            "workflow": workflow,
-            "backend_name": backend_name,
-            "task_count": len(tasks),
-            "max_concurrent": workflow.max_concurrent,
-            "account": account,
-            "commit_hash": commit_hash,
-            "tasks": task_details,
-            "raw_output": raw_output_formatted,
-        }
-
     def get_backend_account(self, backend_name: str) -> str | None:
         """Get the account for a backend (Slurm --account, PBS -A, etc.)."""
         backend = self.config.get_backend(backend_name)
@@ -747,15 +559,13 @@ class RunManager:
     ) -> Run:
         """Create a one-task run from an inline ``TaskDefinition``.
 
-        Unlike :meth:`create_run`, this skips the workflow lookup and
-        task-generator round-trip — useful for ad-hoc CLI submissions
-        and coding agents that synthesize a TaskDefinition directly.
+        Useful for ad-hoc CLI submissions and coding agents that
+        synthesize a TaskDefinition directly.
 
         ``run_name`` becomes the run's ``workflow_name``; if omitted, a
-        synthetic ``_adhoc/<task_id>`` label is used so the run can be
-        located later via :meth:`get_workflow`-style queries returning
-        ``None`` (the run still appears in `run list` and on the
-        dashboard, just without a configured workflow behind it).
+        synthetic ``_adhoc/<task_id>`` label is used (the run still
+        appears in `run list` and on the dashboard, just without a
+        configured source behind it).
 
         Raises ``ValueError`` if the backend isn't in the config or
         doesn't have an available driver.
@@ -773,69 +583,6 @@ class RunManager:
             [task], workflow_name, backend_name, max_concurrent=None,
             ssh_client=ssh_client,
         )
-
-    async def create_run(
-        self, workflow_name: str, *, backend: str | None = None,
-    ) -> Run:
-        """Create a new run from a workflow.
-
-        ``backend`` overrides the workflow's configured backend at submit
-        time (e.g. to retarget a Slurm workflow at a PBS cluster).  The
-        backend must exist in the config and have an available driver.
-        """
-        workflow = self.get_workflow(workflow_name)
-        if workflow is None:
-            raise ValueError(f"Workflow '{workflow_name}' not found")
-
-        backend_name = backend or workflow.backend
-        if backend and self.config.get_backend(backend) is None:
-            raise ValueError(f"Backend '{backend}' not found in config")
-
-        ssh_client = self.get_ssh_client(backend_name)
-        job_backend = self.get_job_backend(backend_name)
-        if ssh_client is None and job_backend is None:
-            raise ValueError(
-                f"Backend '{backend_name}' is not available"
-            )
-
-        # Clone git repo on the backend if configured and SSH-capable.
-        # For API-only backends (e.g. Batch), the commit hash is resolved locally
-        # so the container can check out the same ref at runtime.
-        clone_dir: str | None = None
-        commit_hash: str | None = None
-        if workflow.git is not None:
-            if ssh_client is not None:
-                clone_dir, commit_hash = await self._ensure_repo_cloned(
-                    ssh_client, workflow
-                )
-            else:
-                commit_hash = await self._resolve_commit_locally(workflow)
-
-        tasks, doc_env, doc_env_groups, _ = await self.fetch_tasks(
-            workflow, clone_dir=clone_dir,
-        )
-
-        # Resolve tasks' working_dir relative to the clone directory
-        if clone_dir:
-            self._resolve_working_dirs(tasks, clone_dir)
-
-        git_repo = workflow.git.repo if workflow.git is not None else None
-        git_branch = workflow.git.branch if workflow.git is not None else None
-        run = await self._build_run(
-            tasks, workflow_name, backend_name, workflow.max_concurrent, ssh_client,
-            git_repo=git_repo, git_branch=git_branch, commit_hash=commit_hash,
-            doc_env=doc_env, doc_env_groups=doc_env_groups,
-        )
-        return run
-
-    async def _resolve_commit_locally(
-        self, workflow: WorkflowConfig,
-    ) -> str | None:
-        """Best-effort resolution of a git workflow's ref to a commit hash."""
-        git_cfg = workflow.git
-        if git_cfg is None:
-            return None
-        return await self._ls_remote_commit(git_cfg.repo, git_cfg.branch)
 
     async def _ls_remote_commit(
         self, repo: str, branch: str,
@@ -967,129 +714,6 @@ class RunManager:
             tasks, workflow_name, backend_name, None, ssh_client,
             git_repo=git_repo, git_branch=git_branch, commit_hash=commit_hash,
             doc_env=doc_env, doc_env_groups=doc_env_groups,
-        )
-        return run
-
-    async def rerun_from(self, run_id: str) -> Run:
-        """Re-run using the parameters of an existing run.
-
-        If the original clone directory still exists on the backend, it is
-        reused.  Otherwise the repo is cloned again and checked out at the
-        same commit hash that was recorded on the original run.
-        """
-        original = self.get_run(run_id)
-        if original is None:
-            raise ValueError(f"Run '{run_id}' not found")
-
-        workflow = self.get_workflow(original.workflow_name)
-        if workflow is None:
-            raise ValueError(
-                f"Workflow '{original.workflow_name}' not found in current config"
-            )
-
-        ssh_client = self.get_ssh_client(original.backend_name)
-        if ssh_client is None:
-            raise ValueError(
-                f"No SSH connection to backend '{original.backend_name}'"
-            )
-
-        clone_dir: str | None = None
-        commit_hash = original.commit_hash
-
-        if workflow.git is not None and commit_hash:
-            git_cfg = workflow.git
-            short_hash = commit_hash[:12]
-            expected_dir = f"{git_cfg.clone_dir}/{short_hash}"
-
-            # Check if the original clone directory still exists
-            stdout, _, _ = await ssh_client.run_command(
-                f"test -d {expected_dir} && echo exists"
-            )
-            if "exists" in stdout:
-                logger.info(
-                    f"Rerun: reusing existing clone at {expected_dir}"
-                )
-                clone_dir = expected_dir
-            else:
-                # Clone again at the exact commit
-                logger.info(
-                    f"Rerun: clone not found at {expected_dir}, "
-                    f"cloning {git_cfg.repo} at {commit_hash}"
-                )
-                remote_key: str | None = None
-                try:
-                    if git_cfg.deploy_key is not None:
-                        key_path = git_cfg.deploy_key.expanduser()
-                        remote_key = await self._upload_deploy_key(
-                            ssh_client, key_path
-                        )
-                    git_ssh = self._build_remote_git_ssh_command(remote_key)
-
-                    # Full clone (need full history to checkout arbitrary SHA)
-                    cmd = (
-                        f"{git_ssh}git clone --single-branch "
-                        f"--branch {git_cfg.branch} "
-                        f"{git_cfg.repo} {expected_dir}"
-                    )
-                    _, stderr, exit_code = await ssh_client.run_command(
-                        cmd, timeout=300
-                    )
-                    if exit_code != 0:
-                        raise ValueError(f"Git clone failed: {stderr}")
-
-                    # Checkout the exact commit
-                    cmd = f"cd {expected_dir} && git checkout {commit_hash}"
-                    _, stderr, exit_code = await ssh_client.run_command(
-                        cmd, timeout=60
-                    )
-                    if exit_code != 0:
-                        raise ValueError(
-                            f"Git checkout {commit_hash} failed: {stderr}"
-                        )
-
-                    # Run postclone command if configured
-                    if git_cfg.postclone:
-                        logger.info(
-                            f"Running postclone command in {expected_dir}"
-                        )
-                        cmd = f"cd {expected_dir} && {git_cfg.postclone}"
-                        _, stderr, exit_code = await ssh_client.run_command(
-                            cmd, timeout=300
-                        )
-                        if exit_code != 0:
-                            raise ValueError(
-                                f"Postclone command failed: {stderr}"
-                            )
-
-                    clone_dir = expected_dir
-                finally:
-                    if remote_key is not None:
-                        await self._cleanup_deploy_key(
-                            ssh_client, remote_key
-                        )
-
-        # Re-fetch tasks from the workflow command in the clone dir
-        tasks, doc_env, doc_env_groups, _ = await self.fetch_tasks(
-            workflow, clone_dir=clone_dir,
-        )
-
-        # Resolve working_dir relative to clone directory
-        if clone_dir:
-            self._resolve_working_dirs(tasks, clone_dir)
-
-        git_repo = workflow.git.repo if workflow.git is not None else None
-        git_branch = workflow.git.branch if workflow.git is not None else None
-        run = await self._build_run(
-            tasks,
-            original.workflow_name,
-            original.backend_name,
-            original.max_concurrent,
-            ssh_client,
-            git_repo=git_repo,
-            git_branch=git_branch,
-            commit_hash=commit_hash,
-            doc_env=doc_env,
-            doc_env_groups=doc_env_groups,
         )
         return run
 

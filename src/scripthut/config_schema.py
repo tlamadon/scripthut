@@ -469,59 +469,6 @@ SourceConfig = Annotated[
 ]
 
 
-class WorkflowGitConfig(BaseModel):
-    """Git repository to clone on the backend before running the workflow command."""
-
-    repo: str = Field(description="Git repository URL (SSH format recommended)")
-    branch: str = Field(default="main", description="Branch to clone")
-    deploy_key: Path | None = Field(
-        default=None,
-        description="Path to deploy key on the local machine (will be uploaded to backend temporarily)",
-    )
-    clone_dir: str = Field(
-        default="~/scripthut-repos",
-        description="Parent directory on the backend where repos are cloned into (clone goes into <clone_dir>/<commit_hash>/)",
-    )
-    postclone: str | None = Field(
-        default=None,
-        description="Shell command to run in the clone directory after cloning (e.g. to remove large files)",
-    )
-
-    @property
-    def deploy_key_resolved(self) -> Path | None:
-        """Return the resolved deploy key path with ~ expansion."""
-        return self.deploy_key.expanduser() if self.deploy_key else None
-
-
-class WorkflowConfig(BaseModel):
-    """Workflow configuration - SSH command that returns JSON task list."""
-
-    name: str = Field(description="Unique identifier for this workflow")
-    backend: str = Field(description="Name of the backend to submit tasks to")
-    command: str = Field(description="SSH command that returns JSON task list")
-    max_concurrent: int | None = Field(
-        default=None,
-        ge=1,
-        description="Max concurrent tasks per run (None = backend limit only)",
-    )
-    description: str = Field(
-        default="",
-        description="Human-readable description of this workflow",
-    )
-    git: WorkflowGitConfig | None = Field(
-        default=None,
-        description="Optional: clone a git repo on the backend before running the workflow command",
-    )
-    env: list[EnvRule] = Field(
-        default_factory=list,
-        description="Workflow-level env rules applied to every task in the workflow",
-    )
-    env_groups: dict[str, list[EnvRule]] = Field(
-        default_factory=dict,
-        description="Named, reusable rule lists. Visible to this workflow's env: and to its tasks.",
-    )
-
-
 class ProjectConfig(BaseModel):
     """A git repository on a backend containing sflow.json workflow files."""
 
@@ -694,10 +641,6 @@ class ScriptHutConfig(BaseModel):
         default_factory=list,
         description="List of sources (git repos or backend paths) with workflow definitions",
     )
-    workflows: list[WorkflowConfig] = Field(
-        default_factory=list,
-        description="List of workflows (SSH commands returning JSON task lists)",
-    )
     projects: list[ProjectConfig] = Field(
         default_factory=list,
         description="List of git projects containing sflow.json workflow files",
@@ -735,13 +678,6 @@ class ScriptHutConfig(BaseModel):
         for source in self.sources:
             if source.name == name:
                 return source
-        return None
-
-    def get_workflow(self, name: str) -> WorkflowConfig | None:
-        """Get a workflow by name."""
-        for workflow in self.workflows:
-            if workflow.name == name:
-                return workflow
         return None
 
     def get_project(self, name: str) -> ProjectConfig | None:

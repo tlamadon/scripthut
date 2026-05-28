@@ -189,17 +189,14 @@ def collect_rules(
 ) -> list[LabeledRule]:
     """Concatenate rules from every layer in fixed order, with source labels.
 
-    Layer order: backend → server → workflow (config) → workflow-doc (the
-    generator's JSON top-level ``env:``) → task.
+    Layer order: backend → server → workflow-doc (the generator's JSON
+    top-level ``env:``) → task.
     """
     out: list[LabeledRule] = []
     backend = config.get_backend(backend_name)
     if backend is not None and getattr(backend, "env", None):
         out.extend(LabeledRule(r, f"backend:{backend_name}") for r in backend.env)
     out.extend(LabeledRule(r, "server") for r in config.env)
-    workflow = config.get_workflow(workflow_name)
-    if workflow is not None and workflow.env:
-        out.extend(LabeledRule(r, f"workflow:{workflow_name}") for r in workflow.env)
     if doc_env:
         out.extend(LabeledRule(r, "workflow-doc") for r in doc_env)
     out.extend(LabeledRule(r, "task") for r in task.env)
@@ -215,17 +212,14 @@ def collect_groups(
 ) -> dict[str, list[EnvRule]]:
     """Merge env_groups from every layer; later layers shadow earlier by name.
 
-    Order: backend → server → workflow (config) → workflow-doc (the JSON
-    document's top-level ``env_groups:``). Later definitions win.
+    Order: backend → server → workflow-doc (the JSON document's top-level
+    ``env_groups:``). Later definitions win.
     """
     groups: dict[str, list[EnvRule]] = {}
     backend = config.get_backend(backend_name)
     if backend is not None:
         groups.update(getattr(backend, "env_groups", {}) or {})
     groups.update(getattr(config, "env_groups", {}) or {})
-    workflow = config.get_workflow(workflow_name)
-    if workflow is not None:
-        groups.update(getattr(workflow, "env_groups", {}) or {})
     if doc_env_groups:
         groups.update(doc_env_groups)
     return groups

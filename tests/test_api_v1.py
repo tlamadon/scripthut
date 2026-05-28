@@ -9,7 +9,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from scripthut.api import make_api_router
-from scripthut.config_schema import ProjectConfig, WorkflowConfig
+from scripthut.config_schema import ProjectConfig
 from scripthut.runs.models import Run, RunItem, RunItemStatus, TaskDefinition
 
 # -- fixtures ----------------------------------------------------------------
@@ -41,7 +41,6 @@ def _make_run(
 
 def _make_state(
     run_manager: MagicMock | None = None,
-    workflows: list[WorkflowConfig] | None = None,
     projects: list[ProjectConfig] | None = None,
 ):
     """Build a minimal AppState-like object that satisfies the router."""
@@ -49,15 +48,10 @@ def _make_state(
     state.run_manager = run_manager
     state.config_error = None
     state.backends = {}
-    if workflows is not None or projects is not None:
-        wf_list = workflows or []
-        pr_list = projects or []
+    if projects is not None:
+        pr_list = projects
         state.config = MagicMock()
-        state.config.workflows = wf_list
         state.config.projects = pr_list
-        state.config.get_workflow = lambda name: next(
-            (w for w in wf_list if w.name == name), None,
-        )
         state.config.get_project = lambda name: next(
             (p for p in pr_list if p.name == name), None,
         )
@@ -71,25 +65,6 @@ def _client(state) -> TestClient:
     app = FastAPI()
     app.include_router(make_api_router(state))
     return TestClient(app)
-
-
-# -- /workflows --------------------------------------------------------------
-
-
-def test_list_workflows_returns_configured_entries():
-    workflows = [
-        WorkflowConfig(name="demo", backend="cluster", command="echo []", description="d"),
-    ]
-    state = _make_state(run_manager=MagicMock(), workflows=workflows)
-
-    resp = _client(state).get("/api/v1/workflows")
-
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["workflows"][0]["name"] == "demo"
-    assert data["workflows"][0]["has_git"] is False
-    # /workflows no longer leaks projects — see /projects instead
-    assert "projects" not in data
 
 
 def test_list_projects_returns_configured_projects():
@@ -150,16 +125,6 @@ def test_view_project_unknown_returns_404():
     assert resp.status_code == 404
 
 
-def test_list_workflows_no_config_returns_empty():
-    state = _make_state(run_manager=MagicMock(), workflows=None)
-    state.config = None
-
-    resp = _client(state).get("/api/v1/workflows")
-
-    assert resp.status_code == 200
-    assert resp.json() == {"workflows": []}
-
-
 # -- /backends ----------------------------------------------------------------
 
 
@@ -196,114 +161,6 @@ def test_list_backends_no_config_returns_empty():
     state.config = None
     resp = _client(state).get("/api/v1/backends")
     assert resp.json() == {"backends": []}
-
-
-# -- /workflows/{name}/run ---------------------------------------------------
-
-
-def test_run_workflow_returns_summary():
-    run = _make_run(
-        statuses=[RunItemStatus.SUBMITTED, RunItemStatus.PENDING, RunItemStatus.PENDING],
-    )
-    rm = MagicMock()
-    rm.create_run = AsyncMock(return_value=run)
-    state = _make_state(run_manager=rm)
-
-    resp = _client(state).post("/api/v1/workflows/demo/run")
-
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["id"] == "run123"
-    assert body["workflow_name"] == "demo"
-    assert body["task_count"] == 3
-    assert body["submitted_count"] == 1
-    assert body["status_counts"] == {"submitted": 1, "pending": 2}
-    rm.create_run.assert_awaited_once_with("demo", backend=None)
-    state.notify_poll.assert_called_once()
-
-
-def test_run_workflow_passes_backend_override():
-    run = _make_run()
-    rm = MagicMock()
-    rm.create_run = AsyncMock(return_value=run)
-    state = _make_state(run_manager=rm)
-
-    resp = _client(state).post("/api/v1/workflows/demo/run?backend=cluster-b")
-
-    assert resp.status_code == 200
-    rm.create_run.assert_awaited_once_with("demo", backend="cluster-b")
-
-
-def test_run_workflow_unknown_name_returns_422():
-    rm = MagicMock()
-    rm.create_run = AsyncMock(side_effect=ValueError("Workflow 'nope' not found"))
-    state = _make_state(run_manager=rm)
-
-    resp = _client(state).post("/api/v1/workflows/nope/run")
-
-    assert resp.status_code == 422
-    assert "not found" in resp.json()["detail"]
-
-
-def test_run_workflow_no_manager_returns_503():
-    state = _make_state(run_manager=None)
-
-    resp = _client(state).post("/api/v1/workflows/demo/run")
-
-    assert resp.status_code == 503
-
-
-# -- /workflows/{name}/dry-run -----------------------------------------------
-
-
-def test_dry_run_serializes_tasks():
-    rm = MagicMock()
-    workflow = WorkflowConfig(name="demo", backend="cluster", command="echo []")
-    rm.dry_run = AsyncMock(
-        return_value={
-            "workflow": workflow,
-            "backend_name": "cluster",
-            "task_count": 1,
-            "max_concurrent": 4,
-            "account": None,
-            "commit_hash": "abc123",
-            "tasks": [
-                {
-                    "task": TaskDefinition(id="t0", name="hello", command="echo hi"),
-                    "submit_script": "#!/bin/bash\necho hi",
-                    "output_path": "/tmp/out",
-                    "error_path": "/tmp/err",
-                }
-            ],
-            "raw_output": "[]",
-        }
-    )
-    state = _make_state(run_manager=rm)
-
-    resp = _client(state).get("/api/v1/workflows/demo/dry-run")
-
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["task_count"] == 1
-    assert body["tasks"][0]["task"]["id"] == "t0"
-    assert body["tasks"][0]["submit_script"].startswith("#!/bin/bash")
-    assert body["workflow"]["name"] == "demo"
-    rm.dry_run.assert_awaited_once_with("demo", backend=None)
-
-
-def test_dry_run_passes_backend_override():
-    rm = MagicMock()
-    workflow = WorkflowConfig(name="demo", backend="cluster", command="echo []")
-    rm.dry_run = AsyncMock(return_value={
-        "workflow": workflow, "backend_name": "cluster-b",
-        "task_count": 0, "max_concurrent": 4, "account": None,
-        "commit_hash": None, "tasks": [], "raw_output": "[]",
-    })
-    state = _make_state(run_manager=rm)
-
-    _client(state).get("/api/v1/workflows/demo/dry-run?backend=cluster-b")
-
-    rm.dry_run.assert_awaited_once_with("demo", backend="cluster-b")
 
 
 # -- /projects/{name}/run ----------------------------------------------------
@@ -384,42 +241,17 @@ def test_get_run_missing_returns_404():
 # -- /runs/{run_id}/rerun -----------------------------------------------------
 
 
-def test_rerun_default_mode_creates_new_run():
-    run = _make_run(run_id="new1", workflow_name="demo")
+def test_rerun_resets_run_in_place():
+    run = _make_run(run_id="old", workflow_name="demo")
     rm = MagicMock()
-    rm.rerun_from = AsyncMock(return_value=run)
     rm.rerun_in_place = AsyncMock(return_value=run)
     state = _make_state(run_manager=rm)
 
     resp = _client(state).post("/api/v1/runs/old/rerun")
 
     assert resp.status_code == 200
-    rm.rerun_from.assert_awaited_once_with("old")
-    rm.rerun_in_place.assert_not_awaited()
-    state.notify_poll.assert_called_once()
-
-
-def test_rerun_in_place_mode_resets_run():
-    run = _make_run(run_id="old", workflow_name="demo")
-    rm = MagicMock()
-    rm.rerun_from = AsyncMock(return_value=run)
-    rm.rerun_in_place = AsyncMock(return_value=run)
-    state = _make_state(run_manager=rm)
-
-    resp = _client(state).post("/api/v1/runs/old/rerun?mode=in_place")
-
-    assert resp.status_code == 200
     rm.rerun_in_place.assert_awaited_once_with("old")
-    rm.rerun_from.assert_not_awaited()
-
-
-def test_rerun_invalid_mode_returns_422():
-    rm = MagicMock()
-    state = _make_state(run_manager=rm)
-
-    resp = _client(state).post("/api/v1/runs/old/rerun?mode=bogus")
-
-    assert resp.status_code == 422
+    state.notify_poll.assert_called_once()
 
 
 # -- /runs/{run_id}/tasks/{task_id}/logs --------------------------------------

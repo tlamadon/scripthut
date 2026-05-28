@@ -188,7 +188,6 @@ def _make_manager_with_run(item: RunItem) -> tuple[RunManager, Run]:
         "_Cfg",
         (),
         {
-            "get_workflow": lambda self, name: None,
             "get_backend": lambda self, name: None,
             "get_source": lambda self, name: None,
             "get_project": lambda self, name: None,

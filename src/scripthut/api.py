@@ -70,40 +70,6 @@ def _run_summary(run: Run) -> dict[str, Any]:
     }
 
 
-def _serialize_dry_run(result: dict[str, Any]) -> dict[str, Any]:
-    """Convert a ``RunManager.dry_run`` dict into a fully JSON-safe payload.
-
-    The manager returns a mix of dataclasses (``TaskDefinition``) and a
-    Pydantic ``WorkflowConfig``, both of which need explicit serialization
-    before they can be returned over HTTP.
-    """
-    workflow = result["workflow"]
-    return {
-        "workflow": {
-            "name": workflow.name,
-            "backend": workflow.backend,
-            "description": workflow.description,
-            "max_concurrent": workflow.max_concurrent,
-            "has_git": workflow.git is not None,
-        },
-        "backend_name": result["backend_name"],
-        "task_count": result["task_count"],
-        "max_concurrent": result["max_concurrent"],
-        "account": result["account"],
-        "commit_hash": result["commit_hash"],
-        "tasks": [
-            {
-                "task": entry["task"].to_dict(),
-                "submit_script": entry["submit_script"],
-                "output_path": entry["output_path"],
-                "error_path": entry["error_path"],
-            }
-            for entry in result["tasks"]
-        ],
-        "raw_output": result["raw_output"],
-    }
-
-
 def make_api_router(state: AppState) -> APIRouter:
     """Build the ``/api/v1`` router bound to the given app state.
 
@@ -149,23 +115,6 @@ def make_api_router(state: AppState) -> APIRouter:
                 "max_concurrent": getattr(cfg, "max_concurrent", None),
             })
         return {"backends": result}
-
-    @router.get("/workflows")
-    async def list_workflows() -> dict[str, Any]:
-        if state.config is None:
-            return {"workflows": []}
-        return {
-            "workflows": [
-                {
-                    "name": wf.name,
-                    "backend": wf.backend,
-                    "description": wf.description,
-                    "max_concurrent": wf.max_concurrent,
-                    "has_git": wf.git is not None,
-                }
-                for wf in state.config.workflows
-            ],
-        }
 
     @router.get("/projects")
     async def list_projects() -> dict[str, Any]:
@@ -217,19 +166,6 @@ def make_api_router(state: AppState) -> APIRouter:
             "discover_error": discover_error,
         }
 
-    @router.post("/workflows/{name}/run")
-    async def run_workflow(name: str, backend: str | None = None) -> dict[str, Any]:
-        rm = _require_manager()
-        try:
-            run = await rm.create_run(name, backend=backend)
-        except ValueError as e:
-            raise HTTPException(status_code=422, detail=str(e))
-        except Exception as e:
-            logger.error(f"Failed to create run for workflow '{name}': {e}")
-            raise HTTPException(status_code=500, detail=str(e))
-        state.notify_poll()
-        return _run_summary(run)
-
     @router.post("/tasks/run")
     async def run_adhoc_task(payload: dict) -> dict[str, Any]:
         """Submit a single ad-hoc task as a one-item run.
@@ -263,18 +199,6 @@ def make_api_router(state: AppState) -> APIRouter:
             raise HTTPException(status_code=500, detail=str(e))
         state.notify_poll()
         return _run_summary(run)
-
-    @router.get("/workflows/{name}/dry-run")
-    async def dry_run_workflow(name: str, backend: str | None = None) -> dict[str, Any]:
-        rm = _require_manager()
-        try:
-            result = await rm.dry_run(name, backend=backend)
-        except ValueError as e:
-            raise HTTPException(status_code=422, detail=str(e))
-        except Exception as e:
-            logger.error(f"Dry run failed for workflow '{name}': {e}")
-            raise HTTPException(status_code=500, detail=str(e))
-        return _serialize_dry_run(result)
 
     @router.post("/projects/{name}/run")
     async def run_project_workflow(
@@ -335,17 +259,10 @@ def make_api_router(state: AppState) -> APIRouter:
         return {"run_id": run_id, "cancelled": True}
 
     @router.post("/runs/{run_id}/rerun")
-    async def rerun_run(run_id: str, mode: str = "new") -> dict[str, Any]:
+    async def rerun_run(run_id: str, mode: str = "in_place") -> dict[str, Any]:
         rm = _require_manager()
-        if mode not in ("new", "in_place"):
-            raise HTTPException(
-                status_code=422, detail="mode must be 'new' or 'in_place'"
-            )
         try:
-            if mode == "in_place":
-                run = await rm.rerun_in_place(run_id)
-            else:
-                run = await rm.rerun_from(run_id)
+            run = await rm.rerun_in_place(run_id)
         except ValueError as e:
             raise HTTPException(status_code=404, detail=str(e))
         except Exception as e:

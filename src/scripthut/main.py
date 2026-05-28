@@ -793,9 +793,8 @@ def reload_runtime_config(new_config: ScriptHutConfig) -> ReloadReport:
     state.filter_user = new_config.settings.filter_user
     state.filter_enabled = new_config.settings.filter_user is not None
 
-    report.reloaded.extend(["env rules", "workflows", "projects", "settings"])
+    report.reloaded.extend(["env rules", "projects", "settings"])
     report.counts["env_rules"] = len(new_config.env)
-    report.counts["workflows"] = len(new_config.workflows)
     report.counts["projects"] = len(new_config.projects)
 
     previously_disabled = set(state.disabled_sources)
@@ -1444,76 +1443,6 @@ async def delete_external_job(request: Request, job_id: str) -> HTMLResponse:
     return await jobs_partial(request)
 
 
-# Workflows and Runs Routes
-
-
-@app.get("/workflows")
-async def list_workflows() -> dict[str, Any]:
-    """List all configured workflows."""
-    if state.config is None:
-        return {"workflows": []}
-
-    return {
-        "workflows": [
-            {
-                "name": wf.name,
-                "backend": wf.backend,
-                "description": wf.description,
-                "max_concurrent": wf.max_concurrent,
-                "has_git": wf.git is not None,
-            }
-            for wf in state.config.workflows
-        ]
-    }
-
-
-@app.post("/workflows/{name}/run", response_model=None)
-async def run_workflow(name: str):
-    """Trigger a workflow to create a new run."""
-    if state.run_manager is None:
-        return JSONResponse(
-            status_code=500,
-            content={"error": "Run manager not initialized"},
-        )
-
-    try:
-        run = await state.run_manager.create_run(name)
-        return {
-            "run_id": run.id,
-            "workflow_name": run.workflow_name,
-            "backend_name": run.backend_name,
-            "task_count": len(run.items),
-            "status": run.status.value,
-        }
-    except Exception as e:
-        logger.error(f"Failed to create run for workflow '{name}': {e}")
-        return JSONResponse(
-            status_code=422,
-            content={"error": str(e)},
-        )
-
-
-@app.get("/workflows/{name}/dry-run", response_class=HTMLResponse)
-async def dry_run_workflow(request: Request, name: str) -> HTMLResponse:
-    """Dry run a workflow - show what would be submitted without creating a run."""
-    if state.run_manager is None:
-        return templates.TemplateResponse(
-            "dry_run.html",
-            {"request": request, "error": "Run manager not initialized", "result": None},
-        )
-
-    try:
-        result = await state.run_manager.dry_run(name)
-        return templates.TemplateResponse(
-            "dry_run.html",
-            {"request": request, "result": result, "error": None},
-        )
-    except ValueError as e:
-        return templates.TemplateResponse(
-            "dry_run.html",
-            {"request": request, "error": str(e), "result": None},
-        )
-
 # Project Routes
 
 
@@ -1561,7 +1490,6 @@ async def run_project_workflow(name: str, workflow: str):
 @app.get("/sources", response_class=HTMLResponse)
 async def sources_page(request: Request) -> HTMLResponse:
     """Page listing sources, projects, and workflows available to trigger."""
-    workflows = state.config.workflows if state.config else []
     projects = state.config.projects if state.config else []
 
     # Discover workflows for each project
@@ -1580,7 +1508,6 @@ async def sources_page(request: Request) -> HTMLResponse:
         "sources.html",
         {
             "request": request,
-            "workflows": workflows,
             "projects": projects,
             "project_workflows": project_workflows,
             "source_workflows": state.source_workflows,
@@ -1701,11 +1628,6 @@ def _section_summary() -> dict[str, dict[str, Any]]:
         "env_rules": {
             "label": "Env rules",
             "names": [f"rule #{i}" for i, _ in enumerate(cfg.env)],
-            "hot_reload": True,
-        },
-        "workflows": {
-            "label": "Workflows",
-            "names": [w.name for w in cfg.workflows],
             "hot_reload": True,
         },
         "projects": {
@@ -2088,12 +2010,8 @@ async def cancel_run(run_id: str) -> dict[str, Any]:
 
 
 @app.post("/runs/{run_id}/rerun")
-async def rerun_run(run_id: str, mode: str = "new") -> Response:
-    """Re-run using the parameters of an existing run (same commit hash).
-
-    Query param ``mode``: "new" (default) creates a fresh run,
-    "in_place" resets and re-submits the same run.
-    """
+async def rerun_run(run_id: str, mode: str = "in_place") -> Response:
+    """Re-run by resetting an existing run and re-submitting it in place."""
     if state.run_manager is None:
         return JSONResponse(
             status_code=500,
@@ -2101,10 +2019,7 @@ async def rerun_run(run_id: str, mode: str = "new") -> Response:
         )
 
     try:
-        if mode == "in_place":
-            run = await state.run_manager.rerun_in_place(run_id)
-        else:
-            run = await state.run_manager.rerun_from(run_id)
+        run = await state.run_manager.rerun_in_place(run_id)
         return JSONResponse(
             content={
                 "run_id": run.id,
@@ -2220,11 +2135,6 @@ async def get_task_env(run_id: str, task_id: str) -> JSONResponse:
 
     git_repo = run.git_repo
     git_branch = run.git_branch
-    if git_repo is None and state.config is not None:
-        workflow = state.config.get_workflow(run.workflow_name)
-        if workflow and workflow.git:
-            git_repo = workflow.git.repo
-            git_branch = workflow.git.branch
 
     env, extra_init, prov = resolve_for_task_detailed(
         state.run_manager.config,

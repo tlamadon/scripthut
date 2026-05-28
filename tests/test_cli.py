@@ -10,7 +10,7 @@ import httpx
 import pytest
 
 from scripthut import cli
-from scripthut.config_schema import ProjectConfig, WorkflowConfig
+from scripthut.config_schema import ProjectConfig
 from scripthut.runs.models import Run, RunItem, RunItemStatus, TaskDefinition
 
 # -- helpers -----------------------------------------------------------------
@@ -137,41 +137,6 @@ def test_resolve_server_returns_none_when_nothing_set(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_local_client_run_workflow_calls_manager():
-    run = _make_run(
-        statuses=[RunItemStatus.SUBMITTED, RunItemStatus.PENDING, RunItemStatus.PENDING],
-    )
-    runtime = MagicMock()
-    runtime.run_manager.create_run = AsyncMock(return_value=run)
-
-    client = cli.LocalClient.__new__(cli.LocalClient)
-    client._runtime = runtime
-
-    summary = await client.run_workflow("demo")
-
-    assert summary["id"] == "abc12345"
-    assert summary["task_count"] == 3
-    assert summary["submitted_count"] == 1
-    assert summary["status_counts"] == {"submitted": 1, "pending": 2}
-    runtime.run_manager.create_run.assert_awaited_once_with("demo", backend=None)
-
-
-@pytest.mark.asyncio
-async def test_local_client_list_workflows_uses_config():
-    runtime = MagicMock()
-    runtime.config.workflows = [
-        WorkflowConfig(name="alpha", backend="cluster", command="echo []"),
-    ]
-    client = cli.LocalClient.__new__(cli.LocalClient)
-    client._runtime = runtime
-
-    data = await client.list_workflows()
-
-    assert data["workflows"][0]["name"] == "alpha"
-    assert "projects" not in data
-
-
-@pytest.mark.asyncio
 async def test_local_client_list_projects_uses_config():
     runtime = MagicMock()
     runtime.config.projects = [
@@ -294,32 +259,6 @@ def _mock_remote(handler) -> cli.RemoteClient:
 
 
 @pytest.mark.asyncio
-async def test_remote_client_run_workflow_posts_and_parses():
-    received: dict = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        received["url"] = str(request.url)
-        received["method"] = request.method
-        return httpx.Response(
-            200,
-            json={
-                "id": "abc12345", "workflow_name": "demo", "backend_name": "cluster",
-                "created_at": "2026-05-15T12:00:00+00:00", "status": "running",
-                "task_count": 2, "completed_count": 0, "submitted_count": 1,
-                "status_counts": {"submitted": 1, "pending": 1},
-            },
-        )
-
-    client = _mock_remote(handler)
-    summary = await client.run_workflow("demo")
-    await client._client.aclose()
-
-    assert received["method"] == "POST"
-    assert received["url"].endswith("/api/v1/workflows/demo/run")
-    assert summary["id"] == "abc12345"
-
-
-@pytest.mark.asyncio
 async def test_remote_client_run_project_passes_workflow_query():
     received: dict = {}
 
@@ -336,18 +275,20 @@ async def test_remote_client_run_project_passes_workflow_query():
 
 
 @pytest.mark.asyncio
-async def test_remote_client_rerun_passes_mode():
+async def test_remote_client_rerun_posts_to_endpoint():
     received: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
         received["url"] = str(request.url)
+        received["method"] = request.method
         return httpx.Response(200, json={"id": "y"})
 
     client = _mock_remote(handler)
-    await client.rerun("abc", mode="in_place")
+    await client.rerun("abc")
     await client._client.aclose()
 
-    assert "mode=in_place" in received["url"]
+    assert received["method"] == "POST"
+    assert received["url"].endswith("/runs/abc/rerun")
 
 
 @pytest.mark.asyncio
@@ -377,7 +318,7 @@ async def test_remote_client_raises_runtime_error_on_4xx():
 
     client = _mock_remote(handler)
     with pytest.raises(RuntimeError, match="HTTP 422.*Workflow not found"):
-        await client.run_workflow("nope")
+        await client.run_project_workflow("proj", "missing/sflow.json")
     await client._client.aclose()
 
 
@@ -385,34 +326,19 @@ async def test_remote_client_raises_runtime_error_on_4xx():
 
 
 @pytest.mark.asyncio
-async def test_workflow_run_local_uses_local_client(capsys):
-    run = _make_run(statuses=[RunItemStatus.SUBMITTED])
-    fake = _async_ctx(MagicMock())
-    fake.run_workflow = AsyncMock(return_value=cli._summary_from_run(run))
-
-    args = _ns(name="demo", project=None, backend=None)
-    with patch.object(cli, "_make_client", return_value=fake):
-        with patch.object(cli, "_resolve_server", return_value=None):
-            rc = await cli._cmd_workflow_run(args)
-
-    fake.run_workflow.assert_awaited_once_with("demo", backend=None)
-    out = capsys.readouterr().out
-    assert "Submitted run abc12345" in out
-    assert rc == 0
-
-
-@pytest.mark.asyncio
 async def test_workflow_run_forwards_backend_override():
-    run = _make_run(statuses=[RunItemStatus.SUBMITTED])
+    run = _make_run(workflow_name="proj/sub", statuses=[RunItemStatus.SUBMITTED])
     fake = _async_ctx(MagicMock())
-    fake.run_workflow = AsyncMock(return_value=cli._summary_from_run(run))
+    fake.run_project_workflow = AsyncMock(return_value=cli._summary_from_run(run))
 
-    args = _ns(name="demo", project=None, backend="cluster-b")
+    args = _ns(name="sub/sflow.json", project="proj", backend="cluster-b")
     with patch.object(cli, "_make_client", return_value=fake):
         with patch.object(cli, "_resolve_server", return_value=None):
             await cli._cmd_workflow_run(args)
 
-    fake.run_workflow.assert_awaited_once_with("demo", backend="cluster-b")
+    fake.run_project_workflow.assert_awaited_once_with(
+        "proj", "sub/sflow.json", backend="cluster-b",
+    )
 
 
 @pytest.mark.asyncio
@@ -614,32 +540,18 @@ async def test_run_cancel_calls_client(capsys):
 
 
 @pytest.mark.asyncio
-async def test_run_rerun_default_mode_is_new(capsys):
+async def test_run_rerun_calls_client(capsys):
     run = _make_run(statuses=[RunItemStatus.SUBMITTED])
     fake = _async_ctx(MagicMock())
     fake.rerun = AsyncMock(return_value=cli._summary_from_run(run))
 
-    args = _ns(id="old", in_place=False)
+    args = _ns(id="old")
     with patch.object(cli, "_make_client", return_value=fake):
         with patch.object(cli, "_resolve_server", return_value=None):
             rc = await cli._cmd_run_rerun(args)
 
-    fake.rerun.assert_awaited_once_with("old", mode="new")
+    fake.rerun.assert_awaited_once_with("old")
     assert rc == 0
-
-
-@pytest.mark.asyncio
-async def test_run_rerun_in_place_passes_mode():
-    run = _make_run(statuses=[RunItemStatus.SUBMITTED])
-    fake = _async_ctx(MagicMock())
-    fake.rerun = AsyncMock(return_value=cli._summary_from_run(run))
-
-    args = _ns(id="old", in_place=True)
-    with patch.object(cli, "_make_client", return_value=fake):
-        with patch.object(cli, "_resolve_server", return_value=None):
-            await cli._cmd_run_rerun(args)
-
-    fake.rerun.assert_awaited_once_with("old", mode="in_place")
 
 
 @pytest.mark.asyncio

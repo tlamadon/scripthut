@@ -258,9 +258,6 @@ def _merge_configs(
     merged_stacks = list(
         {**by_name(global_cfg.stacks), **by_name(project_cfg.stacks)}.values()
     )
-    merged_workflows = list(
-        {**by_name(global_cfg.workflows), **by_name(project_cfg.workflows)}.values()
-    )
     merged_projects = list(
         {**by_name(global_cfg.projects), **by_name(project_cfg.projects)}.values()
     )
@@ -269,7 +266,6 @@ def _merge_configs(
 
     return global_cfg.model_copy(update={
         "stacks": merged_stacks,
-        "workflows": merged_workflows,
         "projects": merged_projects,
         "env_groups": merged_env_groups,
         "env": merged_env,

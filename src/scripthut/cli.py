@@ -198,21 +198,6 @@ class LocalClient:
             ]
         }
 
-    async def list_workflows(self) -> dict[str, Any]:
-        config = self.runtime.config
-        return {
-            "workflows": [
-                {
-                    "name": wf.name,
-                    "backend": wf.backend,
-                    "description": wf.description,
-                    "max_concurrent": wf.max_concurrent,
-                    "has_git": wf.git is not None,
-                }
-                for wf in config.workflows
-            ],
-        }
-
     async def list_projects(self) -> dict[str, Any]:
         config = self.runtime.config
         return {
@@ -265,12 +250,6 @@ class LocalClient:
             runs = runs[:limit]
         return {"runs": [_summary_from_run(r) for r in runs]}
 
-    async def run_workflow(
-        self, name: str, *, backend: str | None = None,
-    ) -> dict[str, Any]:
-        run = await self.runtime.run_manager.create_run(name, backend=backend)
-        return _summary_from_run(run)
-
     async def run_task(
         self, task_dict: dict, backend: str, run_name: str | None = None,
     ) -> dict[str, Any]:
@@ -289,14 +268,6 @@ class LocalClient:
             project, workflow, backend=backend,
         )
         return _summary_from_run(run)
-
-    async def view_workflow(
-        self, name: str, *, backend: str | None = None,
-    ) -> dict[str, Any]:
-        from scripthut.api import _serialize_dry_run
-
-        result = await self.runtime.run_manager.dry_run(name, backend=backend)
-        return _serialize_dry_run(result)
 
     async def view_run(self, run_id: str) -> dict[str, Any]:
         # Local mode reads from storage rather than in-memory state since
@@ -327,16 +298,13 @@ class LocalClient:
             raise RuntimeError(f"Run '{run_id}' not found")
         return {"run_id": run_id, "cancelled": True}
 
-    async def rerun(self, run_id: str, mode: str = "new") -> dict[str, Any]:
+    async def rerun(self, run_id: str) -> dict[str, Any]:
         rm = self.runtime.run_manager
         if run_id not in rm.runs and rm.storage is not None:
             all_runs = rm.storage.load_all_runs()
             if run_id in all_runs:
                 rm.runs[run_id] = all_runs[run_id]
-        if mode == "in_place":
-            run = await rm.rerun_in_place(run_id)
-        else:
-            run = await rm.rerun_from(run_id)
+        run = await rm.rerun_in_place(run_id)
         return _summary_from_run(run)
 
     async def fetch_logs(
@@ -399,9 +367,6 @@ class RemoteClient:
     async def list_backends(self) -> dict[str, Any]:
         return await self._get("/backends")
 
-    async def list_workflows(self) -> dict[str, Any]:
-        return await self._get("/workflows")
-
     async def list_projects(self) -> dict[str, Any]:
         return await self._get("/projects")
 
@@ -410,11 +375,6 @@ class RemoteClient:
 
     async def list_runs(self, limit: int | None = None) -> dict[str, Any]:
         return await self._get("/runs", limit=limit)
-
-    async def run_workflow(
-        self, name: str, *, backend: str | None = None,
-    ) -> dict[str, Any]:
-        return await self._post(f"/workflows/{name}/run", backend=backend)
 
     async def run_task(
         self, task_dict: dict, backend: str, run_name: str | None = None,
@@ -437,19 +397,14 @@ class RemoteClient:
             f"/projects/{project}/run", workflow=workflow, backend=backend,
         )
 
-    async def view_workflow(
-        self, name: str, *, backend: str | None = None,
-    ) -> dict[str, Any]:
-        return await self._get(f"/workflows/{name}/dry-run", backend=backend)
-
     async def view_run(self, run_id: str) -> dict[str, Any]:
         return await self._get(f"/runs/{run_id}")
 
     async def cancel_run(self, run_id: str) -> dict[str, Any]:
         return await self._post(f"/runs/{run_id}/cancel")
 
-    async def rerun(self, run_id: str, mode: str = "new") -> dict[str, Any]:
-        return await self._post(f"/runs/{run_id}/rerun", mode=mode)
+    async def rerun(self, run_id: str) -> dict[str, Any]:
+        return await self._post(f"/runs/{run_id}/rerun")
 
     async def fetch_logs(
         self, run_id: str, task_id: str, log_type: str = "output",
@@ -723,16 +678,6 @@ def _render_agent_prompt(config: ScriptHutConfig | None) -> str:
             )
             out.append("")
 
-        # ---- Workflows ----------------------------------------------------
-        out.append("### Workflows")
-        if not config.workflows:
-            out.append("_No workflows configured (use `scripthut task run` for one-off work)._\n")
-        else:
-            for w in config.workflows:
-                desc = f" — {w.description}" if w.description else ""
-                out.append(f"- `{w.name}` (backend: `{w.backend}`){desc}")
-            out.append("")
-
     # ---------- static reference ------------------------------------------
 
     out.append("## Submitting work — pick the smallest tool that fits\n")
@@ -791,12 +736,12 @@ def _render_agent_prompt(config: ScriptHutConfig | None) -> str:
         "template and override single fields per submission.\n"
     )
 
-    out.append("### Configured workflow (when one matches the task)\n")
+    out.append("### Project workflow (an sflow.json in a configured project)\n")
     out.append(
         "```bash\n"
-        "scripthut workflow run <name> --json\n"
+        "scripthut workflow run <sflow.json> --project <name> --json\n"
         "```\n"
-        "Prefer a configured workflow over ad-hoc when one already does what "
+        "Prefer a project workflow over ad-hoc when one already does what "
         "you need — it carries the project's resolved env, partition map, "
         "and stack assumptions.\n"
     )
@@ -840,7 +785,7 @@ def _render_agent_prompt(config: ScriptHutConfig | None) -> str:
         "scripthut run view <id> --json              # one run with item statuses\n"
         "scripthut run logs <id> <task_id> --tail 100         # stdout\n"
         "scripthut run logs <id> <task_id> --error --tail 100 # stderr\n"
-        "scripthut workflow view <name> --json       # preview a workflow's tasks\n"
+        "scripthut project view <name> --json        # list a project's sflow.json workflows\n"
         "```\n"
     )
 
@@ -881,8 +826,8 @@ def _render_agent_prompt(config: ScriptHutConfig | None) -> str:
         "1. `scripthut agent prompt` — re-read whenever the user's project "
         "context changes.\n"
         "2. `scripthut backend list --json` — confirm targets are connected.\n"
-        "3. `scripthut workflow view <name> --json` if you might use an "
-        "existing workflow instead of ad-hoc — saves work.\n"
+        "3. `scripthut project view <name> --json` if you might trigger an "
+        "existing project workflow instead of ad-hoc — saves work.\n"
         "4. If using a stack: `scripthut stack check <name> --json`; install "
         "with `scripthut stack install <name>` if not `ready`.\n"
         "5. `scripthut task run ... --dry-run` to print the assembled "
@@ -1200,29 +1145,6 @@ async def _cmd_stack_delete(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
-# `workflow` subcommands
-# ---------------------------------------------------------------------------
-
-
-async def _cmd_workflow_list(args: argparse.Namespace) -> int:
-    async with _make_client(args) as client:
-        data = await client.list_workflows()
-    if args.json:
-        print(json.dumps(data, indent=2))
-        return 0
-    workflows = data.get("workflows", [])
-    if not workflows:
-        print("No workflows configured.  See `scripthut project list` for git projects.")
-        return 0
-    print("Workflows:")
-    for wf in workflows:
-        git = " (git)" if wf.get("has_git") else ""
-        desc = f" — {wf['description']}" if wf.get("description") else ""
-        print(f"  {wf['name']}  [{wf['backend']}]{git}{desc}")
-    return 0
-
-
-# ---------------------------------------------------------------------------
 # `project` subcommands
 # ---------------------------------------------------------------------------
 
@@ -1269,36 +1191,12 @@ async def _cmd_project_view(args: argparse.Namespace) -> int:
     return 0
 
 
-async def _cmd_workflow_view(args: argparse.Namespace) -> int:
-    async with _make_client(args) as client:
-        data = await client.view_workflow(args.name, backend=args.backend)
-    if args.json:
-        print(json.dumps(data, indent=2))
-        return 0
-    wf = data["workflow"]
-    print(f"Workflow '{wf['name']}' on backend '{data['backend_name']}'")
-    print(f"  tasks: {data['task_count']}, max_concurrent: {data['max_concurrent']}")
-    if data.get("commit_hash"):
-        print(f"  commit: {data['commit_hash']}")
-    for entry in data["tasks"]:
-        task = entry["task"]
-        deps = ", ".join(task.get("dependencies", [])) or "-"
-        print(
-            f"  - {task['id']}: {task['name']}  "
-            f"({task['cpus']}cpu, {task['memory']}, {task['time_limit']}, deps={deps})"
-        )
-    return 0
-
-
 async def _cmd_workflow_run(args: argparse.Namespace) -> int:
     server = _resolve_server(args)
     async with _make_client(args) as client:
-        if args.project:
-            summary = await client.run_project_workflow(
-                args.project, args.name, backend=args.backend,
-            )
-        else:
-            summary = await client.run_workflow(args.name, backend=args.backend)
+        summary = await client.run_project_workflow(
+            args.project, args.name, backend=args.backend,
+        )
     _print_run_submitted(summary, remote_base=server)
     return 0
 
@@ -1394,9 +1292,8 @@ async def _cmd_run_cancel(args: argparse.Namespace) -> int:
 
 async def _cmd_run_rerun(args: argparse.Namespace) -> int:
     server = _resolve_server(args)
-    mode = "in_place" if args.in_place else "new"
     async with _make_client(args) as client:
-        summary = await client.rerun(args.id, mode=mode)
+        summary = await client.rerun(args.id)
     _print_run_submitted(summary, remote_base=server)
     return 0
 
@@ -1484,30 +1381,15 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     # ----- workflow ---------------------------------------------------------
-    p_wf = sub.add_parser("workflow", help="Manage workflows")
+    p_wf = sub.add_parser("workflow", help="Run project workflows")
     wf_sub = p_wf.add_subparsers(dest="wf_cmd", required=True)
 
-    p_wf_list = wf_sub.add_parser("list", help="List configured workflows and projects")
-    p_wf_list.add_argument("--json", action="store_true")
-    _add_common(p_wf_list)
-    p_wf_list.set_defaults(handler=_cmd_workflow_list)
-
-    p_wf_view = wf_sub.add_parser("view", help="Preview a workflow's tasks (dry run)")
-    p_wf_view.add_argument("name")
-    p_wf_view.add_argument(
-        "--backend",
-        help="Override the workflow's configured backend",
-    )
-    p_wf_view.add_argument("--json", action="store_true")
-    _add_common(p_wf_view)
-    p_wf_view.set_defaults(handler=_cmd_workflow_view)
-
-    p_wf_run = wf_sub.add_parser("run", help="Submit a workflow for execution")
-    p_wf_run.add_argument("name", help="Workflow name (or sflow.json path with --project)")
-    p_wf_run.add_argument("--project", help="Trigger an sflow.json from this project")
+    p_wf_run = wf_sub.add_parser("run", help="Submit a project's sflow.json for execution")
+    p_wf_run.add_argument("name", help="sflow.json path within the project")
+    p_wf_run.add_argument("--project", required=True, help="Trigger an sflow.json from this project")
     p_wf_run.add_argument(
         "--backend",
-        help="Override the workflow's (or project's) configured backend",
+        help="Override the project's configured backend",
     )
     _add_common(p_wf_run)
     p_wf_run.set_defaults(handler=_cmd_workflow_run)
@@ -1548,12 +1430,10 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common(p_run_cancel)
     p_run_cancel.set_defaults(handler=_cmd_run_cancel)
 
-    p_run_rerun = run_sub.add_parser("rerun", help="Re-execute a previous run")
-    p_run_rerun.add_argument("id")
-    p_run_rerun.add_argument(
-        "--in-place", action="store_true",
-        help="Reset and re-submit the same run instead of creating a new one",
+    p_run_rerun = run_sub.add_parser(
+        "rerun", help="Reset and re-submit a previous run in place",
     )
+    p_run_rerun.add_argument("id")
     _add_common(p_run_rerun)
     p_run_rerun.set_defaults(handler=_cmd_run_rerun)
 

@@ -17,7 +17,6 @@ def _make_manager(ssh_mock: AsyncMock | None = None) -> RunManager:
     """Create a RunManager with a mocked SSH client."""
     config = MagicMock()
     config.backends = {"test-cluster": MagicMock()}
-    config.workflows = []
     config.settings.poll_interval = 60
     backends = {"test-cluster": ssh_mock or AsyncMock()}
     return RunManager(config=config, backends=backends)

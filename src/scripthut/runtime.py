@@ -261,7 +261,10 @@ async def init_runtime(
     run_manager = RunManager(
         config, ssh_clients, storage=run_storage, job_backends=job_backends,
     )
-    logger.info(f"Initialized run manager with {len(config.workflows)} workflows")
+    logger.info(
+        f"Initialized run manager with {len(config.sources)} sources, "
+        f"{len(config.projects)} projects"
+    )
 
     if restore_runs:
         restored = await run_manager.restore_from_storage()

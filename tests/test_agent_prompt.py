@@ -16,7 +16,6 @@ from scripthut.config_schema import (
     ScriptHutConfig,
     SlurmBackendConfig,
     Stack,
-    WorkflowConfig,
 )
 
 
@@ -36,9 +35,6 @@ class TestPromptStructure:
                 ),
             ],
             stacks=[Stack(name="julia", prep="echo")],
-            workflows=[
-                WorkflowConfig(name="grid", backend="mercury-nb", command="echo"),
-            ],
         )
         prompt = _render_agent_prompt(cfg)
 
@@ -48,7 +44,6 @@ class TestPromptStructure:
             "## What's available here",
             "### Backends",
             "### Stacks (reusable software environments)",
-            "### Workflows",
             "## Submitting work — pick the smallest tool that fits",
             "### A) `--inline-script <local-file>`",
             "### B) Positional command (one-liner)",
@@ -78,7 +73,7 @@ class TestPromptStructure:
             "scripthut run logs",
             "scripthut stack check",
             "scripthut backend list",
-            "scripthut workflow view",
+            "scripthut workflow run",
         ):
             assert snippet in prompt, f"missing pattern: {snippet!r}"
 
@@ -149,21 +144,6 @@ class TestLiveInventory:
         assert "all SSH backends" in prompt
         # The "check before running" reminder is present when stacks exist
         assert "stack check" in prompt
-
-    def test_workflows_listed_with_description(self):
-        cfg = ScriptHutConfig(
-            workflows=[
-                WorkflowConfig(
-                    name="grid", backend="mercury-nb",
-                    command="echo []",
-                    description="parameter sweep",
-                ),
-            ],
-        )
-        prompt = _render_agent_prompt(cfg)
-        assert "`grid`" in prompt
-        assert "`mercury-nb`" in prompt
-        assert "parameter sweep" in prompt
 
 
 # ---------- no-config fallback -------------------------------------------

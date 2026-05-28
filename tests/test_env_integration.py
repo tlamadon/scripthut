@@ -10,33 +10,28 @@ from scripthut.config_schema import (
     ScriptHutConfig,
     SlurmBackendConfig,
     SSHConfig,
-    WorkflowConfig,
 )
 from scripthut.runs.manager import RunManager
 from scripthut.runs.models import Run, TaskDefinition
 
 
-def _make_config(backend_env=None, server_env=None, workflow_env=None):
+def _make_config(backend_env=None, server_env=None):
     backend = SlurmBackendConfig(
         name="mercury",
         ssh=SSHConfig(host="mercury.example.com", user="alice"),
         env=backend_env or [],
     )
-    workflow = WorkflowConfig(
-        name="train",
-        backend="mercury",
-        command="cat tasks.json",
-        env=workflow_env or [],
-    )
     return ScriptHutConfig(
         backends=[backend],
-        workflows=[workflow],
         env=server_env or [],
     )
 
 
-def _make_run(workflow_name="train", backend_name="mercury"):
-    return Run(
+def _make_run(
+    workflow_name="train", backend_name="mercury",
+    doc_env=None, doc_env_groups=None,
+):
+    run = Run(
         id="r-7",
         workflow_name=workflow_name,
         backend_name=backend_name,
@@ -47,16 +42,18 @@ def _make_run(workflow_name="train", backend_name="mercury"):
         git_branch="main",
         commit_hash="abc123",
     )
+    run.doc_env = doc_env or []
+    run.doc_env_groups = doc_env_groups or {}
+    return run
 
 
 def test_full_chain_layers_apply_in_order():
     config = _make_config(
         backend_env=[EnvRule(set={"SCRATCH": "/scratch/${USER}"})],
         server_env=[EnvRule(set={"LOG_LEVEL": "info"})],
-        workflow_env=[EnvRule(set={"MODEL": "small"})],
     )
     mgr = RunManager(config=config, backends={})
-    run = _make_run()
+    run = _make_run(doc_env=[EnvRule(set={"MODEL": "small"})])
     task = TaskDefinition(
         id="t1", name="train", command="python train.py",
         env=[EnvRule(set={"BATCH_SIZE": "32", "USER": "alice"})],
@@ -78,23 +75,24 @@ def test_full_chain_layers_apply_in_order():
 
 
 def test_full_chain_with_backend_conditional():
-    """Module-load case: workflow has a per-backend init rule."""
-    config = _make_config(
-        workflow_env=[
-            EnvRule(
-                if_={"SCRIPTHUT_BACKEND": "mercury"},
-                init="module load gcc/12 cuda/11",
-            ),
-            EnvRule(
-                if_={"SCRIPTHUT_BACKEND": ["anvil", "delta"]},
-                init="module load gcc cuda-toolkit",
-            ),
-        ],
-    )
+    """Module-load case: the doc env has a per-backend init rule."""
+    config = _make_config()
     mgr = RunManager(config=config, backends={})
     task = TaskDefinition(id="t1", name="x", command="true")
+    doc_env = [
+        EnvRule(
+            if_={"SCRIPTHUT_BACKEND": "mercury"},
+            init="module load gcc/12 cuda/11",
+        ),
+        EnvRule(
+            if_={"SCRIPTHUT_BACKEND": ["anvil", "delta"]},
+            init="module load gcc cuda-toolkit",
+        ),
+    ]
 
-    _, init = mgr._resolve_environment(_make_run(backend_name="mercury"), task)
+    _, init = mgr._resolve_environment(
+        _make_run(backend_name="mercury", doc_env=doc_env), task
+    )
     assert init == "module load gcc/12 cuda/11"
 
     # Same task, different cluster — different init
@@ -104,32 +102,32 @@ def test_full_chain_with_backend_conditional():
             ssh=SSHConfig(host="anvil.example.com", user="alice"),
         )
     )
-    _, init = mgr._resolve_environment(_make_run(backend_name="anvil"), task)
+    _, init = mgr._resolve_environment(
+        _make_run(backend_name="anvil", doc_env=doc_env), task
+    )
     assert init == "module load gcc cuda-toolkit"
 
 
 def test_full_chain_expansion_uses_seeded_run_id():
-    config = _make_config(
-        workflow_env=[EnvRule(set={"OUT_DIR": "/data/${SCRIPTHUT_RUN_ID}"})],
-    )
+    config = _make_config()
     mgr = RunManager(config=config, backends={})
     task = TaskDefinition(id="t1", name="x", command="true")
 
-    env, _ = mgr._resolve_environment(_make_run(), task)
+    run = _make_run(doc_env=[EnvRule(set={"OUT_DIR": "/data/${SCRIPTHUT_RUN_ID}"})])
+    env, _ = mgr._resolve_environment(run, task)
     assert env["OUT_DIR"] == "/data/r-7"
 
 
-def test_task_layer_overrides_workflow_layer():
-    config = _make_config(
-        workflow_env=[EnvRule(set={"MODEL": "small"})],
-    )
+def test_task_layer_overrides_doc_layer():
+    config = _make_config()
     mgr = RunManager(config=config, backends={})
     task = TaskDefinition(
         id="t1", name="x", command="true",
         env=[EnvRule(set={"MODEL": "large"})],
     )
 
-    env, _ = mgr._resolve_environment(_make_run(), task)
+    run = _make_run(doc_env=[EnvRule(set={"MODEL": "small"})])
+    env, _ = mgr._resolve_environment(run, task)
     assert env["MODEL"] == "large"
 
 
@@ -193,11 +191,9 @@ def test_task_definition_roundtrip_env():
     assert restored.env[1].init == "echo hi"
 
 
-def test_env_groups_backend_defined_workflow_referenced():
+def test_env_groups_backend_defined_doc_referenced():
     """A group defined at backend layer is referenceable from any later layer."""
-    config = _make_config(
-        workflow_env=[EnvRule(include=["gpu-stack"])],
-    )
+    config = _make_config()
     # Mutate backend to add a group
     config.backends[0].env_groups = {
         "gpu-stack": [
@@ -208,27 +204,27 @@ def test_env_groups_backend_defined_workflow_referenced():
     mgr = RunManager(config=config, backends={})
     task = TaskDefinition(id="t1", name="x", command="true")
 
-    env, init = mgr._resolve_environment(_make_run(), task)
+    run = _make_run(doc_env=[EnvRule(include=["gpu-stack"])])
+    env, init = mgr._resolve_environment(run, task)
     assert env["PATH"] == "/opt/cuda/bin"
     assert init == "module load cuda"
 
 
-def test_env_groups_workflow_shadows_server():
-    """A group defined at workflow layer with the same name shadows server group."""
-    config = _make_config(
-        workflow_env=[EnvRule(include=["gpu-stack"])],
-    )
+def test_env_groups_doc_shadows_server():
+    """A group defined at the doc layer with the same name shadows the server group."""
+    config = _make_config()
     config.env_groups = {
         "gpu-stack": [EnvRule(init="server-version")],
-    }
-    config.workflows[0].env_groups = {
-        "gpu-stack": [EnvRule(init="workflow-version")],
     }
     mgr = RunManager(config=config, backends={})
     task = TaskDefinition(id="t1", name="x", command="true")
 
-    _, init = mgr._resolve_environment(_make_run(), task)
-    assert init == "workflow-version"
+    run = _make_run(
+        doc_env=[EnvRule(include=["gpu-stack"])],
+        doc_env_groups={"gpu-stack": [EnvRule(init="doc-version")]},
+    )
+    _, init = mgr._resolve_environment(run, task)
+    assert init == "doc-version"
 
 
 def test_env_groups_per_backend_with_same_include_name():
@@ -244,35 +240,40 @@ def test_env_groups_per_backend_with_same_include_name():
             env_groups={"gpu-stack": [EnvRule(init="module load cuda-toolkit")]},
         )
     )
-    # Workflow includes "gpu-stack" — resolves differently per backend
-    config.workflows[0].env = [EnvRule(include=["gpu-stack"])]
+    # Doc env includes "gpu-stack" — resolves differently per backend
+    doc_env = [EnvRule(include=["gpu-stack"])]
     mgr = RunManager(config=config, backends={})
     task = TaskDefinition(id="t1", name="x", command="true")
 
-    _, init = mgr._resolve_environment(_make_run(backend_name="mercury"), task)
+    _, init = mgr._resolve_environment(
+        _make_run(backend_name="mercury", doc_env=doc_env), task
+    )
     assert init == "module load cuda/11"
 
-    _, init = mgr._resolve_environment(_make_run(backend_name="anvil"), task)
+    _, init = mgr._resolve_environment(
+        _make_run(backend_name="anvil", doc_env=doc_env), task
+    )
     assert init == "module load cuda-toolkit"
 
 
 def test_env_groups_guarded_include_through_full_chain():
-    """A workflow's include can be gated by an if-clause against SCRIPTHUT_BACKEND."""
-    config = _make_config(
-        workflow_env=[
-            EnvRule(
-                if_={"SCRIPTHUT_BACKEND": "mercury"},
-                include=["gpu-stack"],
-            ),
-        ],
-    )
+    """A doc env include can be gated by an if-clause against SCRIPTHUT_BACKEND."""
+    config = _make_config()
     config.env_groups = {
         "gpu-stack": [EnvRule(init="module load cuda")],
     }
     mgr = RunManager(config=config, backends={})
     task = TaskDefinition(id="t1", name="x", command="true")
+    doc_env = [
+        EnvRule(
+            if_={"SCRIPTHUT_BACKEND": "mercury"},
+            include=["gpu-stack"],
+        ),
+    ]
 
-    _, init = mgr._resolve_environment(_make_run(backend_name="mercury"), task)
+    _, init = mgr._resolve_environment(
+        _make_run(backend_name="mercury", doc_env=doc_env), task
+    )
     assert init == "module load cuda"
 
     # Add anvil backend; include should NOT fire there
@@ -282,7 +283,9 @@ def test_env_groups_guarded_include_through_full_chain():
             ssh=SSHConfig(host="anvil.example.com", user="alice"),
         )
     )
-    _, init = mgr._resolve_environment(_make_run(backend_name="anvil"), task)
+    _, init = mgr._resolve_environment(
+        _make_run(backend_name="anvil", doc_env=doc_env), task
+    )
     assert init == ""
 
 
@@ -372,24 +375,6 @@ def test_doc_env_groups_visible_to_task_includes():
     env, init = mgr._resolve_environment(run, task)
     assert env["JULIA_DEPOT_PATH"] == "/scratch/julia"
     assert init == "module load julia/1.12"
-
-
-def test_doc_env_groups_shadow_workflow_config_groups():
-    """When both layers define the same group name, the doc layer wins."""
-    config = _make_config()
-    config.workflows[0].env_groups = {
-        "x": [EnvRule(set={"FROM": "workflow"})],
-    }
-    mgr = RunManager(config=config, backends={})
-    run = _make_run()
-    run.doc_env_groups = {
-        "x": [EnvRule(set={"FROM": "doc"})],
-    }
-    task = TaskDefinition(id="t", name="t", command="true",
-                          env=[EnvRule(include=["x"])])
-
-    env, _ = mgr._resolve_environment(run, task)
-    assert env["FROM"] == "doc"
 
 
 def test_resolve_for_task_with_unknown_workflow_or_backend():
