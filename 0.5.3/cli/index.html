@@ -1,0 +1,1797 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Web interface to start and track jobs on remote systems (Slurm, ECS, AWS Batch)">
+      
+      
+      
+        <link rel="canonical" href="https://tlamadon.github.io/scripthut/0.5.3/cli/">
+      
+      
+        <link rel="prev" href="../task-json/generators/">
+      
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-ProperDocs 1.6.7, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>CLI - ScriptHut</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#cli" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="ScriptHut" class="md-header__button md-logo" aria-label="ScriptHut" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            ScriptHut
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              CLI
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/tlamadon/scripthut" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    tlamadon/scripthut
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href=".." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../installation/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Installation
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../from-a-project/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  From a project
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../configuration/" class="md-tabs__link">
+          
+  
+  
+  Configuration
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../task-json/" class="md-tabs__link">
+          
+  
+  
+  Task JSON
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    <li class="md-tabs__item md-tabs__item--active">
+      <a href="./" class="md-tabs__link">
+        
+  
+  
+    
+  
+  CLI
+
+      </a>
+    </li>
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="ScriptHut" class="md-nav__button md-logo" aria-label="ScriptHut" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    ScriptHut
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/tlamadon/scripthut" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    tlamadon/scripthut
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../installation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../from-a-project/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    From a project
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Configuration
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../configuration/backends/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Backends
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../configuration/workflows/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Workflows
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../configuration/environments/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Environments
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../configuration/stacks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Stacks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Task JSON
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Task JSON
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../task-json/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../task-json/environments/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Environment Variables
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../task-json/generators/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Writing a Generator
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#transports-local-vs-remote" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Transports — local vs remote
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#global-flags" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Global flags
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Global flags">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#config-discovery-without-config" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Config discovery (without --config)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#workflow-manage-workflows" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        workflow — manage workflows
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#run-inspect-and-control-runs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        run — inspect and control runs
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#backend-inspect-configured-backends" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        backend — inspect configured backends
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#agent-coding-agent-helpers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        agent — coding-agent helpers
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#task-submit-ad-hoc-tasks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        task — submit ad-hoc tasks
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="task — submit ad-hoc tasks">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#what-it-does" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What it does
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#input-modes-mutually-exclusive" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Input modes (mutually exclusive)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#default-id-and-name" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Default id and name
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#output" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Output
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#use-with-stacks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Use with stacks
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#notes-for-coding-agents" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Notes for coding agents
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#stack-manage-reusable-software-stacks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        stack — manage reusable software stacks
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#project-inspect-git-projects" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        project — inspect git projects
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#common-patterns" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Common patterns
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Common patterns">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#submit-a-workflow-and-follow-it-to-completion" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Submit a workflow and follow it to completion
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#tail-one-tasks-stderr-until-it-finishes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Tail one task's stderr until it finishes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#inspect-the-resolved-environment-for-a-task" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Inspect the resolved environment for a task
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ci-automation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CI / automation
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#exit-codes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Exit codes
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#transports-local-vs-remote" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Transports — local vs remote
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#global-flags" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Global flags
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Global flags">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#config-discovery-without-config" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Config discovery (without --config)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#workflow-manage-workflows" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        workflow — manage workflows
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#run-inspect-and-control-runs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        run — inspect and control runs
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#backend-inspect-configured-backends" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        backend — inspect configured backends
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#agent-coding-agent-helpers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        agent — coding-agent helpers
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#task-submit-ad-hoc-tasks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        task — submit ad-hoc tasks
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="task — submit ad-hoc tasks">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#what-it-does" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What it does
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#input-modes-mutually-exclusive" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Input modes (mutually exclusive)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#default-id-and-name" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Default id and name
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#output" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Output
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#use-with-stacks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Use with stacks
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#notes-for-coding-agents" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Notes for coding agents
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#stack-manage-reusable-software-stacks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        stack — manage reusable software stacks
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#project-inspect-git-projects" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        project — inspect git projects
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#common-patterns" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Common patterns
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Common patterns">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#submit-a-workflow-and-follow-it-to-completion" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Submit a workflow and follow it to completion
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#tail-one-tasks-stderr-until-it-finishes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Tail one task's stderr until it finishes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#inspect-the-resolved-environment-for-a-task" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Inspect the resolved environment for a task
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ci-automation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CI / automation
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#exit-codes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Exit codes
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="cli">CLI<a class="headerlink" href="#cli" title="Permanent link">&para;</a></h1>
+<p>ScriptHut ships a <code>gh</code>-style CLI for triggering workflows, managing stacks, firing one-off tasks, inspecting runs, and tailing logs without opening the web UI. The single binary is the same <code>scripthut</code> entry point that runs the server — when called with a subcommand (<code>workflow</code>, <code>run</code>, <code>backend</code>, <code>project</code>, <code>stack</code>, <code>task</code>, <code>agent</code>) it dispatches to the CLI instead.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>scripthut<span class="w"> </span>workflow<span class="w"> </span>list<span class="w">          </span><span class="c1"># CLI</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>scripthut<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span><span class="w">            </span><span class="c1"># server (no subcommand)</span>
+</code></pre></div>
+<p>The CLI is designed to feel native from inside a project directory: it walks up from the current working directory looking for a <code>scripthut.yaml</code>, merges it with your user-global config (<code>~/.config/scripthut/scripthut.yaml</code>), and gives every subcommand the right context automatically. See <a href="../from-a-project/">From a project</a> for the full layered-config model and a worked example.</p>
+<h2 id="transports-local-vs-remote">Transports — local vs remote<a class="headerlink" href="#transports-local-vs-remote" title="Permanent link">&para;</a></h2>
+<p>The CLI talks to your workflows through one of two clients, picked automatically by the <em>server-resolution chain</em>:</p>
+<ol>
+<li><strong><code>--server &lt;url&gt;</code></strong> argument on the command (overrides everything; pass <code>local</code> to force local mode)</li>
+<li><strong><code>SCRIPTHUT_SERVER</code></strong> environment variable</li>
+<li><strong><code>settings.cli_server</code></strong> in <code>scripthut.yaml</code></li>
+<li>None of the above → <strong>local mode</strong></li>
+</ol>
+<table>
+<thead>
+<tr>
+<th>Transport</th>
+<th>Picked when</th>
+<th>Behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>RemoteClient</code> (HTTP)</td>
+<td>a server URL is resolved</td>
+<td>Calls the running server's <code>/api/v1</code> endpoints via httpx. The server submits and tracks the work; the CLI just queries it.</td>
+</tr>
+<tr>
+<td><code>LocalClient</code> (in-process)</td>
+<td>no server URL anywhere</td>
+<td>Boots a <code>Runtime</code> in-process — same backend SSH connections, storage, and <code>RunManager</code> the server uses. No web server required.</td>
+</tr>
+</tbody>
+</table>
+<p>So <code>scripthut workflow run train</code> on a laptop with no config will boot connections, submit the run, and exit. The same command pointed at a running server (<code>--server https://scripthut.team.example</code>) hits its API instead.</p>
+<p>Set the default server once in <code>scripthut.yaml</code> so day-to-day CLI use is point-free:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nt">settings</span><span class="p">:</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span><span class="nt">cli_server</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;https://scripthut.team.example&quot;</span>
+</code></pre></div>
+<h2 id="global-flags">Global flags<a class="headerlink" href="#global-flags" title="Permanent link">&para;</a></h2>
+<p>Every subcommand accepts these:</p>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--server &lt;url&gt;</code></td>
+<td>Server URL to target. Pass <code>local</code> to force local mode.</td>
+</tr>
+<tr>
+<td><code>--config &lt;path&gt;</code>, <code>-c &lt;path&gt;</code></td>
+<td>Path to <code>scripthut.yaml</code>. Loads <strong>exactly that file</strong> and skips the layered discovery. Useful in tests and one-off scripts.</td>
+</tr>
+<tr>
+<td><code>--json</code></td>
+<td>Print machine-readable JSON instead of a formatted table (where supported).</td>
+</tr>
+</tbody>
+</table>
+<h3 id="config-discovery-without-config">Config discovery (without <code>--config</code>)<a class="headerlink" href="#config-discovery-without-config" title="Permanent link">&para;</a></h3>
+<p>When you don't pass <code>--config</code>, the CLI loads up to two files and merges them:</p>
+<ol>
+<li><strong>User-global</strong>: <code>~/.config/scripthut/scripthut.yaml</code> (or <code>~/.scripthut.yaml</code>).</li>
+<li><strong>Project-local</strong>: the first <code>scripthut.yaml</code> found by walking up from <code>$PWD</code>.</li>
+</ol>
+<p>Project-local files may <strong>only</strong> define <code>stacks</code>, <code>workflows</code>, <code>projects</code>, <code>env</code>, <code>env_groups</code>. Infrastructure fields (<code>backends</code>, <code>sources</code>, <code>settings</code>, <code>pricing</code>) come from the global file and are rejected in a project-local file with a clear error. Full details and examples in <a href="../from-a-project/">From a project</a>.</p>
+<h2 id="workflow-manage-workflows"><code>workflow</code> — manage workflows<a class="headerlink" href="#workflow-manage-workflows" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>scripthut<span class="w"> </span>workflow<span class="w"> </span>list<span class="w">                       </span><span class="c1"># show all workflows and projects</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>scripthut<span class="w"> </span>workflow<span class="w"> </span>view<span class="w"> </span>&lt;name&gt;<span class="w">                </span><span class="c1"># dry-run preview the tasks</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>scripthut<span class="w"> </span>workflow<span class="w"> </span>view<span class="w"> </span>&lt;name&gt;<span class="w"> </span>--backend<span class="w"> </span>&lt;b&gt;<span class="w">  </span><span class="c1"># preview against a different backend</span>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>scripthut<span class="w"> </span>workflow<span class="w"> </span>run<span class="w"> </span>&lt;name&gt;<span class="w">                 </span><span class="c1"># submit a run</span>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>scripthut<span class="w"> </span>workflow<span class="w"> </span>run<span class="w"> </span>&lt;name&gt;<span class="w"> </span>--backend<span class="w"> </span>&lt;b&gt;<span class="w">   </span><span class="c1"># submit, overriding the backend</span>
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>scripthut<span class="w"> </span>workflow<span class="w"> </span>run<span class="w"> </span>&lt;sflow.json&gt;<span class="w"> </span>--project<span class="w"> </span>&lt;name&gt;<span class="w">   </span><span class="c1"># submit from a git project</span>
+</code></pre></div>
+<p><code>workflow run</code> prints the new run's ID and a link/path you can pass straight to <code>scripthut run watch &lt;id&gt;</code>.</p>
+<h2 id="run-inspect-and-control-runs"><code>run</code> — inspect and control runs<a class="headerlink" href="#run-inspect-and-control-runs" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>scripthut<span class="w"> </span>run<span class="w"> </span>list<span class="w">                            </span><span class="c1"># 20 most recent runs</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>scripthut<span class="w"> </span>run<span class="w"> </span>list<span class="w"> </span>--limit<span class="w"> </span><span class="m">100</span><span class="w">                </span><span class="c1"># last 100</span>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>scripthut<span class="w"> </span>run<span class="w"> </span>view<span class="w"> </span>&lt;id&gt;<span class="w">                       </span><span class="c1"># task table + status counts</span>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>scripthut<span class="w"> </span>run<span class="w"> </span>watch<span class="w"> </span>&lt;id&gt;<span class="w">                      </span><span class="c1"># poll until the run terminates</span>
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>scripthut<span class="w"> </span>run<span class="w"> </span>watch<span class="w"> </span>&lt;id&gt;<span class="w"> </span>--exit-status<span class="w">        </span><span class="c1"># exit non-zero on FAILED/CANCELLED</span>
+<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>scripthut<span class="w"> </span>run<span class="w"> </span>watch<span class="w"> </span>&lt;id&gt;<span class="w"> </span>--interval<span class="w"> </span><span class="m">2</span><span class="w">         </span><span class="c1"># tighter polling</span>
+<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a>scripthut<span class="w"> </span>run<span class="w"> </span>cancel<span class="w"> </span>&lt;id&gt;<span class="w">                     </span><span class="c1"># cancel a running run</span>
+<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a>scripthut<span class="w"> </span>run<span class="w"> </span>rerun<span class="w"> </span>&lt;id&gt;<span class="w">                      </span><span class="c1"># re-execute as a NEW run</span>
+<a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a>scripthut<span class="w"> </span>run<span class="w"> </span>rerun<span class="w"> </span>&lt;id&gt;<span class="w"> </span>--in-place<span class="w">           </span><span class="c1"># reset and resubmit the same run</span>
+<a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a>scripthut<span class="w"> </span>run<span class="w"> </span>logs<span class="w"> </span>&lt;id&gt;<span class="w"> </span>&lt;task&gt;<span class="w">                </span><span class="c1"># stdout for one task</span>
+<a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a>scripthut<span class="w"> </span>run<span class="w"> </span>logs<span class="w"> </span>&lt;id&gt;<span class="w"> </span>&lt;task&gt;<span class="w"> </span>--error<span class="w">        </span><span class="c1"># stderr</span>
+<a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a>scripthut<span class="w"> </span>run<span class="w"> </span>logs<span class="w"> </span>&lt;id&gt;<span class="w"> </span>&lt;task&gt;<span class="w"> </span>--tail<span class="w"> </span><span class="m">100</span><span class="w">     </span><span class="c1"># only the last 100 lines</span>
+<a id="__codelineno-3-13" name="__codelineno-3-13" href="#__codelineno-3-13"></a>scripthut<span class="w"> </span>run<span class="w"> </span>logs<span class="w"> </span>&lt;id&gt;<span class="w"> </span>&lt;task&gt;<span class="w"> </span>--follow<span class="w">       </span><span class="c1"># tail until the task ends</span>
+</code></pre></div>
+<p><code>watch --exit-status</code> is the CI-friendly form: it returns 0 only when every task in the run completes successfully.</p>
+<h2 id="backend-inspect-configured-backends"><code>backend</code> — inspect configured backends<a class="headerlink" href="#backend-inspect-configured-backends" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>scripthut<span class="w"> </span>backend<span class="w"> </span>list<span class="w">                        </span><span class="c1"># connection status, max_concurrent, type</span>
+</code></pre></div>
+<p>Useful when a workflow hangs at submission to confirm the right backend is actually reachable.</p>
+<h2 id="agent-coding-agent-helpers"><code>agent</code> — coding-agent helpers<a class="headerlink" href="#agent-coding-agent-helpers" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>scripthut<span class="w"> </span>agent<span class="w"> </span>prompt<span class="w">                        </span><span class="c1"># markdown briefing for an agent</span>
+</code></pre></div>
+<p><code>agent prompt</code> emits a markdown document that teaches a coding agent how to use this scripthut from the current project. It's a mix of a <strong>static reference</strong> (CLI patterns, TaskDefinition shape, exit codes, common gotchas) and a <strong>live inventory</strong> (the backends, stacks, and workflows the layered config currently exposes) so the agent's suggestions reference real names rather than placeholders.</p>
+<p>Typical use is to pipe it into the agent's context:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="c1"># Capture once and feed to your agent of choice</span>
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>scripthut<span class="w"> </span>agent<span class="w"> </span>prompt<span class="w"> </span>&gt;<span class="w"> </span>.agent-brief.md
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>
+<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="c1"># Or pipe through xclip / pbcopy / etc.</span>
+<a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>scripthut<span class="w"> </span>agent<span class="w"> </span>prompt<span class="w"> </span><span class="p">|</span><span class="w"> </span>pbcopy
+</code></pre></div>
+<p>Re-run whenever the user adds a backend, stack, or workflow — the inventory is read fresh each invocation.</p>
+<h2 id="task-submit-ad-hoc-tasks"><code>task</code> — submit ad-hoc tasks<a class="headerlink" href="#task-submit-ad-hoc-tasks" title="Permanent link">&para;</a></h2>
+<p>Sometimes you don't want to commit a task definition to a git repo or wire a workflow generator — you just want to fire a single command at a configured backend. <code>task run</code> is the shortest path to that, and is the entry point that's friendliest for coding agents.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="c1"># Simplest form: a one-line command on a configured backend.</span>
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>scripthut<span class="w"> </span>task<span class="w"> </span>run<span class="w"> </span><span class="s2">&quot;python -c &#39;print(2+2)&#39;&quot;</span><span class="w"> </span>--backend<span class="w"> </span>mercury-nb
+<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>
+<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="c1"># Run a local script on the backend WITHOUT staging files first</span>
+<a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="c1"># (script is base64-embedded into the task command).</span>
+<a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a>scripthut<span class="w"> </span>task<span class="w"> </span>run<span class="w"> </span>--inline-script<span class="w"> </span>./probe.py<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a><span class="w">  </span>--backend<span class="w"> </span>mercury-nb<span class="w"> </span>--cpus<span class="w"> </span><span class="m">1</span><span class="w"> </span>--memory<span class="w"> </span>1G<span class="w"> </span>--time<span class="w"> </span><span class="m">0</span>:05:00
+<a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a>
+<a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a><span class="c1"># With explicit resource shape.</span>
+<a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a>scripthut<span class="w"> </span>task<span class="w"> </span>run<span class="w"> </span><span class="s2">&quot;python train.py&quot;</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-7-11" name="__codelineno-7-11" href="#__codelineno-7-11"></a><span class="w">  </span>--backend<span class="w"> </span>mercury-nb<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-7-12" name="__codelineno-7-12" href="#__codelineno-7-12"></a><span class="w">  </span>--cpus<span class="w"> </span><span class="m">8</span><span class="w"> </span>--memory<span class="w"> </span>32G<span class="w"> </span>--time<span class="w"> </span><span class="m">4</span>:00:00<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-7-13" name="__codelineno-7-13" href="#__codelineno-7-13"></a><span class="w">  </span>--partition<span class="w"> </span>gpu<span class="w"> </span>--gres<span class="w"> </span>gpu:1<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-7-14" name="__codelineno-7-14" href="#__codelineno-7-14"></a><span class="w">  </span>--working-dir<span class="w"> </span>/scratch/me/repo<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-7-15" name="__codelineno-7-15" href="#__codelineno-7-15"></a><span class="w">  </span>--env<span class="w"> </span><span class="nv">CUDA_VISIBLE_DEVICES</span><span class="o">=</span><span class="m">0</span><span class="w"> </span>--env<span class="w"> </span><span class="nv">WANDB_PROJECT</span><span class="o">=</span>demo
+<a id="__codelineno-7-16" name="__codelineno-7-16" href="#__codelineno-7-16"></a>
+<a id="__codelineno-7-17" name="__codelineno-7-17" href="#__codelineno-7-17"></a><span class="c1"># Feed a full TaskDefinition JSON via stdin — handy for agents.</span>
+<a id="__codelineno-7-18" name="__codelineno-7-18" href="#__codelineno-7-18"></a><span class="nb">echo</span><span class="w"> </span><span class="s1">&#39;{</span>
+<a id="__codelineno-7-19" name="__codelineno-7-19" href="#__codelineno-7-19"></a><span class="s1">  &quot;id&quot;: &quot;exp-42&quot;,</span>
+<a id="__codelineno-7-20" name="__codelineno-7-20" href="#__codelineno-7-20"></a><span class="s1">  &quot;name&quot;: &quot;exp 42&quot;,</span>
+<a id="__codelineno-7-21" name="__codelineno-7-21" href="#__codelineno-7-21"></a><span class="s1">  &quot;command&quot;: &quot;python train.py --lr 1e-3&quot;,</span>
+<a id="__codelineno-7-22" name="__codelineno-7-22" href="#__codelineno-7-22"></a><span class="s1">  &quot;cpus&quot;: 8,</span>
+<a id="__codelineno-7-23" name="__codelineno-7-23" href="#__codelineno-7-23"></a><span class="s1">  &quot;partition&quot;: &quot;gpu&quot;,</span>
+<a id="__codelineno-7-24" name="__codelineno-7-24" href="#__codelineno-7-24"></a><span class="s1">  &quot;gres&quot;: &quot;gpu:1&quot;</span>
+<a id="__codelineno-7-25" name="__codelineno-7-25" href="#__codelineno-7-25"></a><span class="s1">}&#39;</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>scripthut<span class="w"> </span>task<span class="w"> </span>run<span class="w"> </span>--from-stdin<span class="w"> </span>--backend<span class="w"> </span>mercury-nb<span class="w"> </span>--json
+<a id="__codelineno-7-26" name="__codelineno-7-26" href="#__codelineno-7-26"></a>
+<a id="__codelineno-7-27" name="__codelineno-7-27" href="#__codelineno-7-27"></a><span class="c1"># Or from a JSON file (CLI flags still override individual fields).</span>
+<a id="__codelineno-7-28" name="__codelineno-7-28" href="#__codelineno-7-28"></a>scripthut<span class="w"> </span>task<span class="w"> </span>run<span class="w"> </span>--from-file<span class="w"> </span>experiment.json<span class="w"> </span>--backend<span class="w"> </span>mercury-nb<span class="w"> </span>--cpus<span class="w"> </span><span class="m">16</span>
+<a id="__codelineno-7-29" name="__codelineno-7-29" href="#__codelineno-7-29"></a>
+<a id="__codelineno-7-30" name="__codelineno-7-30" href="#__codelineno-7-30"></a><span class="c1"># Verify the assembled task body without submitting.</span>
+<a id="__codelineno-7-31" name="__codelineno-7-31" href="#__codelineno-7-31"></a>scripthut<span class="w"> </span>task<span class="w"> </span>run<span class="w"> </span><span class="s2">&quot;echo hi&quot;</span><span class="w"> </span>--backend<span class="w"> </span>mercury-nb<span class="w"> </span>--dry-run
+</code></pre></div>
+<h3 id="what-it-does">What it does<a class="headerlink" href="#what-it-does" title="Permanent link">&para;</a></h3>
+<p><code>task run</code> builds a single <code>TaskDefinition</code> (the same shape used by workflow generators) and submits it as a one-item run. The run shows up in the dashboard and in <code>scripthut run list</code> like any other; behind the scenes its <code>workflow_name</code> is <code>_adhoc/&lt;task-id&gt;</code> (override with <code>--run-name &lt;label&gt;</code> if you want something more memorable).</p>
+<h3 id="input-modes-mutually-exclusive">Input modes (mutually exclusive)<a class="headerlink" href="#input-modes-mutually-exclusive" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Source</th>
+<th>When it's used</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>command</code> (positional)</td>
+<td>Genuine one-liners. If you find yourself quoting a multi-line script, switch to <code>--inline-script</code>.</td>
+</tr>
+<tr>
+<td><code>--inline-script &lt;local-path&gt;</code></td>
+<td>A local script file you want to run on the backend without copying or git-committing it first. ScriptHut base64-embeds the file into the task command and the backend decodes + executes it. Files without a <code>#!</code> line get <code>#!/bin/bash</code> prepended. Best for files up to a few hundred KB.</td>
+</tr>
+<tr>
+<td><code>--from-stdin</code></td>
+<td>Pipe a full TaskDefinition JSON. Most reliable for agents that construct the payload programmatically.</td>
+</tr>
+<tr>
+<td><code>--from-file &lt;path&gt;</code></td>
+<td>Same JSON shape, from a file. CLI flags layered on top still override individual fields.</td>
+</tr>
+</tbody>
+</table>
+<p>Passing more than one of these is an error — silent precedence would mean you thought you were submitting one thing and you weren't.</p>
+<p><code>--dry-run</code> prints the assembled <code>{"task": ..., "backend": ...}</code> and exits without touching any backend — let an agent verify the payload before committing.</p>
+<h3 id="default-id-and-name">Default id and name<a class="headerlink" href="#default-id-and-name" title="Permanent link">&para;</a></h3>
+<p>If you don't pass <code>--id</code>, the task gets <code>adhoc-&lt;8-hex-chars&gt;</code> derived from the command and a nanosecond timestamp. Two consecutive runs with the same command get different ids, so they don't collide on disk. <code>--name</code> defaults to whatever <code>--id</code> resolves to.</p>
+<h3 id="output">Output<a class="headerlink" href="#output" title="Permanent link">&para;</a></h3>
+<p>Without <code>--json</code>, prints a single human-readable line and the command to inspect the run:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>Run a1b2c3d4 submitted to mercury-nb (task &#39;adhoc-1f2e3d4a&#39;).
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>  scripthut run view a1b2c3d4
+</code></pre></div>
+<p>With <code>--json</code>, prints the full run summary:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="p">{</span>
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="w">  </span><span class="nt">&quot;id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;a1b2c3d4&quot;</span><span class="p">,</span>
+<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="w">  </span><span class="nt">&quot;workflow_name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;_adhoc/adhoc-1f2e3d4a&quot;</span><span class="p">,</span>
+<a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="w">  </span><span class="nt">&quot;backend_name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;mercury-nb&quot;</span><span class="p">,</span>
+<a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a><span class="w">  </span><span class="nt">&quot;task_count&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span>
+<a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a><span class="w">  </span><span class="nt">&quot;submitted_count&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span>
+<a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a><span class="w">  </span><span class="nt">&quot;status_counts&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;submitted&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">},</span>
+<a id="__codelineno-9-8" name="__codelineno-9-8" href="#__codelineno-9-8"></a><span class="w">  </span><span class="err">...</span>
+<a id="__codelineno-9-9" name="__codelineno-9-9" href="#__codelineno-9-9"></a><span class="p">}</span>
+</code></pre></div>
+<p>The shape matches <code>workflow run --json</code>, so an agent can pipe straight into <code>scripthut run watch "$ID"</code> or other automation built around that contract.</p>
+<h3 id="use-with-stacks">Use with stacks<a class="headerlink" href="#use-with-stacks" title="Permanent link">&para;</a></h3>
+<p>Tasks that need a particular runtime should be paired with a <a href="../configuration/stacks/">stack</a>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a>scripthut<span class="w"> </span>stack<span class="w"> </span>install<span class="w"> </span>julia-1.11<span class="w"> </span>--backend<span class="w"> </span>mercury-nb
+<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>scripthut<span class="w"> </span>task<span class="w"> </span>run<span class="w"> </span><span class="s2">&quot;julia --project=. scripts/run.jl&quot;</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="w">  </span>--backend<span class="w"> </span>mercury-nb<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="w">  </span>--working-dir<span class="w"> </span>/home/me/balke-jmp<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a><span class="w">  </span>--cpus<span class="w"> </span><span class="m">16</span><span class="w"> </span>--memory<span class="w"> </span>64G
+</code></pre></div>
+<p>Stacks are installed once; ad-hoc tasks reference them via their resolved <code>STACK_DIR</code> in the command or working directory.</p>
+<h3 id="notes-for-coding-agents">Notes for coding agents<a class="headerlink" href="#notes-for-coding-agents" title="Permanent link">&para;</a></h3>
+<ul>
+<li>The CLI is the supported entry point — there's no separate "agent API." The <code>--json</code> flag plus stable exit codes (<code>0</code> submitted, <code>1</code> error) are the contract.</li>
+<li><strong>Default pattern</strong>: write your script to a local file → submit with <code>--inline-script &lt;path&gt;</code> → capture <code>id</code> from <code>--json</code> → poll <code>scripthut run view &lt;id&gt; --json</code>. No file staging, no scp, no git commit needed for small scripts.</li>
+<li>For large or multi-file work, fall back to a workflow with a git repo — <code>--inline-script</code> is for "run this file" not "run my whole repo."</li>
+<li><code>--dry-run</code> is a good safety check before submission; pair it with <code>scripthut backend list</code> to verify the target backend is reachable.</li>
+<li>The HTTP form is <code>POST /api/v1/tasks/run</code> with a body of <code>{"task": {...}, "backend": "...", "run_name": "..."}</code> — use it directly if you're talking to a running scripthut server (set <code>SCRIPTHUT_SERVER</code> and the CLI picks remote mode automatically).</li>
+<li>Tasks submitted this way still respect the layered config — <code>working_dir</code> resolution, env rules, partition mapping, and account selection from <code>scripthut.yaml</code> all apply.</li>
+<li>For a self-contained briefing you can paste into your context window, run <code>scripthut agent prompt</code> (see the <code>agent</code> section above).</li>
+</ul>
+<h2 id="stack-manage-reusable-software-stacks"><code>stack</code> — manage reusable software stacks<a class="headerlink" href="#stack-manage-reusable-software-stacks" title="Permanent link">&para;</a></h2>
+<p>A stack is a software environment (Python venv, Julia depot, Conda env, …) ScriptHut installs once per backend and reuses across runs. The CLI is the lifecycle interface — see <a href="../configuration/stacks/">Stacks</a> for the model and YAML schema.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a>scripthut<span class="w"> </span>stack<span class="w"> </span>list<span class="w">                                  </span><span class="c1"># configured stacks (no SSH)</span>
+<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a>scripthut<span class="w"> </span>stack<span class="w"> </span>check<span class="w"> </span><span class="o">[</span>&lt;name&gt;<span class="o">]</span><span class="w"> </span><span class="o">[</span>--backend<span class="w"> </span>X<span class="o">]</span><span class="w">          </span><span class="c1"># per-backend state table</span>
+<a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a>scripthut<span class="w"> </span>stack<span class="w"> </span>install<span class="w"> </span>&lt;name&gt;<span class="w"> </span><span class="o">[</span>--backend<span class="w"> </span>X<span class="o">]</span><span class="w"> </span><span class="o">[</span>--rebuild<span class="o">]</span>
+<a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a>scripthut<span class="w"> </span>stack<span class="w"> </span>delete<span class="w"> </span>&lt;name&gt;<span class="w"> </span><span class="o">[</span>--backend<span class="w"> </span>X<span class="o">]</span>
+</code></pre></div>
+<p>Each command opens an SSH connection per (stack × selected backend). Without <code>--backend</code>, the command iterates every backend the stack declares (or every SSH-capable backend if the stack's <code>backends:</code> list is empty). Non-SSH backends (Batch, EC2) are silently skipped for now.</p>
+<ul>
+<li><code>check</code> exits non-zero if any stack on any selected backend is not <code>ready</code> — handy as a CI gate before submitting work.</li>
+<li><code>install</code> is idempotent: a no-op when the stack is already ready at the current hash. <code>--rebuild</code> forces a fresh build even when the hash matches.</li>
+<li><code>delete</code> removes the entire <code>&lt;cache_dir&gt;/&lt;name&gt;/</code> directory on the backend (every hash, not just the current one). A subsequent <code>install</code> rebuilds from scratch.</li>
+</ul>
+<p>Example session from inside a project:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="nb">cd</span><span class="w"> </span>~/git/my-project
+<a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>scripthut<span class="w"> </span>stack<span class="w"> </span>check<span class="w"> </span>julia-1.11<span class="w">        </span><span class="c1"># is it built on every backend?</span>
+<a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a>scripthut<span class="w"> </span>stack<span class="w"> </span>install<span class="w"> </span>julia-1.11<span class="w">      </span><span class="c1"># build any that aren&#39;t</span>
+<a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a>scripthut<span class="w"> </span>workflow<span class="w"> </span>run<span class="w"> </span>grid-search<span class="w">      </span><span class="c1"># submit work that relies on the stack</span>
+</code></pre></div>
+<h2 id="project-inspect-git-projects"><code>project</code> — inspect git projects<a class="headerlink" href="#project-inspect-git-projects" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a>scripthut<span class="w"> </span>project<span class="w"> </span>list<span class="w">                        </span><span class="c1"># all configured projects</span>
+<a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a>scripthut<span class="w"> </span>project<span class="w"> </span>view<span class="w"> </span>&lt;name&gt;<span class="w">                 </span><span class="c1"># show sflow.json files + their workflows</span>
+</code></pre></div>
+<p>A "project" is a git repo on a backend that contains one or more <code>sflow.json</code> workflow files; <code>project view</code> lists them so you can pick one to feed into <code>workflow run --project</code>.</p>
+<h2 id="common-patterns">Common patterns<a class="headerlink" href="#common-patterns" title="Permanent link">&para;</a></h2>
+<h3 id="submit-a-workflow-and-follow-it-to-completion">Submit a workflow and follow it to completion<a class="headerlink" href="#submit-a-workflow-and-follow-it-to-completion" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="nv">RUN_ID</span><span class="o">=</span><span class="k">$(</span>scripthut<span class="w"> </span>workflow<span class="w"> </span>run<span class="w"> </span>train<span class="w"> </span>--json<span class="w"> </span><span class="p">|</span><span class="w"> </span>jq<span class="w"> </span>-r<span class="w"> </span>.id<span class="k">)</span>
+<a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a>scripthut<span class="w"> </span>run<span class="w"> </span>watch<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$RUN_ID</span><span class="s2">&quot;</span><span class="w"> </span>--exit-status
+</code></pre></div>
+<p>The two commands compose because <code>--json</code> on <code>workflow run</code> yields a stable shape (<code>{"id": "...", "items": N, ...}</code>).</p>
+<h3 id="tail-one-tasks-stderr-until-it-finishes">Tail one task's stderr until it finishes<a class="headerlink" href="#tail-one-tasks-stderr-until-it-finishes" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a>scripthut<span class="w"> </span>run<span class="w"> </span>logs<span class="w"> </span><span class="nv">$RUN_ID</span><span class="w"> </span>train.shard-3<span class="w"> </span>--error<span class="w"> </span>--follow
+</code></pre></div>
+<p><code>--follow</code> reads the file once it appears on the backend, then polls until the task moves to a terminal state.</p>
+<h3 id="inspect-the-resolved-environment-for-a-task">Inspect the resolved environment for a task<a class="headerlink" href="#inspect-the-resolved-environment-for-a-task" title="Permanent link">&para;</a></h3>
+<p>The Env tab in the web UI shows resolved env with per-key provenance. The same data is available via the <code>/runs/{id}/tasks/{task_id}/env</code> endpoint, which <code>RemoteClient</code> can hit directly:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a>curl<span class="w"> </span>-s<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$SCRIPTHUT_SERVER</span><span class="s2">/runs/</span><span class="nv">$RUN_ID</span><span class="s2">/tasks/train.shard-3/env&quot;</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>jq
+</code></pre></div>
+<p>See <a href="../configuration/environments/">Environments</a> for the full env-rule resolution model that produces these values.</p>
+<h3 id="ci-automation">CI / automation<a class="headerlink" href="#ci-automation" title="Permanent link">&para;</a></h3>
+<p>In CI you usually want:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a><span class="nb">export</span><span class="w"> </span><span class="nv">SCRIPTHUT_SERVER</span><span class="o">=</span><span class="s2">&quot;https://scripthut.team.example&quot;</span>
+<a id="__codelineno-17-2" name="__codelineno-17-2" href="#__codelineno-17-2"></a><span class="nv">RUN_ID</span><span class="o">=</span><span class="k">$(</span>scripthut<span class="w"> </span>workflow<span class="w"> </span>run<span class="w"> </span>nightly-eval<span class="w"> </span>--json<span class="w"> </span><span class="p">|</span><span class="w"> </span>jq<span class="w"> </span>-r<span class="w"> </span>.id<span class="k">)</span>
+<a id="__codelineno-17-3" name="__codelineno-17-3" href="#__codelineno-17-3"></a>scripthut<span class="w"> </span>run<span class="w"> </span>watch<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$RUN_ID</span><span class="s2">&quot;</span><span class="w"> </span>--exit-status
+</code></pre></div>
+<p>Setting <code>SCRIPTHUT_SERVER</code> once at the top means the rest of the script reads naturally and <code>scripthut</code> never accidentally drops into local mode.</p>
+<h2 id="exit-codes">Exit codes<a class="headerlink" href="#exit-codes" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Code</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>0</code></td>
+<td>Command succeeded (and for <code>run watch --exit-status</code>, the run completed successfully)</td>
+</tr>
+<tr>
+<td><code>1</code></td>
+<td>Command-level error: bad arguments, missing workflow/run, server unreachable, etc.</td>
+</tr>
+<tr>
+<td><code>2</code></td>
+<td>(<code>run watch --exit-status</code> only) The run terminated in a non-success state (<code>FAILED</code> / <code>CANCELLED</code>)</td>
+</tr>
+</tbody>
+</table>
+<p>Without <code>--exit-status</code>, <code>run watch</code> always returns 0 once the run reaches a terminal state — the watch itself succeeded, even if the work didn't.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.instant", "navigation.tabs", "navigation.sections", "navigation.top", "search.suggest", "search.highlight", "content.code.copy"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"provider": "mike"}}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>
