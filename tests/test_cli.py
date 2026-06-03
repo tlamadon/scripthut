@@ -41,7 +41,11 @@ def _make_run(
 
 def _ns(**kwargs) -> argparse.Namespace:
     """Build an argparse Namespace with sensible defaults for CLI handlers."""
-    defaults = dict(server=None, config=None, json=False)
+    defaults = dict(
+        server=None, config=None, json=False,
+        cf_client_id=None, cf_client_secret=None,
+        cf_access_token=None, cloudflared_app=None,
+    )
     defaults.update(kwargs)
     return argparse.Namespace(**defaults)
 
@@ -131,6 +135,108 @@ def test_resolve_server_returns_none_when_nothing_set(monkeypatch):
     args = _ns()
     with patch.object(cli, "load_config", return_value=fake_config):
         assert cli._resolve_server(args) is None
+
+
+# -- _resolve_auth -----------------------------------------------------------
+
+
+def _empty_cf_env(monkeypatch):
+    for k in (
+        "SCRIPTHUT_CF_CLIENT_ID",
+        "SCRIPTHUT_CF_CLIENT_SECRET",
+        "SCRIPTHUT_CF_ACCESS_TOKEN",
+        "SCRIPTHUT_CLOUDFLARED_APP",
+    ):
+        monkeypatch.delenv(k, raising=False)
+
+
+def test_resolve_auth_returns_none_when_nothing_configured(monkeypatch):
+    _empty_cf_env(monkeypatch)
+    args = _ns()
+    with patch.object(cli, "load_config", side_effect=FileNotFoundError):
+        assert cli._resolve_auth(args) is None
+
+
+def test_resolve_auth_service_token_from_flags(monkeypatch):
+    _empty_cf_env(monkeypatch)
+    args = _ns(cf_client_id="ID", cf_client_secret="SECRET")
+    with patch.object(cli, "load_config", side_effect=FileNotFoundError):
+        auth = cli._resolve_auth(args)
+    assert auth is not None
+    assert auth.headers() == {
+        "CF-Access-Client-Id": "ID",
+        "CF-Access-Client-Secret": "SECRET",
+    }
+
+
+def test_resolve_auth_token_from_env(monkeypatch):
+    _empty_cf_env(monkeypatch)
+    monkeypatch.setenv("SCRIPTHUT_CF_ACCESS_TOKEN", "JWT123")
+    args = _ns()
+    with patch.object(cli, "load_config", side_effect=FileNotFoundError):
+        auth = cli._resolve_auth(args)
+    assert auth is not None
+    assert auth.headers() == {"cf-access-token": "JWT123"}
+
+
+def test_resolve_auth_flag_overrides_env_and_config(monkeypatch):
+    _empty_cf_env(monkeypatch)
+    monkeypatch.setenv("SCRIPTHUT_CF_ACCESS_TOKEN", "env-jwt")
+    fake_config = MagicMock()
+    fake_config.settings.cli_auth = MagicMock(
+        cf_client_id=None, cf_client_secret=None,
+        cf_access_token="config-jwt", cloudflared_app=None,
+    )
+    args = _ns(cf_access_token="flag-jwt")
+    with patch.object(cli, "load_config", return_value=fake_config):
+        auth = cli._resolve_auth(args)
+    assert auth.headers()["cf-access-token"] == "flag-jwt"
+
+
+def test_resolve_auth_invokes_cloudflared_when_no_token(monkeypatch):
+    _empty_cf_env(monkeypatch)
+    args = _ns(cloudflared_app="https://scripthut.example.com")
+    with patch.object(cli, "load_config", side_effect=FileNotFoundError), \
+         patch.object(cli, "_fetch_cloudflared_token", return_value="cf-jwt") as fetch:
+        auth = cli._resolve_auth(args)
+    fetch.assert_called_once_with("https://scripthut.example.com")
+    assert auth.headers() == {"cf-access-token": "cf-jwt"}
+
+
+def test_resolve_auth_skips_cloudflared_when_explicit_token_present(monkeypatch):
+    _empty_cf_env(monkeypatch)
+    args = _ns(
+        cf_access_token="already-have-jwt",
+        cloudflared_app="https://scripthut.example.com",
+    )
+    with patch.object(cli, "load_config", side_effect=FileNotFoundError), \
+         patch.object(cli, "_fetch_cloudflared_token") as fetch:
+        auth = cli._resolve_auth(args)
+    fetch.assert_not_called()
+    assert auth.headers()["cf-access-token"] == "already-have-jwt"
+
+
+def test_remote_client_attaches_auth_headers(monkeypatch):
+    """End-to-end: a RemoteClient built with auth sends the right headers."""
+    seen: dict[str, str] = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen.update(dict(req.headers))
+        return httpx.Response(200, json={"ok": True})
+
+    auth = cli.RemoteAuth(cf_client_id="id1", cf_client_secret="sec1")
+    client = cli.RemoteClient("http://localhost:8000", auth=auth)
+    # Swap transport so we don't actually hit the network.
+    client._client = httpx.AsyncClient(
+        base_url="http://localhost:8000/api/v1",
+        transport=httpx.MockTransport(handler),
+        headers=auth.headers(),
+    )
+
+    import asyncio
+    asyncio.run(client._get("/backends"))
+    assert seen.get("cf-access-client-id") == "id1"
+    assert seen.get("cf-access-client-secret") == "sec1"
 
 
 # -- LocalClient -------------------------------------------------------------
