@@ -78,7 +78,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#workflows-sources-and-projects" class="md-skip">
+        <a href="#workflows-and-sources" class="md-skip">
           Skip to content
         </a>
       
@@ -724,17 +724,6 @@
   
 </li>
       
-        <li class="md-nav__item">
-  <a href="#projects" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Projects
-      
-    </span>
-  </a>
-  
-</li>
-      
     </ul>
   
 </nav>
@@ -1081,17 +1070,6 @@
   
 </li>
       
-        <li class="md-nav__item">
-  <a href="#projects" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Projects
-      
-    </span>
-  </a>
-  
-</li>
-      
     </ul>
   
 </nav>
@@ -1112,13 +1090,15 @@
   
 
 
-<h1 id="workflows-sources-and-projects">Workflows, Sources, and Projects<a class="headerlink" href="#workflows-sources-and-projects" title="Permanent link">&para;</a></h1>
-<p>These three sections of <code>scripthut.yaml</code> all configure <em>task generators</em> — different mechanisms for telling ScriptHut "here's a way to get a list of tasks to run".</p>
+<h1 id="workflows-and-sources">Workflows and Sources<a class="headerlink" href="#workflows-and-sources" title="Permanent link">&para;</a></h1>
+<p>These two sections of <code>scripthut.yaml</code> configure <em>task generators</em> — mechanisms for telling ScriptHut "here's a way to get a list of tasks to run".</p>
 <ul>
 <li><strong>Workflows</strong> — a fixed SSH command (optionally inside a cloned git repo) that prints task JSON</li>
 <li><strong>Sources</strong> — a git repo or backend filesystem path containing one or more workflow JSON files, discovered via glob</li>
-<li><strong>Projects</strong> — a git repo on the backend with <code>sflow.json</code> files in it</li>
 </ul>
+<blockquote>
+<p>The legacy <code>projects:</code> section was removed in scripthut 0.6.0. Convert any project entry to an equivalent <code>sources:</code> entry (type <code>path</code> for a directory on a backend, type <code>git</code> for a remote repo).</p>
+</blockquote>
 <p>See <a href="../../task-json/">Task JSON Format</a> for the JSON shape every generator must emit.</p>
 <hr />
 <h2 id="workflows">Workflows<a class="headerlink" href="#workflows" title="Permanent link">&para;</a></h2>
@@ -1385,58 +1365,6 @@
 <td>string</td>
 <td><code>".hut/workflows/*.json"</code></td>
 <td>Glob pattern to find workflow JSON files (supports <code>**</code> for recursive matching).</td>
-</tr>
-</tbody>
-</table>
-<hr />
-<h2 id="projects">Projects<a class="headerlink" href="#projects" title="Permanent link">&para;</a></h2>
-<p>Projects reference git repositories that already exist on the backend and contain <code>sflow.json</code> workflow definition files.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="nt">projects</span><span class="p">:</span>
-<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">my-project</span>
-<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">    </span><span class="nt">backend</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">hpc-cluster</span>
-<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="w">    </span><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">/home/user/my-project</span>
-<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="w">    </span><span class="nt">max_concurrent</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">10</span>
-<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="w">    </span><span class="nt">description</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;My</span><span class="nv"> </span><span class="s">research</span><span class="nv"> </span><span class="s">project&quot;</span>
-</code></pre></div>
-<table>
-<thead>
-<tr>
-<th>Field</th>
-<th>Type</th>
-<th>Default</th>
-<th>Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>name</code></td>
-<td>string</td>
-<td><strong>required</strong></td>
-<td>Unique identifier for this project.</td>
-</tr>
-<tr>
-<td><code>backend</code></td>
-<td>string</td>
-<td><strong>required</strong></td>
-<td>Name of the backend where the project lives.</td>
-</tr>
-<tr>
-<td><code>path</code></td>
-<td>string</td>
-<td><strong>required</strong></td>
-<td>Path to the git repository on the backend.</td>
-</tr>
-<tr>
-<td><code>max_concurrent</code></td>
-<td>integer</td>
-<td><code>null</code></td>
-<td>Default max concurrent tasks per run.</td>
-</tr>
-<tr>
-<td><code>description</code></td>
-<td>string</td>
-<td><code>""</code></td>
-<td>Human-readable description.</td>
 </tr>
 </tbody>
 </table>
