@@ -1240,13 +1240,21 @@ def _local_source_summaries(config: ScriptHutConfig) -> list[dict[str, Any]]:
 async def _probe_server(
     server: str, auth: RemoteAuth | None, *, timeout: float = 5.0,
 ) -> dict[str, Any]:
-    """Hit ``/api/v1/health`` (unauthenticated) and ``/api/v1/sources``
-    (authenticated). Returns a structured result the renderer formats.
+    """Hit ``/api/v1/health`` and ``/api/v1/sources`` (both authenticated).
 
-    Two probes, not one: a 302 to ``cloudflareaccess.com`` on the
-    *sources* call while *health* still returns 200 means the server is
-    up and Cloudflare Access is rejecting our credentials — different
-    remediation than "server is down".
+    Both probes send any configured auth headers. ``/health`` mainly
+    answers "did the server respond at all?" — a connection error means
+    the host/network is the problem, a 302 means Cloudflare Access
+    rejected the credentials. ``/sources`` is the data-fetching probe
+    and additionally tells us auth is good *and* the API surface is
+    reachable.
+
+    The two probes used to differ on auth (health unauthenticated), but
+    that left a ⚠ even when the auth path worked, because a CF-Access
+    server 302s every unauthenticated request. Now both probes carry
+    the same headers; the renderer distinguishes "server unreachable"
+    (connection error on /health) from "auth rejected at the edge"
+    (302 on either) from "auth OK" (200).
     """
     headers = auth.headers() if auth is not None else {}
     base = server.rstrip("/") + "/api/v1"
@@ -1256,13 +1264,9 @@ async def _probe_server(
     }
 
     async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
-        # Reachability — no auth headers, so a Cloudflare-Access-protected
-        # /health will 302 even when the server is healthy. We still call
-        # it for the latency number and to distinguish DNS/connection
-        # failure from auth failure.
         t0 = asyncio.get_event_loop().time()
         try:
-            r = await client.get(f"{base}/health")
+            r = await client.get(f"{base}/health", headers=headers)
             elapsed_ms = int((asyncio.get_event_loop().time() - t0) * 1000)
             result["health"] = {
                 "status_code": r.status_code,
