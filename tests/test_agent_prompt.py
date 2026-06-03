@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from scripthut.cli import _render_agent_prompt
 from scripthut.config_schema import (
+    GitSourceConfig,
+    PathSourceConfig,
     PBSBackendConfig,
     SSHConfig,
     ScriptHutConfig,
@@ -144,6 +146,104 @@ class TestLiveInventory:
         assert "all SSH backends" in prompt
         # The "check before running" reminder is present when stacks exist
         assert "stack check" in prompt
+
+    def test_git_source_surfaces_branch_url_and_default_backend(self):
+        """The agent needs to see the branch — `workflow run` syncs to HEAD
+        on that branch, so the user picking the wrong branch is the most
+        likely silent failure mode for "wrong code ran".
+        """
+        cfg = ScriptHutConfig(
+            sources=[
+                GitSourceConfig(
+                    name="balke-jmp",
+                    url="git@github.com:computecon/balke-jmp.git",
+                    branch="main",
+                    backend="mercury-nb",
+                ),
+            ],
+        )
+        prompt = _render_agent_prompt(cfg)
+        assert "### Sources" in prompt
+        assert "`balke-jmp` (git)" in prompt
+        assert "git@github.com:computecon/balke-jmp.git" in prompt
+        assert "branch `main`" in prompt
+        assert "default backend `mercury-nb`" in prompt
+        # The latest-HEAD-on-branch behavior must be explained — otherwise
+        # the agent will be surprised when reruns pick up new commits.
+        assert "latest HEAD" in prompt
+        # Refresh instructions for newly-pushed workflow files.
+        assert "source sync" in prompt
+
+    def test_path_source_surfaces_backend_and_path(self):
+        cfg = ScriptHutConfig(
+            sources=[
+                PathSourceConfig(
+                    name="sandbox",
+                    backend="mercury-nb",
+                    path="/scratch/me/sandbox",
+                ),
+            ],
+        )
+        prompt = _render_agent_prompt(cfg)
+        assert "`sandbox` (path)" in prompt
+        assert "path `/scratch/me/sandbox` on `mercury-nb`" in prompt
+
+    def test_no_sources_still_shows_section_with_guidance(self):
+        cfg = ScriptHutConfig(backends=[
+            SlurmBackendConfig(name="b", type="slurm", ssh=_ssh()),
+        ])
+        prompt = _render_agent_prompt(cfg)
+        # Section heading should always be present when config is populated.
+        assert "### Sources" in prompt
+        assert "No sources configured" in prompt
+
+
+# ---------- regression: no project-era stragglers ------------------------
+
+
+class TestNoProjectStragglers:
+    """The `projects` config concept was removed in 0.6.0. The agent prompt
+    must not still teach `--project` or `scripthut project view`, or agents
+    following the briefing will issue commands that no longer exist.
+    """
+
+    def test_no_dash_dash_project_flag_appears(self):
+        prompt = _render_agent_prompt(ScriptHutConfig())
+        assert "--project" not in prompt
+
+    def test_no_project_view_subcommand_appears(self):
+        prompt = _render_agent_prompt(ScriptHutConfig())
+        assert "scripthut project" not in prompt
+        assert "project view" not in prompt
+        assert "project list" not in prompt
+
+
+# ---------- status + sync + log surfaces ---------------------------------
+
+
+class TestObservabilitySurfaces:
+    """The user explicitly asked: the agent must know how to check
+    status, output, and logs, and how to refresh sources.
+    """
+
+    def test_status_command_is_taught(self):
+        prompt = _render_agent_prompt(ScriptHutConfig())
+        # Both in the cheat sheet AND in the verify checklist.
+        assert "scripthut status" in prompt
+        # And tied to the "before anything else" intent so the agent
+        # actually runs it first.
+        assert "reachable" in prompt or "auth is working" in prompt
+
+    def test_source_sync_command_is_taught(self):
+        prompt = _render_agent_prompt(ScriptHutConfig())
+        assert "scripthut source sync" in prompt
+
+    def test_logs_stdout_and_stderr_both_taught(self):
+        prompt = _render_agent_prompt(ScriptHutConfig())
+        assert "scripthut run logs" in prompt
+        assert "--error" in prompt   # stderr access
+        assert "--tail" in prompt    # historical access
+        assert "-f" in prompt        # live tailing
 
 
 # ---------- no-config fallback -------------------------------------------

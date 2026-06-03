@@ -966,6 +966,43 @@ def _render_agent_prompt(config: ScriptHutConfig | None) -> str:
             )
             out.append("")
 
+        # ---- Sources ------------------------------------------------------
+        out.append("### Sources (workflow JSON catalogs)")
+        if not config.sources:
+            out.append(
+                "_No sources configured. Source workflows live in a git "
+                "repo or backend path; ask the user to add one or use the "
+                "ad-hoc `task run` modes below._\n"
+            )
+        else:
+            from scripthut.config_schema import (
+                GitSourceConfig as _Git,
+                PathSourceConfig as _Path,
+            )
+            for src in config.sources:
+                bits = [f"`{src.name}` ({src.type})"]
+                if isinstance(src, _Git):
+                    bits.append(f"git `{src.url}` branch `{src.branch}`")
+                    default_be = getattr(src, "backend", None)
+                    if default_be:
+                        bits.append(f"default backend `{default_be}`")
+                elif isinstance(src, _Path):
+                    bits.append(f"path `{src.path}` on `{src.backend}`")
+                if getattr(src, "description", None):
+                    bits.append(src.description)
+                out.append(f"- {' · '.join(bits)}")
+            out.append(
+                "\nList workflows in a source: "
+                "`scripthut source view <name> --json`. Each git source is "
+                "pinned to a branch above — `scripthut workflow run` "
+                "re-syncs the source on the server before submitting, so "
+                "the run executes against **latest HEAD on that branch**. "
+                "If the user just pushed a *new* workflow file (not just "
+                "edits to existing ones), run `scripthut source sync "
+                "<name>` first so the workflow list picks it up."
+            )
+            out.append("")
+
     # ---------- static reference ------------------------------------------
 
     out.append("## Submitting work — pick the smallest tool that fits\n")
@@ -1027,11 +1064,22 @@ def _render_agent_prompt(config: ScriptHutConfig | None) -> str:
     out.append("### Source workflow (a JSON file in a configured source)\n")
     out.append(
         "```bash\n"
-        "scripthut workflow run <workflow.json> --source <name> --json\n"
+        "scripthut workflow run <workflow.json> --source <name> "
+        "--backend <backend> --json\n"
         "```\n"
-        "Prefer a source workflow over ad-hoc when one already does what "
-        "you need — it carries the source's resolved env, partition map, "
-        "and stack assumptions.\n"
+        "- `--backend` is **required for git sources** unless the source "
+        "config has its own `backend:` field (see the Sources inventory "
+        "above).\n"
+        "- The server re-syncs the source's git clone before submitting, "
+        "so the run executes against **latest HEAD on the source's "
+        "configured branch**. The user doesn't have to sync first to pick "
+        "up edits to existing workflow files.\n"
+        "- If the user pushed a *new* workflow file and `source view` "
+        "doesn't show it yet, run `scripthut source sync <name>` to "
+        "refresh the file list.\n"
+        "- Prefer a source workflow over ad-hoc when one already does "
+        "what you need — it carries the source's resolved env, partition "
+        "map, and stack assumptions.\n"
     )
 
     out.append("### TaskDefinition shape\n")
@@ -1067,13 +1115,17 @@ def _render_agent_prompt(config: ScriptHutConfig | None) -> str:
     out.append("## Inspecting state\n")
     out.append(
         "```bash\n"
+        "scripthut status                            # server reachable + auth OK?\n"
         "scripthut backend list --json               # backend connectivity/health\n"
+        "scripthut source list --json                # sources configured on the server\n"
+        "scripthut source view <name> --json         # workflow files in one source\n"
+        "scripthut source sync [<name>] --json       # re-clone/re-glob + refresh workflow list\n"
         "scripthut stack check [<name>] --json       # stacks ready / missing / installing\n"
         "scripthut run list --json --limit 10        # recent runs\n"
-        "scripthut run view <id> --json              # one run with item statuses\n"
-        "scripthut run logs <id> <task_id> --tail 100         # stdout\n"
-        "scripthut run logs <id> <task_id> --error --tail 100 # stderr\n"
-        "scripthut project view <name> --json        # list a project's sflow.json workflows\n"
+        "scripthut run view <id> --json              # one run, item statuses + counts\n"
+        "scripthut run logs <id> <task_id> --tail 100         # stdout (task output)\n"
+        "scripthut run logs <id> <task_id> --error --tail 100 # stderr (task errors)\n"
+        "scripthut run logs <id> <task_id> -f                 # tail a task live until terminal\n"
         "```\n"
     )
 
@@ -1111,28 +1163,50 @@ def _render_agent_prompt(config: ScriptHutConfig | None) -> str:
         "this cluster is a bad time.\n"
         "\n"
         "**Verify** (cheap, read-only):\n"
-        "1. `scripthut agent prompt` — re-read whenever the user's project "
-        "context changes.\n"
-        "2. `scripthut backend list --json` — confirm targets are connected.\n"
-        "3. `scripthut project view <name> --json` if you might trigger an "
-        "existing project workflow instead of ad-hoc — saves work.\n"
-        "4. If using a stack: `scripthut stack check <name> --json`; install "
+        "1. `scripthut status` — confirm the server is reachable and your "
+        "auth is working. If this fails, nothing below will work either; "
+        "stop and report the diagnostic to the user.\n"
+        "2. `scripthut agent prompt` — re-read whenever the user's project "
+        "context changes (new source, new backend, branch swap).\n"
+        "3. `scripthut backend list --json` — confirm targets are connected.\n"
+        "4. `scripthut source list --json` and "
+        "`scripthut source view <name> --json` if you might trigger an "
+        "existing source workflow instead of ad-hoc — almost always better, "
+        "because the workflow carries the resolved env, partition map, and "
+        "stack assumptions.\n"
+        "5. If the user just pushed a *new* workflow file (one not yet in "
+        "`source view`'s output), run `scripthut source sync <name>` so "
+        "the file list picks it up. Edits to *existing* files are picked "
+        "up automatically on `workflow run`.\n"
+        "6. If using a stack: `scripthut stack check <name> --json`; install "
         "with `scripthut stack install <name>` if not `ready`.\n"
-        "5. `scripthut task run ... --dry-run` to print the assembled "
+        "7. `scripthut task run ... --dry-run` to print the assembled "
         "TaskDefinition. Show it to the user for anything non-trivial.\n"
         "\n"
         "**Submit + track**:\n"
-        "6. Submit with `--json`, capture `id`:\n"
+        "8. Submit with `--json` and capture `id`. For a source workflow:\n"
         "   ```bash\n"
-        "   RUN_ID=$(scripthut task run ... --json | jq -r .id)\n"
+        "   RUN_ID=$(scripthut workflow run train.json \\\n"
+        "     --source <name> --backend <backend> --json | jq -r .id)\n"
         "   ```\n"
-        "7. Poll: `scripthut run view $RUN_ID --json` until the run is "
-        "terminal. Against a running server, `scripthut run watch $RUN_ID "
-        "--exit-status` blocks until done.\n"
-        "8. On failure: `scripthut run logs $RUN_ID <task_id> --error "
-        "--tail 200`. If the issue is a stack, re-run `stack check`. "
-        "If it's a resource issue (OOM, TIMEOUT), bump the relevant field "
-        "and resubmit a new run.\n"
+        "   For an ad-hoc task: same shape, `task run` instead.\n"
+        "9. **Status**: `scripthut run view $RUN_ID --json` to see counts "
+        "and per-item statuses (`SUBMITTED`/`RUNNING`/`COMPLETED`/`FAILED`). "
+        "Re-poll until the top-level `status` is terminal. Against a "
+        "running server, `scripthut run watch $RUN_ID --exit-status` "
+        "blocks until done and exits 2 on failure.\n"
+        "10. **Output / logs** while running or after:\n"
+        "    - `scripthut run logs $RUN_ID <task_id> -f` — tail stdout "
+        "live until the task is terminal (best while running).\n"
+        "    - `scripthut run logs $RUN_ID <task_id> --tail 200` — last "
+        "200 lines of stdout (after the fact).\n"
+        "    - `scripthut run logs $RUN_ID <task_id> --error --tail 200` "
+        "— stderr; use this first when a task ends in `FAILED`.\n"
+        "11. On failure: read stderr (step 10), then check whether the "
+        "issue is a stack (`stack check`), a resource limit (OOM/TIMEOUT "
+        "shows up in stderr or `run view`), or the workflow content "
+        "itself. Bump the relevant field and resubmit a *new* run rather "
+        "than rerunning the same one.\n"
     )
 
     return "\n".join(out)
