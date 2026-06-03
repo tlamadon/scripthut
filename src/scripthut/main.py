@@ -2744,14 +2744,20 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-_SUBCOMMANDS = {"setup-aws-ec2", "workflow", "run", "backend", "project", "stack"}
+# Kept as a literal (not introspected from scripthut.cli) so we don't pay the
+# import cost — and trigger asyncssh / runtime imports — just to start the web
+# server. Must stay in sync with the top-level parsers in cli.py.
+_CLI_SUBCOMMANDS = frozenset(
+    {"workflow", "run", "backend", "project", "stack", "agent", "task"}
+)
+_SUBCOMMANDS = _CLI_SUBCOMMANDS | {"setup-aws-ec2"}
 
 
 def _dispatch_subcommand(name: str, argv_rest: list[str]) -> int:
     if name == "setup-aws-ec2":
         from scripthut.setup.aws_ec2 import main as setup_main
         return setup_main(argv_rest)
-    if name in {"workflow", "run", "backend", "project", "stack"}:
+    if name in _CLI_SUBCOMMANDS:
         from scripthut.cli import main as cli_main
         return cli_main([name, *argv_rest])
     raise SystemExit(f"Unknown subcommand: {name}")

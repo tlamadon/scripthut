@@ -60,6 +60,29 @@ def _async_ctx(client: MagicMock) -> MagicMock:
 # -- parser tests ------------------------------------------------------------
 
 
+def test_main_dispatch_allowlist_covers_all_cli_subcommands():
+    """`main._CLI_SUBCOMMANDS` must list every top-level cli.py subcommand.
+
+    Drift here is invisible at startup but fatal at runtime — the dropped
+    subcommand falls through to the web-server argparse and dies with
+    'unrecognized arguments'. Introspect the actual parser so this test
+    fails the moment someone adds a noun without updating main.py.
+    """
+    from scripthut import main as main_mod
+
+    parser = cli.build_parser()
+    sub_action = next(
+        a for a in parser._actions if isinstance(a, argparse._SubParsersAction)
+    )
+    declared = set(sub_action.choices.keys())
+    missing = declared - main_mod._CLI_SUBCOMMANDS
+    assert not missing, (
+        f"cli.py defines top-level subcommand(s) {sorted(missing)} that are "
+        "not in main._CLI_SUBCOMMANDS — they will be unreachable from the "
+        "`scripthut` entry point."
+    )
+
+
 def test_parser_workflow_run_requires_name():
     parser = cli.build_parser()
     with pytest.raises(SystemExit):
