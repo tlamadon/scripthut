@@ -1,10 +1,11 @@
-# Workflows, Sources, and Projects
+# Workflows and Sources
 
-These three sections of `scripthut.yaml` all configure *task generators* — different mechanisms for telling ScriptHut "here's a way to get a list of tasks to run".
+These two sections of `scripthut.yaml` configure *task generators* — mechanisms for telling ScriptHut "here's a way to get a list of tasks to run".
 
 - **Workflows** — a fixed SSH command (optionally inside a cloned git repo) that prints task JSON
 - **Sources** — a git repo or backend filesystem path containing one or more workflow JSON files, discovered via glob
-- **Projects** — a git repo on the backend with `sflow.json` files in it
+
+> The legacy `projects:` section was removed in scripthut 0.6.0. Convert any project entry to an equivalent `sources:` entry (type `path` for a directory on a backend, type `git` for a remote repo).
 
 See [Task JSON Format](../task-json/index.md) for the JSON shape every generator must emit.
 
@@ -127,25 +128,3 @@ sources:
 | `backend` | string | **required** | Backend where this path exists and where tasks are submitted. |
 | `workflows_glob` | string | `".hut/workflows/*.json"` | Glob pattern to find workflow JSON files (supports `**` for recursive matching). |
 
----
-
-## Projects
-
-Projects reference git repositories that already exist on the backend and contain `sflow.json` workflow definition files.
-
-```yaml
-projects:
-  - name: my-project
-    backend: hpc-cluster
-    path: /home/user/my-project
-    max_concurrent: 10
-    description: "My research project"
-```
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `name` | string | **required** | Unique identifier for this project. |
-| `backend` | string | **required** | Name of the backend where the project lives. |
-| `path` | string | **required** | Path to the git repository on the backend. |
-| `max_concurrent` | integer | `null` | Default max concurrent tasks per run. |
-| `description` | string | `""` | Human-readable description. |

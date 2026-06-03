@@ -262,8 +262,7 @@ async def init_runtime(
         config, ssh_clients, storage=run_storage, job_backends=job_backends,
     )
     logger.info(
-        f"Initialized run manager with {len(config.sources)} sources, "
-        f"{len(config.projects)} projects"
+        f"Initialized run manager with {len(config.sources)} sources"
     )
 
     if restore_runs:

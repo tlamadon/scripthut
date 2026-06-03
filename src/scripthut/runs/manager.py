@@ -17,7 +17,6 @@ from scripthut.config_schema import (
     EnvRule,
     GitSourceConfig,
     PathSourceConfig,
-    ProjectConfig,
     ScriptHutConfig,
 )
 from scripthut.models import JobState
@@ -864,94 +863,6 @@ class RunManager:
 
         return run
 
-    async def discover_workflows(self, project_name: str) -> list[str]:
-        """Discover sflow.json files in a project repo via git ls-files."""
-        project = self.config.get_project(project_name)
-        if project is None:
-            raise ValueError(f"Project '{project_name}' not found")
-
-        ssh_client = self.get_ssh_client(project.backend)
-        if ssh_client is None:
-            raise ValueError(
-                f"No SSH connection to backend '{project.backend}'"
-            )
-
-        stdout, stderr, exit_code = await ssh_client.run_command(
-            f"cd {project.path} && git ls-files '*/sflow.json' 'sflow.json'"
-        )
-        if exit_code != 0:
-            raise ValueError(
-                f"git ls-files failed in {project.path}: {stderr}"
-            )
-
-        paths = [line.strip() for line in stdout.strip().splitlines() if line.strip()]
-        logger.info(
-            f"Discovered {len(paths)} workflows in project '{project_name}'"
-        )
-        return paths
-
-    async def create_run_from_project(
-        self, project_name: str, workflow_path: str, *, backend: str | None = None,
-    ) -> Run:
-        """Create a run from a sflow.json in a project repo.
-
-        ``backend`` overrides the project's configured backend.
-        """
-        project = self.config.get_project(project_name)
-        if project is None:
-            raise ValueError(f"Project '{project_name}' not found")
-
-        if backend and self.config.get_backend(backend) is None:
-            raise ValueError(f"Backend '{backend}' not found in config")
-        backend_name = backend or project.backend
-
-        ssh_client = self.get_ssh_client(backend_name)
-        if ssh_client is None:
-            raise ValueError(
-                f"No SSH connection to backend '{backend_name}'"
-            )
-
-        full_path = f"{project.path}/{workflow_path}"
-        stdout, stderr, exit_code = await ssh_client.run_command(
-            f"cat {full_path}"
-        )
-        if exit_code != 0:
-            raise ValueError(
-                f"Failed to read '{full_path}': {stderr}"
-            )
-
-        try:
-            data = json.loads(stdout)
-        except json.JSONDecodeError as e:
-            raise ValueError(f"Invalid JSON in '{full_path}': {e}")
-
-        if isinstance(data, dict) and "tasks" in data:
-            tasks_data = data["tasks"]
-        elif isinstance(data, list):
-            tasks_data = data
-        else:
-            raise ValueError(
-                f"JSON in '{full_path}' must be a list or dict with 'tasks' key"
-            )
-
-        tasks = [TaskDefinition.from_dict(t) for t in tasks_data]
-
-        sflow_dir = workflow_path.rsplit("/", 1)[0] if "/" in workflow_path else ""
-        default_working_dir = (
-            f"{project.path}/{sflow_dir}" if sflow_dir else project.path
-        )
-        for task in tasks:
-            if task.working_dir == "~":
-                task.working_dir = default_working_dir
-
-        workflow_name = (
-            f"{project.name}/{sflow_dir}" if sflow_dir else project.name
-        )
-
-        return await self._build_run(
-            tasks, workflow_name, backend_name, project.max_concurrent,
-            ssh_client
-        )
 
     def get_job_backend(self, backend_name: str) -> JobBackend | None:
         """Get the JobBackend for a backend name."""

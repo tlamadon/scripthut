@@ -6,9 +6,8 @@ The configuration file has the following top-level sections:
 
 ```yaml
 backends: [...]       # Remote compute backends (Slurm, PBS, AWS Batch, AWS EC2)
-sources: [...]        # Git repository sources
+sources: [...]        # Git or path sources carrying workflow JSON files
 workflows: [...]      # Task generators (SSH commands returning JSON)
-projects: [...]       # Git projects with sflow.json files
 stacks: [...]         # Reusable software environments installed once per backend
 env: [...]            # Server-level env rules (see Environments)
 env_groups: {...}     # Named, reusable rule lists
@@ -23,7 +22,7 @@ All sections are optional and default to empty lists or sensible defaults.
 This page covers the small top-level concerns — file lookup, pricing, settings, and a complete example. The substantial sections each have their own page:
 
 - [Backends](backends.md) — Slurm, PBS, AWS Batch, AWS EC2, SSH config
-- [Workflows](workflows.md) — workflows (incl. git), sources, projects
+- [Workflows](workflows.md) — workflows (incl. git) and sources
 - [Environments](environments.md) — the env-rule resolver and `env_groups`
 - [Stacks](stacks.md) — reusable software environments (Python/Julia/Conda…)
 
@@ -38,7 +37,7 @@ Resolution order:
 1. **Explicit path** via `--config <path>` — loads exactly that file with no merging.
 2. **User-global config** at `~/.config/scripthut/scripthut.yaml` (or the legacy `~/.scripthut.yaml`).
 3. **Project-local config** found by walking up from the current working directory until a `scripthut.yaml` (or `.yml`) is hit.
-4. **Merge** when both 2 and 3 exist: project-local overrides global by name in `stacks` / `workflows` / `projects`, env lists concatenate (global first), and `env_groups` dict-merge. Infrastructure fields (`backends`, `sources`, `settings`, `pricing`) come strictly from the global file and are **rejected** in a project-local file.
+4. **Merge** when both 2 and 3 exist: project-local overrides global by name in `stacks` / `workflows`, env lists concatenate (global first), and `env_groups` dict-merge. Infrastructure fields (`backends`, `sources`, `settings`, `pricing`) come strictly from the global file and are **rejected** in a project-local file.
 5. **Legacy `.env`** fallback if no YAML is found anywhere (deprecated).
 
 All path fields (e.g., `key_path`, `data_dir`, `deploy_key`, `input_files`) support `~` expansion. Relative paths inside a YAML are resolved against **that file's directory**, not the process CWD — so a project-local `input_files: [requirements.txt]` always refers to the project's `requirements.txt`, regardless of where the CLI was invoked from.

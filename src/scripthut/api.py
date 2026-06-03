@@ -116,52 +116,54 @@ def make_api_router(state: AppState) -> APIRouter:
             })
         return {"backends": result}
 
-    @router.get("/projects")
-    async def list_projects() -> dict[str, Any]:
-        if state.config is None:
-            return {"projects": []}
-        return {
-            "projects": [
-                {
-                    "name": p.name,
-                    "backend": p.backend,
-                    "path": p.path,
-                    "description": p.description,
-                    "max_concurrent": p.max_concurrent,
-                }
-                for p in state.config.projects
-            ],
+    def _source_summary(src: Any) -> dict[str, Any]:
+        """Compact dict for a GitSourceConfig or PathSourceConfig.
+
+        Hides type-specific fields under a discriminator so callers can
+        format both variants without sniffing the class.
+        """
+        from scripthut.config_schema import GitSourceConfig, PathSourceConfig
+        common: dict[str, Any] = {
+            "name": src.name,
+            "type": src.type,
+            "description": getattr(src, "description", ""),
+            "max_concurrent": getattr(src, "max_concurrent", None),
         }
+        if isinstance(src, GitSourceConfig):
+            common.update({"url": src.url, "branch": src.branch})
+        elif isinstance(src, PathSourceConfig):
+            common.update({"path": src.path, "backend": src.backend})
+        return common
 
-    @router.get("/projects/{name}")
-    async def view_project(name: str) -> dict[str, Any]:
-        """Project metadata plus the sflow.json files discovered on the backend.
+    @router.get("/sources")
+    async def list_sources() -> dict[str, Any]:
+        if state.config is None:
+            return {"sources": []}
+        return {"sources": [_source_summary(s) for s in state.config.sources]}
 
-        Discovery requires the project's backend to be reachable; if it isn't,
-        the metadata is still returned and ``discover_error`` carries the
-        reason so the caller can show partial results.
+    @router.get("/sources/{name}")
+    async def view_source(name: str) -> dict[str, Any]:
+        """Source metadata plus the workflow files discovered for it.
+
+        Git sources need to have been synced (cloned) for workflows to
+        appear; if discovery fails, metadata is still returned and
+        ``discover_error`` carries the reason.
         """
         if state.config is None:
             raise HTTPException(status_code=503, detail="Config not loaded")
-        project = state.config.get_project(name)
-        if project is None:
-            raise HTTPException(status_code=404, detail=f"Project '{name}' not found")
-        rm = _require_manager()
+        source = state.config.get_source(name)
+        if source is None:
+            raise HTTPException(status_code=404, detail=f"Source '{name}' not found")
         workflows: list[str] = []
         discover_error: str | None = None
         try:
-            workflows = await rm.discover_workflows(name)
-        except ValueError as e:
-            discover_error = str(e)
+            cached = state.source_workflows.get(name, [])
+            workflows = [wf.filename for wf in cached]
         except Exception as e:
-            logger.warning(f"discover_workflows failed for project '{name}': {e}")
+            logger.warning(f"workflow discovery failed for source '{name}': {e}")
             discover_error = str(e)
         return {
-            "name": project.name,
-            "backend": project.backend,
-            "path": project.path,
-            "description": project.description,
-            "max_concurrent": project.max_concurrent,
+            **_source_summary(source),
             "workflows": workflows,
             "discover_error": discover_error,
         }
@@ -200,29 +202,73 @@ def make_api_router(state: AppState) -> APIRouter:
         state.notify_poll()
         return _run_summary(run)
 
-    @router.post("/projects/{name}/run")
-    async def run_project_workflow(
+    @router.post("/sources/{name}/run")
+    async def run_source_workflow_v1(
         name: str, workflow: str, backend: str | None = None,
     ) -> dict[str, Any]:
+        """Submit a source workflow as a new run.
+
+        ``workflow`` is the filename within the source (e.g. ``train.json``).
+        ``backend`` falls back to the source's own ``backend`` field when
+        omitted — required because ``create_run_from_source`` needs one.
+        """
+        if state.config is None:
+            raise HTTPException(status_code=503, detail="Config not loaded")
+        source = state.config.get_source(name)
+        if source is None:
+            raise HTTPException(status_code=404, detail=f"Source '{name}' not found")
+        effective_backend = backend or getattr(source, "backend", None)
+        if not effective_backend:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "No backend specified and source has no default backend. "
+                    "Pass ?backend=<name>."
+                ),
+            )
+        # Fetch the workflow JSON. Git sources need a refresh first so we
+        # don't run against a stale clone.
+        wf = None
+        if state.source_manager and name in getattr(
+            state.source_manager, "_sources", {},
+        ):
+            try:
+                await state.source_manager.sync_source(name)
+                workflows = state.source_manager.discover_workflows(name)
+                state.source_workflows[name] = workflows
+            except Exception as e:
+                logger.warning(f"Failed to refresh source '{name}' before run: {e}")
+        wf = next(
+            (w for w in state.source_workflows.get(name, []) if w.filename == workflow),
+            None,
+        )
+        if wf is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Workflow '{workflow}' not found in source '{name}'",
+            )
         rm = _require_manager()
         try:
-            run = await rm.create_run_from_project(name, workflow, backend=backend)
+            run = await rm.create_run_from_source(
+                name, workflow, wf.tasks_json, backend=effective_backend,
+            )
         except ValueError as e:
             raise HTTPException(status_code=422, detail=str(e))
         except Exception as e:
-            logger.error(f"Failed to create run for project '{name}': {e}")
+            logger.error(f"Failed to create run for source '{name}': {e}")
             raise HTTPException(status_code=500, detail=str(e))
         state.notify_poll()
         return _run_summary(run)
 
-    @router.get("/projects/{name}/workflows")
-    async def list_project_workflows(name: str) -> dict[str, Any]:
-        rm = _require_manager()
-        try:
-            paths = await rm.discover_workflows(name)
-        except ValueError as e:
-            raise HTTPException(status_code=404, detail=str(e))
-        return {"project": name, "workflows": paths}
+    @router.get("/sources/{name}/workflows")
+    async def list_source_workflows_v1(name: str) -> dict[str, Any]:
+        if state.config is None or state.config.get_source(name) is None:
+            raise HTTPException(status_code=404, detail=f"Source '{name}' not found")
+        cached = state.source_workflows.get(name, [])
+        return {
+            "source": name,
+            "workflows": [wf.filename for wf in cached],
+        }
 
     @router.get("/runs")
     async def list_runs(limit: int | None = None, workflow: str | None = None) -> dict[str, Any]:

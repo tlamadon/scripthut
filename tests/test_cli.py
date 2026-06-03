@@ -10,7 +10,7 @@ import httpx
 import pytest
 
 from scripthut import cli
-from scripthut.config_schema import ProjectConfig
+from scripthut.config_schema import GitSourceConfig, PathSourceConfig
 from scripthut.runs.models import Run, RunItem, RunItemStatus, TaskDefinition
 
 # -- helpers -----------------------------------------------------------------
@@ -89,15 +89,15 @@ def test_parser_workflow_run_requires_name():
         parser.parse_args(["workflow", "run"])
 
 
-def test_parser_workflow_run_accepts_project_and_server():
+def test_parser_workflow_run_accepts_source_and_server():
     parser = cli.build_parser()
     args = parser.parse_args(
-        ["workflow", "run", "wf-name", "--project", "proj", "--server", "http://s"]
+        ["workflow", "run", "wf-name", "--source", "src", "--server", "http://s"]
     )
     assert args.cmd == "workflow"
     assert args.wf_cmd == "run"
     assert args.name == "wf-name"
-    assert args.project == "proj"
+    assert args.source == "src"
     assert args.server == "http://s"
     assert args.handler is cli._cmd_workflow_run
 
@@ -266,65 +266,67 @@ def test_remote_client_attaches_auth_headers(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_local_client_list_projects_uses_config():
+async def test_local_client_list_sources_returns_summaries():
     runtime = MagicMock()
-    runtime.config.projects = [
-        ProjectConfig(name="proj", backend="cluster", path="~/proj"),
+    runtime.config.sources = [
+        PathSourceConfig(name="local-src", backend="cluster", path="/r/src"),
+        GitSourceConfig(name="git-src", url="git@host:o/r.git", branch="main"),
     ]
     client = cli.LocalClient.__new__(cli.LocalClient)
     client._runtime = runtime
 
-    data = await client.list_projects()
+    data = await client.list_sources()
 
-    assert data["projects"][0]["name"] == "proj"
+    by_name = {s["name"]: s for s in data["sources"]}
+    assert by_name["local-src"]["type"] == "path"
+    assert by_name["local-src"]["backend"] == "cluster"
+    assert by_name["git-src"]["type"] == "git"
+    assert by_name["git-src"]["url"] == "git@host:o/r.git"
 
 
 @pytest.mark.asyncio
-async def test_local_client_view_project_discovers_workflows():
+async def test_local_client_view_source_returns_metadata():
     runtime = MagicMock()
-    runtime.config.get_project = MagicMock(
-        return_value=ProjectConfig(name="proj", backend="cluster", path="~/proj"),
-    )
-    runtime.run_manager.discover_workflows = AsyncMock(
-        return_value=["a/sflow.json", "b/sflow.json"],
+    runtime.config.get_source = MagicMock(
+        return_value=PathSourceConfig(
+            name="src", backend="cluster", path="/r/src", description="My repo",
+        ),
     )
     client = cli.LocalClient.__new__(cli.LocalClient)
     client._runtime = runtime
 
-    data = await client.view_project("proj")
+    data = await client.view_source("src")
 
-    assert data["name"] == "proj"
-    assert data["workflows"] == ["a/sflow.json", "b/sflow.json"]
-    assert data["discover_error"] is None
-
-
-@pytest.mark.asyncio
-async def test_local_client_view_project_swallows_discovery_error():
-    runtime = MagicMock()
-    runtime.config.get_project = MagicMock(
-        return_value=ProjectConfig(name="proj", backend="cluster", path="~/proj"),
-    )
-    runtime.run_manager.discover_workflows = AsyncMock(
-        side_effect=ValueError("No SSH connection"),
-    )
-    client = cli.LocalClient.__new__(cli.LocalClient)
-    client._runtime = runtime
-
-    data = await client.view_project("proj")
-
+    assert data["name"] == "src"
+    assert data["type"] == "path"
+    assert data["description"] == "My repo"
+    # Local mode degrades workflow discovery — it carries a clear hint.
     assert data["workflows"] == []
-    assert "No SSH connection" in data["discover_error"]
+    assert "--server" in (data["discover_error"] or "")
 
 
 @pytest.mark.asyncio
-async def test_local_client_view_project_unknown_raises():
+async def test_local_client_view_source_unknown_raises():
     runtime = MagicMock()
-    runtime.config.get_project = MagicMock(return_value=None)
+    runtime.config.get_source = MagicMock(return_value=None)
     client = cli.LocalClient.__new__(cli.LocalClient)
     client._runtime = runtime
 
     with pytest.raises(RuntimeError, match="not found"):
-        await client.view_project("missing")
+        await client.view_source("missing")
+
+
+@pytest.mark.asyncio
+async def test_local_client_run_source_workflow_is_unsupported():
+    """Local CLI mode can't fetch the workflow JSON, so this is degraded.
+
+    The error message must direct the user to ``--server <url>`` — that's
+    the supported path until source discovery is added to ``Runtime``.
+    """
+    client = cli.LocalClient.__new__(cli.LocalClient)
+    client._runtime = MagicMock()
+    with pytest.raises(RuntimeError, match="--server"):
+        await client.run_source_workflow("src", "wf.json")
 
 
 @pytest.mark.asyncio
@@ -388,7 +390,7 @@ def _mock_remote(handler) -> cli.RemoteClient:
 
 
 @pytest.mark.asyncio
-async def test_remote_client_run_project_passes_workflow_query():
+async def test_remote_client_run_source_passes_workflow_query():
     received: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -396,11 +398,11 @@ async def test_remote_client_run_project_passes_workflow_query():
         return httpx.Response(200, json={"id": "x"})
 
     client = _mock_remote(handler)
-    await client.run_project_workflow("proj", "sub/sflow.json")
+    await client.run_source_workflow("src", "train.json")
     await client._client.aclose()
 
-    assert "workflow=sub" in received["url"]
-    assert "/api/v1/projects/proj/run" in received["url"]
+    assert "workflow=train.json" in received["url"]
+    assert "/api/v1/sources/src/run" in received["url"]
 
 
 @pytest.mark.asyncio
@@ -447,7 +449,7 @@ async def test_remote_client_raises_runtime_error_on_4xx():
 
     client = _mock_remote(handler)
     with pytest.raises(RuntimeError, match="HTTP 422.*Workflow not found"):
-        await client.run_project_workflow("proj", "missing/sflow.json")
+        await client.run_source_workflow("src", "missing.json")
     await client._client.aclose()
 
 
@@ -456,98 +458,99 @@ async def test_remote_client_raises_runtime_error_on_4xx():
 
 @pytest.mark.asyncio
 async def test_workflow_run_forwards_backend_override():
-    run = _make_run(workflow_name="proj/sub", statuses=[RunItemStatus.SUBMITTED])
+    run = _make_run(workflow_name="src/train", statuses=[RunItemStatus.SUBMITTED])
     fake = _async_ctx(MagicMock())
-    fake.run_project_workflow = AsyncMock(return_value=cli._summary_from_run(run))
+    fake.run_source_workflow = AsyncMock(return_value=cli._summary_from_run(run))
 
-    args = _ns(name="sub/sflow.json", project="proj", backend="cluster-b")
+    args = _ns(name="train.json", source="src", backend="cluster-b")
     with patch.object(cli, "_make_client", return_value=fake):
         with patch.object(cli, "_resolve_server", return_value=None):
             await cli._cmd_workflow_run(args)
 
-    fake.run_project_workflow.assert_awaited_once_with(
-        "proj", "sub/sflow.json", backend="cluster-b",
+    fake.run_source_workflow.assert_awaited_once_with(
+        "src", "train.json", backend="cluster-b",
     )
 
 
 @pytest.mark.asyncio
-async def test_workflow_run_with_project_calls_project_endpoint():
-    run = _make_run(workflow_name="proj/sub", statuses=[RunItemStatus.SUBMITTED])
+async def test_workflow_run_with_source_calls_source_endpoint():
+    run = _make_run(workflow_name="src/train", statuses=[RunItemStatus.SUBMITTED])
     fake = _async_ctx(MagicMock())
-    fake.run_project_workflow = AsyncMock(return_value=cli._summary_from_run(run))
+    fake.run_source_workflow = AsyncMock(return_value=cli._summary_from_run(run))
 
-    args = _ns(name="sub/sflow.json", project="proj", backend=None)
+    args = _ns(name="train.json", source="src", backend=None)
     with patch.object(cli, "_make_client", return_value=fake):
         with patch.object(cli, "_resolve_server", return_value=None):
             rc = await cli._cmd_workflow_run(args)
 
-    fake.run_project_workflow.assert_awaited_once_with(
-        "proj", "sub/sflow.json", backend=None,
+    fake.run_source_workflow.assert_awaited_once_with(
+        "src", "train.json", backend=None,
     )
     assert rc == 0
 
 
 @pytest.mark.asyncio
-async def test_project_list_prints_table(capsys):
+async def test_source_list_prints_table(capsys):
     fake = _async_ctx(MagicMock())
-    fake.list_projects = AsyncMock(return_value={
-        "projects": [
-            {"name": "proj-a", "backend": "cluster", "path": "~/a", "description": ""},
-            {"name": "proj-b", "backend": "cluster", "path": "~/b", "description": "demo"},
+    fake.list_sources = AsyncMock(return_value={
+        "sources": [
+            {"name": "src-a", "type": "path", "backend": "cluster",
+             "path": "/r/a", "description": ""},
+            {"name": "src-b", "type": "git",
+             "url": "git@h:o/r.git", "branch": "main", "description": "demo"},
         ]
     })
 
     args = _ns()
     with patch.object(cli, "_make_client", return_value=fake):
-        rc = await cli._cmd_project_list(args)
+        rc = await cli._cmd_source_list(args)
 
     out = capsys.readouterr().out
-    assert "proj-a" in out
-    assert "proj-b" in out
+    assert "src-a" in out
+    assert "src-b" in out
     assert "demo" in out
     assert rc == 0
 
 
 @pytest.mark.asyncio
-async def test_project_view_lists_discovered_workflows(capsys):
+async def test_source_view_lists_discovered_workflows(capsys):
     fake = _async_ctx(MagicMock())
-    fake.view_project = AsyncMock(return_value={
-        "name": "proj", "backend": "cluster", "path": "~/proj",
+    fake.view_source = AsyncMock(return_value={
+        "name": "src", "type": "path", "backend": "cluster", "path": "/r/src",
         "description": "", "max_concurrent": 4,
-        "workflows": ["a/sflow.json", "b/sflow.json"],
+        "workflows": ["train.json", "eval.json"],
         "discover_error": None,
     })
 
-    args = _ns(name="proj")
+    args = _ns(name="src")
     with patch.object(cli, "_make_client", return_value=fake):
-        rc = await cli._cmd_project_view(args)
+        rc = await cli._cmd_source_view(args)
 
     out = capsys.readouterr().out
-    assert "proj" in out
-    assert "a/sflow.json" in out
-    assert "b/sflow.json" in out
+    assert "src" in out
+    assert "train.json" in out
+    assert "eval.json" in out
     assert "workflows (2)" in out
-    fake.view_project.assert_awaited_once_with("proj")
+    fake.view_source.assert_awaited_once_with("src")
     assert rc == 0
 
 
 @pytest.mark.asyncio
-async def test_project_view_surfaces_discover_error(capsys):
+async def test_source_view_surfaces_discover_error(capsys):
     fake = _async_ctx(MagicMock())
-    fake.view_project = AsyncMock(return_value={
-        "name": "proj", "backend": "cluster", "path": "~/proj",
+    fake.view_source = AsyncMock(return_value={
+        "name": "src", "type": "git", "url": "git@h:o/r.git", "branch": "main",
         "description": "", "max_concurrent": None,
         "workflows": [],
-        "discover_error": "No SSH connection",
+        "discover_error": "Source not synced",
     })
 
-    args = _ns(name="proj")
+    args = _ns(name="src")
     with patch.object(cli, "_make_client", return_value=fake):
-        await cli._cmd_project_view(args)
+        await cli._cmd_source_view(args)
 
     out = capsys.readouterr().out
-    assert "discovery failed" in out
-    assert "No SSH connection" in out
+    assert "Source not synced" in out
 
 
 @pytest.mark.asyncio
@@ -831,9 +834,10 @@ async def test_status_probe_ok():
     def handler(req: httpx.Request) -> httpx.Response:
         if req.url.path.endswith("/health"):
             return httpx.Response(200, json={"ok": True})
-        if req.url.path.endswith("/projects"):
-            return httpx.Response(200, json={"projects": [
-                {"name": "p1", "backend": "b1", "path": "/p", "description": ""},
+        if req.url.path.endswith("/sources"):
+            return httpx.Response(200, json={"sources": [
+                {"name": "s1", "type": "path", "backend": "b1",
+                 "path": "/p", "description": ""},
             ]})
         if req.url.path.endswith("/backends"):
             return httpx.Response(200, json={"backends": [
@@ -851,13 +855,13 @@ async def test_status_probe_ok():
 
     assert probe["health"]["status_code"] == 200
     assert probe["authorized"]["status_code"] == 200
-    assert probe["server_data"]["projects"][0]["name"] == "p1"
+    assert probe["server_data"]["sources"][0]["name"] == "s1"
     assert probe["server_data_backends"]["backends"][0]["name"] == "b1"
 
 
 @pytest.mark.asyncio
 async def test_status_probe_auth_failure_distinguished_from_unreachable():
-    """A 302 to cloudflareaccess.com on /projects means server up, auth bad."""
+    """A 302 to cloudflareaccess.com on /sources means server up, auth bad."""
 
     def handler(req: httpx.Request) -> httpx.Response:
         # /health is also Access-protected here, so it returns 302 unauthenticated.
@@ -907,9 +911,9 @@ def test_status_renders_local_mode():
         "server": None,
         "server_source": "none",
         "auth": {"method": "none", "source": None, "cloudflared_app": None},
-        "local_projects": [
-            {"name": "demo", "backend": "slurm", "path": "/repos/demo",
-             "description": ""},
+        "local_sources": [
+            {"name": "demo", "type": "path", "backend": "slurm",
+             "path": "/repos/demo", "description": ""},
         ],
         "local_backends": [{"name": "slurm", "type": "slurm"}],
     }
@@ -933,14 +937,15 @@ def test_status_renders_remote_authorized():
             "method": "jwt", "source": "cloudflared",
             "cloudflared_app": "https://srv.example",
         },
-        "local_projects": [],
+        "local_sources": [],
         "local_backends": [],
     }
     probe = {
         "health": {"status_code": 200, "elapsed_ms": 80, "redirect_location": None},
         "authorized": {"status_code": 200, "redirect_location": None},
-        "server_data": {"projects": [
-            {"name": "demo", "backend": "slurm", "path": "/r/d", "description": ""},
+        "server_data": {"sources": [
+            {"name": "demo", "type": "path", "backend": "slurm",
+             "path": "/r/d", "description": ""},
         ]},
         "server_data_backends": {"backends": [
             {"name": "slurm", "type": "slurm", "connected": True},
@@ -966,7 +971,7 @@ def test_status_renders_auth_failure_with_hint():
             "method": "jwt-pending", "source": "config",
             "cloudflared_app": "https://srv.example",
         },
-        "local_projects": [], "local_backends": [],
+        "local_sources": [], "local_backends": [],
     }
     probe = {
         "health": {"status_code": 302, "elapsed_ms": 50,
@@ -994,7 +999,7 @@ async def test_cmd_status_exit_code_zero_when_authorized(monkeypatch, capsys):
             "health": {"status_code": 200, "elapsed_ms": 5,
                        "redirect_location": None},
             "authorized": {"status_code": 200, "redirect_location": None},
-            "server_data": {"projects": []},
+            "server_data": {"sources": []},
             "server_data_backends": {"backends": []},
         }
 
@@ -1007,7 +1012,7 @@ async def test_cmd_status_exit_code_zero_when_authorized(monkeypatch, capsys):
 
 @pytest.mark.asyncio
 async def test_cmd_status_exit_code_nonzero_on_auth_failure(monkeypatch):
-    """A 302 on /projects exits non-zero so the command composes in scripts."""
+    """A 302 on /sources exits non-zero so the command composes in scripts."""
     monkeypatch.delenv("SCRIPTHUT_SERVER", raising=False)
     fake_cfg = MagicMock()
     fake_cfg.projects = []
@@ -1066,7 +1071,7 @@ async def test_cmd_status_json_includes_probe(monkeypatch, capsys):
             "health": {"status_code": 200, "elapsed_ms": 5,
                        "redirect_location": None},
             "authorized": {"status_code": 200, "redirect_location": None},
-            "server_data": {"projects": []},
+            "server_data": {"sources": []},
             "server_data_backends": {"backends": []},
         }
 

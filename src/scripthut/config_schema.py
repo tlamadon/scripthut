@@ -1,9 +1,9 @@
 """Pydantic models for YAML configuration schema."""
 
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class EnvRule(BaseModel):
@@ -441,6 +441,15 @@ class GitSourceConfig(BaseModel):
         default=None,
         description="Shell command to run in the clone directory after cloning",
     )
+    max_concurrent: int | None = Field(
+        default=None,
+        ge=1,
+        description="Default max concurrent tasks per run (None = backend limit only)",
+    )
+    description: str = Field(
+        default="",
+        description="Human-readable description of this source",
+    )
 
     @property
     def deploy_key_resolved(self) -> Path | None:
@@ -461,20 +470,6 @@ class PathSourceConfig(BaseModel):
         default=".hut/workflows/*.json",
         description="Glob pattern to find workflow JSON files within the path (e.g. '**/*.hut.json')",
     )
-
-
-SourceConfig = Annotated[
-    GitSourceConfig | PathSourceConfig,
-    Field(discriminator="type"),
-]
-
-
-class ProjectConfig(BaseModel):
-    """A git repository on a backend containing sflow.json workflow files."""
-
-    name: str = Field(description="Unique identifier for this project")
-    backend: str = Field(description="Name of the backend this project lives on")
-    path: str = Field(description="Path to the git repo on the backend")
     max_concurrent: int | None = Field(
         default=None,
         ge=1,
@@ -482,8 +477,14 @@ class ProjectConfig(BaseModel):
     )
     description: str = Field(
         default="",
-        description="Human-readable description of this project",
+        description="Human-readable description of this source",
     )
+
+
+SourceConfig = Annotated[
+    GitSourceConfig | PathSourceConfig,
+    Field(discriminator="type"),
+]
 
 
 class PricingConfig(BaseModel):
@@ -671,6 +672,34 @@ class Stack(BaseModel):
 class ScriptHutConfig(BaseModel):
     """Root configuration model for scripthut.yaml."""
 
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_legacy_projects(cls, data: Any) -> Any:
+        """Refuse YAML carrying the legacy ``projects:`` key (removed in 0.6.0).
+
+        Loud failure beats silent ignore: pydantic would otherwise drop the
+        section quietly and leave the user wondering why their workflows
+        vanished. The error message includes a concrete one-to-one mapping
+        to the equivalent ``sources:`` entry so they can edit and retry.
+        """
+        if isinstance(data, dict) and "projects" in data:
+            example = (
+                "    sources:\n"
+                "      - name: <project_name>\n"
+                "        type: path                  # or 'git' for a remote repo\n"
+                "        backend: <backend_name>\n"
+                "        path: <path_on_backend>\n"
+                "        # optional: workflows_glob, max_concurrent, description"
+            )
+            raise ValueError(
+                "`projects:` was removed in scripthut 0.6.0. Convert each "
+                "project entry to a `sources:` entry, e.g.\n"
+                f"{example}\n"
+                "See scripthut.example.yaml or `scripthut source list` "
+                "(against a server) for working examples."
+            )
+        return data
+
     backends: list[BackendConfig] = Field(
         default_factory=list,
         description="List of remote backends (Slurm, ECS)",
@@ -678,10 +707,6 @@ class ScriptHutConfig(BaseModel):
     sources: list[SourceConfig] = Field(
         default_factory=list,
         description="List of sources (git repos or backend paths) with workflow definitions",
-    )
-    projects: list[ProjectConfig] = Field(
-        default_factory=list,
-        description="List of git projects containing sflow.json workflow files",
     )
     env: list[EnvRule] = Field(
         default_factory=list,
@@ -716,13 +741,6 @@ class ScriptHutConfig(BaseModel):
         for source in self.sources:
             if source.name == name:
                 return source
-        return None
-
-    def get_project(self, name: str) -> ProjectConfig | None:
-        """Get a project by name."""
-        for project in self.projects:
-            if project.name == name:
-                return project
         return None
 
     def get_stack(self, name: str) -> Stack | None:

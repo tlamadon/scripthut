@@ -9,7 +9,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from scripthut.api import make_api_router
-from scripthut.config_schema import ProjectConfig
+from scripthut.config_schema import GitSourceConfig, PathSourceConfig
 from scripthut.runs.models import Run, RunItem, RunItemStatus, TaskDefinition
 
 # -- fixtures ----------------------------------------------------------------
@@ -41,19 +41,28 @@ def _make_run(
 
 def _make_state(
     run_manager: MagicMock | None = None,
-    projects: list[ProjectConfig] | None = None,
+    sources: list | None = None,
+    source_workflows: dict | None = None,
 ):
-    """Build a minimal AppState-like object that satisfies the router."""
+    """Build a minimal AppState-like object that satisfies the router.
+
+    ``sources`` covers both GitSourceConfig and PathSourceConfig — the
+    fixture mirrors what ``state.config.sources`` looks like on a live
+    server. ``source_workflows`` is the cached discovery result keyed by
+    source name; defaults to empty dict.
+    """
     state = MagicMock()
     state.run_manager = run_manager
     state.config_error = None
     state.backends = {}
-    if projects is not None:
-        pr_list = projects
+    state.source_manager = None
+    state.source_workflows = source_workflows or {}
+    if sources is not None:
+        s_list = sources
         state.config = MagicMock()
-        state.config.projects = pr_list
-        state.config.get_project = lambda name: next(
-            (p for p in pr_list if p.name == name), None,
+        state.config.sources = s_list
+        state.config.get_source = lambda name: next(
+            (s for s in s_list if s.name == name), None,
         )
     else:
         state.config = None
@@ -67,60 +76,67 @@ def _client(state) -> TestClient:
     return TestClient(app)
 
 
-def test_list_projects_returns_configured_projects():
-    projects = [
-        ProjectConfig(name="proj", backend="cluster", path="~/proj", description="d"),
+def test_list_sources_returns_configured_sources():
+    sources = [
+        PathSourceConfig(name="local", backend="cluster", path="/r/s", description="d"),
+        GitSourceConfig(name="git", url="git@h:o/r.git", branch="main"),
     ]
-    state = _make_state(run_manager=MagicMock(), projects=projects)
+    state = _make_state(run_manager=MagicMock(), sources=sources)
 
-    resp = _client(state).get("/api/v1/projects")
+    resp = _client(state).get("/api/v1/sources")
 
     assert resp.status_code == 200
     data = resp.json()
-    assert len(data["projects"]) == 1
-    assert data["projects"][0]["name"] == "proj"
-    assert data["projects"][0]["path"] == "~/proj"
+    assert len(data["sources"]) == 2
+    by_name = {s["name"]: s for s in data["sources"]}
+    assert by_name["local"]["type"] == "path"
+    assert by_name["local"]["path"] == "/r/s"
+    assert by_name["local"]["description"] == "d"
+    assert by_name["git"]["type"] == "git"
+    assert by_name["git"]["url"] == "git@h:o/r.git"
 
 
-def test_view_project_returns_metadata_and_workflows():
-    projects = [ProjectConfig(name="proj", backend="cluster", path="~/proj")]
-    rm = MagicMock()
-    rm.discover_workflows = AsyncMock(
-        return_value=["a/sflow.json", "b/sflow.json"],
+def test_view_source_returns_metadata_and_workflows():
+    sources = [PathSourceConfig(name="src", backend="cluster", path="/r/s")]
+    from scripthut.sources.git import SourceWorkflow
+    wfs = [
+        SourceWorkflow(
+            name="train", source_name="src", filename="train.json",
+            tasks_json="[]",
+        ),
+    ]
+    state = _make_state(
+        run_manager=MagicMock(), sources=sources,
+        source_workflows={"src": wfs},
     )
-    state = _make_state(run_manager=rm, projects=projects)
 
-    resp = _client(state).get("/api/v1/projects/proj")
+    resp = _client(state).get("/api/v1/sources/src")
 
     assert resp.status_code == 200
     body = resp.json()
-    assert body["name"] == "proj"
-    assert body["workflows"] == ["a/sflow.json", "b/sflow.json"]
+    assert body["name"] == "src"
+    assert body["type"] == "path"
+    assert body["workflows"] == ["train.json"]
     assert body["discover_error"] is None
-    rm.discover_workflows.assert_awaited_once_with("proj")
 
 
-def test_view_project_returns_metadata_when_discovery_fails():
-    """Discovery failure shouldn't blank out the metadata view."""
-    projects = [ProjectConfig(name="proj", backend="cluster", path="~/proj")]
-    rm = MagicMock()
-    rm.discover_workflows = AsyncMock(
-        side_effect=ValueError("No SSH connection to backend 'cluster'"),
-    )
-    state = _make_state(run_manager=rm, projects=projects)
+def test_view_source_returns_metadata_when_no_workflows_cached():
+    """No cached workflows is normal pre-sync, not an error."""
+    sources = [GitSourceConfig(name="src", url="git@h:o/r.git", branch="main")]
+    state = _make_state(run_manager=MagicMock(), sources=sources)
 
-    resp = _client(state).get("/api/v1/projects/proj")
+    resp = _client(state).get("/api/v1/sources/src")
 
     assert resp.status_code == 200
     body = resp.json()
     assert body["workflows"] == []
-    assert "No SSH connection" in body["discover_error"]
+    assert body["discover_error"] is None
 
 
-def test_view_project_unknown_returns_404():
-    state = _make_state(run_manager=MagicMock(), projects=[])
+def test_view_source_unknown_returns_404():
+    state = _make_state(run_manager=MagicMock(), sources=[])
 
-    resp = _client(state).get("/api/v1/projects/missing")
+    resp = _client(state).get("/api/v1/sources/missing")
 
     assert resp.status_code == 404
 
@@ -163,37 +179,89 @@ def test_list_backends_no_config_returns_empty():
     assert resp.json() == {"backends": []}
 
 
-# -- /projects/{name}/run ----------------------------------------------------
+# -- /sources/{name}/run -----------------------------------------------------
 
 
-def test_run_project_workflow_passes_workflow_query():
-    run = _make_run(workflow_name="proj/sub")
+def test_run_source_workflow_uses_source_default_backend():
+    """Path source carries its own ``backend``; the call should pick it up
+    when the request doesn't override.
+    """
+    from scripthut.sources.git import SourceWorkflow
+    sources = [PathSourceConfig(name="src", backend="cluster", path="/r/s")]
+    wfs = [
+        SourceWorkflow(
+            name="train", source_name="src", filename="train.json",
+            tasks_json='[]',
+        ),
+    ]
+    run = _make_run(workflow_name="src/train")
     rm = MagicMock()
-    rm.create_run_from_project = AsyncMock(return_value=run)
-    state = _make_state(run_manager=rm)
+    rm.create_run_from_source = AsyncMock(return_value=run)
+    state = _make_state(
+        run_manager=rm, sources=sources, source_workflows={"src": wfs},
+    )
 
-    resp = _client(state).post("/api/v1/projects/proj/run?workflow=sub/sflow.json")
+    resp = _client(state).post("/api/v1/sources/src/run?workflow=train.json")
 
     assert resp.status_code == 200
-    rm.create_run_from_project.assert_awaited_once_with(
-        "proj", "sub/sflow.json", backend=None,
+    rm.create_run_from_source.assert_awaited_once_with(
+        "src", "train.json", "[]", backend="cluster",
     )
 
 
-def test_run_project_workflow_passes_backend_override():
-    run = _make_run(workflow_name="proj/sub")
+def test_run_source_workflow_passes_backend_override():
+    from scripthut.sources.git import SourceWorkflow
+    sources = [PathSourceConfig(name="src", backend="cluster", path="/r/s")]
+    wfs = [
+        SourceWorkflow(
+            name="train", source_name="src", filename="train.json",
+            tasks_json="[]",
+        ),
+    ]
+    run = _make_run(workflow_name="src/train")
     rm = MagicMock()
-    rm.create_run_from_project = AsyncMock(return_value=run)
-    state = _make_state(run_manager=rm)
+    rm.create_run_from_source = AsyncMock(return_value=run)
+    state = _make_state(
+        run_manager=rm, sources=sources, source_workflows={"src": wfs},
+    )
 
     resp = _client(state).post(
-        "/api/v1/projects/proj/run?workflow=sub/sflow.json&backend=cluster-b"
+        "/api/v1/sources/src/run?workflow=train.json&backend=cluster-b"
     )
 
     assert resp.status_code == 200
-    rm.create_run_from_project.assert_awaited_once_with(
-        "proj", "sub/sflow.json", backend="cluster-b",
+    rm.create_run_from_source.assert_awaited_once_with(
+        "src", "train.json", "[]", backend="cluster-b",
     )
+
+
+def test_run_source_workflow_unknown_source_returns_404():
+    state = _make_state(run_manager=MagicMock(), sources=[])
+    resp = _client(state).post("/api/v1/sources/missing/run?workflow=x.json")
+    assert resp.status_code == 404
+
+
+def test_run_source_workflow_missing_workflow_returns_404():
+    sources = [PathSourceConfig(name="src", backend="cluster", path="/r/s")]
+    state = _make_state(
+        run_manager=MagicMock(), sources=sources, source_workflows={"src": []},
+    )
+    resp = _client(state).post("/api/v1/sources/src/run?workflow=missing.json")
+    assert resp.status_code == 404
+
+
+def test_run_source_workflow_git_source_without_backend_errors():
+    """Git sources don't carry a backend; without one in the query, 422.
+
+    Path sources have a default; git sources don't (their backend field
+    is deprecated/excluded), so the request must specify one.
+    """
+    sources = [GitSourceConfig(name="git", url="git@h:o/r.git", branch="main")]
+    state = _make_state(run_manager=MagicMock(), sources=sources)
+
+    resp = _client(state).post("/api/v1/sources/git/run?workflow=train.json")
+
+    assert resp.status_code == 422
 
 
 # -- /runs --------------------------------------------------------------------

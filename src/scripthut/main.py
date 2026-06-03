@@ -746,7 +746,7 @@ def _diff_named(
 def reload_runtime_config(new_config: ScriptHutConfig) -> ReloadReport:
     """Apply a freshly parsed config to the running server, in-process.
 
-    Hot-reloadable: environments, workflows, projects, sources, most settings.
+    Hot-reloadable: environments, workflows, sources, most settings.
     Backend changes are detected and reported but NOT applied (SSH connections
     and the polling task are kept as-is to avoid losing in-flight job state).
     Pricing service changes also require a restart.
@@ -793,9 +793,8 @@ def reload_runtime_config(new_config: ScriptHutConfig) -> ReloadReport:
     state.filter_user = new_config.settings.filter_user
     state.filter_enabled = new_config.settings.filter_user is not None
 
-    report.reloaded.extend(["env rules", "projects", "settings"])
+    report.reloaded.extend(["env rules", "settings"])
     report.counts["env_rules"] = len(new_config.env)
-    report.counts["projects"] = len(new_config.projects)
 
     previously_disabled = set(state.disabled_sources)
     state.source_manager = GitSourceManager(new_config.settings.sources_cache_dir_resolved)
@@ -1443,73 +1442,13 @@ async def delete_external_job(request: Request, job_id: str) -> HTMLResponse:
     return await jobs_partial(request)
 
 
-# Project Routes
-
-
-@app.get("/projects/{name}/workflows")
-async def list_project_workflows(name: str) -> dict[str, Any]:
-    """Discover sflow.json files in a project repo."""
-    if state.run_manager is None:
-        return {"error": "Run manager not initialized"}
-
-    try:
-        paths = await state.run_manager.discover_workflows(name)
-        return {"project": name, "workflows": paths}
-    except ValueError as e:
-        return {"error": str(e)}
-
-
-@app.post("/projects/{name}/run", response_model=None)
-async def run_project_workflow(name: str, workflow: str):
-    """Run a sflow.json workflow from a project."""
-    if state.run_manager is None:
-        return JSONResponse(
-            status_code=500,
-            content={"error": "Run manager not initialized"},
-        )
-
-    try:
-        run = await state.run_manager.create_run_from_project(
-            name, workflow
-        )
-        return {
-            "run_id": run.id,
-            "workflow_name": run.workflow_name,
-            "backend_name": run.backend_name,
-            "task_count": len(run.items),
-            "status": run.status.value,
-        }
-    except Exception as e:
-        logger.error(f"Failed to create run for project '{name}': {e}")
-        return JSONResponse(
-            status_code=422,
-            content={"error": str(e)},
-        )
-
-
 @app.get("/sources", response_class=HTMLResponse)
 async def sources_page(request: Request) -> HTMLResponse:
-    """Page listing sources, projects, and workflows available to trigger."""
-    projects = state.config.projects if state.config else []
-
-    # Discover workflows for each project
-    project_workflows: dict[str, list[str]] = {}
-    if state.run_manager:
-        for project in projects:
-            try:
-                paths = await state.run_manager.discover_workflows(
-                    project.name
-                )
-                project_workflows[project.name] = paths
-            except ValueError:
-                project_workflows[project.name] = []
-
+    """Page listing configured sources and the workflows available to trigger."""
     return templates.TemplateResponse(
         "sources.html",
         {
             "request": request,
-            "projects": projects,
-            "project_workflows": project_workflows,
             "source_workflows": state.source_workflows,
             "source_configs": {s.name: s for s in state.config.sources} if state.config else {},
             "source_statuses": state.source_statuses,
@@ -1630,11 +1569,6 @@ def _section_summary() -> dict[str, dict[str, Any]]:
             "names": [f"rule #{i}" for i, _ in enumerate(cfg.env)],
             "hot_reload": True,
         },
-        "projects": {
-            "label": "Projects",
-            "names": [p.name for p in cfg.projects],
-            "hot_reload": True,
-        },
         "sources": {
             "label": "Sources",
             "names": [s.name for s in cfg.sources],
@@ -1716,7 +1650,7 @@ async def settings_save(request: Request) -> HTMLResponse:
 async def admin_reload() -> JSONResponse:
     """Re-read scripthut.yaml from disk and hot-reload safe sections.
 
-    Reloads environments, workflows, projects, sources, and most settings
+    Reloads environments, workflows, sources, and most settings
     in-process. Backend connection changes still require a server restart.
     """
     try:
@@ -2748,7 +2682,7 @@ def parse_args() -> argparse.Namespace:
 # import cost — and trigger asyncssh / runtime imports — just to start the web
 # server. Must stay in sync with the top-level parsers in cli.py.
 _CLI_SUBCOMMANDS = frozenset(
-    {"workflow", "run", "backend", "project", "stack", "agent", "task", "status"}
+    {"workflow", "run", "backend", "source", "stack", "agent", "task", "status"}
 )
 _SUBCOMMANDS = _CLI_SUBCOMMANDS | {"setup-aws-ec2"}
 

@@ -207,42 +207,52 @@ class LocalClient:
             ]
         }
 
-    async def list_projects(self) -> dict[str, Any]:
+    async def list_sources(self) -> dict[str, Any]:
+        from scripthut.config_schema import GitSourceConfig, PathSourceConfig
         config = self.runtime.config
-        return {
-            "projects": [
-                {
-                    "name": p.name,
-                    "backend": p.backend,
-                    "path": p.path,
-                    "description": p.description,
-                    "max_concurrent": p.max_concurrent,
-                }
-                for p in config.projects
-            ],
-        }
+        out: list[dict[str, Any]] = []
+        for s in config.sources:
+            base: dict[str, Any] = {
+                "name": s.name, "type": s.type,
+                "description": getattr(s, "description", ""),
+                "max_concurrent": getattr(s, "max_concurrent", None),
+            }
+            if isinstance(s, GitSourceConfig):
+                base.update({"url": s.url, "branch": s.branch})
+            elif isinstance(s, PathSourceConfig):
+                base.update({"path": s.path, "backend": s.backend})
+            out.append(base)
+        return {"sources": out}
 
-    async def view_project(self, name: str) -> dict[str, Any]:
+    async def view_source(self, name: str) -> dict[str, Any]:
+        """Source metadata. Workflow discovery is server-only in local mode.
+
+        Discovery needs a synced clone (git) or SSH to the backend (path);
+        the CLI's LocalClient doesn't carry a source manager, so we
+        return ``workflows=[]`` with a clear ``discover_error`` and let
+        callers fall back to ``--server <url>`` for the real view.
+        """
+        from scripthut.config_schema import GitSourceConfig, PathSourceConfig
         config = self.runtime.config
-        project = config.get_project(name)
-        if project is None:
-            raise RuntimeError(f"Project '{name}' not found")
-        workflows: list[str] = []
-        discover_error: str | None = None
-        try:
-            workflows = await self.runtime.run_manager.discover_workflows(name)
-        except ValueError as e:
-            discover_error = str(e)
-        except Exception as e:
-            discover_error = str(e)
+        source = config.get_source(name)
+        if source is None:
+            raise RuntimeError(f"Source '{name}' not found")
+        base: dict[str, Any] = {
+            "name": source.name, "type": source.type,
+            "description": getattr(source, "description", ""),
+            "max_concurrent": getattr(source, "max_concurrent", None),
+        }
+        if isinstance(source, GitSourceConfig):
+            base.update({"url": source.url, "branch": source.branch})
+        elif isinstance(source, PathSourceConfig):
+            base.update({"path": source.path, "backend": source.backend})
         return {
-            "name": project.name,
-            "backend": project.backend,
-            "path": project.path,
-            "description": project.description,
-            "max_concurrent": project.max_concurrent,
-            "workflows": workflows,
-            "discover_error": discover_error,
+            **base,
+            "workflows": [],
+            "discover_error": (
+                "Workflow discovery is only available via a running scripthut "
+                "server. Re-run with --server <url>."
+            ),
         }
 
     async def list_runs(self, limit: int | None = None) -> dict[str, Any]:
@@ -270,13 +280,22 @@ class LocalClient:
         )
         return _summary_from_run(run)
 
-    async def run_project_workflow(
-        self, project: str, workflow: str, *, backend: str | None = None,
+    async def run_source_workflow(
+        self, source: str, workflow: str, *, backend: str | None = None,
     ) -> dict[str, Any]:
-        run = await self.runtime.run_manager.create_run_from_project(
-            project, workflow, backend=backend,
+        """Local-mode source-workflow submission is not supported.
+
+        Submitting needs the workflow JSON, which lives in a synced git
+        clone or behind SSH on the source's backend — the CLI's
+        ``LocalClient`` doesn't carry a source manager to fetch either.
+        Run a scripthut server and use ``--server <url>``; the remote
+        client's ``/api/v1/sources/{name}/run`` handles refresh + submit.
+        """
+        raise RuntimeError(
+            "Source workflow submission is not available in local CLI mode. "
+            "Run a scripthut server and re-run with `--server <url>` "
+            "(or set `settings.cli_server` in scripthut.yaml)."
         )
-        return _summary_from_run(run)
 
     async def view_run(self, run_id: str) -> dict[str, Any]:
         # Local mode reads from storage rather than in-memory state since
@@ -427,11 +446,11 @@ class RemoteClient:
     async def list_backends(self) -> dict[str, Any]:
         return await self._get("/backends")
 
-    async def list_projects(self) -> dict[str, Any]:
-        return await self._get("/projects")
+    async def list_sources(self) -> dict[str, Any]:
+        return await self._get("/sources")
 
-    async def view_project(self, name: str) -> dict[str, Any]:
-        return await self._get(f"/projects/{name}")
+    async def view_source(self, name: str) -> dict[str, Any]:
+        return await self._get(f"/sources/{name}")
 
     async def list_runs(self, limit: int | None = None) -> dict[str, Any]:
         return await self._get("/runs", limit=limit)
@@ -450,11 +469,11 @@ class RemoteClient:
         resp.raise_for_status()
         return resp.json()
 
-    async def run_project_workflow(
-        self, project: str, workflow: str, *, backend: str | None = None,
+    async def run_source_workflow(
+        self, source: str, workflow: str, *, backend: str | None = None,
     ) -> dict[str, Any]:
         return await self._post(
-            f"/projects/{project}/run", workflow=workflow, backend=backend,
+            f"/sources/{source}/run", workflow=workflow, backend=backend,
         )
 
     async def view_run(self, run_id: str) -> dict[str, Any]:
@@ -987,13 +1006,13 @@ def _render_agent_prompt(config: ScriptHutConfig | None) -> str:
         "template and override single fields per submission.\n"
     )
 
-    out.append("### Project workflow (an sflow.json in a configured project)\n")
+    out.append("### Source workflow (a JSON file in a configured source)\n")
     out.append(
         "```bash\n"
-        "scripthut workflow run <sflow.json> --project <name> --json\n"
+        "scripthut workflow run <workflow.json> --source <name> --json\n"
         "```\n"
-        "Prefer a project workflow over ad-hoc when one already does what "
-        "you need — it carries the project's resolved env, partition map, "
+        "Prefer a source workflow over ad-hoc when one already does what "
+        "you need — it carries the source's resolved env, partition map, "
         "and stack assumptions.\n"
     )
 
@@ -1171,19 +1190,10 @@ def _gather_status(args: argparse.Namespace) -> dict[str, Any]:
             "source": auth_res.source,
             "cloudflared_app": auth_res.cloudflared_app,
         },
-        # Local-mode projects/backends from the loaded config; in remote
+        # Local-mode sources/backends from the loaded config; in remote
         # mode these are replaced by what the server reports.
-        "local_projects": (
-            [
-                {
-                    "name": p.name,
-                    "backend": p.backend,
-                    "path": p.path,
-                    "description": p.description,
-                }
-                for p in config.projects
-            ]
-            if config is not None else []
+        "local_sources": (
+            _local_source_summaries(config) if config is not None else []
         ),
         "local_backends": (
             [{"name": b.name, "type": b.backend_type} for b in config.backends]
@@ -1192,14 +1202,31 @@ def _gather_status(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def _local_source_summaries(config: ScriptHutConfig) -> list[dict[str, Any]]:
+    """Compact dicts for the status renderer's local-mode source listing."""
+    from scripthut.config_schema import GitSourceConfig, PathSourceConfig
+    out: list[dict[str, Any]] = []
+    for s in config.sources:
+        base: dict[str, Any] = {
+            "name": s.name, "type": s.type,
+            "description": getattr(s, "description", ""),
+        }
+        if isinstance(s, GitSourceConfig):
+            base.update({"url": s.url, "branch": s.branch})
+        elif isinstance(s, PathSourceConfig):
+            base.update({"path": s.path, "backend": s.backend})
+        out.append(base)
+    return out
+
+
 async def _probe_server(
     server: str, auth: RemoteAuth | None, *, timeout: float = 5.0,
 ) -> dict[str, Any]:
-    """Hit ``/api/v1/health`` (unauthenticated) and ``/api/v1/projects``
+    """Hit ``/api/v1/health`` (unauthenticated) and ``/api/v1/sources``
     (authenticated). Returns a structured result the renderer formats.
 
     Two probes, not one: a 302 to ``cloudflareaccess.com`` on the
-    *projects* call while *health* still returns 200 means the server is
+    *sources* call while *health* still returns 200 means the server is
     up and Cloudflare Access is rejecting our credentials — different
     remediation than "server is down".
     """
@@ -1230,7 +1257,7 @@ async def _probe_server(
         # Authorization — with headers; if creds work this is a real test
         # that we can talk to /api/v1.
         try:
-            r = await client.get(f"{base}/projects", headers=headers)
+            r = await client.get(f"{base}/sources", headers=headers)
             result["authorized"] = {
                 "status_code": r.status_code,
                 "redirect_location": r.headers.get("location"),
@@ -1243,7 +1270,7 @@ async def _probe_server(
         except httpx.RequestError as e:
             result["authorized"] = {"error": f"{type(e).__name__}: {e}"}
 
-        # Backends — only meaningful if /projects succeeded.
+        # Backends — only meaningful if /sources succeeded.
         if result["authorized"].get("status_code") == 200:
             try:
                 r = await client.get(f"{base}/backends", headers=headers)
@@ -1324,30 +1351,26 @@ def _render_status(data: dict[str, Any], probe: dict[str, Any] | None) -> str:
         else:
             code = a["status_code"]
             marker = "✓" if code == 200 else "✗"
-            lines.append(f"Authorized:    {marker}  GET /api/v1/projects → {code}")
+            lines.append(f"Authorized:    {marker}  GET /api/v1/sources → {code}")
             if code != 200:
                 lines.append(_authorization_hint(code, a.get("redirect_location"), auth))
 
-    # Projects + backends
+    # Sources + backends
     if probe and probe.get("server_data"):
         sd = probe["server_data"]
-        projects = sd.get("projects", [])
-        if projects:
-            lines.append(f"Projects:      {len(projects)} configured on server")
-            for p in projects:
-                desc = f"  — {p['description']}" if p.get("description") else ""
-                lines.append(
-                    f"  - {p['name']:<18} [{p['backend']}]   {p['path']}{desc}"
-                )
+        sources = sd.get("sources", [])
+        if sources:
+            lines.append(f"Sources:       {len(sources)} configured on server")
+            for s in sources:
+                lines.append(f"  - {_format_source_line(s)}")
         else:
-            lines.append("Projects:      none configured on server")
-    elif not server and data["local_projects"]:
+            lines.append("Sources:       none configured on server")
+    elif not server and data["local_sources"]:
         lines.append(
-            f"Projects:      {len(data['local_projects'])} configured locally"
+            f"Sources:       {len(data['local_sources'])} configured locally"
         )
-        for p in data["local_projects"]:
-            desc = f"  — {p['description']}" if p.get("description") else ""
-            lines.append(f"  - {p['name']:<18} [{p['backend']}]   {p['path']}{desc}")
+        for s in data["local_sources"]:
+            lines.append(f"  - {_format_source_line(s)}")
 
     if probe and probe.get("server_data_backends"):
         bs = probe["server_data_backends"].get("backends", [])
@@ -1362,6 +1385,16 @@ def _render_status(data: dict[str, Any], probe: dict[str, Any] | None) -> str:
         lines.append(f"Backends:      {names}  (local config; not probed)")
 
     return "\n".join(lines)
+
+
+def _format_source_line(s: dict[str, Any]) -> str:
+    """One-line representation of a source for status output."""
+    desc = f"  — {s['description']}" if s.get("description") else ""
+    if s.get("type") == "git":
+        loc = f"{s.get('url', '?')}@{s.get('branch', 'main')}"
+    else:
+        loc = f"[{s.get('backend', '?')}] {s.get('path', '?')}"
+    return f"{s['name']:<20} ({s.get('type', '?')})  {loc}{desc}"
 
 
 def _describe_source(src: str | None) -> str:
@@ -1724,31 +1757,41 @@ async def _cmd_stack_delete(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 
 
-async def _cmd_project_list(args: argparse.Namespace) -> int:
+async def _cmd_source_list(args: argparse.Namespace) -> int:
     async with _make_client(args) as client:
-        data = await client.list_projects()
+        data = await client.list_sources()
     if args.json:
         print(json.dumps(data, indent=2))
         return 0
-    projects = data.get("projects", [])
-    if not projects:
-        print("No projects configured.")
+    sources = data.get("sources", [])
+    if not sources:
+        print("No sources configured.")
         return 0
-    print("Projects:")
-    for p in projects:
-        desc = f" — {p['description']}" if p.get("description") else ""
-        print(f"  {p['name']}  [{p['backend']}]  {p['path']}{desc}")
+    print("Sources:")
+    for s in sources:
+        desc = f" — {s['description']}" if s.get("description") else ""
+        # Git sources show url@branch; path sources show backend:path.
+        if s.get("type") == "git":
+            loc = f"{s.get('url', '?')}@{s.get('branch', 'main')}"
+        else:
+            loc = f"[{s.get('backend', '?')}] {s.get('path', '?')}"
+        print(f"  {s['name']:<20} ({s.get('type', '?')})  {loc}{desc}")
     return 0
 
 
-async def _cmd_project_view(args: argparse.Namespace) -> int:
+async def _cmd_source_view(args: argparse.Namespace) -> int:
     async with _make_client(args) as client:
-        data = await client.view_project(args.name)
+        data = await client.view_source(args.name)
     if args.json:
         print(json.dumps(data, indent=2))
         return 0
-    print(f"Project '{data['name']}' on backend '{data['backend']}'")
-    print(f"  path: {data['path']}")
+    print(f"Source '{data['name']}' (type: {data.get('type', '?')})")
+    if data.get("type") == "git":
+        print(f"  url:    {data.get('url', '?')}")
+        print(f"  branch: {data.get('branch', '?')}")
+    else:
+        print(f"  backend: {data.get('backend', '?')}")
+        print(f"  path:    {data.get('path', '?')}")
     if data.get("description"):
         print(f"  description: {data['description']}")
     if data.get("max_concurrent") is not None:
@@ -1756,7 +1799,7 @@ async def _cmd_project_view(args: argparse.Namespace) -> int:
     err = data.get("discover_error")
     workflows = data.get("workflows", [])
     if err:
-        print(f"  workflows: <discovery failed: {err}>")
+        print(f"  workflows: <{err}>")
     elif workflows:
         print(f"  workflows ({len(workflows)}):")
         for w in workflows:
@@ -1769,8 +1812,8 @@ async def _cmd_project_view(args: argparse.Namespace) -> int:
 async def _cmd_workflow_run(args: argparse.Namespace) -> int:
     server = _resolve_server(args)
     async with _make_client(args) as client:
-        summary = await client.run_project_workflow(
-            args.project, args.name, backend=args.backend,
+        summary = await client.run_source_workflow(
+            args.source, args.name, backend=args.backend,
         )
     _print_run_submitted(summary, remote_base=server)
     return 0
@@ -1929,9 +1972,6 @@ async def _cmd_run_logs(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 
 
-CLI_SUBCOMMANDS = {"workflow", "run", "backend", "project"}
-
-
 def _add_common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--server",
@@ -1988,15 +2028,20 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     # ----- workflow ---------------------------------------------------------
-    p_wf = sub.add_parser("workflow", help="Run project workflows")
+    p_wf = sub.add_parser("workflow", help="Run source workflows")
     wf_sub = p_wf.add_subparsers(dest="wf_cmd", required=True)
 
-    p_wf_run = wf_sub.add_parser("run", help="Submit a project's sflow.json for execution")
-    p_wf_run.add_argument("name", help="sflow.json path within the project")
-    p_wf_run.add_argument("--project", required=True, help="Trigger an sflow.json from this project")
+    p_wf_run = wf_sub.add_parser(
+        "run",
+        help="Submit a workflow file from a configured source for execution",
+    )
+    p_wf_run.add_argument("name", help="Workflow filename within the source")
+    p_wf_run.add_argument(
+        "--source", required=True, help="Name of the source the workflow lives in",
+    )
     p_wf_run.add_argument(
         "--backend",
-        help="Override the project's configured backend",
+        help="Override the source's default backend",
     )
     _add_common(p_wf_run)
     p_wf_run.set_defaults(handler=_cmd_workflow_run)
@@ -2200,21 +2245,21 @@ def build_parser() -> argparse.ArgumentParser:
     p_st_delete.set_defaults(handler=_cmd_stack_delete)
 
     # ----- project ----------------------------------------------------------
-    p_pr = sub.add_parser("project", help="Inspect git projects")
-    pr_sub = p_pr.add_subparsers(dest="pr_cmd", required=True)
+    p_src = sub.add_parser("source", help="Inspect configured sources")
+    src_sub = p_src.add_subparsers(dest="src_cmd", required=True)
 
-    p_pr_list = pr_sub.add_parser("list", help="List configured projects")
-    p_pr_list.add_argument("--json", action="store_true")
-    _add_common(p_pr_list)
-    p_pr_list.set_defaults(handler=_cmd_project_list)
+    p_src_list = src_sub.add_parser("list", help="List configured sources")
+    p_src_list.add_argument("--json", action="store_true")
+    _add_common(p_src_list)
+    p_src_list.set_defaults(handler=_cmd_source_list)
 
-    p_pr_view = pr_sub.add_parser(
-        "view", help="Show project metadata and discovered sflow.json files",
+    p_src_view = src_sub.add_parser(
+        "view", help="Show source metadata and discovered workflow files",
     )
-    p_pr_view.add_argument("name")
-    p_pr_view.add_argument("--json", action="store_true")
-    _add_common(p_pr_view)
-    p_pr_view.set_defaults(handler=_cmd_project_view)
+    p_src_view.add_argument("name")
+    p_src_view.add_argument("--json", action="store_true")
+    _add_common(p_src_view)
+    p_src_view.set_defaults(handler=_cmd_source_view)
 
     # ----- status -----------------------------------------------------------
     p_status = sub.add_parser(

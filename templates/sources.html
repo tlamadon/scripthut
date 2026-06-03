@@ -112,55 +112,8 @@
         {% endfor %}
         {% endif %}
 
-        <!-- Projects -->
-        {% if projects %}
-        {% for project in projects %}
-        <div class="bg-white rounded-lg shadow-md p-6 mb-6">
-            <div class="flex items-center justify-between mb-4">
-                <div>
-                    <h2 class="text-xl font-semibold text-gray-800">{{ project.name }}</h2>
-                    <p class="text-sm text-gray-500">{{ project.backend }}</p>
-                </div>
-                <button hx-get="/projects/{{ project.name }}/workflows" hx-swap="none"
-                    onclick="window.location.reload()"
-                    class="px-3 py-1.5 text-sm text-gray-600 hover:text-gray-800 border rounded-lg hover:bg-gray-50 transition-colors"
-                    title="Refresh workflows">
-                    Refresh
-                </button>
-            </div>
-            {% if project.description %}
-            <p class="text-sm text-gray-600 mb-3">{{ project.description }}</p>
-            {% endif %}
-
-            {% set proj_workflows = project_workflows.get(project.name, []) %}
-            {% if proj_workflows %}
-            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {% for wf in proj_workflows %}
-                {% set wf_dir = wf.rsplit('/', 2)[-2] if '/' in wf else '.' %}
-                <div class="border rounded-lg p-4 hover:shadow-md transition-shadow">
-                    <div class="flex items-start justify-between">
-                        <div>
-                            <h3 class="font-semibold text-gray-800">{{ wf_dir }}</h3>
-                            <p class="text-sm text-gray-500">sflow.json</p>
-                        </div>
-                        <button hx-post="/projects/{{ project.name }}/run?workflow={{ wf }}" hx-swap="none"
-                            hx-on::after-request="handleRunResponse(event)"
-                            class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm font-medium text-center whitespace-nowrap">
-                            Run
-                        </button>
-                    </div>
-                </div>
-                {% endfor %}
-            </div>
-            {% else %}
-            <p class="text-gray-500 text-sm">No sflow.json files found. Push a workflow to the repo and refresh.</p>
-            {% endif %}
-        </div>
-        {% endfor %}
-        {% endif %}
-
         <!-- Empty state -->
-        {% if not source_workflows and not projects %}
+        {% if not source_workflows %}
         <div class="bg-white rounded-lg shadow-md p-6">
             <p class="text-gray-500 text-center">No sources configured. Add <code>sources</code> to your scripthut.yaml.</p>
         </div>

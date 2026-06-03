@@ -296,3 +296,42 @@ class TestLoadLayered:
         empty.mkdir()
         with patch("scripthut.config.GLOBAL_CONFIG_PATHS", []):
             assert load_layered_config(cwd=empty) is None
+
+
+class TestLegacyProjectsRejection:
+    """`projects:` was removed in 0.6.0 — it should be rejected, not ignored.
+
+    Silent ignore would leave users wondering why their workflows vanished.
+    The validator must raise with a message that maps the old field to the
+    new `sources:` shape so the user can edit and retry.
+    """
+
+    def test_yaml_with_projects_key_raises_with_migration_hint(
+        self, tmp_path: Path,
+    ):
+        yaml = _write_yaml(
+            tmp_path / "scripthut.yaml",
+            "projects:\n"
+            "  - name: foo\n"
+            "    backend: cluster\n"
+            "    path: /home/me/foo\n",
+        )
+        with pytest.raises(Exception) as exc_info:
+            load_yaml_config(yaml)
+        msg = str(exc_info.value)
+        assert "projects:" in msg
+        assert "sources:" in msg
+        assert "0.6.0" in msg
+
+    def test_yaml_with_only_sources_still_works(self, tmp_path: Path):
+        yaml = _write_yaml(
+            tmp_path / "scripthut.yaml",
+            "sources:\n"
+            "  - name: foo\n"
+            "    type: path\n"
+            "    backend: cluster\n"
+            "    path: /home/me/foo\n",
+        )
+        cfg = load_yaml_config(yaml)
+        assert len(cfg.sources) == 1
+        assert cfg.sources[0].name == "foo"
