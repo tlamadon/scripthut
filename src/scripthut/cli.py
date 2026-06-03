@@ -1177,7 +1177,28 @@ def _render_agent_prompt(config: ScriptHutConfig | None) -> str:
         "```\n"
         "All `${name}` references expand against the env-resolved-so-far. "
         "Per-task `set:` always wins; resolver order is "
-        "server → backend → workflow → task.\n"
+        "server → backend → repo-project → workflow-doc → task.\n"
+        "\n"
+        "**A source repo's `scripthut.yaml` also applies server-side.** "
+        "If the source repo has a `scripthut.yaml` at its root, its "
+        "`env` / `env_groups` are pulled in by the server when running "
+        "any workflow from that source — sitting *above* the server's "
+        "config / backend layer and *below* the workflow file's own "
+        "inline rules. So a Julia repo can define `env_groups: "
+        "{julia-1.12: [...]}` once at the root, and every workflow JSON "
+        "in `.hut/workflows/` can just `env: [{include: [julia-1.12]}]` "
+        "without duplicating the module-load text. The repo file is "
+        "subject to the same project-local validation: `backends:` / "
+        "`sources:` / `settings:` / `pricing:` are rejected (a repo must "
+        "never redefine infrastructure server-side).\n"
+        "\n"
+        "**Repo-defined stacks are visible to the CLI with `--source`.** "
+        "`scripthut stack list --source <name>` (and `check` / `install` "
+        "/ `delete`) fetch the repo's `scripthut.yaml` via the server "
+        "and overlay its `stacks:` on top of the operator's local config "
+        "— source wins on name collision. Use this when an operator "
+        "needs to install a stack defined by the repo without first "
+        "cloning the repo locally.\n"
         "\n"
         "**Edit discipline** (this matters more than the schema):\n"
         "- **Read the file first** (don't `Write` blind). Make a minimal "
@@ -1797,8 +1818,78 @@ async def _cmd_task_run(args: argparse.Namespace) -> int:
     return 0
 
 
+async def _overlay_source_stacks(
+    args: argparse.Namespace, config: ScriptHutConfig,
+) -> ScriptHutConfig:
+    """Fetch ``/api/v1/sources/{name}/config`` and overlay its stacks.
+
+    When ``args.source`` is unset, this is a no-op. When set, the source
+    must be configured on the resolved server; its project-local
+    ``scripthut.yaml`` ``stacks:`` are merged into ``config.stacks``
+    with the source winning on name collision (matching the convention
+    in ``_merge_configs``, where project-local overrides global).
+
+    The flag exists so an operator can manage stacks defined by a
+    source repo without first cloning the repo locally — they just need
+    a server URL + auth credentials.
+    """
+    from scripthut.config_schema import Stack
+
+    source_name = getattr(args, "source", None)
+    if not source_name:
+        return config
+    server = _resolve_server(args)
+    if not server:
+        raise RuntimeError(
+            "--source requires a server URL. Pass --server <url>, set "
+            "SCRIPTHUT_SERVER, or configure settings.cli_server in "
+            "scripthut.yaml."
+        )
+    auth = _resolve_auth(args)
+    base = server.rstrip("/") + "/api/v1"
+    headers = auth.headers() if auth is not None else {}
+    async with httpx.AsyncClient(timeout=15.0, headers=headers) as client:
+        r = await client.get(f"{base}/sources/{source_name}/config")
+    if r.status_code == 404:
+        raise RuntimeError(
+            f"Source '{source_name}' not found on the server at {server}"
+        )
+    if r.status_code == 422:
+        try:
+            detail = r.json().get("detail", r.text)
+        except Exception:
+            detail = r.text
+        raise RuntimeError(
+            f"Source '{source_name}' project config is invalid: {detail}"
+        )
+    if r.status_code >= 400:
+        raise RuntimeError(
+            f"GET /api/v1/sources/{source_name}/config returned "
+            f"HTTP {r.status_code}: {r.text}"
+        )
+    data = r.json()
+    if not data.get("config_present", False):
+        # No scripthut.yaml at the source root — nothing to overlay; the
+        # operator's local config.stacks are used as-is.
+        return config
+    raw_stacks = data.get("stacks", []) or []
+    if not raw_stacks:
+        return config
+    try:
+        overlay_stacks = [Stack.model_validate(s) for s in raw_stacks]
+    except Exception as e:
+        raise RuntimeError(
+            f"Source '{source_name}' stacks failed schema validation: {e}"
+        ) from e
+    by_name = {s.name: s for s in config.stacks}
+    for s in overlay_stacks:
+        by_name[s.name] = s
+    return config.model_copy(update={"stacks": list(by_name.values())})
+
+
 async def _cmd_stack_list(args: argparse.Namespace) -> int:
     config = load_config(getattr(args, "config", None))
+    config = await _overlay_source_stacks(args, config)
     if not config.stacks:
         print("No stacks configured.")
         return 0
@@ -1815,6 +1906,7 @@ async def _cmd_stack_list(args: argparse.Namespace) -> int:
 
 async def _cmd_stack_check(args: argparse.Namespace) -> int:
     config = load_config(getattr(args, "config", None))
+    config = await _overlay_source_stacks(args, config)
     if args.name:
         stack = config.get_stack(args.name)
         if stack is None:
@@ -1864,6 +1956,7 @@ async def _cmd_stack_check(args: argparse.Namespace) -> int:
 
 async def _cmd_stack_install(args: argparse.Namespace) -> int:
     config = load_config(getattr(args, "config", None))
+    config = await _overlay_source_stacks(args, config)
     stack = config.get_stack(args.name)
     if stack is None:
         print(f"Stack '{args.name}' not found", file=sys.stderr)
@@ -1888,6 +1981,7 @@ async def _cmd_stack_install(args: argparse.Namespace) -> int:
 
 async def _cmd_stack_delete(args: argparse.Namespace) -> int:
     config = load_config(getattr(args, "config", None))
+    config = await _overlay_source_stacks(args, config)
     stack = config.get_stack(args.name)
     if stack is None:
         print(f"Stack '{args.name}' not found", file=sys.stderr)
@@ -2398,8 +2492,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_st = sub.add_parser("stack", help="Manage reusable software stacks")
     st_sub = p_st.add_subparsers(dest="stack_cmd", required=True)
 
+    _SOURCE_OVERLAY_HELP = (
+        "Overlay stacks from a source repo's scripthut.yaml (fetched from "
+        "the configured server). Source wins on name collision; requires "
+        "--server / SCRIPTHUT_SERVER."
+    )
+
     p_st_list = st_sub.add_parser("list", help="List configured stacks")
     p_st_list.add_argument("--json", action="store_true")
+    p_st_list.add_argument("--source", help=_SOURCE_OVERLAY_HELP)
     _add_common(p_st_list)
     p_st_list.set_defaults(handler=_cmd_stack_list)
 
@@ -2410,6 +2511,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_st_check.add_argument("name", nargs="?", help="Stack name (default: all)")
     p_st_check.add_argument("--backend", help="Limit to a single backend")
     p_st_check.add_argument("--json", action="store_true")
+    p_st_check.add_argument("--source", help=_SOURCE_OVERLAY_HELP)
     _add_common(p_st_check)
     p_st_check.set_defaults(handler=_cmd_stack_check)
 
@@ -2424,6 +2526,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Force a rebuild even when the input hash matches the cached build",
     )
+    p_st_install.add_argument("--source", help=_SOURCE_OVERLAY_HELP)
     _add_common(p_st_install)
     p_st_install.set_defaults(handler=_cmd_stack_install)
 
@@ -2433,6 +2536,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_st_delete.add_argument("name")
     p_st_delete.add_argument("--backend", help="Delete on a single backend only")
+    p_st_delete.add_argument("--source", help=_SOURCE_OVERLAY_HELP)
     _add_common(p_st_delete)
     p_st_delete.set_defaults(handler=_cmd_stack_delete)
 

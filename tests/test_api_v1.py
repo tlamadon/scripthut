@@ -265,6 +265,73 @@ def test_run_source_workflow_git_source_without_backend_errors():
     assert resp.status_code == 422
 
 
+# -- /sources/{name}/config --------------------------------------------------
+
+
+def test_source_config_returns_env_groups_and_stacks():
+    """Happy path: project YAML present, returned as JSON for the CLI."""
+    from scripthut.config_schema import ScriptHutConfig
+    sources = [GitSourceConfig(name="src", url="git@h:o/r.git", branch="main")]
+    project_cfg = ScriptHutConfig.model_validate({
+        "env_groups": {"cuda": [{"set": {"CUDA_VISIBLE_DEVICES": "0"}}]},
+        "stacks": [{"name": "py-ml", "prep": "echo prep"}],
+    })
+    rm = MagicMock()
+    rm._load_source_project_config = AsyncMock(return_value=project_cfg)
+    state = _make_state(run_manager=rm, sources=sources)
+
+    resp = _client(state).get("/api/v1/sources/src/config")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["config_present"] is True
+    assert body["env_groups"]["cuda"][0]["set"]["CUDA_VISIBLE_DEVICES"] == "0"
+    assert body["stacks"][0]["name"] == "py-ml"
+
+
+def test_source_config_missing_file_returns_empty_shape():
+    """No scripthut.yaml at the source root — still 200, config_present=False."""
+    sources = [GitSourceConfig(name="src", url="git@h:o/r.git", branch="main")]
+    rm = MagicMock()
+    rm._load_source_project_config = AsyncMock(return_value=None)
+    state = _make_state(run_manager=rm, sources=sources)
+
+    resp = _client(state).get("/api/v1/sources/src/config")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["config_present"] is False
+    assert body["env"] == []
+    assert body["env_groups"] == {}
+    assert body["stacks"] == []
+
+
+def test_source_config_unknown_source_returns_404():
+    state = _make_state(run_manager=MagicMock(), sources=[])
+    resp = _client(state).get("/api/v1/sources/missing/config")
+    assert resp.status_code == 404
+
+
+def test_source_config_forbidden_section_returns_422():
+    """An actively-broken project YAML (`backends:` in a project-local
+    file) must surface to the operator, not silently disappear.
+    """
+    sources = [GitSourceConfig(name="src", url="git@h:o/r.git", branch="main")]
+    rm = MagicMock()
+    rm._load_source_project_config = AsyncMock(
+        side_effect=ValueError(
+            "source 'src'/scripthut.yaml contains fields that belong in "
+            "the user-global config: backends."
+        ),
+    )
+    state = _make_state(run_manager=rm, sources=sources)
+
+    resp = _client(state).get("/api/v1/sources/src/config")
+
+    assert resp.status_code == 422
+    assert "backends" in resp.json()["detail"]
+
+
 # -- /sources/{name}/sync ----------------------------------------------------
 
 

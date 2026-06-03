@@ -270,6 +270,77 @@ def make_api_router(state: AppState) -> APIRouter:
             "workflows": [wf.filename for wf in cached],
         }
 
+    @router.get("/sources/{name}/config")
+    async def view_source_project_config(name: str) -> dict[str, Any]:
+        """Return the source repo's ``scripthut.yaml`` as JSON.
+
+        Carries ``env`` / ``env_groups`` / ``stacks`` — the sections a
+        project-local YAML is allowed to define. The same file is
+        merged server-side into runs of this source's workflows
+        (precedence: server → backend → repo-project → workflow-doc →
+        task); this endpoint exists so the CLI can also surface its
+        ``stacks`` to operators via ``scripthut stack ... --source <name>``.
+
+        ``config_present=False`` means the file is absent at the source
+        root or unreadable — both are non-error cases. 422 is reserved
+        for an actively-broken project YAML (forbidden sections, bad
+        YAML, schema mismatch) so the operator sees the diagnostic.
+        """
+        from scripthut.config_schema import PathSourceConfig
+
+        if state.config is None:
+            raise HTTPException(status_code=503, detail="Config not loaded")
+        source = state.config.get_source(name)
+        if source is None:
+            raise HTTPException(status_code=404, detail=f"Source '{name}' not found")
+        rm = _require_manager()
+
+        # Path sources require the backend's SSH client to read the file;
+        # without it, treat as "no overlay readable" rather than 5xx, so
+        # the operator's `stack list --source` still works against the
+        # rest of the data. Soft fail is consistent with the helper.
+        ssh_client = None
+        if isinstance(source, PathSourceConfig):
+            ssh_client = rm.get_ssh_client(source.backend)
+
+        try:
+            project_cfg = await rm._load_source_project_config(
+                source, ssh_client=ssh_client,
+            )
+        except ValueError as e:
+            # Forbidden section / malformed YAML / schema error — actively
+            # broken config, surface to the caller.
+            raise HTTPException(status_code=422, detail=str(e)) from e
+
+        if project_cfg is None:
+            return {
+                "source": name,
+                "config_present": False,
+                "env": [],
+                "env_groups": {},
+                "stacks": [],
+            }
+
+        return {
+            "source": name,
+            "config_present": True,
+            "env": [
+                r.model_dump(mode="json", by_alias=True, exclude_defaults=True)
+                for r in project_cfg.env
+            ],
+            "env_groups": {
+                name_: [
+                    r.model_dump(mode="json", by_alias=True, exclude_defaults=True)
+                    for r in rules
+                ]
+                for name_, rules in project_cfg.env_groups.items()
+            },
+            "stacks": [
+                s.model_dump(mode="json", exclude_defaults=True)
+                for s in project_cfg.stacks
+            ],
+        }
+
     async def _sync_one_source(name: str) -> dict[str, Any]:
         """Re-sync a single source and refresh its workflow cache.
 

@@ -642,6 +642,205 @@ async def test_source_sync_all_with_one_failure_still_returns_zero(capsys):
     assert rc == 0
 
 
+# -- _overlay_source_stacks --------------------------------------------------
+
+
+class _MockResponse:
+    """Minimal stand-in for the bits of httpx.Response we use."""
+
+    def __init__(self, status_code: int, json_body: dict | None = None,
+                 text: str = ""):
+        self.status_code = status_code
+        self._json = json_body or {}
+        self.text = text
+
+    def json(self):
+        return self._json
+
+
+def _fake_async_client_returning(resp: _MockResponse):
+    """Build an `httpx.AsyncClient`-compatible context manager that
+    yields a stub whose `.get()` always returns `resp`.
+    """
+    class _AsyncClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return None
+
+        async def get(self, url):
+            return resp
+
+    return _AsyncClient
+
+
+@pytest.mark.asyncio
+async def test_overlay_source_stacks_noop_without_source_flag():
+    """Default (no --source) must not touch config and must not call any
+    server endpoint — otherwise the existing local-mode stack workflow
+    suddenly grows a server dependency.
+    """
+    from scripthut.config_schema import ScriptHutConfig, Stack
+    cfg = ScriptHutConfig(stacks=[Stack(name="local", prep="echo")])
+    args = _ns()  # no source attribute
+    out = await cli._overlay_source_stacks(args, cfg)
+    assert out is cfg
+
+
+@pytest.mark.asyncio
+async def test_overlay_source_stacks_requires_server():
+    """Setting --source without a resolvable server should fail loudly
+    rather than silently falling back to local mode.
+    """
+    from scripthut.config_schema import ScriptHutConfig
+    cfg = ScriptHutConfig()
+    args = _ns(source="balke-jmp")
+    with patch.object(cli, "_resolve_server", return_value=None):
+        with pytest.raises(RuntimeError, match="requires a server URL"):
+            await cli._overlay_source_stacks(args, cfg)
+
+
+@pytest.mark.asyncio
+async def test_overlay_source_stacks_fetches_and_merges():
+    """Happy path: stacks from /api/v1/sources/{name}/config land on
+    config.stacks alongside any local entries.
+    """
+    from scripthut.config_schema import ScriptHutConfig, Stack
+    cfg = ScriptHutConfig(stacks=[Stack(name="from-local", prep="echo")])
+    args = _ns(source="src")
+
+    resp = _MockResponse(200, json_body={
+        "source": "src", "config_present": True,
+        "env": [], "env_groups": {},
+        "stacks": [{"name": "from-repo", "prep": "echo repo"}],
+    })
+    fake_client = _fake_async_client_returning(resp)
+    with patch.object(cli, "_resolve_server", return_value="https://srv"), \
+         patch.object(cli, "_resolve_auth", return_value=None), \
+         patch("scripthut.cli.httpx.AsyncClient", fake_client):
+        out = await cli._overlay_source_stacks(args, cfg)
+
+    names = {s.name for s in out.stacks}
+    assert names == {"from-local", "from-repo"}
+
+
+@pytest.mark.asyncio
+async def test_overlay_source_stacks_source_wins_on_collision():
+    """Same stack name in both local config and the repo's project YAML
+    — repo wins, mirroring `_merge_configs`'s "project-local overrides".
+    """
+    from scripthut.config_schema import ScriptHutConfig, Stack
+    cfg = ScriptHutConfig(stacks=[
+        Stack(name="julia", prep="echo from-local"),
+    ])
+    args = _ns(source="src")
+
+    resp = _MockResponse(200, json_body={
+        "source": "src", "config_present": True,
+        "env": [], "env_groups": {},
+        "stacks": [{"name": "julia", "prep": "echo from-repo"}],
+    })
+    fake_client = _fake_async_client_returning(resp)
+    with patch.object(cli, "_resolve_server", return_value="https://srv"), \
+         patch.object(cli, "_resolve_auth", return_value=None), \
+         patch("scripthut.cli.httpx.AsyncClient", fake_client):
+        out = await cli._overlay_source_stacks(args, cfg)
+
+    by_name = {s.name: s for s in out.stacks}
+    assert "from-repo" in by_name["julia"].prep
+
+
+@pytest.mark.asyncio
+async def test_overlay_source_stacks_missing_config_is_noop():
+    """`config_present=False` on the server means there's no
+    scripthut.yaml in the repo — the CLI should leave local stacks alone.
+    """
+    from scripthut.config_schema import ScriptHutConfig, Stack
+    cfg = ScriptHutConfig(stacks=[Stack(name="local", prep="echo")])
+    args = _ns(source="src")
+
+    resp = _MockResponse(200, json_body={
+        "source": "src", "config_present": False,
+        "env": [], "env_groups": {}, "stacks": [],
+    })
+    fake_client = _fake_async_client_returning(resp)
+    with patch.object(cli, "_resolve_server", return_value="https://srv"), \
+         patch.object(cli, "_resolve_auth", return_value=None), \
+         patch("scripthut.cli.httpx.AsyncClient", fake_client):
+        out = await cli._overlay_source_stacks(args, cfg)
+
+    assert [s.name for s in out.stacks] == ["local"]
+
+
+@pytest.mark.asyncio
+async def test_overlay_source_stacks_unknown_source_raises():
+    """404 from the server should be a clear "unknown source" error,
+    not a generic HTTP error or silent skip.
+    """
+    from scripthut.config_schema import ScriptHutConfig
+    cfg = ScriptHutConfig()
+    args = _ns(source="missing")
+
+    resp = _MockResponse(404, text="Not found")
+    fake_client = _fake_async_client_returning(resp)
+    with patch.object(cli, "_resolve_server", return_value="https://srv"), \
+         patch.object(cli, "_resolve_auth", return_value=None), \
+         patch("scripthut.cli.httpx.AsyncClient", fake_client):
+        with pytest.raises(RuntimeError, match="not found on the server"):
+            await cli._overlay_source_stacks(args, cfg)
+
+
+@pytest.mark.asyncio
+async def test_overlay_source_stacks_broken_repo_yaml_raises():
+    """422 from the server (forbidden section, malformed YAML) must
+    surface the server's detail message so the operator can fix the repo.
+    """
+    from scripthut.config_schema import ScriptHutConfig
+    cfg = ScriptHutConfig()
+    args = _ns(source="src")
+
+    resp = _MockResponse(422, json_body={
+        "detail": "source 'src'/scripthut.yaml contains forbidden section: backends",
+    })
+    fake_client = _fake_async_client_returning(resp)
+    with patch.object(cli, "_resolve_server", return_value="https://srv"), \
+         patch.object(cli, "_resolve_auth", return_value=None), \
+         patch("scripthut.cli.httpx.AsyncClient", fake_client):
+        with pytest.raises(RuntimeError, match="backends"):
+            await cli._overlay_source_stacks(args, cfg)
+
+
+# -- stack list --source -----------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_stack_list_with_source_flag_overlays(capsys):
+    """End-to-end: `stack list --source <name>` overlays repo stacks
+    and prints them alongside local ones.
+    """
+    from scripthut.config_schema import ScriptHutConfig, Stack
+    local_cfg = ScriptHutConfig(stacks=[Stack(name="local", prep="echo")])
+    repo_cfg = ScriptHutConfig(stacks=[Stack(name="from-repo", prep="echo")])
+
+    args = _ns(source="src")
+    with patch.object(cli, "load_config", return_value=local_cfg), \
+         patch.object(cli, "_overlay_source_stacks",
+                      AsyncMock(return_value=repo_cfg.model_copy(
+                          update={"stacks": list(local_cfg.stacks)
+                                  + list(repo_cfg.stacks)},
+                      ))):
+        rc = await cli._cmd_stack_list(args)
+
+    out = capsys.readouterr().out
+    assert "from-repo" in out
+    assert "local" in out
+    assert rc == 0
+
+
 @pytest.mark.asyncio
 async def test_backend_list_prints_table(capsys):
     fake = _async_ctx(MagicMock())

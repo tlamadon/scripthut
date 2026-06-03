@@ -648,6 +648,124 @@ class RunManager:
             elif not task.working_dir.startswith(("/", "~")):
                 task.working_dir = f"{clone_dir}/{task.working_dir}"
 
+    async def _load_source_project_config(
+        self,
+        source: GitSourceConfig | PathSourceConfig,
+        *,
+        commit_hash: str | None = None,
+        ssh_client: SSHClient | None = None,
+    ) -> ScriptHutConfig | None:
+        """Read ``<repo>/scripthut.yaml`` from a source as project-local config.
+
+        Returns the parsed ``ScriptHutConfig`` when the file is present.
+        Returns ``None`` when there's no ``scripthut.yaml`` at the source
+        root — that's the legitimate "no per-repo overlay" case and the
+        merge path must treat it as a no-op.
+
+        Raises ``ValueError`` if the YAML carries sections that aren't
+        allowed in a project-local file (``backends`` / ``sources`` /
+        ``settings`` / ``pricing``) so a misconfigured repo fails the
+        run loudly rather than silently dropping the entries. The error
+        message reuses ``_validate_project_local_yaml``'s text so users
+        get the same diagnostic they'd see from the CLI.
+
+        Read location depends on source type:
+
+        - **Git**: ``git show <sha>:scripthut.yaml`` against the server's
+          local clone at ``<sources_cache_dir>/<source.name>``. ``commit_hash=None``
+          falls back to ``HEAD``, which after a fresh sync points at the
+          configured branch's tip — what the user expects when submitting
+          "latest HEAD" runs. Reading from the server's clone (not the
+          backend's) keeps git+SSH and git+API-only backends uniform and
+          avoids an extra SSH round-trip.
+        - **Path**: ``cat <source.path>/scripthut.yaml`` over the
+          ``ssh_client`` passed in (the source's backend). The caller
+          already has this connection in ``create_run_from_source``.
+        """
+        import subprocess
+
+        import yaml
+
+        from scripthut.config import (
+            ConfigError,
+            _validate_project_local_yaml,
+        )
+
+        raw_text: str | None = None
+        identity = f"source '{source.name}'/scripthut.yaml"
+
+        if isinstance(source, GitSourceConfig):
+            clone_path = (
+                self.config.settings.sources_cache_dir_resolved / source.name
+            )
+            if not clone_path.exists():
+                # Cache hasn't been populated yet (server hasn't synced
+                # this source). Treat as missing rather than erroring —
+                # the run can still proceed without the overlay.
+                return None
+            ref = commit_hash or "HEAD"
+            try:
+                proc = subprocess.run(
+                    ["git", "-C", str(clone_path), "show", f"{ref}:scripthut.yaml"],
+                    capture_output=True, text=True, timeout=10,
+                )
+            except (subprocess.SubprocessError, FileNotFoundError) as e:
+                # `git` not installed or cache directory unreadable — not
+                # the user's per-run problem. Log and skip the overlay.
+                logger.warning(f"git show failed for {identity}: {e}")
+                return None
+            if proc.returncode != 0:
+                # `git show` exits 128 when the path doesn't exist at the
+                # given commit; treat as "no overlay configured". Any
+                # other nonzero is also fail-soft so a transient git
+                # issue doesn't block submissions.
+                return None
+            raw_text = proc.stdout
+        elif isinstance(source, PathSourceConfig):
+            if ssh_client is None:
+                # Path sources always require SSH (verified at the call
+                # site); a missing client here is a programming error.
+                raise ValueError(
+                    f"Path source '{source.name}' requires an SSH client "
+                    "to read its project config"
+                )
+            stdout, _stderr, exit_code = await ssh_client.run_command(
+                f"cat {source.path}/scripthut.yaml",
+                timeout=10,
+            )
+            if exit_code != 0:
+                # cat exits 1 when the file is missing; same soft skip.
+                return None
+            raw_text = stdout
+        else:
+            return None
+
+        if not raw_text or not raw_text.strip():
+            return None
+
+        try:
+            raw = yaml.safe_load(raw_text)
+        except yaml.YAMLError as e:
+            raise ValueError(
+                f"{identity}: invalid YAML — {e}"
+            ) from e
+        if raw is None:
+            return None
+        if not isinstance(raw, dict):
+            raise ValueError(
+                f"{identity}: top level must be a mapping, got {type(raw).__name__}"
+            )
+
+        try:
+            _validate_project_local_yaml(raw, Path(f"<{identity}>"))
+        except ConfigError as e:
+            raise ValueError(str(e)) from e
+
+        try:
+            return ScriptHutConfig.model_validate(raw)
+        except Exception as e:
+            raise ValueError(f"{identity}: schema validation failed — {e}") from e
+
     async def create_run_from_source(
         self, source_name: str, workflow_filename: str, tasks_json: str,
         backend: str,
@@ -706,6 +824,25 @@ class RunManager:
                 )
             # Path sources already exist on the backend.
             self._resolve_working_dirs(tasks, source.path)
+
+        # Overlay the source repo's project-local scripthut.yaml on top of
+        # what the workflow doc itself carries. Precedence in the final
+        # resolver: server config → backend → repo-project (here) →
+        # workflow-doc inline → task. We prepend the repo's env list and
+        # *under-merge* its env_groups so the workflow doc wins on any
+        # name collision (most-specific source of truth for that file).
+        # Generated tasks inherit automatically because run.doc_env /
+        # doc_env_groups are extended in _handle_generates_source.
+        project_cfg = await self._load_source_project_config(
+            source, commit_hash=commit_hash, ssh_client=ssh_client,
+        )
+        if project_cfg is not None:
+            doc_env = list(project_cfg.env) + list(doc_env)
+            # Workflow-inline keys win on collision.
+            doc_env_groups = {
+                **project_cfg.env_groups,
+                **doc_env_groups,
+            }
 
         git_repo = source.url if isinstance(source, GitSourceConfig) else None
         git_branch = source.branch if isinstance(source, GitSourceConfig) else None

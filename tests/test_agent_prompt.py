@@ -255,7 +255,7 @@ class TestYamlEditingGuidance:
         # The non-obvious semantic — AND across keys in `if:`.
         assert "AND" in prompt
         # Resolver order so the agent knows which layer wins.
-        assert "server → backend → workflow → task" in prompt
+        assert "server → backend → repo-project → workflow-doc → task" in prompt
 
     def test_merge_semantics_documented(self):
         """The agent needs to know: env CONCATS, env_groups MERGE,
