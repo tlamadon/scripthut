@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 from fastapi import FastAPI
@@ -262,6 +263,108 @@ def test_run_source_workflow_git_source_without_backend_errors():
     resp = _client(state).post("/api/v1/sources/git/run?workflow=train.json")
 
     assert resp.status_code == 422
+
+
+# -- /sources/{name}/sync ----------------------------------------------------
+
+
+def test_sync_git_source_refreshes_status_and_workflows():
+    """Syncing a git source re-clones and re-discovers workflows."""
+    from scripthut.sources.git import SourceStatus, SourceWorkflow
+    sources = [GitSourceConfig(name="git", url="git@h:o/r.git", branch="main")]
+    sm = MagicMock()
+    sm.sync_source = AsyncMock(return_value=SourceStatus(
+        name="git", path=Path("/tmp/clone"), cloned=True, branch="main",
+        last_commit="deadbeef1234",
+    ))
+    sm.discover_workflows = MagicMock(return_value=[
+        SourceWorkflow(name="train", source_name="git", filename="train.json",
+                       tasks_json="[]"),
+    ])
+    state = _make_state(run_manager=MagicMock(), sources=sources)
+    state.source_manager = sm
+    state.source_statuses = {}
+
+    resp = _client(state).post("/api/v1/sources/git/sync")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["name"] == "git"
+    assert body["type"] == "git"
+    assert body["cloned"] is True
+    assert body["last_commit"] == "deadbeef1234"
+    assert body["workflows"] == ["train.json"]
+    assert body["error"] is None
+    # Cache must be refreshed for subsequent /run calls.
+    assert state.source_workflows["git"][0].filename == "train.json"
+
+
+def test_sync_unknown_source_returns_404():
+    state = _make_state(run_manager=MagicMock(), sources=[])
+    resp = _client(state).post("/api/v1/sources/missing/sync")
+    assert resp.status_code == 404
+
+
+def test_sync_git_source_failure_returns_200_with_error_field():
+    """Per-source failures are reported in-band, not as a 5xx.
+
+    A 5xx would make it look like the server itself is broken; we want
+    callers to see "this one source failed, others may still work."
+    """
+    sources = [GitSourceConfig(name="git", url="git@h:o/r.git", branch="main")]
+    sm = MagicMock()
+    sm.sync_source = AsyncMock(side_effect=RuntimeError("clone failed"))
+    state = _make_state(run_manager=MagicMock(), sources=sources)
+    state.source_manager = sm
+    state.source_statuses = {}
+
+    resp = _client(state).post("/api/v1/sources/git/sync")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "clone failed" in body["error"]
+
+
+# -- /sources/sync (all) ------------------------------------------------------
+
+
+def test_sync_all_sources_iterates_every_configured_source():
+    from scripthut.sources.git import SourceStatus, SourceWorkflow
+    sources = [
+        GitSourceConfig(name="a", url="git@h:o/a.git", branch="main"),
+        GitSourceConfig(name="b", url="git@h:o/b.git", branch="main"),
+    ]
+    sm = MagicMock()
+
+    async def fake_sync(n: str) -> SourceStatus:
+        return SourceStatus(
+            name=n, path=Path(f"/tmp/{n}"), cloned=True, branch="main",
+            last_commit=f"{n}-sha",
+        )
+
+    sm.sync_source = AsyncMock(side_effect=fake_sync)
+    sm.discover_workflows = MagicMock(return_value=[
+        SourceWorkflow(name="t", source_name="x", filename="t.json",
+                       tasks_json="[]"),
+    ])
+    state = _make_state(run_manager=MagicMock(), sources=sources)
+    state.source_manager = sm
+    state.source_statuses = {}
+
+    resp = _client(state).post("/api/v1/sources/sync")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    names = [r["name"] for r in body["sources"]]
+    assert names == ["a", "b"]
+
+
+def test_sync_all_sources_empty_config_returns_empty_list():
+    state = _make_state(run_manager=MagicMock())
+    state.config = None
+    resp = _client(state).post("/api/v1/sources/sync")
+    assert resp.status_code == 200
+    assert resp.json() == {"sources": []}
 
 
 # -- /runs --------------------------------------------------------------------

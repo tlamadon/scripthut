@@ -554,6 +554,95 @@ async def test_source_view_surfaces_discover_error(capsys):
 
 
 @pytest.mark.asyncio
+async def test_source_sync_single_name_calls_sync_source(capsys):
+    """`scripthut source sync <name>` hits the per-source endpoint."""
+    fake = _async_ctx(MagicMock())
+    fake.sync_source = AsyncMock(return_value={
+        "name": "src", "type": "git", "cloned": True,
+        "last_commit": "deadbeef0123", "workflows": ["train.json"], "error": None,
+    })
+
+    args = _ns(name="src")
+    with patch.object(cli, "_make_client", return_value=fake):
+        rc = await cli._cmd_source_sync(args)
+
+    fake.sync_source.assert_awaited_once_with("src")
+    out = capsys.readouterr().out
+    assert "src" in out
+    assert "1 workflow" in out
+    assert "deadbeef" in out
+    assert rc == 0
+
+
+@pytest.mark.asyncio
+async def test_source_sync_no_name_syncs_all(capsys):
+    fake = _async_ctx(MagicMock())
+    fake.sync_all_sources = AsyncMock(return_value={
+        "sources": [
+            {"name": "a", "type": "git", "workflows": ["t.json"], "error": None,
+             "cloned": True, "last_commit": "abc12345"},
+            {"name": "b", "type": "path", "workflows": [], "error": None},
+        ]
+    })
+
+    args = _ns(name=None)
+    with patch.object(cli, "_make_client", return_value=fake):
+        rc = await cli._cmd_source_sync(args)
+
+    fake.sync_all_sources.assert_awaited_once_with()
+    out = capsys.readouterr().out
+    assert "a" in out
+    assert "b" in out
+    assert rc == 0
+
+
+@pytest.mark.asyncio
+async def test_source_sync_single_failure_returns_nonzero(capsys):
+    """A specifically requested source failing should be a hard error."""
+    fake = _async_ctx(MagicMock())
+    fake.sync_source = AsyncMock(return_value={
+        "name": "src", "type": "git", "workflows": [],
+        "error": "git clone failed: permission denied",
+    })
+
+    args = _ns(name="src")
+    with patch.object(cli, "_make_client", return_value=fake):
+        rc = await cli._cmd_source_sync(args)
+
+    out = capsys.readouterr().out
+    assert "permission denied" in out
+    # Exit non-zero so scripts can detect the failure.
+    assert rc == 2
+
+
+@pytest.mark.asyncio
+async def test_source_sync_all_with_one_failure_still_returns_zero(capsys):
+    """Per-source failures in a sync-all are reported but not fatal.
+
+    Otherwise one broken source on a server would make the whole batch
+    sync look like a failure — better to report per-entry and let the
+    user act on what they see.
+    """
+    fake = _async_ctx(MagicMock())
+    fake.sync_all_sources = AsyncMock(return_value={
+        "sources": [
+            {"name": "ok", "type": "git", "workflows": ["t.json"], "error": None,
+             "cloned": True},
+            {"name": "bad", "type": "git", "workflows": [], "error": "boom"},
+        ]
+    })
+
+    args = _ns(name=None)
+    with patch.object(cli, "_make_client", return_value=fake):
+        rc = await cli._cmd_source_sync(args)
+
+    out = capsys.readouterr().out
+    assert "ok" in out and "bad" in out
+    assert "boom" in out
+    assert rc == 0
+
+
+@pytest.mark.asyncio
 async def test_backend_list_prints_table(capsys):
     fake = _async_ctx(MagicMock())
     fake.list_backends = AsyncMock(return_value={

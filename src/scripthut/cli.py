@@ -297,6 +297,18 @@ class LocalClient:
             "(or set `settings.cli_server` in scripthut.yaml)."
         )
 
+    async def sync_source(self, name: str) -> dict[str, Any]:
+        raise RuntimeError(
+            "Source sync is not available in local CLI mode. "
+            "Run a scripthut server and re-run with `--server <url>`."
+        )
+
+    async def sync_all_sources(self) -> dict[str, Any]:
+        raise RuntimeError(
+            "Source sync is not available in local CLI mode. "
+            "Run a scripthut server and re-run with `--server <url>`."
+        )
+
     async def view_run(self, run_id: str) -> dict[str, Any]:
         # Local mode reads from storage rather than in-memory state since
         # we don't restore on startup.
@@ -451,6 +463,12 @@ class RemoteClient:
 
     async def view_source(self, name: str) -> dict[str, Any]:
         return await self._get(f"/sources/{name}")
+
+    async def sync_source(self, name: str) -> dict[str, Any]:
+        return await self._post(f"/sources/{name}/sync")
+
+    async def sync_all_sources(self) -> dict[str, Any]:
+        return await self._post("/sources/sync")
 
     async def list_runs(self, limit: int | None = None) -> dict[str, Any]:
         return await self._get("/runs", limit=limit)
@@ -1779,6 +1797,44 @@ async def _cmd_source_list(args: argparse.Namespace) -> int:
     return 0
 
 
+async def _cmd_source_sync(args: argparse.Namespace) -> int:
+    """Re-clone (git) or re-glob (path) one or all sources, refresh cache.
+
+    No name argument syncs every configured source; per-source errors
+    are reported but don't fail the overall command (exit code 0). When
+    a name is given and *that* source errors, exit code 2 so it composes
+    in scripts.
+    """
+    async with _make_client(args) as client:
+        if args.name:
+            data = await client.sync_source(args.name)
+            entries = [data]
+        else:
+            data = await client.sync_all_sources()
+            entries = data.get("sources", [])
+
+    if args.json:
+        print(json.dumps(data, indent=2))
+    elif not entries:
+        print("No sources configured.")
+    else:
+        any_failed = False
+        for r in entries:
+            marker = "✗" if r.get("error") else "✓"
+            wfs = r.get("workflows", []) or []
+            wf_str = f"{len(wfs)} workflow{'s' if len(wfs) != 1 else ''}"
+            line = f"  {marker} {r['name']:<20} ({r.get('type', '?')})  {wf_str}"
+            if r.get("type") == "git" and r.get("last_commit"):
+                line += f"  @ {r['last_commit'][:8]}"
+            print(line)
+            if r.get("error"):
+                any_failed = True
+                print(f"      → {r['error']}")
+        if args.name and any_failed:
+            return 2
+    return 0
+
+
 async def _cmd_source_view(args: argparse.Namespace) -> int:
     async with _make_client(args) as client:
         data = await client.view_source(args.name)
@@ -2260,6 +2316,19 @@ def build_parser() -> argparse.ArgumentParser:
     p_src_view.add_argument("--json", action="store_true")
     _add_common(p_src_view)
     p_src_view.set_defaults(handler=_cmd_source_view)
+
+    p_src_sync = src_sub.add_parser(
+        "sync",
+        help="Re-clone/re-glob a source (or all) and refresh workflow cache",
+    )
+    p_src_sync.add_argument(
+        "name",
+        nargs="?",
+        help="Source name; omit to sync every configured source",
+    )
+    p_src_sync.add_argument("--json", action="store_true")
+    _add_common(p_src_sync)
+    p_src_sync.set_defaults(handler=_cmd_source_sync)
 
     # ----- status -----------------------------------------------------------
     p_status = sub.add_parser(

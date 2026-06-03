@@ -270,6 +270,81 @@ def make_api_router(state: AppState) -> APIRouter:
             "workflows": [wf.filename for wf in cached],
         }
 
+    async def _sync_one_source(name: str) -> dict[str, Any]:
+        """Re-sync a single source and refresh its workflow cache.
+
+        Git sources re-clone via ``source_manager``; path sources re-glob
+        over SSH using ``main._discover_path_source_workflows`` (lazy
+        imported to avoid a circular dep at module load).
+        """
+        from scripthut.config_schema import GitSourceConfig, PathSourceConfig
+        if state.config is None:
+            raise HTTPException(status_code=503, detail="Config not loaded")
+        source = state.config.get_source(name)
+        if source is None:
+            raise HTTPException(
+                status_code=404, detail=f"Source '{name}' not found",
+            )
+
+        result: dict[str, Any] = {
+            "name": name, "type": source.type, "error": None,
+        }
+        if isinstance(source, GitSourceConfig):
+            if state.source_manager is None:
+                raise HTTPException(
+                    status_code=503, detail="Source manager not initialized",
+                )
+            try:
+                status = await state.source_manager.sync_source(name)
+                state.source_statuses[name] = status
+                result["cloned"] = status.cloned
+                result["last_commit"] = status.last_commit
+                if status.error:
+                    result["error"] = status.error
+                workflows = state.source_manager.discover_workflows(name)
+                state.source_workflows[name] = workflows
+                result["workflows"] = [wf.filename for wf in workflows]
+            except Exception as e:
+                logger.exception(f"Sync failed for git source '{name}'")
+                result["error"] = str(e)
+                result["workflows"] = [
+                    wf.filename for wf in state.source_workflows.get(name, [])
+                ]
+        elif isinstance(source, PathSourceConfig):
+            try:
+                from scripthut.main import _discover_path_source_workflows
+                workflows = await _discover_path_source_workflows(source)
+                state.source_workflows[name] = workflows
+                result["workflows"] = [wf.filename for wf in workflows]
+            except Exception as e:
+                logger.exception(f"Discovery failed for path source '{name}'")
+                result["error"] = str(e)
+                result["workflows"] = [
+                    wf.filename for wf in state.source_workflows.get(name, [])
+                ]
+        return result
+
+    @router.post("/sources/{name}/sync")
+    async def sync_one_source_v1(name: str) -> dict[str, Any]:
+        """Re-sync a single source and refresh its workflow cache.
+
+        Returns the refreshed metadata (cloned status, commit, workflow
+        filenames) plus an ``error`` field that is ``null`` on success.
+        4xx is reserved for "source/config not found"; an individual
+        sync failure surfaces as a 200 with ``error`` populated so
+        callers can distinguish "doesn't exist" from "exists but broken".
+        """
+        return await _sync_one_source(name)
+
+    @router.post("/sources/sync")
+    async def sync_all_sources_v1() -> dict[str, Any]:
+        """Re-sync every configured source. Errors are per-entry, not fatal."""
+        if state.config is None:
+            return {"sources": []}
+        names = [s.name for s in state.config.sources]
+        results = [await _sync_one_source(n) for n in names]
+        return {"sources": results}
+
     @router.get("/runs")
     async def list_runs(limit: int | None = None, workflow: str | None = None) -> dict[str, Any]:
         rm = _require_manager()
