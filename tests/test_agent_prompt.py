@@ -221,6 +221,65 @@ class TestNoProjectStragglers:
 # ---------- status + sync + log surfaces ---------------------------------
 
 
+class TestYamlEditingGuidance:
+    """Agents are routinely asked to add env vars / stacks / workflows to
+    the user's YAML. Without targeted guidance they're likely to (a) put
+    the change in the wrong file, (b) overwrite the whole YAML, or
+    (c) miss the env-rule syntax. Pin the basics.
+    """
+
+    def test_yaml_editing_section_present(self):
+        prompt = _render_agent_prompt(ScriptHutConfig())
+        assert "## Editing scripthut.yaml" in prompt
+
+    def test_two_layer_model_is_explained(self):
+        prompt = _render_agent_prompt(ScriptHutConfig())
+        # Both file paths are explicitly named so the agent picks the right one.
+        assert "~/.config/scripthut/scripthut.yaml" in prompt
+        assert "./scripthut.yaml" in prompt
+        # The four project-local-allowed sections are named.
+        for section in ("stacks", "workflows", "env", "env_groups"):
+            assert section in prompt
+        # The four global-only sections are named, with the loader-rejects
+        # consequence explicit.
+        for section in ("backends", "sources", "settings", "pricing"):
+            assert section in prompt
+        assert "ConfigError" in prompt or "rejects" in prompt or "rejected" in prompt
+
+    def test_env_rule_shape_taught_with_all_common_keys(self):
+        prompt = _render_agent_prompt(ScriptHutConfig())
+        # The schema's five fields on EnvRule — agents see at least the
+        # action ones plus the guard.
+        for key in ("set:", "if:", "include:", "append:", "init:"):
+            assert key in prompt
+        # The non-obvious semantic — AND across keys in `if:`.
+        assert "AND" in prompt
+        # Resolver order so the agent knows which layer wins.
+        assert "server → backend → workflow → task" in prompt
+
+    def test_merge_semantics_documented(self):
+        """The agent needs to know: env CONCATS, env_groups MERGE,
+        stacks/workflows OVERRIDE-BY-NAME. Different from each other.
+        """
+        prompt = _render_agent_prompt(ScriptHutConfig())
+        assert "concatenated" in prompt          # env
+        assert "dict-merged" in prompt           # env_groups
+        assert "by-name override" in prompt      # stacks / workflows
+
+    def test_edit_discipline_taught(self):
+        """The most expensive failure mode for YAML edits: overwriting
+        the file. Make sure the briefing tells the agent not to.
+        """
+        prompt = _render_agent_prompt(ScriptHutConfig())
+        # Read-first is non-negotiable.
+        assert "Read the file first" in prompt
+        # Minimal-diff is the operating principle.
+        assert "minimal diff" in prompt
+        # Hot-reload vs restart — agent shouldn't blindly tell the user
+        # to restart.
+        assert "hot-reload" in prompt.lower()
+
+
 class TestObservabilitySurfaces:
     """The user explicitly asked: the agent must know how to check
     status, output, and logs, and how to refresh sources.
