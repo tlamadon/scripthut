@@ -2748,7 +2748,7 @@ def parse_args() -> argparse.Namespace:
 # import cost — and trigger asyncssh / runtime imports — just to start the web
 # server. Must stay in sync with the top-level parsers in cli.py.
 _CLI_SUBCOMMANDS = frozenset(
-    {"workflow", "run", "backend", "project", "stack", "agent", "task"}
+    {"workflow", "run", "backend", "project", "stack", "agent", "task", "status"}
 )
 _SUBCOMMANDS = _CLI_SUBCOMMANDS | {"setup-aws-ec2"}
 

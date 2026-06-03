@@ -519,19 +519,46 @@ def _fetch_cloudflared_token(app_url: str) -> str:
     return token
 
 
-def _resolve_auth(args: argparse.Namespace) -> RemoteAuth | None:
-    """Build a ``RemoteAuth`` from CLI args / env vars / config / cloudflared.
+class AuthResolution:
+    """What ``_resolve_auth_with_source`` decided + how it got there.
 
-    Per-field precedence (highest wins):
-      1. CLI flags (``--cf-client-id`` etc.)
-      2. Env vars (``SCRIPTHUT_CF_CLIENT_ID``, ``SCRIPTHUT_CF_CLIENT_SECRET``,
-         ``SCRIPTHUT_CF_ACCESS_TOKEN``)
-      3. ``settings.cli_auth`` from scripthut.yaml
-      4. ``cloudflared access token --app=<cloudflared_app>`` — only consulted
-         when no explicit token was supplied at layers 1-3.
+    ``auth`` is what gets sent on the wire; the rest is bookkeeping that
+    the ``status`` command turns into human-readable diagnostics.
+    ``method`` is one of: ``"none"``, ``"service-token"``, ``"jwt"``.
+    ``source`` describes where the winning credential came from
+    (``"flag"`` / ``"env"`` / ``"config"`` / ``"cloudflared"``).
+    ``cloudflared_app`` is set when a cloudflared fallback was configured
+    (whether or not the token was actually fetched — see
+    ``fetch_cloudflared``).
+    """
 
-    Returns ``None`` when nothing is configured (CLI runs against the
-    server with no extra headers, which is fine for unprotected servers).
+    def __init__(
+        self,
+        *,
+        auth: RemoteAuth | None,
+        method: str,
+        source: str | None,
+        cloudflared_app: str | None = None,
+        cloudflared_error: str | None = None,
+    ):
+        self.auth = auth
+        self.method = method
+        self.source = source
+        self.cloudflared_app = cloudflared_app
+        self.cloudflared_error = cloudflared_error
+
+
+def _resolve_auth_with_source(
+    args: argparse.Namespace, *, fetch_cloudflared: bool = True,
+) -> AuthResolution:
+    """Resolve auth credentials and remember where each one came from.
+
+    Per-field precedence (highest wins): CLI flags → env vars →
+    ``settings.cli_auth`` from scripthut.yaml → cloudflared shell-out.
+    The cloudflared fallback only runs when no explicit token is
+    supplied; pass ``fetch_cloudflared=False`` to suppress it for a
+    "describe only, no side effects" view (used by ``scripthut status``
+    so it stays fast and doesn't fail when offline).
     """
     cfg_auth = None
     try:
@@ -542,72 +569,132 @@ def _resolve_auth(args: argparse.Namespace) -> RemoteAuth | None:
         # purely off flags or env vars.
         pass
 
-    def pick(flag: str | None, env_key: str, cfg_attr: str) -> str | None:
+    def pick(
+        flag: str | None, env_key: str, cfg_attr: str,
+    ) -> tuple[str | None, str | None]:
         if flag:
-            return flag
+            return flag, "flag"
         env = os.environ.get(env_key)
         if env:
-            return env
-        return getattr(cfg_auth, cfg_attr, None) if cfg_auth else None
+            return env, "env"
+        v = getattr(cfg_auth, cfg_attr, None) if cfg_auth else None
+        return (v, "config") if v else (None, None)
 
-    client_id = pick(
+    client_id, src_id = pick(
         getattr(args, "cf_client_id", None),
         "SCRIPTHUT_CF_CLIENT_ID",
         "cf_client_id",
     )
-    client_secret = pick(
+    client_secret, src_secret = pick(
         getattr(args, "cf_client_secret", None),
         "SCRIPTHUT_CF_CLIENT_SECRET",
         "cf_client_secret",
     )
-    token = pick(
+    token, src_token = pick(
         getattr(args, "cf_access_token", None),
         "SCRIPTHUT_CF_ACCESS_TOKEN",
         "cf_access_token",
     )
 
-    # Only fall back to cloudflared if no token was given explicitly and
-    # we have an app URL to ask about.
-    cloudflared_app = (
-        getattr(args, "cloudflared_app", None)
-        or os.environ.get("SCRIPTHUT_CLOUDFLARED_APP")
-        or (getattr(cfg_auth, "cloudflared_app", None) if cfg_auth else None)
-    )
-    if token is None and cloudflared_app:
-        token = _fetch_cloudflared_token(cloudflared_app)
+    # Track the cloudflared app URL even when we don't actually shell out,
+    # so status can report "would use cloudflared (from <source>)".
+    cloudflared_app: str | None = None
+    cf_source: str | None = None
+    if getattr(args, "cloudflared_app", None):
+        cloudflared_app, cf_source = args.cloudflared_app, "flag"
+    elif os.environ.get("SCRIPTHUT_CLOUDFLARED_APP"):
+        cloudflared_app, cf_source = (
+            os.environ["SCRIPTHUT_CLOUDFLARED_APP"],
+            "env",
+        )
+    elif cfg_auth and getattr(cfg_auth, "cloudflared_app", None):
+        cloudflared_app, cf_source = cfg_auth.cloudflared_app, "config"
+
+    cloudflared_error: str | None = None
+    if token is None and cloudflared_app and fetch_cloudflared:
+        try:
+            token = _fetch_cloudflared_token(cloudflared_app)
+            src_token = "cloudflared"
+        except RuntimeError as e:
+            cloudflared_error = str(e)
 
     auth = RemoteAuth(
         cf_client_id=client_id,
         cf_client_secret=client_secret,
         cf_access_token=token,
     )
-    return auth if auth.has_credentials else None
+    if not auth.has_credentials:
+        # No headers will be sent. Still report a cloudflared-app source
+        # if one was configured, so status can explain "configured but
+        # nothing fetched".
+        if cloudflared_app and not fetch_cloudflared:
+            return AuthResolution(
+                auth=None, method="jwt-pending", source=cf_source,
+                cloudflared_app=cloudflared_app,
+            )
+        return AuthResolution(
+            auth=None, method="none", source=None,
+            cloudflared_app=cloudflared_app,
+            cloudflared_error=cloudflared_error,
+        )
+    # When both methods are configured RemoteAuth.headers() emits both;
+    # we describe whichever has its full credential pair (service token
+    # needs id+secret) first.
+    if client_id and client_secret:
+        return AuthResolution(
+            auth=auth, method="service-token", source=src_id,
+            cloudflared_app=cloudflared_app,
+        )
+    return AuthResolution(
+        auth=auth, method="jwt", source=src_token,
+        cloudflared_app=cloudflared_app,
+    )
 
 
-def _resolve_server(args: argparse.Namespace) -> str | None:
-    """Determine which server URL (if any) to target for the command.
+def _resolve_auth(args: argparse.Namespace) -> RemoteAuth | None:
+    """Backwards-compatible wrapper around ``_resolve_auth_with_source``.
 
-    Order: ``--server`` arg > ``SCRIPTHUT_SERVER`` env > config's
-    ``settings.cli_server``.  Returns ``None`` for local mode.
+    Existing call sites (``_make_client``) only care about the
+    ``RemoteAuth`` itself; the source attribution is for ``status``.
+    """
+    return _resolve_auth_with_source(args).auth
 
-    A bare ``--server local`` forces local mode even when env/config
-    sets a remote URL — useful for one-off debugging.
+
+def _resolve_server_with_source(
+    args: argparse.Namespace,
+) -> tuple[str | None, str]:
+    """Like ``_resolve_server`` but also reports where the value came from.
+
+    Returns ``(url, source)`` where ``source`` is one of: ``"flag"``,
+    ``"env"``, ``"config"``, ``"local-keyword"`` (user passed
+    ``--server local``), or ``"none"`` (nothing configured anywhere).
     """
     explicit = getattr(args, "server", None)
     if explicit == "local":
-        return None
+        return None, "local-keyword"
     if explicit:
-        return explicit
+        return explicit, "flag"
     env = os.environ.get("SCRIPTHUT_SERVER")
     if env:
-        return env
+        return env, "env"
     # Read config's cli_server; failures are non-fatal (user might not have
     # a config in CWD when targeting --server local).
     try:
         config = load_config(getattr(args, "config", None))
     except Exception:
-        return None
-    return config.settings.cli_server
+        return None, "none"
+    if config.settings.cli_server:
+        return config.settings.cli_server, "config"
+    return None, "none"
+
+
+def _resolve_server(args: argparse.Namespace) -> str | None:
+    """Backwards-compatible wrapper around ``_resolve_server_with_source``.
+
+    ``--server local`` forces local mode (returns ``None``) even when env
+    or config points at a remote URL — useful for one-off debugging.
+    """
+    return _resolve_server_with_source(args)[0]
 
 
 def _make_client(args: argparse.Namespace) -> Any:
@@ -1020,6 +1107,330 @@ async def _cmd_agent_prompt(args: argparse.Namespace) -> int:
     except (FileNotFoundError, ConfigError):
         config = None
     print(_render_agent_prompt(config))
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# `status` subcommand — diagnose CLI connectivity to the server
+# ---------------------------------------------------------------------------
+
+
+def _gather_status(args: argparse.Namespace) -> dict[str, Any]:
+    """Collect everything ``scripthut status`` reports on, as a plain dict.
+
+    Returns a dict (used directly for ``--json`` output and consumed by
+    ``_render_status`` for the human view). Pure config/path inspection
+    only — the HTTP probes happen separately in ``_probe_server`` so we
+    can stay synchronous here and unit-test without mocking httpx.
+    """
+    from scripthut import __version__  # type: ignore
+
+    server, server_source = _resolve_server_with_source(args)
+    # Describe-only: don't shell out to cloudflared just to render status.
+    auth_res = _resolve_auth_with_source(args, fetch_cloudflared=False)
+
+    # Surface which config files were loaded — the most common "why is
+    # nothing being picked up?" failure mode is having the wrong file.
+    explicit_cfg = getattr(args, "config", None)
+    config_paths: dict[str, str | None] = {}
+    if explicit_cfg:
+        config_paths["explicit"] = str(explicit_cfg)
+    else:
+        from scripthut.config import discover_global_config, discover_project_config
+        g = discover_global_config()
+        p = discover_project_config()
+        config_paths["global"] = str(g) if g else None
+        config_paths["project"] = str(p) if p else None
+
+    config: ScriptHutConfig | None
+    config_error: str | None = None
+    try:
+        config = load_config(explicit_cfg)
+    except (FileNotFoundError, ConfigError) as e:
+        config = None
+        config_error = str(e)
+
+    install_path: str | None
+    try:
+        import scripthut as _pkg
+        install_path = (
+            str(Path(_pkg.__file__).parent) if _pkg.__file__ else None
+        )
+    except Exception:
+        install_path = None
+
+    return {
+        "version": __version__,
+        "install_path": install_path,
+        "config_paths": config_paths,
+        "config_error": config_error,
+        "server": server,
+        "server_source": server_source,
+        "auth": {
+            "method": auth_res.method,
+            "source": auth_res.source,
+            "cloudflared_app": auth_res.cloudflared_app,
+        },
+        # Local-mode projects/backends from the loaded config; in remote
+        # mode these are replaced by what the server reports.
+        "local_projects": (
+            [
+                {
+                    "name": p.name,
+                    "backend": p.backend,
+                    "path": p.path,
+                    "description": p.description,
+                }
+                for p in config.projects
+            ]
+            if config is not None else []
+        ),
+        "local_backends": (
+            [{"name": b.name, "type": b.backend_type} for b in config.backends]
+            if config is not None else []
+        ),
+    }
+
+
+async def _probe_server(
+    server: str, auth: RemoteAuth | None, *, timeout: float = 5.0,
+) -> dict[str, Any]:
+    """Hit ``/api/v1/health`` (unauthenticated) and ``/api/v1/projects``
+    (authenticated). Returns a structured result the renderer formats.
+
+    Two probes, not one: a 302 to ``cloudflareaccess.com`` on the
+    *projects* call while *health* still returns 200 means the server is
+    up and Cloudflare Access is rejecting our credentials — different
+    remediation than "server is down".
+    """
+    headers = auth.headers() if auth is not None else {}
+    base = server.rstrip("/") + "/api/v1"
+    result: dict[str, Any] = {
+        "health": {},
+        "authorized": {},
+    }
+
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+        # Reachability — no auth headers, so a Cloudflare-Access-protected
+        # /health will 302 even when the server is healthy. We still call
+        # it for the latency number and to distinguish DNS/connection
+        # failure from auth failure.
+        t0 = asyncio.get_event_loop().time()
+        try:
+            r = await client.get(f"{base}/health")
+            elapsed_ms = int((asyncio.get_event_loop().time() - t0) * 1000)
+            result["health"] = {
+                "status_code": r.status_code,
+                "elapsed_ms": elapsed_ms,
+                "redirect_location": r.headers.get("location"),
+            }
+        except httpx.RequestError as e:
+            result["health"] = {"error": f"{type(e).__name__}: {e}"}
+
+        # Authorization — with headers; if creds work this is a real test
+        # that we can talk to /api/v1.
+        try:
+            r = await client.get(f"{base}/projects", headers=headers)
+            result["authorized"] = {
+                "status_code": r.status_code,
+                "redirect_location": r.headers.get("location"),
+            }
+            if r.status_code == 200:
+                try:
+                    result["server_data"] = r.json()
+                except Exception:
+                    pass
+        except httpx.RequestError as e:
+            result["authorized"] = {"error": f"{type(e).__name__}: {e}"}
+
+        # Backends — only meaningful if /projects succeeded.
+        if result["authorized"].get("status_code") == 200:
+            try:
+                r = await client.get(f"{base}/backends", headers=headers)
+                if r.status_code == 200:
+                    result["server_data_backends"] = r.json()
+            except httpx.RequestError:
+                pass
+
+    return result
+
+
+def _render_status(data: dict[str, Any], probe: dict[str, Any] | None) -> str:
+    """Format ``_gather_status`` + ``_probe_server`` output for humans."""
+    lines: list[str] = []
+    lines.append(f"scripthut {data['version']}")
+    if data.get("install_path"):
+        lines.append(f"  installed at {data['install_path']}")
+    lines.append("")
+
+    cfg_paths = data["config_paths"]
+    if "explicit" in cfg_paths:
+        lines.append(f"Config:        {cfg_paths['explicit']}  (--config)")
+    else:
+        g = cfg_paths.get("global") or "(none)"
+        p = cfg_paths.get("project") or "(none)"
+        lines.append(f"Config:        global={g}")
+        lines.append(f"               project={p}")
+    if data.get("config_error"):
+        lines.append(f"               ! {data['config_error']}")
+
+    server = data["server"]
+    src = data["server_source"]
+    if server:
+        lines.append(f"Server:        {server}  (from {_describe_source(src)})")
+    elif src == "local-keyword":
+        lines.append("Server:        local mode (--server local)")
+    else:
+        lines.append(
+            "Server:        local mode "
+            "(no --server / SCRIPTHUT_SERVER / settings.cli_server set)"
+        )
+
+    auth = data["auth"]
+    if not server:
+        lines.append("Auth:          n/a (local mode)")
+    elif auth["method"] == "none":
+        lines.append("Auth:          (none — server reachable only if unprotected)")
+    elif auth["method"] == "jwt-pending":
+        lines.append(
+            f"Auth:          cloudflared (app={auth['cloudflared_app']})  "
+            f"(from {_describe_source(auth['source'])})  [not fetched]"
+        )
+    else:
+        lines.append(
+            f"Auth:          {auth['method']}  "
+            f"(from {_describe_source(auth['source'])})"
+        )
+
+    if probe is not None:
+        h = probe["health"]
+        if "error" in h:
+            lines.append(f"Reachable:     ✗  {h['error']}")
+        else:
+            code = h["status_code"]
+            ms = h.get("elapsed_ms")
+            ms_str = f" in {ms} ms" if ms is not None else ""
+            marker = "✓" if code == 200 else ("⚠" if code == 302 else "✗")
+            lines.append(f"Reachable:     {marker}  GET /api/v1/health → {code}{ms_str}")
+            if code == 302 and h.get("redirect_location"):
+                # Surface the Access subdomain — sometimes the *team*
+                # is what's wrong (e.g. typo'd server URL).
+                loc = h["redirect_location"]
+                lines.append(f"               → redirected to {loc[:80]}")
+
+        a = probe["authorized"]
+        if "error" in a:
+            lines.append(f"Authorized:    ✗  {a['error']}")
+        else:
+            code = a["status_code"]
+            marker = "✓" if code == 200 else "✗"
+            lines.append(f"Authorized:    {marker}  GET /api/v1/projects → {code}")
+            if code != 200:
+                lines.append(_authorization_hint(code, a.get("redirect_location"), auth))
+
+    # Projects + backends
+    if probe and probe.get("server_data"):
+        sd = probe["server_data"]
+        projects = sd.get("projects", [])
+        if projects:
+            lines.append(f"Projects:      {len(projects)} configured on server")
+            for p in projects:
+                desc = f"  — {p['description']}" if p.get("description") else ""
+                lines.append(
+                    f"  - {p['name']:<18} [{p['backend']}]   {p['path']}{desc}"
+                )
+        else:
+            lines.append("Projects:      none configured on server")
+    elif not server and data["local_projects"]:
+        lines.append(
+            f"Projects:      {len(data['local_projects'])} configured locally"
+        )
+        for p in data["local_projects"]:
+            desc = f"  — {p['description']}" if p.get("description") else ""
+            lines.append(f"  - {p['name']:<18} [{p['backend']}]   {p['path']}{desc}")
+
+    if probe and probe.get("server_data_backends"):
+        bs = probe["server_data_backends"].get("backends", [])
+        if bs:
+            parts = [
+                f"{b['name']} ({'connected' if b.get('connected') else 'down'})"
+                for b in bs
+            ]
+            lines.append(f"Backends:      {', '.join(parts)}")
+    elif not server and data["local_backends"]:
+        names = ", ".join(b["name"] for b in data["local_backends"])
+        lines.append(f"Backends:      {names}  (local config; not probed)")
+
+    return "\n".join(lines)
+
+
+def _describe_source(src: str | None) -> str:
+    """Turn an internal source tag into a human label."""
+    return {
+        "flag": "CLI flag",
+        "env": "env var",
+        "config": "settings.cli_server / cli_auth",
+        "cloudflared": "cloudflared",
+        "local-keyword": "--server local",
+        "none": "nothing configured",
+    }.get(src or "", src or "?")
+
+
+def _authorization_hint(
+    code: int, redirect_location: str | None, auth: dict[str, Any],
+) -> str:
+    """Suggest a remediation for an authorization failure."""
+    if code == 302 and redirect_location and "cloudflareaccess.com" in redirect_location:
+        if auth["method"] in ("none", "jwt-pending"):
+            if auth.get("cloudflared_app"):
+                return (
+                    "               → no token sent. Try: "
+                    f"cloudflared access login {auth['cloudflared_app']}"
+                )
+            return (
+                "               → server is behind Cloudflare Access but no "
+                "credentials are configured. See README §Talking to a remote server."
+            )
+        return (
+            "               → token rejected by Cloudflare. Likely expired — "
+            "re-run `cloudflared access login <server>`."
+        )
+    if code in (401, 403):
+        return "               → credentials rejected by the scripthut server."
+    return f"               → unexpected status {code}."
+
+
+async def _cmd_status(args: argparse.Namespace) -> int:
+    data = _gather_status(args)
+    probe: dict[str, Any] | None = None
+    if data["server"] and not getattr(args, "quick", False):
+        # Re-resolve auth with cloudflared fetch enabled so the probe is
+        # realistic; if it errors, surface it in the auth section.
+        try:
+            auth_res = _resolve_auth_with_source(args, fetch_cloudflared=True)
+            real_auth = auth_res.auth
+            if auth_res.cloudflared_error:
+                data["auth"]["cloudflared_error"] = auth_res.cloudflared_error
+        except Exception as e:
+            real_auth = None
+            data["auth"]["cloudflared_error"] = str(e)
+        probe = await _probe_server(data["server"], real_auth)
+
+    if getattr(args, "json", False):
+        out = {**data, "probe": probe}
+        print(json.dumps(out, indent=2))
+        return 0
+
+    print(_render_status(data, probe))
+    # Exit non-zero on failure so this composes in scripts; in --quick
+    # mode we don't probe and so can't fail the check.
+    if probe is not None:
+        h = probe["health"]
+        a = probe["authorized"]
+        if "error" in h or "error" in a:
+            return 2
+        if a.get("status_code") != 200:
+            return 2
     return 0
 
 
@@ -1804,6 +2215,20 @@ def build_parser() -> argparse.ArgumentParser:
     p_pr_view.add_argument("--json", action="store_true")
     _add_common(p_pr_view)
     p_pr_view.set_defaults(handler=_cmd_project_view)
+
+    # ----- status -----------------------------------------------------------
+    p_status = sub.add_parser(
+        "status",
+        help="Show resolved server/auth/config and probe remote reachability",
+    )
+    p_status.add_argument(
+        "--quick",
+        action="store_true",
+        help="Skip the HTTP probes; just print resolved config (no network).",
+    )
+    p_status.add_argument("--json", action="store_true")
+    _add_common(p_status)
+    p_status.set_defaults(handler=_cmd_status)
 
     return parser
 

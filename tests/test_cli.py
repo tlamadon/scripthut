@@ -748,3 +748,336 @@ async def test_run_logs_follow_streams_until_task_terminal(capsys):
     assert "line2" in out
     assert "final" in out
     assert rc == 0
+
+
+# -- status command ----------------------------------------------------------
+
+
+def _status_ns(**kwargs) -> argparse.Namespace:
+    """Defaults for ``scripthut status`` invocations."""
+    defaults = dict(
+        config=None, server=None, json=False, quick=False,
+        cf_client_id=None, cf_client_secret=None,
+        cf_access_token=None, cloudflared_app=None,
+    )
+    defaults.update(kwargs)
+    return argparse.Namespace(**defaults)
+
+
+def test_status_local_mode_reports_no_server(monkeypatch):
+    """No --server / env / config → local mode, no probe attempted."""
+    monkeypatch.delenv("SCRIPTHUT_SERVER", raising=False)
+    monkeypatch.delenv("SCRIPTHUT_CF_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("SCRIPTHUT_CLOUDFLARED_APP", raising=False)
+    # Force load_config to look "empty" (no projects/backends).
+    fake_cfg = MagicMock()
+    fake_cfg.projects = []
+    fake_cfg.backends = []
+    fake_cfg.settings.cli_server = None
+    fake_cfg.settings.cli_auth = None
+    with patch.object(cli, "load_config", return_value=fake_cfg), \
+         patch("scripthut.config.discover_global_config", return_value=None), \
+         patch("scripthut.config.discover_project_config", return_value=None):
+        data = cli._gather_status(_status_ns())
+
+    assert data["server"] is None
+    assert data["server_source"] == "none"
+    assert data["auth"]["method"] == "none"
+
+
+def test_status_reports_source_attribution(monkeypatch):
+    """A --server flag wins over env, and the source string says so."""
+    monkeypatch.setenv("SCRIPTHUT_SERVER", "http://from-env")
+    fake_cfg = MagicMock()
+    fake_cfg.projects = []
+    fake_cfg.backends = []
+    fake_cfg.settings.cli_server = "http://from-config"
+    fake_cfg.settings.cli_auth = None
+    with patch.object(cli, "load_config", return_value=fake_cfg):
+        data = cli._gather_status(_status_ns(server="http://from-flag"))
+
+    assert data["server"] == "http://from-flag"
+    assert data["server_source"] == "flag"
+
+
+def test_status_describes_cloudflared_app_without_fetching(monkeypatch):
+    """Status must NOT shell out to cloudflared just to describe config.
+
+    The fetch is slow and can fail offline — status should stay fast and
+    report intent ("would use cloudflared") rather than result.
+    """
+    monkeypatch.delenv("SCRIPTHUT_SERVER", raising=False)
+    monkeypatch.delenv("SCRIPTHUT_CF_ACCESS_TOKEN", raising=False)
+    monkeypatch.setenv("SCRIPTHUT_CLOUDFLARED_APP", "https://srv.example")
+    fake_cfg = MagicMock()
+    fake_cfg.projects = []
+    fake_cfg.backends = []
+    fake_cfg.settings.cli_server = None
+    fake_cfg.settings.cli_auth = None
+    called = MagicMock(side_effect=AssertionError("cloudflared was invoked!"))
+    with patch.object(cli, "load_config", return_value=fake_cfg), \
+         patch.object(cli, "_fetch_cloudflared_token", called):
+        data = cli._gather_status(_status_ns())
+
+    assert data["auth"]["cloudflared_app"] == "https://srv.example"
+    assert data["auth"]["method"] == "jwt-pending"
+    called.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_status_probe_ok():
+    """Both probes return 200 → reachable + authorized."""
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        if req.url.path.endswith("/health"):
+            return httpx.Response(200, json={"ok": True})
+        if req.url.path.endswith("/projects"):
+            return httpx.Response(200, json={"projects": [
+                {"name": "p1", "backend": "b1", "path": "/p", "description": ""},
+            ]})
+        if req.url.path.endswith("/backends"):
+            return httpx.Response(200, json={"backends": [
+                {"name": "b1", "type": "slurm", "connected": True},
+            ]})
+        return httpx.Response(404)
+
+    transport = httpx.MockTransport(handler)
+    real_client = httpx.AsyncClient
+    with patch("httpx.AsyncClient", lambda *a, **kw: real_client(
+        transport=transport, timeout=kw.get("timeout", 5.0),
+        follow_redirects=kw.get("follow_redirects", False),
+    )):
+        probe = await cli._probe_server("http://srv.example", auth=None)
+
+    assert probe["health"]["status_code"] == 200
+    assert probe["authorized"]["status_code"] == 200
+    assert probe["server_data"]["projects"][0]["name"] == "p1"
+    assert probe["server_data_backends"]["backends"][0]["name"] == "b1"
+
+
+@pytest.mark.asyncio
+async def test_status_probe_auth_failure_distinguished_from_unreachable():
+    """A 302 to cloudflareaccess.com on /projects means server up, auth bad."""
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        # /health is also Access-protected here, so it returns 302 unauthenticated.
+        return httpx.Response(
+            302,
+            headers={"location": "https://team.cloudflareaccess.com/cdn-cgi/access/login/..."},
+        )
+
+    transport = httpx.MockTransport(handler)
+    real_client = httpx.AsyncClient
+    with patch("httpx.AsyncClient", lambda *a, **kw: real_client(
+        transport=transport, timeout=kw.get("timeout", 5.0),
+        follow_redirects=kw.get("follow_redirects", False),
+    )):
+        probe = await cli._probe_server("http://srv.example", auth=None)
+
+    assert probe["health"]["status_code"] == 302
+    assert probe["authorized"]["status_code"] == 302
+    assert "cloudflareaccess.com" in probe["authorized"]["redirect_location"]
+
+
+@pytest.mark.asyncio
+async def test_status_probe_unreachable_returns_error_field():
+    """Connection errors land in an `error` field, not status_code."""
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("nope")
+
+    transport = httpx.MockTransport(handler)
+    real_client = httpx.AsyncClient
+    with patch("httpx.AsyncClient", lambda *a, **kw: real_client(
+        transport=transport, timeout=kw.get("timeout", 5.0),
+        follow_redirects=kw.get("follow_redirects", False),
+    )):
+        probe = await cli._probe_server("http://srv.example", auth=None)
+
+    assert "error" in probe["health"]
+    assert "error" in probe["authorized"]
+
+
+def test_status_renders_local_mode():
+    data = {
+        "version": "0.5.7",
+        "install_path": "/x/y/scripthut",
+        "config_paths": {"global": "/u/scripthut.yaml", "project": None},
+        "config_error": None,
+        "server": None,
+        "server_source": "none",
+        "auth": {"method": "none", "source": None, "cloudflared_app": None},
+        "local_projects": [
+            {"name": "demo", "backend": "slurm", "path": "/repos/demo",
+             "description": ""},
+        ],
+        "local_backends": [{"name": "slurm", "type": "slurm"}],
+    }
+    out = cli._render_status(data, probe=None)
+    assert "local mode" in out
+    assert "demo" in out
+    assert "/u/scripthut.yaml" in out
+    # No probe lines when offline.
+    assert "Reachable" not in out
+
+
+def test_status_renders_remote_authorized():
+    data = {
+        "version": "0.5.7",
+        "install_path": "/x/y/scripthut",
+        "config_paths": {"global": None, "project": None},
+        "config_error": None,
+        "server": "https://srv.example",
+        "server_source": "config",
+        "auth": {
+            "method": "jwt", "source": "cloudflared",
+            "cloudflared_app": "https://srv.example",
+        },
+        "local_projects": [],
+        "local_backends": [],
+    }
+    probe = {
+        "health": {"status_code": 200, "elapsed_ms": 80, "redirect_location": None},
+        "authorized": {"status_code": 200, "redirect_location": None},
+        "server_data": {"projects": [
+            {"name": "demo", "backend": "slurm", "path": "/r/d", "description": ""},
+        ]},
+        "server_data_backends": {"backends": [
+            {"name": "slurm", "type": "slurm", "connected": True},
+        ]},
+    }
+    out = cli._render_status(data, probe=probe)
+    assert "https://srv.example" in out
+    assert "Reachable:     ✓" in out  # check mark
+    assert "Authorized:    ✓" in out
+    assert "demo" in out
+    assert "slurm (connected)" in out
+
+
+def test_status_renders_auth_failure_with_hint():
+    data = {
+        "version": "0.5.7",
+        "install_path": None,
+        "config_paths": {"global": None, "project": None},
+        "config_error": None,
+        "server": "https://srv.example",
+        "server_source": "env",
+        "auth": {
+            "method": "jwt-pending", "source": "config",
+            "cloudflared_app": "https://srv.example",
+        },
+        "local_projects": [], "local_backends": [],
+    }
+    probe = {
+        "health": {"status_code": 302, "elapsed_ms": 50,
+                   "redirect_location": "https://team.cloudflareaccess.com/.."},
+        "authorized": {"status_code": 302,
+                       "redirect_location": "https://team.cloudflareaccess.com/.."},
+    }
+    out = cli._render_status(data, probe=probe)
+    # Hint should mention the cloudflared login command, populated with the app URL.
+    assert "cloudflared access login https://srv.example" in out
+
+
+@pytest.mark.asyncio
+async def test_cmd_status_exit_code_zero_when_authorized(monkeypatch, capsys):
+    """A successful probe exits 0."""
+    monkeypatch.delenv("SCRIPTHUT_SERVER", raising=False)
+    fake_cfg = MagicMock()
+    fake_cfg.projects = []
+    fake_cfg.backends = []
+    fake_cfg.settings.cli_server = None
+    fake_cfg.settings.cli_auth = None
+
+    async def fake_probe(server, auth, **kw):
+        return {
+            "health": {"status_code": 200, "elapsed_ms": 5,
+                       "redirect_location": None},
+            "authorized": {"status_code": 200, "redirect_location": None},
+            "server_data": {"projects": []},
+            "server_data_backends": {"backends": []},
+        }
+
+    with patch.object(cli, "load_config", return_value=fake_cfg), \
+         patch.object(cli, "_probe_server", side_effect=fake_probe):
+        rc = await cli._cmd_status(_status_ns(server="https://srv.example"))
+
+    assert rc == 0
+
+
+@pytest.mark.asyncio
+async def test_cmd_status_exit_code_nonzero_on_auth_failure(monkeypatch):
+    """A 302 on /projects exits non-zero so the command composes in scripts."""
+    monkeypatch.delenv("SCRIPTHUT_SERVER", raising=False)
+    fake_cfg = MagicMock()
+    fake_cfg.projects = []
+    fake_cfg.backends = []
+    fake_cfg.settings.cli_server = None
+    fake_cfg.settings.cli_auth = None
+
+    async def fake_probe(server, auth, **kw):
+        return {
+            "health": {"status_code": 200, "elapsed_ms": 5,
+                       "redirect_location": None},
+            "authorized": {"status_code": 302,
+                           "redirect_location": "https://cf/login"},
+        }
+
+    with patch.object(cli, "load_config", return_value=fake_cfg), \
+         patch.object(cli, "_probe_server", side_effect=fake_probe):
+        rc = await cli._cmd_status(_status_ns(server="https://srv.example"))
+
+    assert rc == 2
+
+
+@pytest.mark.asyncio
+async def test_cmd_status_quick_mode_skips_probe(monkeypatch, capsys):
+    """--quick means no HTTP call, even with a remote configured."""
+    monkeypatch.delenv("SCRIPTHUT_SERVER", raising=False)
+    fake_cfg = MagicMock()
+    fake_cfg.projects = []
+    fake_cfg.backends = []
+    fake_cfg.settings.cli_server = None
+    fake_cfg.settings.cli_auth = None
+
+    probe_called = MagicMock(side_effect=AssertionError("probe was called"))
+    with patch.object(cli, "load_config", return_value=fake_cfg), \
+         patch.object(cli, "_probe_server", probe_called):
+        rc = await cli._cmd_status(
+            _status_ns(server="https://srv.example", quick=True),
+        )
+
+    assert rc == 0
+    probe_called.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_cmd_status_json_includes_probe(monkeypatch, capsys):
+    """--json output includes the probe results so scripts can parse them."""
+    monkeypatch.delenv("SCRIPTHUT_SERVER", raising=False)
+    fake_cfg = MagicMock()
+    fake_cfg.projects = []
+    fake_cfg.backends = []
+    fake_cfg.settings.cli_server = None
+    fake_cfg.settings.cli_auth = None
+
+    async def fake_probe(server, auth, **kw):
+        return {
+            "health": {"status_code": 200, "elapsed_ms": 5,
+                       "redirect_location": None},
+            "authorized": {"status_code": 200, "redirect_location": None},
+            "server_data": {"projects": []},
+            "server_data_backends": {"backends": []},
+        }
+
+    with patch.object(cli, "load_config", return_value=fake_cfg), \
+         patch.object(cli, "_probe_server", side_effect=fake_probe):
+        rc = await cli._cmd_status(
+            _status_ns(server="https://srv.example", json=True),
+        )
+
+    out = capsys.readouterr().out
+    payload = __import__("json").loads(out)
+    assert payload["server"] == "https://srv.example"
+    assert payload["probe"]["health"]["status_code"] == 200
+    assert rc == 0
