@@ -56,6 +56,32 @@ SLURM_TERMINAL_STATES = frozenset({
 parse_slurm_duration = parse_duration_hms
 
 
+def _slurm_exitcode_indicates_failure(field: str) -> bool:
+    """True when an ``ExitCode`` field reports a non-zero exit or signal.
+
+    sacct's ``ExitCode`` column is formatted ``<exit>:<signal>`` (e.g.
+    ``1:0`` for ``exit 1`` with no signal, ``0:15`` for SIGTERM with no
+    explicit exit). Either non-zero half means the job didn't end
+    cleanly. Empty / unparseable fields return ``False`` so we never
+    flip COMPLETED → FAILED on a parse glitch — the existing State
+    logic still owns the default verdict.
+    """
+    field = (field or "").strip()
+    if ":" not in field:
+        # Anything not in the documented ``exit:signal`` shape is treated as
+        # unparseable. Better to leave the State-based verdict in place than
+        # to invent a failure from a column scripthut doesn't recognize.
+        return False
+    parts = field.split(":")
+    for p in parts:
+        try:
+            if int(p.strip()) != 0:
+                return True
+        except ValueError:
+            return False
+    return False
+
+
 def _safe_float(s: str) -> float | None:
     """Parse a Slurm numeric field; return None for empty / N/A / unparseable."""
     s = s.strip()
@@ -339,10 +365,15 @@ class SlurmBackend(JobBackend):
             return stats
 
         # --- sacct for CPU efficiency + post-completion memory + timing ---
+        # ExitCode is included so we can override `State=COMPLETED` when
+        # the script actually exited non-zero — happens with masking
+        # bash patterns the framework can't always defend against
+        # (e.g. trailing statement after the failing command).
         ids_str = ",".join(valid_ids)
         cmd = (
             f"sacct --noheader --parsable2"
-            f" --format=JobIDRaw,TotalCPU,Elapsed,AllocCPUS,MaxRSS,Start,End,State"
+            f" --format=JobIDRaw,TotalCPU,Elapsed,AllocCPUS,MaxRSS,"
+            f"Start,End,State,ExitCode"
             f" --jobs={ids_str}"
         )
 
@@ -372,10 +403,11 @@ class SlurmBackend(JobBackend):
             if not line.strip():
                 continue
             parts = line.split("|")
-            if len(parts) < 8:
+            if len(parts) < 9:
                 continue
 
-            raw_id, total_cpu, elapsed, alloc_cpus_str, max_rss, start_str, end_str, job_state = parts[:8]
+            (raw_id, total_cpu, elapsed, alloc_cpus_str, max_rss,
+             start_str, end_str, job_state, exit_code_str) = parts[:9]
 
             # Extract base job ID (strip .batch, .extern, .0, etc.)
             base_id = raw_id.split(".")[0] if "." in raw_id else raw_id
@@ -385,6 +417,11 @@ class SlurmBackend(JobBackend):
             if rss_b > max_rss_bytes.get(base_id, 0):
                 max_rss_bytes[base_id] = rss_b
 
+            # ExitCode format is "<exit>:<signal>" — either non-zero means
+            # the script didn't end cleanly. Computed per row but only
+            # used to override COMPLETED, so we keep parsing tolerant.
+            exit_nonzero = _slurm_exitcode_indicates_failure(exit_code_str)
+
             if ".batch" in raw_id:
                 batch_cpu[base_id] = parse_slurm_duration(total_cpu)
                 # .batch is where user code actually runs — if it failed
@@ -393,6 +430,12 @@ class SlurmBackend(JobBackend):
                 batch_state = job_state.split()[0] if job_state else ""
                 if batch_state and batch_state in SLURM_FAILURE_STATES:
                     sacct_state[base_id] = batch_state
+                elif exit_nonzero:
+                    # State says COMPLETED but the script returned non-zero —
+                    # most often a masked failure (`solve | tee log` without
+                    # pipefail, trailing statement after the failing command).
+                    # Treat as FAILED so the user sees the truth.
+                    sacct_state[base_id] = "FAILED"
             elif "." not in raw_id:
                 # Main entry — has aggregate TotalCPU (used as fallback when .batch is 0)
                 elapsed_s = parse_slurm_duration(elapsed)
@@ -407,6 +450,11 @@ class SlurmBackend(JobBackend):
                 # Only set if .batch hasn't already overridden with a failure
                 if raw_id not in sacct_state:
                     sacct_state[raw_id] = main_state
+                # Defense in depth: even if .batch was missing (e.g. interactive
+                # job, srun-only step layout), an ExitCode != 0:0 on the main
+                # entry still flips us to FAILED.
+                if exit_nonzero and sacct_state.get(raw_id) == "COMPLETED":
+                    sacct_state[raw_id] = "FAILED"
 
                 # Parse actual start/end timestamps from sacct
                 try:

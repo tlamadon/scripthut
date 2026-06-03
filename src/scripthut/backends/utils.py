@@ -211,7 +211,16 @@ fi
 
 """
 
-    return f"""echo "=== ScriptHut Task: {task_name} ==="
+    # pipefail makes `solve | tee log.txt` propagate solve's failure
+    # instead of swallowing it behind tee's 0 exit. Without this the
+    # job script exits 0, Slurm marks the job COMPLETED, and scripthut
+    # has no way to tell the user's command actually failed. We do NOT
+    # add `set -e` because it would silently break legitimate
+    # `cmd || handle_failure` patterns that users may rely on inside
+    # `command`. Users who want strict exits can still `set -e` inside
+    # their command themselves.
+    return f"""set -o pipefail
+echo "=== ScriptHut Task: {task_name} ==="
 echo "Task ID: {task_id}"
 echo "Started: $(date)"
 echo "Host: $(hostname)"
