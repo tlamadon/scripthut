@@ -434,6 +434,56 @@ scripthut --host 0.0.0.0 --port 9000
 
 Open http://127.0.0.1:8000 in your browser.
 
+### Talking to a remote server from the CLI
+
+The CLI subcommands (`scripthut run list`, `scripthut workflow run …`, etc.) can hit a running server's `/api/v1` instead of booting an in-process runtime. Server selection is resolved from `--server <url>` → `SCRIPTHUT_SERVER` env var → `settings.cli_server` in `scripthut.yaml`. Pass `--server local` to force local mode.
+
+#### Cloudflare Access
+
+When the server sits behind a Cloudflare Access policy (Google login / email-password / etc.), the CLI needs to attach Access credentials to every request. Two methods are supported:
+
+1. **Service token** (best for scripts / CI). Create a service token in the Cloudflare Zero Trust dashboard (Access → Service Auth) and add a "Service Auth" include rule to the application's policy. Then provide both halves on the CLI:
+
+   ```bash
+   scripthut --server https://scripthut.example.com \
+     --cf-client-id <id>.access --cf-client-secret <secret> \
+     run list
+   ```
+
+2. **User JWT via `cloudflared`** (best for interactive use, reuses your Google login). After `cloudflared access login https://scripthut.example.com` you can either pass an explicit token, or let the CLI fetch a fresh one on each invocation:
+
+   ```bash
+   # Fetch + use a fresh JWT on each call
+   scripthut --server https://scripthut.example.com \
+     --cloudflared-app https://scripthut.example.com \
+     run list
+
+   # Or pass a token you already have
+   scripthut --server https://scripthut.example.com \
+     --cf-access-token "$(cloudflared access token --app=https://scripthut.example.com)" \
+     run list
+   ```
+
+All four flags also have env-var and config equivalents (per-field, highest wins):
+
+| Flag | Env var | `settings.cli_auth` key |
+|------|---------|-------------------------|
+| `--cf-client-id` | `SCRIPTHUT_CF_CLIENT_ID` | `cf_client_id` |
+| `--cf-client-secret` | `SCRIPTHUT_CF_CLIENT_SECRET` | `cf_client_secret` |
+| `--cf-access-token` | `SCRIPTHUT_CF_ACCESS_TOKEN` | `cf_access_token` |
+| `--cloudflared-app` | `SCRIPTHUT_CLOUDFLARED_APP` | `cloudflared_app` |
+
+A typical "set it and forget it" `scripthut.yaml` for personal use:
+
+```yaml
+settings:
+  cli_server: https://scripthut.example.com
+  cli_auth:
+    cloudflared_app: https://scripthut.example.com
+```
+
+Then plain `scripthut run list` Just Works as long as your `cloudflared access login` session is still valid.
+
 ### API Endpoints
 
 #### Jobs

@@ -503,6 +503,37 @@ class PricingConfig(BaseModel):
     )
 
 
+class CliAuthConfig(BaseModel):
+    """Auth credentials the CLI sends when talking to ``cli_server``.
+
+    Currently scoped to Cloudflare Access — populate either the service-token
+    pair (``cf_client_id`` + ``cf_client_secret``, best for unattended use)
+    or ``cf_access_token`` (a JWT, e.g. from ``cloudflared access token``).
+    ``cloudflared_app`` lets the CLI fetch a fresh JWT on demand instead.
+    """
+
+    cf_client_id: str | None = Field(
+        default=None,
+        description="Cloudflare Access service-token client ID (sent as CF-Access-Client-Id).",
+    )
+    cf_client_secret: str | None = Field(
+        default=None,
+        description="Cloudflare Access service-token client secret (sent as CF-Access-Client-Secret).",
+    )
+    cf_access_token: str | None = Field(
+        default=None,
+        description="Cloudflare Access user JWT (sent as cf-access-token header).",
+    )
+    cloudflared_app: str | None = Field(
+        default=None,
+        description=(
+            "If set, run `cloudflared access token --app=<value>` to obtain a "
+            "JWT at CLI invocation time. Used only when no token is supplied "
+            "explicitly via flag / env / cf_access_token."
+        ),
+    )
+
+
 class GlobalSettings(BaseModel):
     """Global application settings."""
 
@@ -537,6 +568,13 @@ class GlobalSettings(BaseModel):
             "Default URL of a running scripthut server for the CLI. "
             "When set, CLI commands hit this server instead of running locally. "
             "Overridden by --server and the SCRIPTHUT_SERVER env var."
+        ),
+    )
+    cli_auth: CliAuthConfig | None = Field(
+        default=None,
+        description=(
+            "Default Cloudflare Access credentials the CLI sends to cli_server. "
+            "Overridden by per-command flags and SCRIPTHUT_CF_* env vars."
         ),
     )
 

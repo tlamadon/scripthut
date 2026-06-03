@@ -13,6 +13,15 @@ share a single ``Client`` interface:
 Server resolution order: ``--server`` argument → ``SCRIPTHUT_SERVER``
 env var → ``settings.cli_server`` in scripthut.yaml.  If none of those
 are set, commands run locally.
+
+When the resolved server sits behind Cloudflare Access, the CLI sends
+auth headers built from (per field, highest wins): ``--cf-client-id`` /
+``--cf-client-secret`` / ``--cf-access-token`` flags →
+``SCRIPTHUT_CF_CLIENT_ID`` / ``SCRIPTHUT_CF_CLIENT_SECRET`` /
+``SCRIPTHUT_CF_ACCESS_TOKEN`` env vars → ``settings.cli_auth`` in
+scripthut.yaml.  As a final fallback for the JWT, if
+``--cloudflared-app`` (or its env / config equivalent) is set, the CLI
+shells out to ``cloudflared access token --app=<url>`` at invocation.
 """
 
 from __future__ import annotations
@@ -329,13 +338,64 @@ class LocalClient:
         }
 
 
+class RemoteAuth:
+    """Auth headers to send with every ``RemoteClient`` request.
+
+    Holds Cloudflare Access credentials: either a service-token pair
+    (``cf_client_id`` + ``cf_client_secret``) or a user JWT
+    (``cf_access_token``). Both are optional — an instance with no
+    credentials populated yields no headers, which is the same as not
+    using auth at all.
+    """
+
+    def __init__(
+        self,
+        *,
+        cf_client_id: str | None = None,
+        cf_client_secret: str | None = None,
+        cf_access_token: str | None = None,
+    ):
+        self.cf_client_id = cf_client_id
+        self.cf_client_secret = cf_client_secret
+        self.cf_access_token = cf_access_token
+
+    def headers(self) -> dict[str, str]:
+        h: dict[str, str] = {}
+        # Service token: both halves must be present to be useful.
+        if self.cf_client_id and self.cf_client_secret:
+            h["CF-Access-Client-Id"] = self.cf_client_id
+            h["CF-Access-Client-Secret"] = self.cf_client_secret
+        # User JWT — `cf-access-token` header works for API calls; Cloudflare
+        # also accepts the `CF_Authorization` cookie, but the header form is
+        # what `cloudflared access curl` emits and is documented for service
+        # auth, so we standardize on it.
+        if self.cf_access_token:
+            h["cf-access-token"] = self.cf_access_token
+        return h
+
+    @property
+    def has_credentials(self) -> bool:
+        return bool(
+            (self.cf_client_id and self.cf_client_secret) or self.cf_access_token
+        )
+
+
 class RemoteClient:
     """Run scripthut commands against a running server's ``/api/v1``."""
 
-    def __init__(self, base_url: str, *, timeout: float = 60.0):
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        timeout: float = 60.0,
+        auth: RemoteAuth | None = None,
+    ):
         self.base_url = base_url.rstrip("/")
+        self.auth = auth
         self._client = httpx.AsyncClient(
-            base_url=f"{self.base_url}/api/v1", timeout=timeout,
+            base_url=f"{self.base_url}/api/v1",
+            timeout=timeout,
+            headers=auth.headers() if auth is not None else {},
         )
 
     async def __aenter__(self) -> RemoteClient:
@@ -420,6 +480,110 @@ class RemoteClient:
 # ---------------------------------------------------------------------------
 
 
+def _fetch_cloudflared_token(app_url: str) -> str:
+    """Shell out to ``cloudflared access token --app=<app_url>`` and return its JWT.
+
+    Bubbles up a clear error if cloudflared is missing or the cached login
+    has expired — those are the two common failure modes, and the user has
+    different remedies for each (install cloudflared vs. re-run
+    ``cloudflared access login``).
+    """
+    import shutil
+    import subprocess
+
+    if shutil.which("cloudflared") is None:
+        raise RuntimeError(
+            "cloudflared not found on PATH — install it "
+            "(https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/) "
+            "or pass --cf-access-token / --cf-client-id+--cf-client-secret instead."
+        )
+    try:
+        proc = subprocess.run(
+            ["cloudflared", "access", "token", f"--app={app_url}"],
+            check=True, capture_output=True, text=True, timeout=30,
+        )
+    except subprocess.CalledProcessError as e:
+        stderr = (e.stderr or "").strip()
+        raise RuntimeError(
+            f"cloudflared access token failed: {stderr or e.returncode}. "
+            f"Try `cloudflared access login {app_url}` first."
+        ) from e
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError("cloudflared access token timed out after 30s") from e
+    token = proc.stdout.strip()
+    if not token:
+        raise RuntimeError(
+            f"cloudflared returned an empty token for {app_url}. "
+            f"Try `cloudflared access login {app_url}` first."
+        )
+    return token
+
+
+def _resolve_auth(args: argparse.Namespace) -> RemoteAuth | None:
+    """Build a ``RemoteAuth`` from CLI args / env vars / config / cloudflared.
+
+    Per-field precedence (highest wins):
+      1. CLI flags (``--cf-client-id`` etc.)
+      2. Env vars (``SCRIPTHUT_CF_CLIENT_ID``, ``SCRIPTHUT_CF_CLIENT_SECRET``,
+         ``SCRIPTHUT_CF_ACCESS_TOKEN``)
+      3. ``settings.cli_auth`` from scripthut.yaml
+      4. ``cloudflared access token --app=<cloudflared_app>`` — only consulted
+         when no explicit token was supplied at layers 1-3.
+
+    Returns ``None`` when nothing is configured (CLI runs against the
+    server with no extra headers, which is fine for unprotected servers).
+    """
+    cfg_auth = None
+    try:
+        config = load_config(getattr(args, "config", None))
+        cfg_auth = config.settings.cli_auth
+    except Exception:
+        # No config / unreadable config is fine — the user might be running
+        # purely off flags or env vars.
+        pass
+
+    def pick(flag: str | None, env_key: str, cfg_attr: str) -> str | None:
+        if flag:
+            return flag
+        env = os.environ.get(env_key)
+        if env:
+            return env
+        return getattr(cfg_auth, cfg_attr, None) if cfg_auth else None
+
+    client_id = pick(
+        getattr(args, "cf_client_id", None),
+        "SCRIPTHUT_CF_CLIENT_ID",
+        "cf_client_id",
+    )
+    client_secret = pick(
+        getattr(args, "cf_client_secret", None),
+        "SCRIPTHUT_CF_CLIENT_SECRET",
+        "cf_client_secret",
+    )
+    token = pick(
+        getattr(args, "cf_access_token", None),
+        "SCRIPTHUT_CF_ACCESS_TOKEN",
+        "cf_access_token",
+    )
+
+    # Only fall back to cloudflared if no token was given explicitly and
+    # we have an app URL to ask about.
+    cloudflared_app = (
+        getattr(args, "cloudflared_app", None)
+        or os.environ.get("SCRIPTHUT_CLOUDFLARED_APP")
+        or (getattr(cfg_auth, "cloudflared_app", None) if cfg_auth else None)
+    )
+    if token is None and cloudflared_app:
+        token = _fetch_cloudflared_token(cloudflared_app)
+
+    auth = RemoteAuth(
+        cf_client_id=client_id,
+        cf_client_secret=client_secret,
+        cf_access_token=token,
+    )
+    return auth if auth.has_credentials else None
+
+
 def _resolve_server(args: argparse.Namespace) -> str | None:
     """Determine which server URL (if any) to target for the command.
 
@@ -450,7 +614,7 @@ def _make_client(args: argparse.Namespace) -> Any:
     """Build the right Client subclass for this invocation."""
     server = _resolve_server(args)
     if server:
-        return RemoteClient(server)
+        return RemoteClient(server, auth=_resolve_auth(args))
     return LocalClient(getattr(args, "config", None))
 
 
@@ -1369,6 +1533,38 @@ def _add_common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--config", "-c", type=Path,
         help="Path to scripthut.yaml (used for local mode and cli_server lookup)",
+    )
+    # Cloudflare Access auth — only used when talking to a remote server.
+    # Each flag has a matching SCRIPTHUT_CF_* env var and a settings.cli_auth
+    # field in scripthut.yaml; see _resolve_auth.
+    parser.add_argument(
+        "--cf-client-id", dest="cf_client_id",
+        help=(
+            "Cloudflare Access service-token client ID. "
+            "Env: SCRIPTHUT_CF_CLIENT_ID. Pair with --cf-client-secret."
+        ),
+    )
+    parser.add_argument(
+        "--cf-client-secret", dest="cf_client_secret",
+        help=(
+            "Cloudflare Access service-token client secret. "
+            "Env: SCRIPTHUT_CF_CLIENT_SECRET."
+        ),
+    )
+    parser.add_argument(
+        "--cf-access-token", dest="cf_access_token",
+        help=(
+            "Cloudflare Access user JWT (e.g. `cloudflared access token "
+            "--app=<url>`). Env: SCRIPTHUT_CF_ACCESS_TOKEN."
+        ),
+    )
+    parser.add_argument(
+        "--cloudflared-app", dest="cloudflared_app",
+        help=(
+            "App URL passed to `cloudflared access token` to fetch a fresh "
+            "JWT at invocation time. Ignored if a token is supplied "
+            "explicitly. Env: SCRIPTHUT_CLOUDFLARED_APP."
+        ),
     )
 
 
