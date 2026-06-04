@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -551,6 +551,249 @@ def test_get_task_logs_task_not_submitted_returns_422():
     resp = _client(state).get("/api/v1/runs/r1/tasks/t1/logs")
 
     assert resp.status_code == 422
+
+
+# -- /stacks/{name}/check ----------------------------------------------------
+
+
+def _stack_state(state_value: str = "ready", hash_: str = "deadbeef",
+                 path: str = "/cache/foo/deadbeef", error: str | None = None):
+    """Build a StackStatus-like mock the API renderer can serialize."""
+    from scripthut.stacks.manager import StackState
+    s = MagicMock()
+    s.name = "foo"
+    s.backend = "cluster"
+    s.state = StackState(state_value)
+    s.hash = hash_
+    s.path = path
+    s.last_built = None
+    s.size_bytes = None
+    s.error = error
+    return s
+
+
+def _make_state_with_stacks_and_backends(
+    *, stacks: list, sources: list | None = None,
+    backend_kind: str | None = None,
+):
+    """Common fixture: state with stacks + a connected backend + run_manager."""
+    from scripthut.config_schema import PBSBackendConfig, SlurmBackendConfig, SSHConfig
+    state = _make_state(run_manager=MagicMock(), sources=sources or [])
+    state.config = MagicMock()
+    state.config.stacks = stacks
+    state.config.sources = sources or []
+    state.config.get_source = lambda name: next(
+        (s for s in (sources or []) if s.name == name), None,
+    )
+
+    if backend_kind == "slurm":
+        backend_cfg = SlurmBackendConfig(
+            name="cluster", type="slurm", ssh=SSHConfig(host="h", user="u"),
+        )
+    elif backend_kind == "pbs":
+        backend_cfg = PBSBackendConfig(
+            name="cluster", type="pbs", ssh=SSHConfig(host="h", user="u"),
+        )
+    else:
+        backend_cfg = None
+    state.config.get_backend = lambda name: (
+        backend_cfg if name == "cluster" else None
+    )
+
+    # Provide an SSH client so the endpoint doesn't 503.
+    ssh = MagicMock()
+    state.run_manager.get_ssh_client = MagicMock(return_value=ssh)
+    return state, ssh
+
+
+def test_check_stack_resolves_from_server_global():
+    from scripthut.config_schema import Stack
+    state, ssh = _make_state_with_stacks_and_backends(
+        stacks=[Stack(name="foo", prep="echo prep")],
+    )
+    with patch("scripthut.stacks.StackManager") as mgr_cls:
+        mgr_cls.return_value.check = AsyncMock(return_value=_stack_state())
+        resp = _client(state).get("/api/v1/stacks/foo/check?backend=cluster")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["state"] == "ready"
+    assert body["hash"] == "deadbeef"
+    # The StackManager call must have used the SSH client we set up.
+    mgr_cls.return_value.check.assert_awaited_once()
+
+
+def test_check_stack_unknown_name_returns_404():
+    state, _ = _make_state_with_stacks_and_backends(stacks=[])
+    resp = _client(state).get("/api/v1/stacks/missing/check?backend=cluster")
+    assert resp.status_code == 404
+
+
+def test_check_stack_unknown_source_returns_404():
+    from scripthut.config_schema import Stack
+    state, _ = _make_state_with_stacks_and_backends(
+        stacks=[Stack(name="foo", prep="echo prep")],
+    )
+    resp = _client(state).get(
+        "/api/v1/stacks/foo/check?backend=cluster&source=ghost",
+    )
+    assert resp.status_code == 404
+
+
+def test_check_stack_no_ssh_returns_503():
+    from scripthut.config_schema import Stack
+    state, _ = _make_state_with_stacks_and_backends(
+        stacks=[Stack(name="foo", prep="echo prep")],
+    )
+    state.run_manager.get_ssh_client = MagicMock(return_value=None)
+    resp = _client(state).get("/api/v1/stacks/foo/check?backend=cluster")
+    assert resp.status_code == 503
+
+
+def test_check_stack_source_overlay_wins_collision():
+    """A stack with the same name in server-global and a source's
+    project YAML must resolve to the source version (project overrides
+    global, mirroring CLI's _overlay_source_stacks).
+    """
+    from scripthut.config_schema import GitSourceConfig, ScriptHutConfig, Stack
+    server_stack = Stack(name="julia", prep="echo server")
+    repo_stack = Stack(name="julia", prep="echo repo")
+
+    sources = [GitSourceConfig(name="src", url="git@h:o/r.git", branch="main")]
+    state, _ = _make_state_with_stacks_and_backends(
+        stacks=[server_stack], sources=sources,
+    )
+    project_cfg = ScriptHutConfig.model_validate({
+        "stacks": [{"name": "julia", "prep": "echo repo"}],
+    })
+    state.run_manager._load_source_project_config = AsyncMock(
+        return_value=project_cfg,
+    )
+    state.source_manager = None  # avoid the sync_source path
+
+    with patch("scripthut.stacks.StackManager") as mgr_cls:
+        check_mock = AsyncMock(return_value=_stack_state())
+        mgr_cls.return_value.check = check_mock
+        resp = _client(state).get(
+            "/api/v1/stacks/julia/check?backend=cluster&source=src",
+        )
+
+    assert resp.status_code == 200
+    # Confirm it was the repo's version, not the server's.
+    called_stack = check_mock.call_args.args[0]
+    assert "repo" in called_stack.prep
+
+
+# -- /stacks/{name}/install --------------------------------------------------
+
+
+def test_install_stack_runs_and_returns_ready():
+    from scripthut.config_schema import Stack
+    state, _ = _make_state_with_stacks_and_backends(
+        stacks=[Stack(name="foo", prep="echo prep")],
+    )
+    with patch("scripthut.stacks.StackManager") as mgr_cls:
+        install_mock = AsyncMock(return_value=_stack_state(state_value="ready"))
+        mgr_cls.return_value.install = install_mock
+        resp = _client(state).post(
+            "/api/v1/stacks/foo/install?backend=cluster",
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["state"] == "ready"
+    # Default rebuild=False
+    assert install_mock.call_args.kwargs.get("rebuild") is False
+
+
+def test_install_stack_rebuild_flag_forwarded():
+    from scripthut.config_schema import Stack
+    state, _ = _make_state_with_stacks_and_backends(
+        stacks=[Stack(name="foo", prep="echo prep")],
+    )
+    with patch("scripthut.stacks.StackManager") as mgr_cls:
+        install_mock = AsyncMock(return_value=_stack_state())
+        mgr_cls.return_value.install = install_mock
+        resp = _client(state).post(
+            "/api/v1/stacks/foo/install?backend=cluster&rebuild=true",
+        )
+
+    assert resp.status_code == 200
+    assert install_mock.call_args.kwargs["rebuild"] is True
+
+
+def test_install_stack_passes_slurm_scheduler():
+    """Slurm backends → ``StackManager.install(scheduler='slurm')`` so prep
+    lands on a worker via srun rather than the login node.
+    """
+    from scripthut.config_schema import Stack
+    state, _ = _make_state_with_stacks_and_backends(
+        stacks=[Stack(name="foo", prep="echo prep")],
+        backend_kind="slurm",
+    )
+    with patch("scripthut.stacks.StackManager") as mgr_cls:
+        install_mock = AsyncMock(return_value=_stack_state())
+        mgr_cls.return_value.install = install_mock
+        resp = _client(state).post("/api/v1/stacks/foo/install?backend=cluster")
+
+    assert resp.status_code == 200
+    assert install_mock.call_args.kwargs["scheduler"] == "slurm"
+
+
+def test_install_stack_pbs_scheduler():
+    from scripthut.config_schema import Stack
+    state, _ = _make_state_with_stacks_and_backends(
+        stacks=[Stack(name="foo", prep="echo prep")],
+        backend_kind="pbs",
+    )
+    with patch("scripthut.stacks.StackManager") as mgr_cls:
+        install_mock = AsyncMock(return_value=_stack_state())
+        mgr_cls.return_value.install = install_mock
+        resp = _client(state).post("/api/v1/stacks/foo/install?backend=cluster")
+
+    assert install_mock.call_args.kwargs["scheduler"] == "pbs"
+
+
+def test_install_stack_unknown_returns_404():
+    state, _ = _make_state_with_stacks_and_backends(stacks=[])
+    resp = _client(state).post("/api/v1/stacks/ghost/install?backend=cluster")
+    assert resp.status_code == 404
+
+
+def test_install_stack_no_ssh_returns_503():
+    from scripthut.config_schema import Stack
+    state, _ = _make_state_with_stacks_and_backends(
+        stacks=[Stack(name="foo", prep="echo prep")],
+    )
+    state.run_manager.get_ssh_client = MagicMock(return_value=None)
+    resp = _client(state).post("/api/v1/stacks/foo/install?backend=cluster")
+    assert resp.status_code == 503
+
+
+# -- /stacks/{name} (DELETE) -------------------------------------------------
+
+
+def test_delete_stack_calls_manager_and_returns_ok():
+    from scripthut.config_schema import Stack
+    state, _ = _make_state_with_stacks_and_backends(
+        stacks=[Stack(name="foo", prep="echo prep")],
+    )
+    with patch("scripthut.stacks.StackManager") as mgr_cls:
+        delete_mock = AsyncMock(return_value=None)
+        mgr_cls.return_value.delete = delete_mock
+        resp = _client(state).delete("/api/v1/stacks/foo?backend=cluster")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["deleted"] is True
+    assert body["backend"] == "cluster"
+    delete_mock.assert_awaited_once()
+
+
+def test_delete_stack_unknown_returns_404():
+    state, _ = _make_state_with_stacks_and_backends(stacks=[])
+    resp = _client(state).delete("/api/v1/stacks/ghost?backend=cluster")
+    assert resp.status_code == 404
 
 
 # -- /health ------------------------------------------------------------------

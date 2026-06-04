@@ -1374,3 +1374,151 @@ async def test_cmd_status_json_includes_probe(monkeypatch, capsys):
     assert payload["server"] == "https://srv.example"
     assert payload["probe"]["health"]["status_code"] == 200
     assert rc == 0
+
+
+# -- stack remote routing -----------------------------------------------------
+
+
+def _stack_args(**kwargs) -> argparse.Namespace:
+    """Defaults for stack-command argparse namespaces."""
+    defaults = dict(
+        server=None, config=None, json=False,
+        source=None, backend=None, name=None, rebuild=False,
+        cf_client_id=None, cf_client_secret=None,
+        cf_access_token=None, cloudflared_app=None,
+    )
+    defaults.update(kwargs)
+    return argparse.Namespace(**defaults)
+
+
+@pytest.mark.asyncio
+async def test_stack_install_remote_dispatches_to_api(capsys):
+    """When a server is resolvable, ``stack install`` POSTs to
+    ``/api/v1/stacks/{name}/install`` instead of opening local SSH.
+    """
+    call_log: dict = {}
+
+    async def fake_remote_call(args, server, method, path, *,
+                               params=None, timeout=1800.0):
+        call_log["method"] = method
+        call_log["path"] = path
+        call_log["params"] = params
+        return {"name": "foo", "backend": "cluster", "state": "ready",
+                "hash": "deadbeef0000", "path": "/c/foo/deadbeef0000",
+                "last_built": None, "size_bytes": None, "error": None}
+
+    args = _stack_args(name="foo", backend="cluster", source="src", rebuild=True)
+    with patch.object(cli, "_resolve_server", return_value="https://srv"), \
+         patch.object(cli, "_remote_stack_call", side_effect=fake_remote_call):
+        rc = await cli._cmd_stack_install(args)
+
+    assert call_log["method"] == "POST"
+    assert call_log["path"] == "/stacks/foo/install"
+    assert call_log["params"]["backend"] == "cluster"
+    assert call_log["params"]["source"] == "src"
+    # rebuild is serialized as a query string boolean.
+    assert call_log["params"]["rebuild"] == "true"
+    assert rc == 0
+
+
+@pytest.mark.asyncio
+async def test_stack_check_remote_dispatches_to_api(capsys):
+    call_log: dict = {}
+
+    async def fake_remote_call(args, server, method, path, *,
+                               params=None, timeout=1800.0):
+        call_log["path"] = path
+        return {"name": "foo", "backend": "cluster", "state": "ready",
+                "hash": "abc12345", "path": "/c/foo/abc12345",
+                "last_built": None, "size_bytes": None, "error": None}
+
+    args = _stack_args(name="foo", backend="cluster")
+    with patch.object(cli, "_resolve_server", return_value="https://srv"), \
+         patch.object(cli, "_remote_stack_call", side_effect=fake_remote_call):
+        rc = await cli._cmd_stack_check(args)
+
+    assert call_log["path"] == "/stacks/foo/check"
+    assert rc == 0
+
+
+@pytest.mark.asyncio
+async def test_stack_check_remote_missing_state_returns_one():
+    """``state != "ready"`` translates to a non-zero exit code so CI
+    gates can rely on it.
+    """
+    async def fake_remote_call(*a, **kw):
+        return {"name": "foo", "backend": "cluster", "state": "missing",
+                "hash": "", "path": "", "last_built": None,
+                "size_bytes": None, "error": None}
+
+    args = _stack_args(name="foo", backend="cluster")
+    with patch.object(cli, "_resolve_server", return_value="https://srv"), \
+         patch.object(cli, "_remote_stack_call", side_effect=fake_remote_call):
+        rc = await cli._cmd_stack_check(args)
+    assert rc == 1
+
+
+@pytest.mark.asyncio
+async def test_stack_delete_remote_dispatches_to_api(capsys):
+    call_log: dict = {}
+
+    async def fake_remote_call(args, server, method, path, *,
+                               params=None, timeout=1800.0):
+        call_log["method"] = method
+        call_log["path"] = path
+        return {"name": "foo", "backend": "cluster", "deleted": True}
+
+    args = _stack_args(name="foo", backend="cluster")
+    with patch.object(cli, "_resolve_server", return_value="https://srv"), \
+         patch.object(cli, "_remote_stack_call", side_effect=fake_remote_call):
+        rc = await cli._cmd_stack_delete(args)
+
+    assert call_log["method"] == "DELETE"
+    assert call_log["path"] == "/stacks/foo"
+    assert rc == 0
+
+
+@pytest.mark.asyncio
+async def test_stack_install_remote_requires_backend(capsys):
+    """``--backend`` is required when in server mode. v1 doesn't iterate
+    over backends across separate API calls — the operator picks one.
+    The error message must point at the right fix.
+    """
+    args = _stack_args(name="foo", backend=None)
+    with patch.object(cli, "_resolve_server", return_value="https://srv"):
+        with pytest.raises(RuntimeError, match="--backend is required"):
+            await cli._cmd_stack_install(args)
+
+
+@pytest.mark.asyncio
+async def test_stack_check_remote_requires_name(capsys):
+    """``stack check`` without a name works locally (checks every stack)
+    but in server mode the URL needs a name — error rather than guess.
+    """
+    args = _stack_args(name=None, backend="cluster")
+    with patch.object(cli, "_resolve_server", return_value="https://srv"):
+        rc = await cli._cmd_stack_check(args)
+    assert rc == 2
+
+
+@pytest.mark.asyncio
+async def test_stack_install_local_path_unchanged_when_no_server(monkeypatch):
+    """No server resolvable → fall through to the existing local-SSH
+    path, which is what the existing tests already cover. This just
+    confirms the dispatch picks the right branch.
+    """
+    monkeypatch.delenv("SCRIPTHUT_SERVER", raising=False)
+    args = _stack_args(name="foo", backend="cluster")
+    fake_cfg = MagicMock()
+    fake_cfg.get_stack.return_value = None  # short-circuits with "not found"
+    fake_cfg.settings.cli_server = None
+    remote_called = AsyncMock(side_effect=AssertionError("remote called!"))
+    with patch.object(cli, "load_config", return_value=fake_cfg), \
+         patch.object(cli, "_overlay_source_stacks",
+                      AsyncMock(return_value=fake_cfg)), \
+         patch.object(cli, "_remote_stack_call", remote_called):
+        rc = await cli._cmd_stack_install(args)
+    # Stack not in local config → 2; the important assertion is that
+    # _remote_stack_call was never invoked.
+    assert rc == 2
+    remote_called.assert_not_called()

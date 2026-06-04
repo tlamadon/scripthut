@@ -1254,24 +1254,48 @@ def _render_agent_prompt(config: ScriptHutConfig | None) -> str:
         "### How to install (operator step — not automatic)\n"
         "Scripthut does NOT auto-install a stack at task submit time. "
         "The operator installs once before running any task that "
-        "references it:\n"
+        "references it. The CLI has **two modes** for these commands:\n"
+        "\n"
+        "- **Local mode** — no `--server` / `SCRIPTHUT_SERVER` /"
+        " `settings.cli_server`. The CLI reads the local "
+        "`scripthut.yaml`, opens SSH to the backend itself, and runs "
+        "`prep`. Iterates over every backend the stack is configured "
+        "for when `--backend` is omitted.\n"
+        "- **Server mode** — a server URL is resolvable. `install` / "
+        "`check` / `delete` go through new server-mediated endpoints "
+        "(`/api/v1/stacks/{name}/...`). The **server** runs `prep` on "
+        "the backend; the CLI doesn't need SSH access to the cluster "
+        "at all. **`--backend` is required** in this mode (one "
+        "backend per call — no client-side iteration). This is the "
+        "right path for thin remote agents and CI that drive "
+        "scripthut purely through a server.\n"
+        "\n"
         "```bash\n"
-        "scripthut stack check                          # which stacks "
-        "are READY / MISSING / INSTALLING per backend?\n"
-        "scripthut stack install julia-1.12             # build it now "
-        "(local CLI mode — uses local SSH to the backend)\n"
-        "scripthut stack install julia-1.12 --source <name>   # build a "
-        "repo-defined stack without cloning the repo locally; fetches "
-        "the definition from the server's source cache\n"
-        "scripthut stack install julia-1.12 --rebuild   # force rebuild "
-        "even when the input hash matches the cache\n"
-        "scripthut stack delete julia-1.12              # remove the "
-        "cache (all hashes for that name)\n"
+        "# Both modes use the same commands; the routing is automatic.\n"
+        "scripthut stack check <name> --backend <b>           # READY / "
+        "MISSING / INSTALLING for one stack on one backend\n"
+        "scripthut stack install <name> --backend <b>         # build "
+        "now; blocks until prep finishes (or .ready already exists)\n"
+        "scripthut stack install <name> --source <src> --backend <b>  "
+        "# build a repo-defined stack — server re-syncs the source's "
+        "git HEAD first, then runs prep\n"
+        "scripthut stack install <name> --backend <b> --rebuild   "
+        "# wipe and re-run prep even when the input hash matches\n"
+        "scripthut stack delete <name> --backend <b>          # rm -rf "
+        "the cache (every hash for that name on that backend)\n"
         "```\n"
         "The first time a stack is installed on a backend, `prep:` runs "
         "as a normal job on that backend (so cluster modules, GPUs, etc. "
         "are available). Subsequent invocations of the same stack on "
         "the same backend find a `.ready` sentinel and skip immediately.\n"
+        "\n"
+        "**Long installs**: server-mediated `install` blocks until "
+        "prep returns. Cloudflare-Access tunnels generally hold for "
+        "the duration since prep emits output, but if you reliably "
+        "see installs hit edge-keepalive limits, an async-polling "
+        "endpoint variant is the natural follow-up (POST returns "
+        "immediately, then poll `check` until ready). Out of scope "
+        "for v0.8.0.\n"
         "\n"
         "### How a task uses a stack (the v0.7.1 way)\n"
         "Tasks reference stacks via the **`stacks:`** field on any env "
@@ -1997,6 +2021,95 @@ async def _overlay_source_stacks(
     return config.model_copy(update={"stacks": list(by_name.values())})
 
 
+async def _remote_stack_call(
+    args: argparse.Namespace, server: str, method: str, path: str,
+    *, params: dict[str, Any] | None = None,
+    timeout: float = 1800.0,
+) -> dict[str, Any]:
+    """Hit a ``/api/v1/stacks/...`` endpoint with auth + sensible error mapping.
+
+    Long default timeout because the install path blocks on ``prep``;
+    Cloudflare-Access tunnels generally hold while data is flowing
+    (prep emits output). Each per-backend call is independent — a slow
+    one doesn't block the others if the CLI iterates.
+    """
+    auth = _resolve_auth(args)
+    base = server.rstrip("/") + "/api/v1"
+    headers = auth.headers() if auth is not None else {}
+    async with httpx.AsyncClient(timeout=timeout, headers=headers) as client:
+        r = await client.request(
+            method, f"{base}{path}",
+            params={k: v for k, v in (params or {}).items() if v is not None},
+        )
+    if r.status_code == 404:
+        try:
+            detail = r.json().get("detail", r.text)
+        except Exception:
+            detail = r.text
+        raise RuntimeError(f"Not found: {detail}")
+    if r.status_code == 422:
+        try:
+            detail = r.json().get("detail", r.text)
+        except Exception:
+            detail = r.text
+        raise RuntimeError(f"Server rejected the request: {detail}")
+    if r.status_code == 503:
+        try:
+            detail = r.json().get("detail", r.text)
+        except Exception:
+            detail = r.text
+        raise RuntimeError(
+            f"Server cannot service this request right now: {detail}. "
+            f"Check `scripthut status` and the backend's connectivity."
+        )
+    if r.status_code >= 400:
+        raise RuntimeError(
+            f"{method} {path} returned HTTP {r.status_code}: {r.text}"
+        )
+    return r.json()
+
+
+def _require_remote_backend(args: argparse.Namespace) -> str:
+    """``stack install/check/delete`` against a server need an explicit backend.
+
+    The CLI doesn't iterate in remote mode for v1: a server-side install
+    is a synchronous, potentially-long operation, and silently fanning
+    out across every connected backend would surprise the user with N
+    concurrent prep jobs they didn't expect. Be explicit.
+    """
+    backend = getattr(args, "backend", None)
+    if not backend:
+        raise RuntimeError(
+            "--backend is required when targeting a server. The local "
+            "CLI iterates over every configured backend, but in "
+            "server mode each backend is one separate install call; "
+            "pick one (`scripthut backend list --json` to see what's "
+            "available) and re-run."
+        )
+    return backend
+
+
+def _render_remote_stack_result(
+    name: str, data: dict[str, Any], *, as_json: bool, note: str | None = None,
+) -> None:
+    """Print the JSON or a tiny one-line summary for a server-side stack op."""
+    if as_json:
+        payload = {"stack": name, "backend": data.get("backend"), "status": data}
+        if note is not None:
+            payload["note"] = note
+        print(json.dumps(payload, indent=2))
+        return
+    marker = "✓" if data.get("state") == "ready" else (
+        "…" if data.get("state") == "installing" else "✗"
+    )
+    line = f"  {marker} {name:<20} backend={data.get('backend')}  state={data.get('state')}"
+    if data.get("hash"):
+        line += f"  hash={data['hash'][:10]}"
+    print(line)
+    if data.get("error"):
+        print(f"      → {data['error']}")
+
+
 async def _cmd_stack_list(args: argparse.Namespace) -> int:
     config = load_config(getattr(args, "config", None))
     config = await _overlay_source_stacks(args, config)
@@ -2015,6 +2128,23 @@ async def _cmd_stack_list(args: argparse.Namespace) -> int:
 
 
 async def _cmd_stack_check(args: argparse.Namespace) -> int:
+    server = _resolve_server(args)
+    if server:
+        if not args.name:
+            print(
+                "Stack name is required when targeting a server "
+                "(server-side check is single-stack per call).",
+                file=sys.stderr,
+            )
+            return 2
+        backend = _require_remote_backend(args)
+        data = await _remote_stack_call(
+            args, server, "GET", f"/stacks/{args.name}/check",
+            params={"backend": backend, "source": getattr(args, "source", None)},
+        )
+        _render_remote_stack_result(args.name, data, as_json=args.json)
+        return 0 if data.get("state") == "ready" else 1
+
     config = load_config(getattr(args, "config", None))
     config = await _overlay_source_stacks(args, config)
     if args.name:
@@ -2065,6 +2195,20 @@ async def _cmd_stack_check(args: argparse.Namespace) -> int:
 
 
 async def _cmd_stack_install(args: argparse.Namespace) -> int:
+    server = _resolve_server(args)
+    if server:
+        backend = _require_remote_backend(args)
+        data = await _remote_stack_call(
+            args, server, "POST", f"/stacks/{args.name}/install",
+            params={
+                "backend": backend,
+                "source": getattr(args, "source", None),
+                "rebuild": "true" if args.rebuild else "false",
+            },
+        )
+        _render_remote_stack_result(args.name, data, as_json=False)
+        return 0 if data.get("state") == "ready" else 1
+
     config = load_config(getattr(args, "config", None))
     config = await _overlay_source_stacks(args, config)
     stack = config.get_stack(args.name)
@@ -2090,6 +2234,19 @@ async def _cmd_stack_install(args: argparse.Namespace) -> int:
 
 
 async def _cmd_stack_delete(args: argparse.Namespace) -> int:
+    server = _resolve_server(args)
+    if server:
+        backend = _require_remote_backend(args)
+        data = await _remote_stack_call(
+            args, server, "DELETE", f"/stacks/{args.name}",
+            params={"backend": backend, "source": getattr(args, "source", None)},
+        )
+        if data.get("deleted"):
+            print(f"  ✓ {args.name} deleted on backend {data.get('backend')}")
+            return 0
+        print(f"  ✗ {args.name} delete failed: {data}", file=sys.stderr)
+        return 1
+
     config = load_config(getattr(args, "config", None))
     config = await _overlay_source_stacks(args, config)
     stack = config.get_stack(args.name)

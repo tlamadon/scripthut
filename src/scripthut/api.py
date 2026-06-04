@@ -489,6 +489,206 @@ def make_api_router(state: AppState) -> APIRouter:
             "content": content or "",
         }
 
+    # ----- stacks -----------------------------------------------------------
+    #
+    # Server-mediated stack install/check/delete. The CLI's local-SSH path
+    # remains the default when no server is configured; when a remote
+    # server IS configured, these endpoints let a thin client manage
+    # stacks without holding SSH keys to the cluster. Symmetric with
+    # workflow run (also server-mediated when --source is set).
+
+    async def _resolve_stack(
+        name: str, source: str | None,
+    ) -> Any:
+        """Find a Stack by name, optionally overlaying a source repo's project YAML.
+
+        Resolution: server-global stacks are the base; ``source`` (when
+        set) is re-synced and its project ``scripthut.yaml`` stacks are
+        merged on top (source wins on collision, matching the CLI's
+        ``_overlay_source_stacks``). 404 if the name resolves to nothing
+        in either layer.
+        """
+        if state.config is None:
+            raise HTTPException(status_code=503, detail="Config not loaded")
+        rm = _require_manager()
+
+        merged: dict[str, Any] = {s.name: s for s in state.config.stacks}
+
+        if source is not None:
+            source_cfg = state.config.get_source(source)
+            if source_cfg is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Source '{source}' not found",
+                )
+            # Re-sync git sources so the stack definition reflects the
+            # latest HEAD on the source's configured branch — same
+            # guarantee `workflow run` gives.
+            if state.source_manager and source in getattr(
+                state.source_manager, "_sources", {},
+            ):
+                try:
+                    await state.source_manager.sync_source(source)
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to sync source '{source}' before stack op: {e}"
+                    )
+            from scripthut.config_schema import PathSourceConfig
+            ssh_for_cfg = None
+            if isinstance(source_cfg, PathSourceConfig):
+                ssh_for_cfg = rm.get_ssh_client(source_cfg.backend)
+            try:
+                project_cfg = await rm._load_source_project_config(
+                    source_cfg, ssh_client=ssh_for_cfg,
+                )
+            except ValueError as e:
+                # Forbidden section / malformed YAML — explicit error so
+                # the operator sees the diagnostic.
+                raise HTTPException(status_code=422, detail=str(e)) from e
+            if project_cfg is not None:
+                for s in project_cfg.stacks:
+                    merged[s.name] = s
+
+        stack = merged.get(name)
+        if stack is None:
+            where = f" in source '{source}' or server config" if source else " in the server config"
+            raise HTTPException(
+                status_code=404,
+                detail=f"Stack '{name}' not found{where}",
+            )
+        return stack
+
+    def _scheduler_for_backend(backend_name: str) -> str | None:
+        """Scheduler tag StackManager.install uses to decide how to run prep.
+
+        Slurm wraps prep with ``srun`` so the build lands on a worker;
+        PBS / API-only backends run prep inline over SSH (PBS-side
+        builds are not wired yet). Inlined here rather than imported
+        from cli.py to keep api.py from depending on the CLI surface.
+        """
+        from scripthut.config_schema import (
+            PBSBackendConfig,
+            SlurmBackendConfig,
+        )
+        if state.config is None:
+            return None
+        cfg = state.config.get_backend(backend_name)
+        if isinstance(cfg, SlurmBackendConfig):
+            return "slurm"
+        if isinstance(cfg, PBSBackendConfig):
+            return "pbs"
+        return None
+
+    def _stack_status_dict(status: Any) -> dict[str, Any]:
+        """Shape a StackStatus for JSON return."""
+        return {
+            "name": status.name,
+            "backend": status.backend,
+            "state": status.state.value,
+            "hash": status.hash,
+            "path": status.path,
+            "last_built": status.last_built.isoformat() if status.last_built else None,
+            "size_bytes": status.size_bytes,
+            "error": status.error,
+        }
+
+    @router.get("/stacks/{name}/check")
+    async def check_stack_v1(
+        name: str, backend: str, source: str | None = None,
+    ) -> dict[str, Any]:
+        """Report the installed state of a stack on one backend (server-side).
+
+        Source overlay (when ``source`` is set) means the same name can
+        resolve to different prep/inputs than the server-global default,
+        so the hash this returns may differ from a hashless ``stack list``
+        view — that's the whole point of letting a repo redefine a
+        stack.
+        """
+        from scripthut.stacks import StackManager
+
+        stack = await _resolve_stack(name, source)
+        rm = _require_manager()
+        ssh = rm.get_ssh_client(backend)
+        if ssh is None:
+            raise HTTPException(
+                status_code=503,
+                detail=f"Backend '{backend}' has no SSH connection on the server",
+            )
+        mgr = StackManager()
+        try:
+            status = await mgr.check(stack, backend, ssh)
+        except Exception as e:
+            logger.exception(f"stack check '{name}' on '{backend}' failed")
+            raise HTTPException(status_code=500, detail=str(e)) from e
+        return _stack_status_dict(status)
+
+    @router.post("/stacks/{name}/install")
+    async def install_stack_v1(
+        name: str, backend: str, source: str | None = None,
+        rebuild: bool = False,
+    ) -> dict[str, Any]:
+        """Build a stack on one backend, running prep via the server's SSH/job path.
+
+        Blocks until prep finishes (or the existing ready sentinel says
+        we can skip). Idempotent: ``rebuild=false`` and an already-ready
+        hash means no-op; ``rebuild=true`` wipes and re-runs prep.
+        Returns the final ``StackStatus``.
+
+        Long installs depend on the request staying alive end-to-end —
+        Cloudflare-Access tunnels generally hold for the duration since
+        prep emits output, but a future async-polling variant could be
+        added if installs reliably exceed the edge's keepalive.
+        """
+        from scripthut.stacks import StackManager
+
+        stack = await _resolve_stack(name, source)
+        rm = _require_manager()
+        ssh = rm.get_ssh_client(backend)
+        if ssh is None:
+            raise HTTPException(
+                status_code=503,
+                detail=f"Backend '{backend}' has no SSH connection on the server",
+            )
+        scheduler = _scheduler_for_backend(backend)
+        mgr = StackManager()
+        try:
+            status = await mgr.install(
+                stack, backend, ssh, rebuild=rebuild, scheduler=scheduler,
+            )
+        except Exception as e:
+            logger.exception(f"stack install '{name}' on '{backend}' failed")
+            raise HTTPException(status_code=500, detail=str(e)) from e
+        return _stack_status_dict(status)
+
+    @router.delete("/stacks/{name}")
+    async def delete_stack_v1(
+        name: str, backend: str, source: str | None = None,
+    ) -> dict[str, Any]:
+        """Remove every cached build of this stack on one backend.
+
+        Source overlay matters when the repo's project YAML defines a
+        stack with a different ``cache_dir`` than the server-global —
+        the delete operates on the resolved stack's cache path, not on
+        every directory that happens to share the stack name.
+        """
+        from scripthut.stacks import StackManager
+
+        stack = await _resolve_stack(name, source)
+        rm = _require_manager()
+        ssh = rm.get_ssh_client(backend)
+        if ssh is None:
+            raise HTTPException(
+                status_code=503,
+                detail=f"Backend '{backend}' has no SSH connection on the server",
+            )
+        mgr = StackManager()
+        try:
+            await mgr.delete(stack, backend, ssh)
+        except Exception as e:
+            logger.exception(f"stack delete '{name}' on '{backend}' failed")
+            raise HTTPException(status_code=500, detail=str(e)) from e
+        return {"name": name, "backend": backend, "deleted": True}
+
     return router
 
 
