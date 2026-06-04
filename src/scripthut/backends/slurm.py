@@ -82,6 +82,27 @@ def _slurm_exitcode_indicates_failure(field: str) -> bool:
     return False
 
 
+def _slurm_parse_exit_int(field: str) -> int | None:
+    """Return the numeric exit code from a sacct ``ExitCode`` field.
+
+    ``<exit>:<signal>`` is the documented format. We return the exit
+    half as an int; signal-only failures (exit=0, signal!=0) surface as
+    0 here, but the boolean ``_slurm_exitcode_indicates_failure`` will
+    still flip the state to FAILED — consumers reading the numeric
+    code should cross-check with status when interpreting a 0.
+    Returns ``None`` for empty / non-``<n>:<n>`` shaped fields so the
+    caller doesn't invent a value from a parse miss.
+    """
+    field = (field or "").strip()
+    if ":" not in field:
+        return None
+    head = field.split(":", 1)[0].strip()
+    try:
+        return int(head)
+    except ValueError:
+        return None
+
+
 def _safe_float(s: str) -> float | None:
     """Parse a Slurm numeric field; return None for empty / N/A / unparseable."""
     s = s.strip()
@@ -398,6 +419,10 @@ class SlurmBackend(JobBackend):
         sacct_start: dict[str, datetime | None] = {}  # job_id -> actual start time
         sacct_end: dict[str, datetime | None] = {}  # job_id -> actual end time
         sacct_state: dict[str, str] = {}  # job_id -> State from main entry
+        # Numeric exit code, parsed from "exit:signal". .batch (where
+        # the user's script ran) wins on conflict; main entry is the
+        # fallback for jobs without a .batch step.
+        sacct_exit_code: dict[str, int] = {}
 
         for line in stdout.strip().split("\n"):
             if not line.strip():
@@ -418,9 +443,11 @@ class SlurmBackend(JobBackend):
                 max_rss_bytes[base_id] = rss_b
 
             # ExitCode format is "<exit>:<signal>" — either non-zero means
-            # the script didn't end cleanly. Computed per row but only
-            # used to override COMPLETED, so we keep parsing tolerant.
+            # the script didn't end cleanly. Used both to override
+            # COMPLETED (boolean) and to populate `JobStats.exit_code`
+            # (numeric, so consumers can read the actual code).
             exit_nonzero = _slurm_exitcode_indicates_failure(exit_code_str)
+            exit_int = _slurm_parse_exit_int(exit_code_str)
 
             if ".batch" in raw_id:
                 batch_cpu[base_id] = parse_slurm_duration(total_cpu)
@@ -436,6 +463,10 @@ class SlurmBackend(JobBackend):
                     # pipefail, trailing statement after the failing command).
                     # Treat as FAILED so the user sees the truth.
                     sacct_state[base_id] = "FAILED"
+                # .batch exit code wins over the main entry's because
+                # this is where user code ran.
+                if exit_int is not None:
+                    sacct_exit_code[base_id] = exit_int
             elif "." not in raw_id:
                 # Main entry — has aggregate TotalCPU (used as fallback when .batch is 0)
                 elapsed_s = parse_slurm_duration(elapsed)
@@ -455,6 +486,10 @@ class SlurmBackend(JobBackend):
                 # entry still flips us to FAILED.
                 if exit_nonzero and sacct_state.get(raw_id) == "COMPLETED":
                     sacct_state[raw_id] = "FAILED"
+                # Main-entry exit code is a fallback for jobs without a
+                # .batch row.
+                if exit_int is not None and raw_id not in sacct_exit_code:
+                    sacct_exit_code[raw_id] = exit_int
 
                 # Parse actual start/end timestamps from sacct
                 try:
@@ -490,6 +525,7 @@ class SlurmBackend(JobBackend):
                 start_time=sacct_start.get(job_id),
                 end_time=sacct_end.get(job_id),
                 state=sacct_state.get(job_id),
+                exit_code=sacct_exit_code.get(job_id),
             )
 
         logger.debug(f"Fetched stats for {len(stats)}/{len(job_ids)} jobs via sacct")

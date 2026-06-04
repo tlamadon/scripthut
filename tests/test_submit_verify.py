@@ -232,10 +232,12 @@ class TestManagerDisappearance:
         assert item.finished_at is None
 
     @pytest.mark.asyncio
-    async def test_running_disappearance_still_marks_completed(self):
-        # We observed it RUNNING; gone now means it finished. Optimistic
-        # COMPLETED — sacct can correct to FAILED if accounting disagrees.
-        # This path is unchanged by the QUEUED refactor.
+    async def test_running_disappearance_marks_settling(self):
+        # v0.10.0: a RUNNING item missing from squeue is in transition
+        # between "scheduler done" and "accounting confirmed". Move to
+        # SETTLING — the run stays non-terminal until sacct returns a
+        # row, preventing `run watch --exit-status` from racing a
+        # transient COMPLETED→FAILED flip.
         item = RunItem(
             task=TaskDefinition(id="t1", name="t1", command="echo hi"),
             status=RunItemStatus.RUNNING,
@@ -245,13 +247,15 @@ class TestManagerDisappearance:
         )
         manager, run = _make_manager_with_run(item)
         await manager.update_run_status(run, slurm_jobs={})
-        assert item.status == RunItemStatus.COMPLETED
+        assert item.status == RunItemStatus.SETTLING
+        # finished_at is set to the queue-vanish moment so the long-
+        # grace fallback in main.poll_backend can decide when to give
+        # up on accounting.
+        assert item.finished_at is not None
 
     @pytest.mark.asyncio
-    async def test_queued_disappearance_marks_completed(self):
-        # A QUEUED item missing from squeue is treated like RUNNING-
-        # disappeared (the scheduler had it, then doesn't): optimistic
-        # COMPLETED; sacct may correct.
+    async def test_queued_disappearance_marks_settling(self):
+        # Same as RUNNING-vanished: SETTLING, not optimistic COMPLETED.
         item = RunItem(
             task=TaskDefinition(id="t1", name="t1", command="echo hi"),
             status=RunItemStatus.QUEUED,
@@ -262,7 +266,7 @@ class TestManagerDisappearance:
 
         await manager.update_run_status(run, slurm_jobs={})
 
-        assert item.status == RunItemStatus.COMPLETED
+        assert item.status == RunItemStatus.SETTLING
         assert item.started_at is not None  # filled from submitted_at
         assert item.finished_at is not None
 

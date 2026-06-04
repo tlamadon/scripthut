@@ -64,6 +64,23 @@ SCHEDULER_NO_RECORD_MARKER = (
     "sbatch accepted the job but the scheduler has no record of it"
 )
 
+# How long (seconds) we let a SETTLING item wait for sacct before
+# giving up and marking it COMPLETED-without-exit-code. The job
+# scheduler said the job is done; we're only waiting on accounting.
+# Long-grace because slurm DBs can lag significantly under load, and
+# the alternative (mark FAILED on a hung accounting DB) would be
+# worse — we'd be inventing failures from a DB-availability problem.
+SETTLING_NO_RECORD_TIMEOUT_SECONDS = 600.0
+
+# Marker stored on ``item.error`` when SETTLING fell back to
+# COMPLETED because sacct never returned a row. Lets downstream
+# consumers (especially agents reading exit_code) know the verdict
+# isn't accounting-confirmed.
+SETTLING_UNCONFIRMED_MARKER = (
+    "marked COMPLETED after the scheduler queue clear but accounting "
+    "never returned a row — exit code unknown"
+)
+
 
 async def _run_local_shell(command: str, timeout: float = 60.0) -> tuple[str, str, int]:
     """Run ``command`` locally (``sh -c``) and return ``(stdout, stderr, exit_code)``.
@@ -1356,19 +1373,33 @@ class RunManager:
                 # *ever* saw the scheduler hold this job.
                 if item.status in (RunItemStatus.QUEUED, RunItemStatus.RUNNING):
                     # We observed the scheduler had it; gone now means
-                    # it finished. Optimistic COMPLETED; sacct will
-                    # correct to FAILED if accounting disagrees.
+                    # it's between "scheduler done" and "accounting
+                    # confirmed". Move to SETTLING — the run stays
+                    # non-terminal until sacct returns a row (handled
+                    # in main.poll_backend). This eliminates the
+                    # transient COMPLETED→FAILED flip that broke
+                    # `run watch --exit-status` automation.
                     item.started_at = item.started_at or item.submitted_at
-                    item.status = RunItemStatus.COMPLETED
+                    item.status = RunItemStatus.SETTLING
+                    # ``finished_at`` is set to "now" — the timestamp
+                    # when scripthut noticed the job left the queue.
+                    # This is approximate (the job may have finished
+                    # seconds earlier on the cluster); sacct updates
+                    # it to the precise end time during SETTLING
+                    # resolution. We need *some* timestamp here so the
+                    # long-grace fallback can decide when to give up
+                    # waiting for accounting.
                     item.finished_at = datetime.now(timezone.utc)
                     changed = True
                     changed_items.append(item)
                     logger.info(
                         f"Task '{item.task.id}' (job {item.job_id}) "
-                        f"left scheduler queue — marking COMPLETED (sacct may correct)"
+                        f"left scheduler queue — SETTLING (awaiting sacct)"
                     )
-                    if item.task.generates_source:
-                        await self._handle_generates_source(run, item)
+                    # generates_source handling waits too — we don't
+                    # want to spawn dependent tasks based on an
+                    # unconfirmed completion. Triggers on the sacct
+                    # COMPLETED transition in main.poll_backend.
                 # SUBMITTED + missing: do nothing here. The item stays
                 # SUBMITTED until either it shows up in squeue or the
                 # sacct-evidence path resolves it. No timer, no marker,
@@ -1398,14 +1429,21 @@ class RunManager:
                         f"acknowledged by scheduler — QUEUED"
                     )
             elif job_state == JobState.COMPLETED:
+                # squeue says COMPLETED, but the script's exit code might
+                # still disagree (the v0.6.5 fix specifically handles this
+                # for sacct's ExitCode). Route through SETTLING so
+                # `run watch --exit-status` waits for accounting to
+                # confirm. The same path resolves SETTLING → COMPLETED
+                # (with generates_source handling) or → FAILED if the
+                # ExitCode was non-zero.
                 item.started_at = item.started_at or item.submitted_at
-                item.status = RunItemStatus.COMPLETED
-                item.finished_at = datetime.now(timezone.utc)
+                item.status = RunItemStatus.SETTLING
                 changed = True
                 changed_items.append(item)
-                logger.info(f"Task '{item.task.id}' (job {item.job_id}) completed")
-                if item.task.generates_source:
-                    await self._handle_generates_source(run, item)
+                logger.info(
+                    f"Task '{item.task.id}' (job {item.job_id}) "
+                    f"reported COMPLETED by scheduler — SETTLING (awaiting sacct)"
+                )
             elif job_state in (
                 JobState.FAILED,
                 JobState.CANCELLED,

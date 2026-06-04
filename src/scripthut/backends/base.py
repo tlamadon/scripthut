@@ -21,6 +21,12 @@ class JobStats:
     start_time: datetime | None = None
     end_time: datetime | None = None
     state: str | None = None  # Terminal state from accounting, e.g. "COMPLETED"
+    # Numeric exit code from accounting. For Slurm: the exit half of
+    # sacct's ``ExitCode`` (``<exit>:<signal>``); signal != 0 with exit
+    # 0 is treated as a non-zero exit by the consumer logic. ``None``
+    # means accounting either didn't return a row or didn't surface a
+    # parseable value — distinct from "exit was 0", which is an int.
+    exit_code: int | None = None
 
 
 @dataclass

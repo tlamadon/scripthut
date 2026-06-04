@@ -33,6 +33,8 @@ from scripthut.runs import Run, RunManager
 from scripthut.runs.manager import (
     DISAPPEARED_BEFORE_RUNNING_MARKER,
     SCHEDULER_NO_RECORD_MARKER,
+    SETTLING_NO_RECORD_TIMEOUT_SECONDS,
+    SETTLING_UNCONFIRMED_MARKER,
     SUBMIT_TO_FAIL_GRACE_SECONDS,
     SUBMITTED_NO_RECORD_TIMEOUT_SECONDS,
 )
@@ -210,7 +212,7 @@ async def poll_backend(backend_state: BackendState, filter_user: str | None = No
         )
         logger.debug(f"Polled {len(jobs)} jobs from '{backend_state.name}' in {duration_ms}ms")
 
-        # Collect job_ids that need an accounting (sacct) lookup. Two
+        # Collect job_ids that need an accounting (sacct) lookup. Three
         # phases share the same query so the SSH round-trip is shared:
         #
         #   A) Items already in a terminal state (COMPLETED/FAILED) whose
@@ -223,6 +225,15 @@ async def poll_backend(backend_state: BackendState, filter_user: str | None = No
         #      with-marker pattern). sacct will tell us whether they
         #      ran to completion, failed for a real reason, or were
         #      dropped by the scheduler entirely.
+        #
+        #   C) Items in SETTLING (added in v0.10.0): the scheduler said
+        #      the job is done but accounting hasn't confirmed the real
+        #      outcome yet. Until sacct returns a row, the item stays
+        #      non-terminal so `run watch --exit-status` doesn't race
+        #      a transient COMPLETED → FAILED flip. Falls back to
+        #      COMPLETED (without a confirmed exit code) after a long
+        #      grace if accounting still hasn't surfaced — better than
+        #      a permanently stuck run.
         sacct_ids: list[str] = []
         live_job_ids: set[str] = {j.job_id for j in jobs if j.job_id}
         now_utc = datetime.now(UTC)
@@ -249,6 +260,10 @@ async def poll_backend(backend_state: BackendState, filter_user: str | None = No
                         submit_age = (now_utc - item.submitted_at).total_seconds()
                         if submit_age > SUBMIT_TO_FAIL_GRACE_SECONDS:
                             sacct_ids.append(item.job_id)
+                        continue
+                    # Phase C
+                    if item.status == RunItemStatus.SETTLING:
+                        sacct_ids.append(item.job_id)
 
         # Query accounting for resource utilization
         job_stats: dict[str, JobStats] = {}
@@ -287,6 +302,11 @@ async def poll_backend(backend_state: BackendState, filter_user: str | None = No
                         # RUNNING/PENDING when the DB hasn't caught up yet.
                         if s.state and s.state in backend_state.backend.terminal_states:
                             item.scheduler_state = s.state
+                        # Populate the numeric exit code on every sacct
+                        # observation — useful to consumers regardless of
+                        # which transition branch we end up in.
+                        if s.exit_code is not None:
+                            item.exit_code = s.exit_code
                         # Correct false completions: accounting says failed but
                         # item was marked COMPLETED because it vanished from queue
                         if (
@@ -301,6 +321,39 @@ async def poll_backend(backend_state: BackendState, filter_user: str | None = No
                                 f"Corrected task '{item.task.id}' "
                                 f"(job {item.job_id}): {reason}"
                             )
+                        # SETTLING resolution (v0.10.0): the scheduler said
+                        # the job left the queue but the verdict was unknown
+                        # until accounting returned a row. This is where the
+                        # state machine commits — COMPLETED or FAILED, with
+                        # the exit code as evidence. Same shape as the
+                        # SUBMITTED-past-grace branch below.
+                        elif item.status == RunItemStatus.SETTLING and s.state:
+                            if s.state == "COMPLETED":
+                                item.started_at = item.started_at or item.submitted_at
+                                item.status = RunItemStatus.COMPLETED
+                                item.finished_at = s.end_time or datetime.now(UTC)
+                                logger.info(
+                                    f"Task '{item.task.id}' (job {item.job_id}) "
+                                    f"resolved via sacct: COMPLETED "
+                                    f"(exit {s.exit_code})"
+                                )
+                                if item.task.generates_source and state.run_manager:
+                                    await state.run_manager._handle_generates_source(
+                                        run, item,
+                                    )
+                                needs_reprocess = True
+                            elif s.state in backend_state.backend.failure_states:
+                                reason = backend_state.backend.failure_states[s.state]
+                                item.started_at = item.started_at or item.submitted_at
+                                item.status = RunItemStatus.FAILED
+                                item.error = f"Scheduler: {reason}"
+                                item.finished_at = s.end_time or datetime.now(UTC)
+                                logger.info(
+                                    f"Task '{item.task.id}' (job {item.job_id}) "
+                                    f"resolved via sacct: {reason} "
+                                    f"(exit {s.exit_code})"
+                                )
+                                needs_reprocess = True
                         # SUBMITTED-past-grace resolution: the item was
                         # missing from squeue and we asked sacct what
                         # actually happened. Move directly to the right
@@ -406,6 +459,48 @@ async def poll_backend(backend_state: BackendState, filter_user: str | None = No
                 if dropped_any:
                     state.run_manager._persist_run(run)
                     state.run_manager.notify_run(run.id)
+
+        # SETTLING long-grace fallback: an item that's been waiting on
+        # accounting for too long should not block the run forever. If
+        # sacct still has no row well past the timeout, fall back to
+        # COMPLETED with a marker on item.error so consumers know the
+        # exit code wasn't accounting-confirmed. Marking FAILED here
+        # would invent a failure from an accounting-DB-availability
+        # issue, which is worse than reporting "ran but unverified".
+        if state.run_manager:
+            for run in state.run_manager.runs.values():
+                if run.backend_name != backend_state.name:
+                    continue
+                unresolved_any = False
+                for item in run.items:
+                    if (
+                        item.status == RunItemStatus.SETTLING
+                        and item.job_id
+                        and item.job_id not in job_stats
+                        and item.finished_at is not None
+                    ):
+                        age = (now_utc - item.finished_at).total_seconds()
+                        if age > SETTLING_NO_RECORD_TIMEOUT_SECONDS:
+                            item.status = RunItemStatus.COMPLETED
+                            item.error = SETTLING_UNCONFIRMED_MARKER
+                            # finished_at stays as the queue-vanish moment.
+                            unresolved_any = True
+                            logger.warning(
+                                f"Task '{item.task.id}' (job {item.job_id}): "
+                                f"SETTLING for {age:.0f}s without an sacct "
+                                f"row — marking COMPLETED (unconfirmed)"
+                            )
+                            if (
+                                item.task.generates_source
+                                and state.run_manager
+                            ):
+                                await state.run_manager._handle_generates_source(
+                                    run, item,
+                                )
+                if unresolved_any:
+                    state.run_manager._persist_run(run)
+                    state.run_manager.notify_run(run.id)
+                    await state.run_manager.process_run(run)
 
         # Handle external jobs (not in any active run)
         if state.run_manager and state.run_storage:

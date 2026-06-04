@@ -19,14 +19,24 @@ class RunItemStatus(str, Enum):
     makes sense once we've ever observed the job — otherwise we have no
     evidence either way, and the right move is to ask sacct rather than
     guess.
+
+    The SETTLING state exists for the same reason but for the
+    opposite end: a job that *was* in the queue but vanished isn't
+    necessarily done — sacct hasn't returned a row yet. Marking it
+    COMPLETED on queue-vanish and then correcting to FAILED when
+    accounting lands creates a transient window where an automation
+    using ``run watch --exit-status`` can return success before the
+    real verdict is in. SETTLING keeps the run non-terminal until
+    accounting confirms what actually happened.
     """
 
     PENDING = "pending"           # Waiting to be submitted
     SUBMITTED = "submitted"       # sbatch returned; not yet observed in squeue
     QUEUED = "queued"             # Observed in squeue (PENDING); awaiting resources
     RUNNING = "running"           # Currently running
-    COMPLETED = "completed"       # Finished successfully
-    FAILED = "failed"             # Failed or cancelled
+    SETTLING = "settling"         # Left the scheduler queue; awaiting accounting (sacct)
+    COMPLETED = "completed"       # Finished successfully (accounting confirmed)
+    FAILED = "failed"             # Failed or cancelled (accounting confirmed)
     DEP_FAILED = "dep_failed"     # Skipped because a dependency failed
 
 
@@ -218,6 +228,12 @@ class RunItem:
     cpu_efficiency: float | None = None  # 0-100%
     max_rss: str | None = None  # Peak memory, e.g. "1.2G"
     scheduler_state: str | None = None  # Confirmed final state from accounting
+    # Numeric exit code from the scheduler's accounting (sacct's
+    # ``ExitCode`` field). Populated once the item leaves SETTLING.
+    # ``None`` means "not yet observed" — for SUBMITTED/QUEUED/RUNNING
+    # items it's expected; for COMPLETED items it means accounting
+    # didn't return a row within the grace window.
+    exit_code: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to dictionary for JSON storage."""
@@ -234,6 +250,7 @@ class RunItem:
             "cpu_efficiency": self.cpu_efficiency,
             "max_rss": self.max_rss,
             "scheduler_state": self.scheduler_state,
+            "exit_code": self.exit_code,
         }
 
     @classmethod
@@ -261,6 +278,7 @@ class RunItem:
             cpu_efficiency=data.get("cpu_efficiency"),
             max_rss=data.get("max_rss"),
             scheduler_state=data.get("scheduler_state") or data.get("sacct_state"),
+            exit_code=data.get("exit_code"),
         )
 
     @property
@@ -275,6 +293,10 @@ class RunItem:
             RunItemStatus.SUBMITTED: "text-yellow-500",
             RunItemStatus.QUEUED: "text-yellow-700",
             RunItemStatus.RUNNING: "text-blue-600",
+            # SETTLING reuses the running blue but a shade lighter to
+            # signal "scheduler-side done, waiting on accounting" — not
+            # a terminal state.
+            RunItemStatus.SETTLING: "text-blue-400",
             RunItemStatus.COMPLETED: "text-green-600",
             RunItemStatus.FAILED: "text-red-600",
             RunItemStatus.DEP_FAILED: "text-orange-600",
@@ -342,10 +364,16 @@ class Run:
         if all(s == RunItemStatus.COMPLETED for s in statuses):
             return RunStatus.COMPLETED
 
-        # Check if any running, queued, or submitted (all "in flight" for
-        # the purposes of the run's overall status).
+        # Check if any running, queued, submitted, or settling. SETTLING
+        # is non-terminal by design: the scheduler is done but accounting
+        # hasn't confirmed COMPLETED vs FAILED yet, so the run must not
+        # report a terminal status (otherwise `run watch --exit-status`
+        # could exit 0 before the real verdict lands).
         if any(
-            s in (RunItemStatus.RUNNING, RunItemStatus.QUEUED, RunItemStatus.SUBMITTED)
+            s in (
+                RunItemStatus.RUNNING, RunItemStatus.QUEUED,
+                RunItemStatus.SUBMITTED, RunItemStatus.SETTLING,
+            )
             for s in statuses
         ):
             return RunStatus.RUNNING
@@ -375,10 +403,12 @@ class Run:
         """Count of items that consume a concurrency slot.
 
         Includes SUBMITTED (waiting for scheduler ack), QUEUED (in
-        scheduler queue), and RUNNING. The concurrency cap exists to
-        avoid drowning the scheduler in submissions, so anything we've
-        already submitted counts — even if the scheduler hasn't picked
-        it up yet.
+        scheduler queue), RUNNING, and SETTLING (job vanished from
+        queue, awaiting sacct confirmation — still counts since the
+        scheduler resources may still be settling on the cluster side).
+        The concurrency cap exists to avoid drowning the scheduler in
+        submissions, so anything we've already submitted counts — even
+        if the scheduler hasn't picked it up yet.
         """
         return sum(
             1 for item in self.items
@@ -386,6 +416,7 @@ class Run:
                 RunItemStatus.RUNNING,
                 RunItemStatus.QUEUED,
                 RunItemStatus.SUBMITTED,
+                RunItemStatus.SETTLING,
             )
         )
 
