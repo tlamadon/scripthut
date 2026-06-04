@@ -65,11 +65,24 @@
                 </td>
                 <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-900">{{ item.task.name }}</td>
                 <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-600">
+                    {# DEPS column: inline pills are readable up to ~2
+                       short ids; beyond that the cell explodes
+                       horizontally (this column has whitespace-nowrap
+                       so deps can't wrap). Collapse to a count with a
+                       hover tooltip — keeps the column width bounded
+                       regardless of how dense the DAG is. #}
                     {% if item.task.dependencies %}
+                    {% if item.task.dependencies | length <= 2 %}
                     {% for dep in item.task.dependencies %}
                     <span class="inline-block px-1.5 py-0.5 text-xs bg-gray-100 text-gray-600 rounded mr-1">{{ dep
                         }}</span>
                     {% endfor %}
+                    {% else %}
+                    <span class="inline-block px-1.5 py-0.5 text-xs bg-gray-100 text-gray-600 rounded cursor-help"
+                        title="{{ item.task.dependencies | join(', ') }}">
+                        {{ item.task.dependencies | length }} deps
+                    </span>
+                    {% endif %}
                     {% else %}
                     -
                     {% endif %}
