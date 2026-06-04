@@ -335,6 +335,65 @@ class TestStackGuidance:
         assert "stack check" in prompt
 
 
+class TestTaskOutputsGuidance:
+    """v0.11.0's task-outputs feature only shows up in the UI if the
+    task author / agent knows to write to ``$SCRIPTHUT_OUTPUT_DIR`` and
+    friends. The agent prompt must teach the three env vars + the
+    behaviors that bite (SSH-only, post-completion-not-streaming,
+    size caps).
+    """
+
+    def test_section_present(self):
+        prompt = _render_agent_prompt(ScriptHutConfig())
+        assert "## Emitting structured outputs" in prompt
+
+    def test_all_three_env_vars_documented(self):
+        prompt = _render_agent_prompt(ScriptHutConfig())
+        # All three convention paths must be named — losing any one
+        # would silently hide a UI surface from agents.
+        assert "$SCRIPTHUT_OUTPUT_DIR" in prompt
+        assert "$SCRIPTHUT_TASK_SUMMARY" in prompt
+        assert "$SCRIPTHUT_RUN_SUMMARY" in prompt
+
+    def test_per_task_vs_per_run_distinction_taught(self):
+        """The user asked for these two surfaces specifically — the
+        agent must understand the difference and pick the right one.
+        """
+        prompt = _render_agent_prompt(ScriptHutConfig())
+        # Both UI panels named.
+        assert "Outputs" in prompt
+        assert "Run Summary" in prompt
+        # The when-to-use guidance with a clear distinction.
+        assert "Per-task" in prompt or "per-task" in prompt
+        assert "Run-wide" in prompt or "run-wide" in prompt
+
+    def test_critical_caveats_taught(self):
+        """The two failure modes that bite hardest: backends-without-
+        SSH silently skip collection, and the panel doesn't stream
+        (it appears after the task finishes).
+        """
+        prompt = _render_agent_prompt(ScriptHutConfig())
+        # SSH-only scope — agents shouldn't promise UI panels on Batch/EC2.
+        assert "Slurm" in prompt
+        assert "Batch" in prompt
+        # Post-completion, not streaming.
+        assert "post-completion" in prompt.lower() or "after" in prompt.lower()
+        # Size caps so agents don't write 10k plots in a training loop.
+        assert "5 MB" in prompt or "5MB" in prompt
+        assert "200 files" in prompt or "200 files per" in prompt
+
+    def test_worked_example_present(self):
+        """A real bash snippet the agent can paste/adapt. Pin the
+        markdown table syntax so future drift doesn't quietly drop it.
+        """
+        prompt = _render_agent_prompt(ScriptHutConfig())
+        assert 'savefig' in prompt or '.png' in prompt
+        # The convention path appears in a redirect — confirms the
+        # snippet shows the write pattern, not just the path.
+        assert '> "$SCRIPTHUT_TASK_SUMMARY"' in prompt
+        assert '> "$SCRIPTHUT_RUN_SUMMARY"' in prompt
+
+
 class TestObservabilitySurfaces:
     """The user explicitly asked: the agent must know how to check
     status, output, and logs, and how to refresh sources.
