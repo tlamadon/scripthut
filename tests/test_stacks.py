@@ -322,3 +322,80 @@ class TestDelete:
         stack = Stack(name="x", prep="echo hi")
         with pytest.raises(RuntimeError, match="Permission denied"):
             await StackManager().delete(stack, "be", ssh)
+
+
+# ---------- tilde expansion in shell commands -----------------------------
+
+
+class TestTildeExpansion:
+    """The check/install/delete commands must substitute leading ``~`` with
+    ``$HOME`` rather than single-quoting it. ``shlex.quote('~/foo')`` returns
+    ``'~/foo'`` which bash treats as a literal tilde character — a check
+    after a successful install would silently report MISSING because the
+    install creates the file at ``$HOME/foo`` but the check probes a
+    literal ``~/foo`` path. v0.9.0 fixed install on the server side; the
+    pre-existing local-mode shell helpers needed the same treatment.
+    """
+
+    @pytest.mark.asyncio
+    async def test_check_uses_dollar_home_not_literal_tilde(self):
+        """The check command must reference ``$HOME`` so the shell expands it."""
+        ssh = _ScriptedSSH([("MISSING\n", "", 0)])
+        stack = Stack(
+            name="julia", prep="echo hi", cache_dir="~/.cache/sh-stacks",
+        )
+        await StackManager().check(stack, "be", ssh)
+
+        assert len(ssh.commands) == 1
+        cmd = ssh.commands[0]
+        # The path should appear as $HOME/.cache/... in double quotes so
+        # bash expands it. A literal '~/.cache/...' (single-quoted) would
+        # be the bug.
+        assert '"$HOME/.cache/sh-stacks/julia/' in cmd
+        assert "'~/.cache/sh-stacks" not in cmd
+
+    @pytest.mark.asyncio
+    async def test_install_uses_dollar_home_not_literal_tilde(self):
+        # Sequence: check (MISSING) → mkdir → bash -s heredoc (prep) → check
+        ssh = _ScriptedSSH([
+            ("MISSING\n", "", 0),  # initial check
+            ("", "", 0),            # mkdir
+            ("", "", 0),            # prep heredoc
+            ("READY\n0\n100\n", "", 0),  # final check
+        ])
+        stack = Stack(
+            name="cuda", prep="echo build", cache_dir="~/.cache/sh-stacks",
+        )
+        await StackManager().install(stack, "be", ssh)
+
+        # mkdir, the prep heredoc, and the final check should all use
+        # the expanded path. No single-quoted literal tilde anywhere.
+        all_cmds = "\n".join(ssh.commands)
+        assert "$HOME/.cache/sh-stacks/cuda/" in all_cmds
+        assert "'~/.cache/sh-stacks" not in all_cmds
+
+    @pytest.mark.asyncio
+    async def test_delete_uses_dollar_home_not_literal_tilde(self):
+        ssh = _ScriptedSSH([("", "", 0)])
+        stack = Stack(
+            name="julia", prep="echo hi", cache_dir="~/.cache/sh-stacks",
+        )
+        await StackManager().delete(stack, "be", ssh)
+
+        cmd = ssh.commands[0]
+        assert 'rm -rf "$HOME/.cache/sh-stacks/julia"' == cmd
+        assert "'~" not in cmd
+
+    @pytest.mark.asyncio
+    async def test_absolute_cache_dir_passes_through_unchanged(self):
+        """A non-tilde cache_dir (e.g. /scratch/me/stacks) shouldn't grow a
+        spurious $HOME prefix.
+        """
+        ssh = _ScriptedSSH([("MISSING\n", "", 0)])
+        stack = Stack(
+            name="julia", prep="echo", cache_dir="/scratch/me/stacks",
+        )
+        await StackManager().check(stack, "be", ssh)
+        cmd = ssh.commands[0]
+        assert '"/scratch/me/stacks/julia/' in cmd
+        assert "$HOME/scratch" not in cmd

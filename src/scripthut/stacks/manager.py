@@ -100,11 +100,28 @@ class StackManager:
     def hash_path(stack: Stack, hash_: str) -> str:
         """Return the canonical remote directory for a (stack, hash) pair.
 
-        ``~`` is preserved in the returned string — the remote shell does
-        the expansion, which is the same convention used elsewhere in
-        scripthut (e.g. ``clone_dir``).
+        ``~`` is preserved in the returned string — call ``_shell_quote_path``
+        before embedding in a shell command so the remote shell actually
+        expands it.
         """
         return f"{stack.cache_dir}/{stack.name}/{hash_}"
+
+    @staticmethod
+    def _shell_quote_path(path: str) -> str:
+        """Quote ``path`` for shell embedding while preserving ``~`` expansion.
+
+        ``shlex.quote`` uses single quotes, which block tilde expansion —
+        a check command built that way looks for a literal ``~`` file
+        instead of one under ``$HOME``. We rewrite a leading ``~`` to
+        ``$HOME`` first, then wrap in *double* quotes so ``$HOME``
+        expands while spaces in the rest of the path (cache_dir, stack
+        names) stay as one token. Scripthut's controlled config space
+        doesn't allow paths with shell metachars beyond ``$``, so this
+        is safe enough for the closed set of strings we feed in.
+        """
+        if path.startswith("~"):
+            path = "$HOME" + path[1:]
+        return f'"{path}"'
 
     async def check(
         self, stack: Stack, backend_name: str, ssh: SSHClient
@@ -115,8 +132,8 @@ class StackManager:
 
         # One round-trip: probe sentinel, dir, mtime, size.
         # ``stat -c %Y`` gives mtime as epoch seconds.
-        ready = shlex.quote(f"{path}/{READY_SENTINEL}")
-        dir_q = shlex.quote(path)
+        ready = self._shell_quote_path(f"{path}/{READY_SENTINEL}")
+        dir_q = self._shell_quote_path(path)
         cmd = (
             f"if [ -f {ready} ]; then "
             f"  echo READY; "
@@ -208,8 +225,8 @@ class StackManager:
             return status
 
         path = status.path
-        dir_q = shlex.quote(path)
-        ready_q = shlex.quote(f"{path}/{READY_SENTINEL}")
+        dir_q = self._shell_quote_path(path)
+        ready_q = self._shell_quote_path(f"{path}/{READY_SENTINEL}")
 
         # Wipe a half-built dir or a stale ready sentinel when rebuilding.
         if rebuild or status.state == StackState.INSTALLING:
@@ -296,7 +313,7 @@ class StackManager:
         from scratch.
         """
         target = f"{stack.cache_dir}/{stack.name}"
-        cmd = f"rm -rf {shlex.quote(target)}"
+        cmd = f"rm -rf {self._shell_quote_path(target)}"
         _, stderr, exit_code = await ssh.run_command(cmd, timeout=60)
         if exit_code != 0:
             raise RuntimeError(
