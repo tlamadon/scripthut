@@ -687,23 +687,47 @@ def test_check_stack_source_overlay_wins_collision():
 # -- /stacks/{name}/install --------------------------------------------------
 
 
-def test_install_stack_runs_and_returns_ready():
+def _stack_install_run(run_id: str = "abc12345"):
+    """A run-shaped object the synthesized install path returns."""
+    from datetime import UTC, datetime
+    from scripthut.runs.models import Run, RunItem, RunItemStatus, TaskDefinition
+    return Run(
+        id=run_id, workflow_name="_stack/foo", backend_name="cluster",
+        created_at=datetime(2026, 1, 1, tzinfo=UTC),
+        items=[RunItem(
+            task=TaskDefinition(id="install-x", name="stack/foo", command="echo"),
+            status=RunItemStatus.SUBMITTED,
+        )],
+        max_concurrent=1,
+    )
+
+
+def test_install_stack_returns_run_summary():
+    """v0.9.0: install endpoint submits a workflow run and returns its
+    summary immediately, so long preps don't block the HTTP call.
+    """
     from scripthut.config_schema import Stack
     state, _ = _make_state_with_stacks_and_backends(
         stacks=[Stack(name="foo", prep="echo prep")],
     )
-    with patch("scripthut.stacks.StackManager") as mgr_cls:
-        install_mock = AsyncMock(return_value=_stack_state(state_value="ready"))
-        mgr_cls.return_value.install = install_mock
-        resp = _client(state).post(
-            "/api/v1/stacks/foo/install?backend=cluster",
-        )
+    run = _stack_install_run()
+    state.run_manager.create_run_from_stack = AsyncMock(return_value=run)
+    resp = _client(state).post(
+        "/api/v1/stacks/foo/install?backend=cluster",
+    )
 
     assert resp.status_code == 200
     body = resp.json()
-    assert body["state"] == "ready"
-    # Default rebuild=False
-    assert install_mock.call_args.kwargs.get("rebuild") is False
+    # The shape matches `_run_summary` (id / workflow_name / backend_name / status).
+    assert body["id"] == "abc12345"
+    assert body["workflow_name"] == "_stack/foo"
+    assert body["backend_name"] == "cluster"
+    # Default rebuild=False threaded through to the helper.
+    state.run_manager.create_run_from_stack.assert_awaited_once()
+    assert state.run_manager.create_run_from_stack.call_args.kwargs.get(
+        "rebuild"
+    ) is False
+    state.notify_poll.assert_called_once()
 
 
 def test_install_stack_rebuild_flag_forwarded():
@@ -711,47 +735,49 @@ def test_install_stack_rebuild_flag_forwarded():
     state, _ = _make_state_with_stacks_and_backends(
         stacks=[Stack(name="foo", prep="echo prep")],
     )
-    with patch("scripthut.stacks.StackManager") as mgr_cls:
-        install_mock = AsyncMock(return_value=_stack_state())
-        mgr_cls.return_value.install = install_mock
-        resp = _client(state).post(
-            "/api/v1/stacks/foo/install?backend=cluster&rebuild=true",
-        )
+    state.run_manager.create_run_from_stack = AsyncMock(
+        return_value=_stack_install_run(),
+    )
+    resp = _client(state).post(
+        "/api/v1/stacks/foo/install?backend=cluster&rebuild=true",
+    )
 
     assert resp.status_code == 200
-    assert install_mock.call_args.kwargs["rebuild"] is True
+    assert state.run_manager.create_run_from_stack.call_args.kwargs["rebuild"] is True
 
 
-def test_install_stack_passes_slurm_scheduler():
-    """Slurm backends → ``StackManager.install(scheduler='slurm')`` so prep
-    lands on a worker via srun rather than the login node.
+def test_install_stack_source_threaded_to_workflow_name():
+    """``source_name`` flows into the synthesized workflow_name so the
+    runs page shows which repo's stack was being installed.
     """
-    from scripthut.config_schema import Stack
+    from scripthut.config_schema import GitSourceConfig, ScriptHutConfig, Stack
+    sources = [GitSourceConfig(name="src", url="git@h:o/r.git", branch="main")]
     state, _ = _make_state_with_stacks_and_backends(
-        stacks=[Stack(name="foo", prep="echo prep")],
-        backend_kind="slurm",
+        stacks=[Stack(name="foo", prep="echo prep")], sources=sources,
     )
-    with patch("scripthut.stacks.StackManager") as mgr_cls:
-        install_mock = AsyncMock(return_value=_stack_state())
-        mgr_cls.return_value.install = install_mock
-        resp = _client(state).post("/api/v1/stacks/foo/install?backend=cluster")
+    # Source has its own foo stack — overlay path resolves to it.
+    project_cfg = ScriptHutConfig.model_validate({
+        "stacks": [{"name": "foo", "prep": "echo from-repo"}],
+    })
+    state.run_manager._load_source_project_config = AsyncMock(
+        return_value=project_cfg,
+    )
+    state.source_manager = None
+    state.run_manager.create_run_from_stack = AsyncMock(
+        return_value=_stack_install_run(),
+    )
+
+    resp = _client(state).post(
+        "/api/v1/stacks/foo/install?backend=cluster&source=src",
+    )
 
     assert resp.status_code == 200
-    assert install_mock.call_args.kwargs["scheduler"] == "slurm"
-
-
-def test_install_stack_pbs_scheduler():
-    from scripthut.config_schema import Stack
-    state, _ = _make_state_with_stacks_and_backends(
-        stacks=[Stack(name="foo", prep="echo prep")],
-        backend_kind="pbs",
-    )
-    with patch("scripthut.stacks.StackManager") as mgr_cls:
-        install_mock = AsyncMock(return_value=_stack_state())
-        mgr_cls.return_value.install = install_mock
-        resp = _client(state).post("/api/v1/stacks/foo/install?backend=cluster")
-
-    assert install_mock.call_args.kwargs["scheduler"] == "pbs"
+    # The helper got the resolved stack AND the source name for the
+    # workflow_name label.
+    kwargs = state.run_manager.create_run_from_stack.call_args.kwargs
+    assert kwargs["source_name"] == "src"
+    called_stack = state.run_manager.create_run_from_stack.call_args.args[0]
+    assert "from-repo" in called_stack.prep
 
 
 def test_install_stack_unknown_returns_404():
@@ -760,14 +786,21 @@ def test_install_stack_unknown_returns_404():
     assert resp.status_code == 404
 
 
-def test_install_stack_no_ssh_returns_503():
+def test_install_stack_backend_not_available_returns_422():
+    """``create_run_from_stack`` raises ValueError for unavailable
+    backends (no SSH, no API driver) — surfaced as 422 so the user
+    sees the same diagnostic CLI users get today.
+    """
     from scripthut.config_schema import Stack
     state, _ = _make_state_with_stacks_and_backends(
         stacks=[Stack(name="foo", prep="echo prep")],
     )
-    state.run_manager.get_ssh_client = MagicMock(return_value=None)
+    state.run_manager.create_run_from_stack = AsyncMock(
+        side_effect=ValueError("Backend 'cluster' is not available"),
+    )
     resp = _client(state).post("/api/v1/stacks/foo/install?backend=cluster")
-    assert resp.status_code == 503
+    assert resp.status_code == 422
+    assert "not available" in resp.json()["detail"]
 
 
 # -- /stacks/{name} (DELETE) -------------------------------------------------

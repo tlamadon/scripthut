@@ -1259,26 +1259,34 @@ def _render_agent_prompt(config: ScriptHutConfig | None) -> str:
         "- **Local mode** — no `--server` / `SCRIPTHUT_SERVER` /"
         " `settings.cli_server`. The CLI reads the local "
         "`scripthut.yaml`, opens SSH to the backend itself, and runs "
-        "`prep`. Iterates over every backend the stack is configured "
-        "for when `--backend` is omitted.\n"
-        "- **Server mode** — a server URL is resolvable. `install` / "
-        "`check` / `delete` go through new server-mediated endpoints "
-        "(`/api/v1/stacks/{name}/...`). The **server** runs `prep` on "
-        "the backend; the CLI doesn't need SSH access to the cluster "
-        "at all. **`--backend` is required** in this mode (one "
-        "backend per call — no client-side iteration). This is the "
-        "right path for thin remote agents and CI that drive "
-        "scripthut purely through a server.\n"
+        "`prep` synchronously. Iterates over every backend the stack "
+        "is configured for when `--backend` is omitted. **Blocking**: "
+        "the command sits until prep finishes.\n"
+        "- **Server mode** — a server URL is resolvable. `check` / "
+        "`delete` are still single-call server-side ops; **`install` "
+        "v0.9.0+ submits a workflow run** and returns the run_id "
+        "immediately. The actual prep runs as a normal scheduled job "
+        "on the backend (sbatch on Slurm, etc.) and shows up in "
+        "`scripthut run list` alongside everything else. Monitor it "
+        "with `scripthut run view <id>`, tail with `scripthut run "
+        "logs <id> install-XXXXXX -f`, or block until done with "
+        "`scripthut run watch <id> --exit-status`. **`--backend` is "
+        "required** in server mode.\n"
         "\n"
         "```bash\n"
-        "# Both modes use the same commands; the routing is automatic.\n"
+        "# Server mode (cli_server / SCRIPTHUT_SERVER configured) —\n"
+        "# install becomes a normal run:\n"
         "scripthut stack check <name> --backend <b>           # READY / "
         "MISSING / INSTALLING for one stack on one backend\n"
-        "scripthut stack install <name> --backend <b>         # build "
-        "now; blocks until prep finishes (or .ready already exists)\n"
+        "scripthut stack install <name> --backend <b>         # "
+        "submits a run; prints the run_id and hint\n"
+        "scripthut stack install <name> --backend <b> --watch # submit "
+        "AND block until done (returns non-zero on failure)\n"
+        "scripthut stack install <name> --backend <b> --json | jq -r .id "
+        "# capture the run_id for scripts/CI\n"
         "scripthut stack install <name> --source <src> --backend <b>  "
         "# build a repo-defined stack — server re-syncs the source's "
-        "git HEAD first, then runs prep\n"
+        "git HEAD first, then submits prep as a run\n"
         "scripthut stack install <name> --backend <b> --rebuild   "
         "# wipe and re-run prep even when the input hash matches\n"
         "scripthut stack delete <name> --backend <b>          # rm -rf "
@@ -1287,15 +1295,17 @@ def _render_agent_prompt(config: ScriptHutConfig | None) -> str:
         "The first time a stack is installed on a backend, `prep:` runs "
         "as a normal job on that backend (so cluster modules, GPUs, etc. "
         "are available). Subsequent invocations of the same stack on "
-        "the same backend find a `.ready` sentinel and skip immediately.\n"
+        "the same backend find a `.ready` sentinel and exit 0 "
+        "immediately — the install still appears in `run list` as a "
+        "successful run, so the operator sees \"I tried to install "
+        "julia, it was already ready.\"\n"
         "\n"
-        "**Long installs**: server-mediated `install` blocks until "
-        "prep returns. Cloudflare-Access tunnels generally hold for "
-        "the duration since prep emits output, but if you reliably "
-        "see installs hit edge-keepalive limits, an async-polling "
-        "endpoint variant is the natural follow-up (POST returns "
-        "immediately, then poll `check` until ready). Out of scope "
-        "for v0.8.0.\n"
+        "**Long installs are not a problem anymore.** Because server-"
+        "mode install is a queued run rather than a blocking HTTP call, "
+        "Cloudflare-Access timeouts don't matter — the CLI submits "
+        "and exits; the run finishes server-side at its own pace. The "
+        "agent should `scripthut run view $RUN_ID --json` or `run "
+        "watch $RUN_ID --exit-status` to track it.\n"
         "\n"
         "### How a task uses a stack (the v0.7.1 way)\n"
         "Tasks reference stacks via the **`stacks:`** field on any env "
@@ -2205,9 +2215,37 @@ async def _cmd_stack_install(args: argparse.Namespace) -> int:
                 "source": getattr(args, "source", None),
                 "rebuild": "true" if args.rebuild else "false",
             },
+            # Submission is now non-blocking — the synthesized install
+            # workflow is queued and the run summary returns right away.
+            # Keep the timeout short so a stuck network surfaces quickly.
+            timeout=60.0,
         )
-        _render_remote_stack_result(args.name, data, as_json=False)
-        return 0 if data.get("state") == "ready" else 1
+        run_id = data.get("id")
+        if args.json:
+            print(json.dumps(data, indent=2))
+        else:
+            print(
+                f"Install submitted as run {run_id} "
+                f"(workflow '{data.get('workflow_name')}' on {data.get('backend_name')})."
+            )
+            if not args.watch:
+                print(
+                    f"  scripthut run watch {run_id} --exit-status   "
+                    f"# wait until done\n"
+                    f"  scripthut run logs {run_id} install-{(data.get('id') or '')[:0]}  "
+                    f"# live output"
+                )
+        if not args.watch:
+            return 0
+        # `--watch` mode: block until the run terminates, exit 1 on failure.
+        # We reuse `_cmd_run_watch` so the polling cadence and output
+        # match the standalone `scripthut run watch` command.
+        import copy
+        watch_args = copy.copy(args)
+        watch_args.id = run_id
+        watch_args.exit_status = True
+        watch_args.interval = getattr(args, "interval", 2.0)
+        return await _cmd_run_watch(watch_args)
 
     config = load_config(getattr(args, "config", None))
     config = await _overlay_source_stacks(args, config)
@@ -2794,6 +2832,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="Force a rebuild even when the input hash matches the cached build",
     )
     p_st_install.add_argument("--source", help=_SOURCE_OVERLAY_HELP)
+    p_st_install.add_argument(
+        "--json", action="store_true",
+        help="Print the submitted run summary as JSON (server mode only).",
+    )
+    p_st_install.add_argument(
+        "--watch", action="store_true",
+        help=(
+            "After submitting (server mode only), block until the install "
+            "run terminates and exit non-zero on failure — equivalent to "
+            "piping through `scripthut run watch --exit-status`."
+        ),
+    )
+    p_st_install.add_argument(
+        "--interval", type=float, default=2.0,
+        help="Polling interval (seconds) for --watch.",
+    )
     _add_common(p_st_install)
     p_st_install.set_defaults(handler=_cmd_stack_install)
 

@@ -1384,6 +1384,7 @@ def _stack_args(**kwargs) -> argparse.Namespace:
     defaults = dict(
         server=None, config=None, json=False,
         source=None, backend=None, name=None, rebuild=False,
+        watch=False, interval=2.0,
         cf_client_id=None, cf_client_secret=None,
         cf_access_token=None, cloudflared_app=None,
     )
@@ -1392,20 +1393,26 @@ def _stack_args(**kwargs) -> argparse.Namespace:
 
 
 @pytest.mark.asyncio
-async def test_stack_install_remote_dispatches_to_api(capsys):
-    """When a server is resolvable, ``stack install`` POSTs to
-    ``/api/v1/stacks/{name}/install`` instead of opening local SSH.
+async def test_stack_install_remote_submits_run_and_prints_id(capsys):
+    """v0.9.0: ``stack install`` against a server submits a workflow
+    run and prints the run_id + a hint, returning 0 on submission.
     """
     call_log: dict = {}
 
     async def fake_remote_call(args, server, method, path, *,
-                               params=None, timeout=1800.0):
+                               params=None, timeout=60.0):
         call_log["method"] = method
         call_log["path"] = path
         call_log["params"] = params
-        return {"name": "foo", "backend": "cluster", "state": "ready",
-                "hash": "deadbeef0000", "path": "/c/foo/deadbeef0000",
-                "last_built": None, "size_bytes": None, "error": None}
+        return {
+            "id": "abc12345",
+            "workflow_name": "_stack/src/foo",
+            "backend_name": "cluster",
+            "created_at": "2026-01-01T00:00:00+00:00",
+            "status": "submitted",
+            "task_count": 1, "completed_count": 0, "submitted_count": 1,
+            "status_counts": {},
+        }
 
     args = _stack_args(name="foo", backend="cluster", source="src", rebuild=True)
     with patch.object(cli, "_resolve_server", return_value="https://srv"), \
@@ -1414,10 +1421,71 @@ async def test_stack_install_remote_dispatches_to_api(capsys):
 
     assert call_log["method"] == "POST"
     assert call_log["path"] == "/stacks/foo/install"
-    assert call_log["params"]["backend"] == "cluster"
-    assert call_log["params"]["source"] == "src"
-    # rebuild is serialized as a query string boolean.
     assert call_log["params"]["rebuild"] == "true"
+    out = capsys.readouterr().out
+    assert "abc12345" in out
+    # Default (no --watch) prints the hint to wait via run watch.
+    assert "scripthut run watch abc12345" in out
+    assert rc == 0
+
+
+@pytest.mark.asyncio
+async def test_stack_install_remote_watch_blocks_until_done(capsys):
+    """``--watch`` after submission should re-enter the existing run-watch
+    polling so the same UX as `run watch --exit-status` works.
+    """
+
+    async def fake_remote_call(*a, **kw):
+        return {
+            "id": "ready1", "workflow_name": "_stack/foo",
+            "backend_name": "cluster",
+            "created_at": "2026-01-01T00:00:00+00:00",
+            "status": "submitted",
+            "task_count": 1, "completed_count": 0, "submitted_count": 1,
+            "status_counts": {},
+        }
+
+    watch_calls: list = []
+
+    async def fake_watch(watch_args):
+        watch_calls.append(watch_args)
+        return 0
+
+    args = _stack_args(name="foo", backend="cluster", watch=True)
+    with patch.object(cli, "_resolve_server", return_value="https://srv"), \
+         patch.object(cli, "_remote_stack_call", side_effect=fake_remote_call), \
+         patch.object(cli, "_cmd_run_watch", side_effect=fake_watch):
+        rc = await cli._cmd_stack_install(args)
+
+    assert rc == 0
+    assert len(watch_calls) == 1
+    # The watch handler must see the submitted run's id and
+    # exit_status=True so a failed install returns non-zero.
+    assert watch_calls[0].id == "ready1"
+    assert watch_calls[0].exit_status is True
+
+
+@pytest.mark.asyncio
+async def test_stack_install_remote_json_flag_prints_run_summary(capsys):
+    """``--json`` outputs the submitted-run summary verbatim so scripts
+    can `jq -r .id` to capture the run_id, matching `task run --json`.
+    """
+    async def fake_remote_call(*a, **kw):
+        return {
+            "id": "jsonok", "workflow_name": "_stack/foo",
+            "backend_name": "cluster",
+            "created_at": "2026-01-01T00:00:00+00:00",
+            "status": "submitted",
+            "task_count": 1, "completed_count": 0, "submitted_count": 1,
+            "status_counts": {},
+        }
+    args = _stack_args(name="foo", backend="cluster", json=True)
+    with patch.object(cli, "_resolve_server", return_value="https://srv"), \
+         patch.object(cli, "_remote_stack_call", side_effect=fake_remote_call):
+        rc = await cli._cmd_stack_install(args)
+    out = capsys.readouterr().out
+    payload = __import__("json").loads(out)
+    assert payload["id"] == "jsonok"
     assert rc == 0
 
 

@@ -553,6 +553,137 @@ class RunManager:
 
         return run
 
+    @staticmethod
+    def _synthesize_stack_install_command(
+        stack: Stack, hash_: str, rebuild: bool,
+    ) -> str:
+        """Render the bash that does the install dance for a task command.
+
+        Reproduces ``StackManager.install``'s logic — sentinel check,
+        cleanup, mkdir, ``STACK_DIR`` export, prep, touch ``.ready`` —
+        but as a single inline script so the task can be submitted
+        through the normal scheduler path (sbatch / qsub / Batch).
+
+        Two design choices worth flagging:
+
+        - **``~`` → ``$HOME`` substitution at synthesis time.** The
+          existing ``StackManager`` quotes paths with ``shlex.quote``,
+          which single-quotes tilde paths and would break ``~``
+          expansion on the backend. We expand once at the Python layer
+          so the emitted command works regardless of which bash
+          invocation lands it.
+        - **Idempotency lives in the command, not in a Python
+          pre-check.** When a stack is already ready and ``rebuild`` is
+          False the task exits 0 immediately — no Python round-trip
+          required, and the task still shows up in ``run list`` as a
+          successful run (so the user sees "I tried to install julia,
+          it was already there"). Pre-flighting on the Python side
+          would skip the run entirely, which is harder to observe.
+        """
+        from scripthut.stacks.manager import READY_SENTINEL
+
+        cache_dir = stack.cache_dir.replace("~", "$HOME", 1)
+        hash_dir = f"{cache_dir}/{stack.name}/{hash_}"
+        rebuild_flag = "1" if rebuild else "0"
+        prep = stack.prep.strip()
+
+        if not prep:
+            # Empty prep is legitimate (init-only stack that just wants a
+            # stable directory). Make ready and call it a day.
+            return (
+                f'HASH_DIR="{hash_dir}"\n'
+                f'mkdir -p "$HASH_DIR"\n'
+                f'touch "$HASH_DIR/{READY_SENTINEL}"\n'
+                f'echo "Stack {stack.name!r} marked ready at $HASH_DIR"\n'
+            )
+
+        return (
+            f'HASH_DIR="{hash_dir}"\n'
+            f'READY="$HASH_DIR/{READY_SENTINEL}"\n'
+            f'REBUILD={rebuild_flag}\n'
+            f'\n'
+            f'# Fast path: already ready, not rebuilding.\n'
+            f'if [ -f "$READY" ] && [ "$REBUILD" != "1" ]; then\n'
+            f'  echo "Stack {stack.name!r} already ready at $HASH_DIR (hash {hash_})"\n'
+            f'  exit 0\n'
+            f'fi\n'
+            f'\n'
+            f'# Cleanup: rebuild OR half-built leftover from a prior crash.\n'
+            f'if [ "$REBUILD" = "1" ] || [ -d "$HASH_DIR" ]; then\n'
+            f'  rm -rf "$HASH_DIR"\n'
+            f'fi\n'
+            f'\n'
+            f'set -euo pipefail\n'
+            f'mkdir -p "$HASH_DIR"\n'
+            f'export STACK_DIR="$HASH_DIR"\n'
+            f'cd "$HASH_DIR"\n'
+            f'\n'
+            f'# === User prep ===\n'
+            f'{prep}\n'
+            f'# === /User prep ===\n'
+            f'\n'
+            f'touch "$READY"\n'
+            f'echo "Stack {stack.name!r} installed at $HASH_DIR (hash {hash_})"\n'
+        )
+
+    async def create_run_from_stack(
+        self,
+        stack: Stack,
+        backend_name: str,
+        *,
+        rebuild: bool = False,
+        source_name: str | None = None,
+    ) -> Run:
+        """Submit a stack install as a one-task workflow run.
+
+        The install becomes a normal run — appears in ``run list``,
+        readable via ``run view``, tailable via ``run logs -f``,
+        cancelable via ``run cancel``, watchable via ``run watch
+        --exit-status``. No new observability surface.
+
+        Task resources (``cpus`` / ``memory`` / ``time_limit`` /
+        ``partition``) come from the stack so heavy preps (compiling
+        Julia, downloading large conda envs) actually get the
+        allocation they need. ``source_name`` is folded into
+        ``workflow_name`` (``_stack/<source>/<stack>``) for
+        provenance — operators reading the runs page can see *which
+        repo's* stack got installed.
+        """
+        from scripthut.stacks.manager import compute_stack_hash
+
+        if self.config.get_backend(backend_name) is None:
+            raise ValueError(f"Backend '{backend_name}' not found in config")
+
+        ssh_client = self.get_ssh_client(backend_name)
+        job_backend = self.get_job_backend(backend_name)
+        if ssh_client is None and job_backend is None:
+            raise ValueError(f"Backend '{backend_name}' is not available")
+
+        hash_ = compute_stack_hash(stack)
+        command = self._synthesize_stack_install_command(
+            stack, hash_, rebuild,
+        )
+
+        task = TaskDefinition(
+            id=f"install-{hash_[:8]}",
+            name=f"stack/{stack.name}",
+            command=command,
+            cpus=stack.cpus,
+            memory=stack.memory,
+            time_limit=stack.time_limit,
+            partition=stack.partition or "normal",
+        )
+
+        workflow_name = (
+            f"_stack/{source_name}/{stack.name}"
+            if source_name else f"_stack/{stack.name}"
+        )
+
+        return await self._build_run(
+            [task], workflow_name, backend_name, max_concurrent=None,
+            ssh_client=ssh_client,
+        )
+
     async def create_adhoc_run(
         self,
         task: TaskDefinition,

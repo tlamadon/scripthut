@@ -627,38 +627,36 @@ def make_api_router(state: AppState) -> APIRouter:
         name: str, backend: str, source: str | None = None,
         rebuild: bool = False,
     ) -> dict[str, Any]:
-        """Build a stack on one backend, running prep via the server's SSH/job path.
+        """Submit a stack install as a workflow run; return the run summary.
 
-        Blocks until prep finishes (or the existing ready sentinel says
-        we can skip). Idempotent: ``rebuild=false`` and an already-ready
-        hash means no-op; ``rebuild=true`` wipes and re-runs prep.
-        Returns the final ``StackStatus``.
+        The endpoint no longer blocks: install is synthesized as a
+        single-task workflow, submitted through the same scheduler path
+        as every other run, and the run summary returned immediately.
+        Caller monitors via the existing ``/runs/{id}`` endpoints —
+        ``run view`` for status, ``run logs -f`` for live output, ``run
+        watch --exit-status`` for "wait until done".
 
-        Long installs depend on the request staying alive end-to-end —
-        Cloudflare-Access tunnels generally hold for the duration since
-        prep emits output, but a future async-polling variant could be
-        added if installs reliably exceed the edge's keepalive.
+        Idempotency lives in the task command: if the stack's content
+        hash already has a ``.ready`` sentinel and ``rebuild`` is False,
+        the task exits 0 immediately. A "nothing to do" install is still
+        a visible run — operators see "I tried to install julia, it was
+        already there" rather than guessing whether the request landed.
         """
-        from scripthut.stacks import StackManager
-
         stack = await _resolve_stack(name, source)
         rm = _require_manager()
-        ssh = rm.get_ssh_client(backend)
-        if ssh is None:
-            raise HTTPException(
-                status_code=503,
-                detail=f"Backend '{backend}' has no SSH connection on the server",
-            )
-        scheduler = _scheduler_for_backend(backend)
-        mgr = StackManager()
         try:
-            status = await mgr.install(
-                stack, backend, ssh, rebuild=rebuild, scheduler=scheduler,
+            run = await rm.create_run_from_stack(
+                stack, backend, rebuild=rebuild, source_name=source,
             )
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e)) from e
         except Exception as e:
-            logger.exception(f"stack install '{name}' on '{backend}' failed")
+            logger.exception(
+                f"stack install submission for '{name}' on '{backend}' failed"
+            )
             raise HTTPException(status_code=500, detail=str(e)) from e
-        return _stack_status_dict(status)
+        state.notify_poll()
+        return _run_summary(run)
 
     @router.delete("/stacks/{name}")
     async def delete_stack_v1(
