@@ -69,3 +69,4 @@ nav:
       - Environment Variables: task-json/environments.md
       - Writing a Generator: task-json/generators.md
   - CLI: cli.md
+  - Coding agents: coding-agents.md
