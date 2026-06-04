@@ -28,6 +28,7 @@ from scripthut.runs.models import (
     RunItemStatus,
     RunStatus,
     TaskDefinition,
+    TaskOutput,
 )
 from scripthut.ssh.client import SSHClient
 
@@ -313,6 +314,138 @@ class RunManager:
         )
 
         await self.process_run(run)
+
+    # Maximum file size we'll surface in the per-task outputs panel.
+    # Larger files are dropped from the listing — the user can still
+    # access them through their own paths, scripthut just doesn't try
+    # to embed or render them. Matches the size cap documented in the
+    # v0.11.0 plan; revisit if real workloads need bigger payloads.
+    _OUTPUTS_MAX_FILE_BYTES = 5 * 1024 * 1024
+
+    # Cap the number of files the listing surfaces so a runaway
+    # ``$SCRIPTHUT_OUTPUT_DIR`` (e.g. someone redirects a million-row
+    # iteration into a per-iteration plot) doesn't bloat ``run.json``.
+    # 200 is more than any reasonable summary; the ``+1`` head limit
+    # lets us detect overflow.
+    _OUTPUTS_MAX_FILES = 200
+
+    @staticmethod
+    def _classify_output(path: str) -> str:
+        """Suffix-based ``TaskOutput.kind`` mapping. Permissive on case."""
+        lower = path.lower()
+        if lower.endswith((".md", ".markdown")):
+            return "markdown"
+        if lower.endswith((".png", ".jpg", ".jpeg", ".svg", ".gif", ".webp")):
+            return "image"
+        return "other"
+
+    async def _handle_task_outputs(self, run: Run, item: RunItem) -> None:
+        """Collect ``$SCRIPTHUT_OUTPUT_DIR`` contents + ``$SCRIPTHUT_RUN_SUMMARY``.
+
+        Mirrors ``_handle_generates_source`` in shape: one SSH round-trip,
+        parse, mutate the item, persist. v0.11.0 supports SSH backends
+        (Slurm + PBS) only — backends without an SSH client (Batch /
+        EC2 in their API-only modes) silently no-op so existing
+        workflows keep working.
+
+        The ``find`` command lists the output dir at depth ≤3 with a
+        ``%P\\t%s\\n`` format (path-relative, then byte size), capped at
+        ``_OUTPUTS_MAX_FILES + 1`` lines so we can detect overflow. The
+        same SSH command also probes for ``$SCRIPTHUT_RUN_SUMMARY``
+        existence so we don't pay a second round-trip — the result
+        rides on stderr where the script writes either ``has-summary``
+        or nothing, keeping the listing on stdout clean.
+
+        Errors are non-fatal: a missing dir, an unreachable SSH
+        connection, or unparseable lines result in an empty outputs
+        list. The run continues regardless — outputs are decorative,
+        not correctness-critical.
+        """
+        ssh_client = self.get_ssh_client(run.backend_name)
+        if ssh_client is None:
+            # Backend has no SSH (Batch / EC2-API) — skip silently.
+            # Batch/EC2 output collection is the v2 work tracked
+            # separately; not having it doesn't fail the run.
+            return
+
+        output_dir = item.task.get_output_dir(run.id, run.log_dir)
+        run_summary_path = item.task.get_run_summary_path(run.id, run.log_dir)
+        max_files_plus_one = self._OUTPUTS_MAX_FILES + 1
+        # Single round-trip: list files + probe run-summary existence.
+        # ``2>/dev/null`` swallows the "no such file" error case so a
+        # task that didn't emit anything just produces empty stdout.
+        cmd = (
+            f"find {output_dir} -maxdepth 3 -type f "
+            f"-printf '%P\\t%s\\n' 2>/dev/null | head -{max_files_plus_one}; "
+            f"[ -f {run_summary_path} ] && echo HAS_SUMMARY >&2"
+        )
+        try:
+            stdout, stderr, exit_code = await ssh_client.run_command(cmd)
+        except Exception as e:
+            logger.warning(
+                f"Failed to list outputs for task '{item.task.id}' on "
+                f"'{run.backend_name}': {e}"
+            )
+            return
+
+        outputs: list[TaskOutput] = []
+        truncated = False
+        for line in stdout.splitlines():
+            if not line.strip():
+                continue
+            parts = line.split("\t")
+            if len(parts) != 2:
+                continue
+            path_rel, size_str = parts
+            try:
+                size = int(size_str)
+            except ValueError:
+                continue
+            if size > self._OUTPUTS_MAX_FILE_BYTES:
+                # Skip oversize files but log so users notice the cap.
+                logger.info(
+                    f"Task '{item.task.id}': output '{path_rel}' is "
+                    f"{size} bytes; skipping from listing "
+                    f"(max {self._OUTPUTS_MAX_FILE_BYTES})"
+                )
+                continue
+            if len(outputs) >= self._OUTPUTS_MAX_FILES:
+                truncated = True
+                break
+            outputs.append(TaskOutput(
+                path=path_rel, size=size,
+                kind=self._classify_output(path_rel),
+            ))
+
+        item.outputs = outputs
+        item.has_run_summary = "HAS_SUMMARY" in (stderr or "")
+        if outputs or item.has_run_summary:
+            logger.info(
+                f"Task '{item.task.id}': collected {len(outputs)} output "
+                f"file(s){' (truncated)' if truncated else ''}, "
+                f"run_summary={'yes' if item.has_run_summary else 'no'}"
+            )
+            self._persist_run(run)
+
+    async def _after_item_completed(self, run: Run, item: RunItem) -> None:
+        """Fan-out point for every "this item just reached COMPLETED" hook.
+
+        Concentrating the calls here means callers (the three branches
+        in ``main.poll_backend`` that transition items to COMPLETED:
+        SETTLING→COMPLETED, SUBMITTED-past-grace, and the SETTLING
+        long-grace fallback) don't have to remember to invoke each
+        hook separately. New post-completion behavior should land
+        here, not at the call sites.
+
+        Order matters: ``generates_source`` may extend the run with
+        more tasks, but outputs collection only touches the current
+        item — running both is safe in either order. We keep
+        generates_source first because it has been the historically
+        established hook.
+        """
+        if item.task.generates_source:
+            await self._handle_generates_source(run, item)
+        await self._handle_task_outputs(run, item)
 
     def get_ssh_client(self, backend_name: str) -> SSHClient | None:
         """Get SSH client for a backend."""

@@ -47,6 +47,18 @@
                 {% include "run_info.html" %}
             </div>
 
+            <!-- Run Summary panel (v0.11.0) — populated client-side from
+                 /runs/{id}/summary. ``refreshRunSummary()`` is called on
+                 page load and on the ``summary-update`` SSE event so
+                 the panel stays current as tasks finish. Hidden until
+                 at least one task has written ``$SCRIPTHUT_RUN_SUMMARY``. -->
+            <div id="run-summary-panel"
+                class="bg-white rounded-lg shadow-md p-6 mb-6"
+                style="display:none;">
+                <h2 class="text-base font-semibold text-gray-800 mb-3">Run Summary</h2>
+                <div id="run-summary-content" class="prose prose-sm max-w-none text-gray-700"></div>
+            </div>
+
             <!-- View Tabs -->
             <div class="flex gap-1 mb-4 text-sm font-medium">
                 <button id="tab-table" onclick="switchTab('table')"
@@ -138,6 +150,11 @@
                                 class="px-4 py-2.5 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300"
                                 style="display:none;">
                                 Generated
+                            </button>
+                            <button onclick="loadDetailContent('outputs')" id="dtab-outputs"
+                                class="px-4 py-2.5 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300"
+                                style="display:none;">
+                                Outputs
                             </button>
                             <button onclick="loadDetailContent('env')" id="dtab-env"
                                 class="px-4 py-2.5 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300">
@@ -378,7 +395,43 @@
                     } else {
                         document.getElementById('detail-error').style.display = 'none';
                     }
-                    document.getElementById('detail-content').textContent = data.content || 'No content available.';
+                    var contentEl = document.getElementById('detail-content');
+                    // The default "Output / Error / Script" view is a
+                    // dark-themed <pre> for monospace logs. The Outputs
+                    // panel renders styled HTML (markdown + images), so
+                    // swap to a light theme when that's active, restore
+                    // on every other branch.
+                    var darkPreClass = 'h-full p-4 overflow-auto text-sm font-mono bg-gray-900 text-gray-100';
+                    var richClass = 'h-full p-4 overflow-auto text-sm bg-white text-gray-800';
+                    if (_detailType === 'outputs') {
+                        contentEl.className = richClass;
+                        // Structured render: each output entry becomes either
+                        // rendered markdown (server-sanitized), an inline image
+                        // pointing at the file endpoint, or a labelled
+                        // download link for everything else.
+                        var outputs = (data.outputs || []);
+                        if (outputs.length === 0) {
+                            contentEl.textContent = 'No outputs produced by this task.';
+                        } else {
+                            var html = '';
+                            outputs.forEach(function (o) {
+                                html += '<div class="mb-6 pb-4 border-b border-gray-100 last:border-b-0">';
+                                html += '<div class="text-xs text-gray-500 font-mono mb-2">' + escapeHtml(o.path) + ' <span class="text-gray-400">(' + o.kind + ', ' + o.size + ' bytes)</span></div>';
+                                if (o.kind === 'markdown' && o.rendered_html) {
+                                    html += '<div class="prose prose-sm max-w-none">' + o.rendered_html + '</div>';
+                                } else if (o.kind === 'image') {
+                                    html += '<img src="' + escapeHtml(o.url) + '" alt="' + escapeHtml(o.path) + '" class="max-w-full h-auto rounded border border-gray-200">';
+                                } else {
+                                    html += '<a href="' + escapeHtml(o.url) + '" class="text-blue-600 hover:underline text-sm" target="_blank">Download ' + escapeHtml(o.path) + '</a>';
+                                }
+                                html += '</div>';
+                            });
+                            contentEl.innerHTML = html;
+                        }
+                    } else {
+                        contentEl.className = darkPreClass;
+                        contentEl.textContent = data.content || 'No content available.';
+                    }
                     var header = document.getElementById('detail-header');
                     var h = '<h2 class="text-sm font-semibold text-gray-800">' + escapeHtml(data.task_name) + '</h2>';
                     if (data.path) {
@@ -390,6 +443,12 @@
                     var genTab = document.getElementById('dtab-generated');
                     if (genTab) {
                         genTab.style.display = data.generates_source ? '' : 'none';
+                    }
+
+                    // Show/hide "Outputs" tab based on has_outputs flag.
+                    var outTab = document.getElementById('dtab-outputs');
+                    if (outTab) {
+                        outTab.style.display = data.has_outputs ? '' : 'none';
                     }
 
                     // Update attach/debug buttons
@@ -424,10 +483,47 @@
                 });
         }
 
+        // v0.11.0: Run Summary panel. Fetches the aggregated TL;DR
+        // from /runs/{id}/summary and renders each contributing
+        // task's section with a small heading. Hidden when no task
+        // wrote $SCRIPTHUT_RUN_SUMMARY. Polled every 30s so new
+        // contributions surface without a page reload — the panel
+        // doesn't need real-time freshness, so we skip plumbing
+        // through SSE (which would force an SSH read per cycle on
+        // the server).
+        function refreshRunSummary() {
+            var runId = {{ run.id | tojson }};
+            fetch('/runs/' + encodeURIComponent(runId) + '/summary')
+                .then(function (r) { return r.json(); })
+                .then(function (data) {
+                    var panel = document.getElementById('run-summary-panel');
+                    var content = document.getElementById('run-summary-content');
+                    if (!panel || !content) return;
+                    if (!data.any_contributions) {
+                        panel.style.display = 'none';
+                        return;
+                    }
+                    var html = '';
+                    (data.sections || []).forEach(function (s) {
+                        html += '<div class="mb-4 pb-3 border-b border-gray-100 last:border-b-0 last:pb-0 last:mb-0">';
+                        html += '<h3 class="text-xs font-mono text-gray-500 mb-1">' + escapeHtml(s.task_name) + '</h3>';
+                        html += '<div>' + s.rendered_html + '</div>';
+                        html += '</div>';
+                    });
+                    content.innerHTML = html;
+                    panel.style.display = '';
+                })
+                .catch(function () { /* keep last good state */ });
+        }
+        document.addEventListener('DOMContentLoaded', function () {
+            refreshRunSummary();
+            setInterval(refreshRunSummary, 30000);
+        });
+
         function updateDetailTabs() {
             var activeClass = 'px-4 py-2.5 text-sm font-medium border-b-2 border-blue-500 text-blue-600';
             var inactiveClass = 'px-4 py-2.5 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300';
-            ['output', 'error', 'script', 'json', 'generated', 'env'].forEach(function (t) {
+            ['output', 'error', 'script', 'json', 'generated', 'outputs', 'env'].forEach(function (t) {
                 var el = document.getElementById('dtab-' + t);
                 if (el && el.style.display !== 'none') {
                     el.className = (t === _detailType) ? activeClass : inactiveClass;

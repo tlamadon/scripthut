@@ -741,6 +741,9 @@ class PBSBackend(JobBackend):
         """Generate a PBS submission script for a task."""
         output_path = task.get_output_path(run_id, log_dir)
         error_path = task.get_error_path(run_id, log_dir)
+        # v0.11.0 task-outputs feature: see slurm.py for the rationale.
+        output_dir = task.get_output_dir(run_id, log_dir)
+        run_summary_path = task.get_run_summary_path(run_id, log_dir)
         shebang = "#!/bin/bash -l" if login_shell else "#!/bin/bash"
 
         queue = self._default_queue or task.partition
@@ -770,6 +773,8 @@ class PBSBackend(JobBackend):
             env_vars=env_vars,
             extra_init=extra_init,
             interactive_wait=interactive_wait,
+            output_dir=output_dir,
+            run_summary_path=run_summary_path,
         )
         return header + "\n" + body
 

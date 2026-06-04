@@ -992,6 +992,11 @@ class SlurmBackend(JobBackend):
         """Generate an sbatch submission script for a task."""
         output_path = task.get_output_path(run_id, log_dir)
         error_path = task.get_error_path(run_id, log_dir)
+        # v0.11.0 task-outputs feature: wire the contract paths into
+        # the script wrapper so user commands can write structured
+        # outputs without further configuration.
+        output_dir = task.get_output_dir(run_id, log_dir)
+        run_summary_path = task.get_run_summary_path(run_id, log_dir)
         shebang = "#!/bin/bash -l" if login_shell else "#!/bin/bash"
         account_line = f"#SBATCH --account={account}\n" if account else ""
         gres_line = f"#SBATCH --gres={task.gres}\n" if task.gres else ""
@@ -1014,6 +1019,8 @@ class SlurmBackend(JobBackend):
             env_vars=env_vars,
             extra_init=extra_init,
             interactive_wait=interactive_wait,
+            output_dir=output_dir,
+            run_summary_path=run_summary_path,
         )
         return header + "\n" + body
 

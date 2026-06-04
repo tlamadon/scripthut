@@ -3,9 +3,40 @@
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 from scripthut.config_schema import EnvRule, Stack
+
+
+@dataclass
+class TaskOutput:
+    """A single file the task wrote under ``$SCRIPTHUT_OUTPUT_DIR``.
+
+    Populated by ``RunManager._handle_task_outputs`` after the item
+    transitions to COMPLETED. The content itself is not stored — the
+    UI fetches files on demand via the file endpoint, mirroring how
+    logs are read.
+    """
+
+    path: str  # Relative to the task's output dir (no leading slash, no ``..``)
+    size: int  # Bytes, as reported by ``find -printf '%s'``
+    # Classification by suffix. ``markdown`` files are rendered inline
+    # in the Outputs subtab; ``image`` files become inline ``<img>``
+    # tags pointing at the file endpoint; ``other`` files surface as a
+    # download link so binary blobs (CSV, JSON, PDFs) are still
+    # accessible without scripthut trying to interpret them.
+    kind: Literal["markdown", "image", "other"]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"path": self.path, "size": self.size, "kind": self.kind}
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "TaskOutput":
+        return cls(
+            path=data["path"],
+            size=int(data.get("size", 0)),
+            kind=data.get("kind", "other"),
+        )
 
 
 class RunItemStatus(str, Enum):
@@ -150,6 +181,26 @@ class TaskDefinition:
             return self.error_file
         return f"{log_dir}/scripthut_{run_id}_{self.id}.err"
 
+    def get_output_dir(self, run_id: str, log_dir: str) -> str:
+        """Directory the task writes structured outputs to (v0.11.0).
+
+        Exposed to the user's command as ``$SCRIPTHUT_OUTPUT_DIR``. The
+        script wrapper ``mkdir -p``s this before the command runs;
+        anything written here is collected by ``_handle_task_outputs``
+        when the item transitions to COMPLETED and shown in the
+        per-task Outputs panel.
+        """
+        return f"{log_dir}/outputs/{run_id}/{self.id}"
+
+    def get_run_summary_path(self, run_id: str, log_dir: str) -> str:
+        """Per-task markdown fragment that feeds the run-wide Summary panel.
+
+        Exposed as ``$SCRIPTHUT_RUN_SUMMARY``. All tasks' contributions
+        live under ``outputs/<run_id>/_run/`` so the run-summary
+        aggregator can find them with one ``ls``.
+        """
+        return f"{log_dir}/outputs/{run_id}/_run/{self.id}.md"
+
     def to_sbatch_script(
         self,
         run_id: str,
@@ -234,6 +285,16 @@ class RunItem:
     # items it's expected; for COMPLETED items it means accounting
     # didn't return a row within the grace window.
     exit_code: int | None = None
+    # Structured output files the task wrote under
+    # ``$SCRIPTHUT_OUTPUT_DIR``. Populated by ``_handle_task_outputs``
+    # on the SETTLING → COMPLETED transition; empty list when the
+    # task didn't emit anything (or output collection isn't supported
+    # on this backend yet — Batch/EC2 in v0.11.0).
+    outputs: list[TaskOutput] = field(default_factory=list)
+    # ``True`` when the task wrote to ``$SCRIPTHUT_RUN_SUMMARY``. Lets
+    # ``/runs/{id}/summary`` know which items contribute to the
+    # aggregated panel without doing N stat probes at request time.
+    has_run_summary: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to dictionary for JSON storage."""
@@ -251,6 +312,8 @@ class RunItem:
             "max_rss": self.max_rss,
             "scheduler_state": self.scheduler_state,
             "exit_code": self.exit_code,
+            "outputs": [o.to_dict() for o in self.outputs],
+            "has_run_summary": self.has_run_summary,
         }
 
     @classmethod
@@ -279,6 +342,8 @@ class RunItem:
             max_rss=data.get("max_rss"),
             scheduler_state=data.get("scheduler_state") or data.get("sacct_state"),
             exit_code=data.get("exit_code"),
+            outputs=[TaskOutput.from_dict(o) for o in data.get("outputs", [])],
+            has_run_summary=bool(data.get("has_run_summary", False)),
         )
 
     @property

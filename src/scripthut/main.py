@@ -337,8 +337,8 @@ async def poll_backend(backend_state: BackendState, filter_user: str | None = No
                                     f"resolved via sacct: COMPLETED "
                                     f"(exit {s.exit_code})"
                                 )
-                                if item.task.generates_source and state.run_manager:
-                                    await state.run_manager._handle_generates_source(
+                                if state.run_manager:
+                                    await state.run_manager._after_item_completed(
                                         run, item,
                                     )
                                 needs_reprocess = True
@@ -367,8 +367,8 @@ async def poll_backend(backend_state: BackendState, filter_user: str | None = No
                                     f"Task '{item.task.id}' (job {item.job_id}) "
                                     f"resolved via sacct: COMPLETED"
                                 )
-                                if item.task.generates_source and state.run_manager:
-                                    await state.run_manager._handle_generates_source(
+                                if state.run_manager:
+                                    await state.run_manager._after_item_completed(
                                         run, item,
                                     )
                                 needs_reprocess = True
@@ -490,11 +490,8 @@ async def poll_backend(backend_state: BackendState, filter_user: str | None = No
                                 f"SETTLING for {age:.0f}s without an sacct "
                                 f"row — marking COMPLETED (unconfirmed)"
                             )
-                            if (
-                                item.task.generates_source
-                                and state.run_manager
-                            ):
-                                await state.run_manager._handle_generates_source(
+                            if state.run_manager:
+                                await state.run_manager._after_item_completed(
                                     run, item,
                                 )
                 if unresolved_any:
@@ -1011,6 +1008,92 @@ class JobView:
         if elapsed > 0:
             return elapsed * self.cpus / 3600.0
         return 0.0
+
+
+# --- v0.11.0 task-outputs markdown rendering ---
+#
+# `markdown` and `bleach` are imported lazily inside the helper so the
+# server boots without them and only pays the import cost on the first
+# outputs request. If a deployment omits the deps entirely the helper
+# falls back to escaped plain text — still functional, just unstyled.
+
+# HTML tags + attributes the sanitizer accepts inside user-authored
+# markdown. The list is deliberately tight: enough for tables, code
+# blocks, lists, headings, images, and links; no ``<style>``, ``<form>``,
+# ``<iframe>``, or event handlers. We rewrite ``<img src>`` ourselves
+# (see ``_render_markdown_for_outputs``) so the allowlist on ``img``
+# accepts a controlled set of attributes only.
+_OUTPUTS_ALLOWED_TAGS = frozenset({
+    "p", "h1", "h2", "h3", "h4", "h5", "h6",
+    "a", "img", "ul", "ol", "li",
+    "table", "thead", "tbody", "tr", "td", "th",
+    "pre", "code", "blockquote",
+    "strong", "em", "br", "hr", "div", "span",
+})
+_OUTPUTS_ALLOWED_ATTRS = {
+    "a": ["href", "title"],
+    "img": ["src", "alt", "title"],
+    "code": ["class"],  # for syntax highlighting via class names
+    "pre": ["class"],
+    "th": ["align"],
+    "td": ["align"],
+}
+
+
+def _render_markdown_for_outputs(
+    source: str, file_endpoint_base: str,
+) -> str:
+    """Render a single markdown file from a task's output dir to HTML.
+
+    ``file_endpoint_base`` is the prefix that user-relative image refs
+    (e.g. ``![](plot.png)``) get rewritten to so the browser can fetch
+    them — e.g. ``/runs/<id>/tasks/<tid>/outputs/file``. Absolute URLs
+    (``http://`` / ``https://``) and same-origin paths (``/static/...``)
+    pass through unchanged.
+
+    Output passes through bleach with a tight allowlist. Sanitization
+    is the load-bearing security control here — anything a user can
+    write inside ``$SCRIPTHUT_TASK_SUMMARY`` ends up in this pipeline.
+    """
+    try:
+        import markdown
+        import bleach
+    except ImportError:
+        # Degrade gracefully: escape and wrap in <pre> so the content
+        # is still visible. Production installs should always have
+        # both deps; this is purely defensive for partial installs.
+        import html
+        return f"<pre>{html.escape(source)}</pre>"
+
+    raw_html = markdown.markdown(
+        source,
+        extensions=["tables", "fenced_code", "nl2br", "sane_lists"],
+    )
+
+    # Rewrite relative ``<img src="...">`` to point at the file
+    # endpoint. At this stage in the pipeline ``markdown`` has just
+    # emitted the HTML and the only tag that uses ``src=`` is ``<img>``,
+    # so blanket-matching ``src="..."`` is safe; bleach later strips
+    # any non-allowed tags that might have re-introduced one.
+    import re as _re
+
+    def _rewrite_src(match: _re.Match[str]) -> str:
+        src = match.group(1)
+        # Pass-through for absolute URLs, root-relative paths, and
+        # inline ``data:`` URIs. Only naked relative paths need to
+        # be re-anchored at the file endpoint.
+        if src.startswith(("http://", "https://", "/", "data:")):
+            return f'src="{src}"'
+        return f'src="{file_endpoint_base}/{src.lstrip("./")}"'
+
+    rewritten = _re.sub(r'src="([^"]+)"', _rewrite_src, raw_html)
+
+    return bleach.clean(
+        rewritten,
+        tags=_OUTPUTS_ALLOWED_TAGS,
+        attributes=_OUTPUTS_ALLOWED_ATTRS,
+        strip=True,
+    )
 
 
 def _get_job_nodes() -> dict[str, str]:
@@ -2281,6 +2364,86 @@ async def get_task_detail(
                         content = stdout
             else:
                 error = f"Backend '{run.backend_name}' not connected"
+    elif detail_type == "outputs":
+        # v0.11.0 outputs feature: fetch each file the task wrote under
+        # ``$SCRIPTHUT_OUTPUT_DIR`` and render markdown server-side with
+        # bleach sanitization. Images return only their URL — the UI
+        # embeds them via the file endpoint. The renderer also rewrites
+        # relative ``<img src="rel.png">`` references to point at the
+        # file endpoint so users can author markdown naturally.
+        if not item.outputs:
+            # No structured outputs collected. Either the task didn't
+            # emit anything, the backend has no SSH (Batch/EC2), or the
+            # ``_handle_task_outputs`` hook hasn't run yet (item still
+            # SETTLING). The UI uses ``len(outputs) == 0`` to keep the
+            # subtab hidden in those cases.
+            return JSONResponse({
+                "content": None,
+                "error": None,
+                "task_name": item.task.name,
+                "task_id": task_id,
+                "path": None,
+                "outputs": [],
+                "output_dir": item.task.get_output_dir(run.id, run.log_dir),
+                "node": None,
+                "backend_name": run.backend_name,
+                "status": item.status.value,
+                "generates_source": item.task.generates_source,
+                "has_outputs": False,
+            })
+        backend_state = state.backends.get(run.backend_name)
+        ssh_client = backend_state.ssh_client if backend_state else None
+        output_dir = item.task.get_output_dir(run.id, run.log_dir)
+        file_endpoint_base = f"/runs/{run.id}/tasks/{task_id}/outputs/file"
+        outputs_payload = []
+        for o in item.outputs:
+            entry = {
+                "path": o.path,
+                "size": o.size,
+                "kind": o.kind,
+                "url": f"{file_endpoint_base}/{o.path}",
+            }
+            if o.kind == "markdown" and ssh_client is not None:
+                # Render markdown server-side. Cap at 1 MB raw to avoid
+                # render-time blow-ups; oversize markdown surfaces as a
+                # download link via ``url`` instead. The output cap on
+                # the listing already drops >5 MB files, so this is a
+                # smaller "render-friendly" budget.
+                if o.size <= 1024 * 1024:
+                    md_path = f"{output_dir}/{o.path}"
+                    try:
+                        stdout, _, exit_code = await ssh_client.run_command(
+                            f"cat {md_path}"
+                        )
+                        if exit_code == 0:
+                            entry["rendered_html"] = _render_markdown_for_outputs(
+                                stdout, file_endpoint_base,
+                            )
+                    except Exception as e:
+                        logger.warning(
+                            f"Failed to render markdown '{o.path}' "
+                            f"for task '{task_id}': {e}"
+                        )
+            outputs_payload.append(entry)
+        # ``task-summary.md`` (if present) renders first; otherwise
+        # alphabetical. The UI can choose to show summary prominently.
+        outputs_payload.sort(key=lambda e: (
+            0 if e["path"] == "task-summary.md" else 1, e["path"],
+        ))
+        return JSONResponse({
+            "content": None,
+            "error": None,
+            "task_name": item.task.name,
+            "task_id": task_id,
+            "path": output_dir,
+            "outputs": outputs_payload,
+            "output_dir": output_dir,
+            "node": None,
+            "backend_name": run.backend_name,
+            "status": item.status.value,
+            "generates_source": item.task.generates_source,
+            "has_outputs": True,
+        })
     elif detail_type == "json":
         task_data: dict[str, Any] = {
             "id": item.task.id,
@@ -2328,7 +2491,195 @@ async def get_task_detail(
         "backend_name": run.backend_name,
         "run_id": run_id,
         "generates_source": item.task.generates_source,
+        # v0.11.0: every detail response carries the outputs count so
+        # the UI knows whether to reveal the Outputs subtab regardless
+        # of which detail_type the user clicked first. Same pattern as
+        # ``generates_source`` above.
+        "has_outputs": bool(item.outputs),
     })
+
+
+@app.get("/runs/{run_id}/summary")
+async def get_run_summary(run_id: str) -> JSONResponse:
+    """Aggregated run-wide Summary panel content.
+
+    Concatenates each item's ``$SCRIPTHUT_RUN_SUMMARY`` contribution
+    in submission order (the order items appear in ``run.items``,
+    which preserves the order they were submitted). Each contribution
+    is rendered through the same markdown + bleach pipeline as the
+    per-task outputs panel, so the user can use markdown tables,
+    links, and (relative) images. Image references resolve against
+    the contributing task's output dir — same UX as the per-task
+    panel — so the user can ``![](plot.png)`` inside their
+    ``$SCRIPTHUT_RUN_SUMMARY`` and have it Just Work.
+
+    ``any_contributions`` lets the UI hide the panel entirely when
+    no task in the run wrote ``$SCRIPTHUT_RUN_SUMMARY``; that's
+    cheaper than rendering an empty card.
+    """
+    if state.run_manager is None:
+        return JSONResponse(
+            {"error": "Run manager not initialized"}, status_code=503,
+        )
+    run = state.run_manager.get_run(run_id)
+    if run is None:
+        return JSONResponse(
+            {"error": f"Run '{run_id}' not found"}, status_code=404,
+        )
+
+    backend_state = state.backends.get(run.backend_name)
+    ssh = backend_state.ssh_client if backend_state else None
+
+    sections: list[dict[str, Any]] = []
+    for item in run.items:
+        if not item.has_run_summary:
+            continue
+        summary_path = item.task.get_run_summary_path(run.id, run.log_dir)
+        rendered = ""
+        if ssh is not None:
+            try:
+                stdout, _, exit_code = await ssh.run_command(
+                    f"cat {summary_path}"
+                )
+                if exit_code == 0 and stdout.strip():
+                    file_endpoint_base = (
+                        f"/runs/{run.id}/tasks/{item.task.id}/outputs/file"
+                    )
+                    rendered = _render_markdown_for_outputs(
+                        stdout, file_endpoint_base,
+                    )
+            except Exception as e:
+                # Skip the section rather than 5xx the whole panel —
+                # one broken contribution shouldn't blank everything.
+                logger.warning(
+                    f"Failed to render run-summary for task "
+                    f"'{item.task.id}' in run '{run.id}': {e}"
+                )
+        if rendered:
+            sections.append({
+                "task_id": item.task.id,
+                "task_name": item.task.name,
+                "rendered_html": rendered,
+            })
+
+    return JSONResponse({
+        "run_id": run.id,
+        "sections": sections,
+        "any_contributions": bool(sections),
+    })
+
+
+# v0.11.0 task-outputs feature: stream a file the task wrote under
+# ``$SCRIPTHUT_OUTPUT_DIR``. The endpoint is referenced from inside
+# rendered markdown (``<img>``), from the per-task Outputs subtab as
+# download links, and from copy-pasteable URLs.
+
+_OUTPUTS_FILE_MAX_BYTES = 10 * 1024 * 1024
+
+# Coarse content-type guesser by suffix. Browsers don't strictly need
+# these for images (they sniff), but explicit types make the cache
+# behave predictably and let curl users save with the right extension.
+_OUTPUTS_MIME_TYPES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".svg": "image/svg+xml",
+    ".webp": "image/webp",
+    ".md": "text/markdown; charset=utf-8",
+    ".markdown": "text/markdown; charset=utf-8",
+    ".csv": "text/csv; charset=utf-8",
+    ".tsv": "text/tab-separated-values; charset=utf-8",
+    ".json": "application/json",
+    ".txt": "text/plain; charset=utf-8",
+    ".pdf": "application/pdf",
+}
+
+
+@app.get("/runs/{run_id}/tasks/{task_id}/outputs/file/{rel_path:path}")
+async def get_task_output_file(
+    run_id: str, task_id: str, rel_path: str,
+) -> Response:
+    """Stream a single file from a task's ``$SCRIPTHUT_OUTPUT_DIR``.
+
+    Security: the requested ``rel_path`` is joined onto the task's
+    output dir, both are passed through ``os.path.realpath``, and the
+    file must resolve under the directory. Symlink escapes, ``..``,
+    and absolute-path attempts all 404 (not 403 — same observable as
+    "this file doesn't exist", which leaks less information).
+
+    Reads via SSH from the backend (Slurm + PBS only in v0.11.0;
+    Batch / EC2 are v2). Capped at ``_OUTPUTS_FILE_MAX_BYTES``; the
+    listing already drops >5 MB files, so this is the belt-and-
+    suspenders limit if someone hits the endpoint directly.
+    """
+    import os
+    import posixpath
+
+    if state.run_manager is None:
+        return Response(status_code=503)
+    run = state.run_manager.get_run(run_id)
+    if run is None:
+        return Response(status_code=404)
+    item = run.get_item_by_task_id(task_id)
+    if item is None:
+        return Response(status_code=404)
+
+    output_dir = item.task.get_output_dir(run.id, run.log_dir)
+    # Containment check happens against the *normalized* joined path
+    # in POSIX form because the backend path will always be POSIX
+    # (Slurm/PBS run on Linux), even if scripthut itself is on macOS.
+    full_path = posixpath.normpath(posixpath.join(output_dir, rel_path))
+    norm_dir = posixpath.normpath(output_dir) + "/"
+    if not full_path.startswith(norm_dir):
+        return Response(status_code=404)
+    # Belt-and-suspenders against null bytes / control chars in the
+    # request path that could confuse the remote shell. These tokens
+    # never appear in legitimate filenames in this system.
+    if any(c in rel_path for c in ("\x00", "\n", "\r")):
+        return Response(status_code=404)
+
+    backend_state = state.backends.get(run.backend_name)
+    if backend_state is None or backend_state.ssh_client is None:
+        return Response(status_code=503)
+    ssh = backend_state.ssh_client
+
+    # Probe size before reading so an oversize file fails cleanly
+    # with 413 rather than hanging or OOM'ing on the read. ``stat -c %s``
+    # works on the Linux backends scripthut targets.
+    size_out, _, size_rc = await ssh.run_command(
+        f"stat -c %s {full_path} 2>/dev/null"
+    )
+    if size_rc != 0 or not size_out.strip():
+        return Response(status_code=404)
+    try:
+        size = int(size_out.strip())
+    except ValueError:
+        return Response(status_code=404)
+    if size > _OUTPUTS_FILE_MAX_BYTES:
+        return Response(status_code=413)
+
+    # Use base64 to survive binary content over the SSH stdout text
+    # channel. ``base64 -w0`` emits no line wrapping; the Python side
+    # decodes back to bytes.
+    import base64
+    b64_out, _, b64_rc = await ssh.run_command(
+        f"base64 -w0 {full_path}"
+    )
+    if b64_rc != 0:
+        return Response(status_code=404)
+    try:
+        content = base64.b64decode(b64_out.strip())
+    except Exception:
+        return Response(status_code=500)
+
+    _, ext = os.path.splitext(rel_path.lower())
+    media_type = _OUTPUTS_MIME_TYPES.get(ext, "application/octet-stream")
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={"Cache-Control": "private, max-age=60"},
+    )
 
 
 @app.get("/runs/{run_id}/tasks/{task_id}/json", response_class=HTMLResponse)

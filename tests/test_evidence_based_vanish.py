@@ -98,6 +98,7 @@ def _state_for_run(run: Run, job_backend) -> tuple:
     run_manager._persist_run = MagicMock()
     run_manager.notify_run = MagicMock()
     run_manager._handle_generates_source = AsyncMock()
+    run_manager._after_item_completed = AsyncMock()
     run_manager.storage = MagicMock()
     run_manager.storage.add_external_job = MagicMock()
 

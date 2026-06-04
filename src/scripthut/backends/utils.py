@@ -158,14 +158,18 @@ def generate_script_body(
     env_vars: dict[str, str] | None = None,
     extra_init: str = "",
     interactive_wait: bool = False,
+    output_dir: str | None = None,
+    run_summary_path: str | None = None,
 ) -> str:
     """Generate the common body of an HPC submission script.
 
     Order in the produced bash:
         1. ``extra_init`` (e.g. ``module load``, ``source activate``)
         2. ``export`` lines from ``env_vars``
-        3. ``cd`` into the working dir
-        4. The task command
+        3. (v0.11.0) ``SCRIPTHUT_OUTPUT_DIR`` / ``SCRIPTHUT_TASK_SUMMARY`` /
+           ``SCRIPTHUT_RUN_SUMMARY`` exports + ``mkdir -p`` of the dirs
+        4. ``cd`` into the working dir
+        5. The task command
 
     Init runs first so any env vars the user sets via ``set:`` rules override
     whatever ``module load`` / ``source`` placed into the environment — the
@@ -175,6 +179,21 @@ def generate_script_body(
     If interactive_wait is True, a tmux session is started after environment
     setup and the script blocks until a continue signal is sent. This lets
     users attach to the job interactively before the heavy command runs.
+
+    When ``output_dir`` and ``run_summary_path`` are both passed (currently
+    SSH-based backends only — Slurm + PBS in v0.11.0), the wrapper exports
+    three convention paths for the user's command to write to:
+
+    - ``$SCRIPTHUT_OUTPUT_DIR`` — the task's private output directory.
+      Anything written here surfaces in the per-task Outputs panel.
+    - ``$SCRIPTHUT_TASK_SUMMARY`` — convenience path
+      (``$SCRIPTHUT_OUTPUT_DIR/task-summary.md``); the markdown
+      rendered prominently at the top of the per-task panel.
+    - ``$SCRIPTHUT_RUN_SUMMARY`` — separate path for the task's
+      contribution to the run-level Summary panel.
+
+    Both directories are ``mkdir -p``'d before the command runs so user
+    scripts can append immediately without their own preflight.
     """
     env_lines = ""
     if env_vars:
@@ -185,6 +204,22 @@ def generate_script_body(
     extra_init_lines = ""
     if extra_init:
         extra_init_lines = extra_init + "\n\n"
+
+    # Output-dir exports happen AFTER env_vars so the user's `set:`
+    # rules can't accidentally clobber them — these are scripthut-
+    # contract paths, not user knobs. The mkdir lines fail soft on
+    # filesystems where pre-creation isn't possible (rare), so a
+    # missing dir at write time still surfaces a clean error from
+    # the user's command rather than ours.
+    output_dir_block = ""
+    if output_dir and run_summary_path:
+        output_dir_block = (
+            f'export SCRIPTHUT_OUTPUT_DIR="{output_dir}"\n'
+            f'export SCRIPTHUT_TASK_SUMMARY="$SCRIPTHUT_OUTPUT_DIR/task-summary.md"\n'
+            f'export SCRIPTHUT_RUN_SUMMARY="{run_summary_path}"\n'
+            f'mkdir -p "$SCRIPTHUT_OUTPUT_DIR" '
+            f'"$(dirname "$SCRIPTHUT_RUN_SUMMARY")" 2>/dev/null || true\n\n'
+        )
 
     tmux_block = ""
     if interactive_wait:
@@ -228,7 +263,7 @@ echo "Working dir: {working_dir}"
 echo "=================================="
 echo ""
 
-{extra_init_lines}{env_lines}cd {working_dir}
+{extra_init_lines}{env_lines}{output_dir_block}cd {working_dir}
 {tmux_block}{command}
 EXIT_CODE=$?
 
