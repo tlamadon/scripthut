@@ -396,6 +396,7 @@ def test_resolve_for_task_with_unknown_workflow_or_backend():
     run.commit_hash = None
     run.doc_env = []
     run.doc_env_groups = {}
+    run.doc_stacks = {}
 
     env, init = mgr._resolve_environment(run, task)
     assert env["FOO"] == "bar"

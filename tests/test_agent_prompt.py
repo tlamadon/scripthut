@@ -280,6 +280,61 @@ class TestYamlEditingGuidance:
         assert "hot-reload" in prompt.lower()
 
 
+class TestStackGuidance:
+    """The most common follow-up question after env_groups is "how do I
+    get a fresh Julia/CUDA/conda env onto every task?" The briefing must
+    teach the full define → install → reference workflow plus the two
+    things that bite hardest (unknown name → ValueError, no auto-install)
+    so agents don't suggest `stacks: [name]` without first checking
+    `stack check`.
+    """
+
+    def test_stacks_section_present(self):
+        prompt = _render_agent_prompt(ScriptHutConfig())
+        # The dedicated section header.
+        assert "## Stacks — define once, install once, reference everywhere" in prompt
+
+    def test_define_step_is_documented_with_required_fields(self):
+        prompt = _render_agent_prompt(ScriptHutConfig())
+        # The four schema fields the author actually needs to know.
+        assert "name:" in prompt
+        assert "prep:" in prompt
+        assert "init:" in prompt
+        assert "inputs:" in prompt
+        # Server vs. per-repo placement explicitly contrasted.
+        assert "Server-global" in prompt
+        assert "Per-repo" in prompt
+
+    def test_install_step_is_documented(self):
+        prompt = _render_agent_prompt(ScriptHutConfig())
+        assert "scripthut stack check" in prompt
+        assert "scripthut stack install" in prompt
+        # The --source variant — the v0.7.0 feature for installing
+        # repo-defined stacks without first cloning.
+        assert "--source" in prompt
+        # The rebuild option is documented (common follow-up question).
+        assert "--rebuild" in prompt
+
+    def test_reference_step_shows_stacks_env_rule(self):
+        """The v0.7.1 new thing — using `stacks: [name]` on env rules."""
+        prompt = _render_agent_prompt(ScriptHutConfig())
+        # The JSON usage example with the new field.
+        assert '"stacks":' in prompt or '"stacks"' in prompt
+        # The YAML env_groups variant — common pattern.
+        assert "stacks: [julia-1.12]" in prompt
+
+    def test_critical_gotchas_are_taught(self):
+        """The two failure modes that bite hardest must be loud."""
+        prompt = _render_agent_prompt(ScriptHutConfig())
+        # Unknown name → loud failure, not silent skip.
+        assert "Unknown stack name" in prompt
+        assert "ValueError" in prompt
+        # No auto-install — operator's responsibility.
+        assert "No auto-install" in prompt
+        # The check-before-running pattern is the recovery path.
+        assert "stack check" in prompt
+
+
 class TestObservabilitySurfaces:
     """The user explicitly asked: the agent must know how to check
     status, output, and logs, and how to refresh sources.

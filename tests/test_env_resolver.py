@@ -469,5 +469,121 @@ def test_flatten_guards_with_conflicting_keys_never_match():
     assert "X" not in env
 
 
+# ---- stacks: references ----------------------------------------------------
+
+
+from scripthut.config_schema import Stack as _Stack
+
+
+def _stack(name: str, init: str = "") -> _Stack:
+    return _Stack(name=name, init=init, prep="echo prep")
+
+
+def test_flatten_stacks_emits_init_rule():
+    """A `stacks: [name]` reference expands to a synthetic init rule."""
+    stacks = {"julia-1.12": _stack("julia-1.12", init="module load julia/1.12")}
+    rules = [_lr(rule(stacks=["julia-1.12"]))]
+    out = flatten(rules, {}, stacks)
+    assert len(out) == 1
+    assert out[0].rule.init == "module load julia/1.12"
+    # Source is annotated so provenance still tracks the original reference.
+    assert "stack:julia-1.12" in out[0].source
+
+
+def test_flatten_stacks_then_set_apply_in_order():
+    """Same rule with stacks: AND set: — stack's init expands first, then
+    the rule's own set runs after. Lets workflows do
+    ``stacks: [foo], set: {OVERRIDE: '1'}`` to layer on top.
+    """
+    stacks = {"foo": _stack("foo", init="echo stack-init")}
+    r = rule(stacks=["foo"], set={"X": "1"})
+    out = flatten([_lr(r)], {}, stacks)
+    # First the stack's init, then the original rule (carrying set).
+    assert len(out) == 2
+    assert out[0].rule.init == "echo stack-init"
+    assert out[1].rule.set == {"X": "1"}
+
+
+def test_flatten_unknown_stack_raises():
+    """Stack typos must fail loudly. Otherwise the task runs without the
+    env the author expected — silent dropping is the worst failure mode.
+    """
+    rules = [_lr(rule(stacks=["typo-1.12"]))]
+    with pytest.raises(ValueError, match="stack 'typo-1.12'"):
+        flatten(rules, {}, {})
+
+
+def test_flatten_empty_init_stack_is_noop():
+    """A stack with no init: produces no env contribution, no error."""
+    stacks = {"silent": _stack("silent", init="")}
+    rules = [_lr(rule(stacks=["silent"]))]
+    out = flatten(rules, {}, stacks)
+    assert out == []
+
+
+def test_flatten_multiple_stacks_in_one_rule():
+    stacks = {
+        "a": _stack("a", init="load A"),
+        "b": _stack("b", init="load B"),
+    }
+    rules = [_lr(rule(stacks=["a", "b"]))]
+    out = flatten(rules, {}, stacks)
+    assert [r.rule.init for r in out] == ["load A", "load B"]
+
+
+def test_flatten_stack_with_if_guard_inherits():
+    """A stacks: rule under an if-guard means the expanded init is also
+    guarded — useful for backend-specific stack selection.
+    """
+    stacks = {"cuda": _stack("cuda", init="export CUDA_HOME=/x")}
+    rules = [_lr(rule(if_={"GPU": "1"}, stacks=["cuda"]))]
+    out = flatten(rules, {}, stacks)
+    assert out[0].extra_guards == [{"GPU": "1"}]
+    env, init = resolve(out, {"GPU": "1"})
+    assert init == "export CUDA_HOME=/x"
+    env, init = resolve(out, {"GPU": "0"})
+    assert init == ""
+
+
+def test_flatten_include_and_stacks_compose():
+    """A rule can both include an env_group AND reference stacks. The
+    expansion order is groups first (per existing convention), then
+    stacks, then the rule's own set/init.
+    """
+    groups = {"g": [rule(set={"FROM_GROUP": "1"})]}
+    stacks = {"s": _stack("s", init="from-stack")}
+    rules = [_lr(rule(include=["g"], stacks=["s"], set={"FROM_RULE": "1"}))]
+    out = flatten(rules, groups, stacks)
+    # Group expanded (1) + stack expanded (1) + original rule (carrying set).
+    assert len(out) == 3
+    env, init = resolve(out, {})
+    assert env["FROM_GROUP"] == "1"
+    assert env["FROM_RULE"] == "1"
+    assert init == "from-stack"
+
+
+# ---- collect_stacks --------------------------------------------------------
+
+
+def test_collect_stacks_server_only():
+    from scripthut.config_schema import ScriptHutConfig
+    from scripthut.runs.env import collect_stacks
+
+    cfg = ScriptHutConfig(stacks=[_stack("base")])
+    out = collect_stacks(cfg)
+    assert set(out) == {"base"}
+
+
+def test_collect_stacks_doc_overrides_server():
+    """Repo-project stacks (passed as doc_stacks) win on name collision."""
+    from scripthut.config_schema import ScriptHutConfig
+    from scripthut.runs.env import collect_stacks
+
+    cfg = ScriptHutConfig(stacks=[_stack("julia", init="from-server")])
+    doc = {"julia": _stack("julia", init="from-repo")}
+    out = collect_stacks(cfg, doc_stacks=doc)
+    assert out["julia"].init == "from-repo"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

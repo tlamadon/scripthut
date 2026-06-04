@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
-from scripthut.config_schema import EnvRule
+from scripthut.config_schema import EnvRule, Stack
 
 
 class RunItemStatus(str, Enum):
@@ -313,6 +313,11 @@ class Run:
     # workflow-config env and the per-task env in the resolver chain.
     doc_env: list[EnvRule] = field(default_factory=list)
     doc_env_groups: dict[str, list[EnvRule]] = field(default_factory=dict)
+    # Stacks available to ``stacks:`` env-rule references for this run.
+    # Pre-merged at submit time (server config | source repo's project
+    # YAML, source wins on collision) so the resolver doesn't have to
+    # know about the merge layers.
+    doc_stacks: dict[str, Stack] = field(default_factory=dict)
 
     @property
     def status(self) -> RunStatus:

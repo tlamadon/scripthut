@@ -292,10 +292,11 @@ class TestRunEnvLayering:
         async def fake_build_run(
             tasks, workflow_name, backend_name, max_concurrent, ssh_client,
             *, git_repo=None, git_branch=None, commit_hash=None,
-            doc_env=None, doc_env_groups=None,
+            doc_env=None, doc_env_groups=None, doc_stacks=None,
         ):
             captured["doc_env"] = doc_env
             captured["doc_env_groups"] = doc_env_groups
+            captured["doc_stacks"] = doc_stacks
             # Return a minimal Run-shaped sentinel; the test never reads it.
             from scripthut.runs.models import (
                 Run,
@@ -414,3 +415,109 @@ class TestRunEnvLayering:
         # Only the workflow's own env, nothing else.
         assert len(captured["doc_env"]) == 1
         assert captured["doc_env"][0].set == {"FROM_WORKFLOW": "yes"}
+
+    @pytest.mark.asyncio
+    async def test_project_stacks_threaded_to_doc_stacks(self, tmp_path: Path):
+        """Stacks defined in the repo project YAML must reach the
+        resolver via ``doc_stacks`` so workflow ``stacks: [name]``
+        references resolve.
+        """
+        from scripthut.config_schema import Stack
+        mgr = _manager(self._git_config(tmp_path), tmp_path=tmp_path)
+        project_cfg = ScriptHutConfig.model_validate({
+            "stacks": [{
+                "name": "julia-1.12", "prep": "echo prep",
+                "init": "module load julia/1.12",
+            }],
+        })
+        workflow_doc = {
+            "tasks": [{"id": "t", "name": "t", "command": "echo hi"}],
+        }
+        captured = await self._run_workflow(
+            mgr, project_cfg=project_cfg, workflow_doc=workflow_doc,
+        )
+        assert "julia-1.12" in captured["doc_stacks"]
+        assert isinstance(captured["doc_stacks"]["julia-1.12"], Stack)
+
+
+class TestEndToEndStackReference:
+    """End-to-end: a workflow whose env carries ``stacks: [name]`` resolves
+    against the merged stack pool when the task is actually scheduled.
+    """
+
+    @pytest.mark.asyncio
+    async def test_resolve_for_task_expands_stacks_init(self):
+        from scripthut.config_schema import ScriptHutConfig, Stack
+        from scripthut.runs.env import resolve_for_task
+        from scripthut.runs.models import TaskDefinition
+        from datetime import UTC, datetime
+
+        cfg = ScriptHutConfig(
+            stacks=[Stack(name="julia-1.12", prep="echo prep",
+                          init="module load julia/1.12")],
+        )
+        # Workflow's env references the stack.
+        doc_env = [{"stacks": ["julia-1.12"]}]
+        from scripthut.config_schema import EnvRule
+        doc_env_rules = [EnvRule.model_validate(r) for r in doc_env]
+
+        task = TaskDefinition(id="t", name="t", command="julia run.jl")
+
+        env, extra_init = resolve_for_task(
+            cfg, backend_name="any", workflow_name="wf", run_id="r",
+            created_at=datetime(2026, 1, 1, tzinfo=UTC), task=task,
+            doc_env=doc_env_rules,
+        )
+        assert "module load julia/1.12" in extra_init
+
+    @pytest.mark.asyncio
+    async def test_resolve_for_task_repo_stack_overrides_server(self):
+        """When both server and repo project YAML define a stack with the
+        same name, the repo's init wins — same convention as env_groups.
+        """
+        from scripthut.config_schema import ScriptHutConfig, Stack
+        from scripthut.runs.env import resolve_for_task
+        from scripthut.runs.models import TaskDefinition
+        from datetime import UTC, datetime
+
+        cfg = ScriptHutConfig(
+            stacks=[Stack(name="julia", prep="echo prep",
+                          init="server-side julia")],
+        )
+        doc_stacks = {
+            "julia": Stack(name="julia", prep="echo prep",
+                           init="repo-side julia 1.12"),
+        }
+        from scripthut.config_schema import EnvRule
+        doc_env_rules = [EnvRule.model_validate({"stacks": ["julia"]})]
+
+        task = TaskDefinition(id="t", name="t", command="julia run.jl")
+
+        env, extra_init = resolve_for_task(
+            cfg, backend_name="any", workflow_name="wf", run_id="r",
+            created_at=datetime(2026, 1, 1, tzinfo=UTC), task=task,
+            doc_env=doc_env_rules, doc_stacks=doc_stacks,
+        )
+        assert "repo-side julia 1.12" in extra_init
+        assert "server-side julia" not in extra_init
+
+    @pytest.mark.asyncio
+    async def test_resolve_for_task_unknown_stack_raises(self):
+        """A workflow referencing a stack name that doesn't exist
+        anywhere should fail loudly — no submitting a task missing its env.
+        """
+        from scripthut.config_schema import EnvRule, ScriptHutConfig
+        from scripthut.runs.env import resolve_for_task
+        from scripthut.runs.models import TaskDefinition
+        from datetime import UTC, datetime
+
+        cfg = ScriptHutConfig()
+        task = TaskDefinition(
+            id="t", name="t", command="julia",
+            env=[EnvRule.model_validate({"stacks": ["typo"]})],
+        )
+        with pytest.raises(ValueError, match="stack 'typo'"):
+            resolve_for_task(
+                cfg, backend_name="any", workflow_name="wf", run_id="r",
+                created_at=datetime(2026, 1, 1, tzinfo=UTC), task=task,
+            )

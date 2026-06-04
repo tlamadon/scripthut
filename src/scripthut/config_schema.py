@@ -32,6 +32,17 @@ class EnvRule(BaseModel):
             "are evaluated in order, and inherit this rule's if-guard if any."
         ),
     )
+    stacks: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Names of stacks whose ``init:`` text is inlined at this position, "
+            "exactly as if the user had written an env rule with that init body. "
+            "The runtime does NOT auto-install or auto-check the stack — "
+            "operator manages that via ``scripthut stack install``. An unknown "
+            "stack name raises at resolve time so a typo fails loudly rather "
+            "than silently dropping the dependency."
+        ),
+    )
     set: dict[str, str] = Field(
         default_factory=dict,
         description="Variables to set (overwrites prior values). ${name} is expanded against env-so-far.",

@@ -18,6 +18,7 @@ from scripthut.config_schema import (
     GitSourceConfig,
     PathSourceConfig,
     ScriptHutConfig,
+    Stack,
 )
 from scripthut.models import JobState
 from scripthut.runs.env import resolve_for_task
@@ -132,6 +133,7 @@ class RunManager:
             git_sha=run.commit_hash,
             doc_env=run.doc_env,
             doc_env_groups=run.doc_env_groups,
+            doc_stacks=run.doc_stacks,
         )
 
     @staticmethod
@@ -489,6 +491,7 @@ class RunManager:
         commit_hash: str | None = None,
         doc_env: list[EnvRule] | None = None,
         doc_env_groups: dict[str, list[EnvRule]] | None = None,
+        doc_stacks: dict[str, Stack] | None = None,
     ) -> Run:
         """Build a Run: resolve deps, validate, create, persist, and start processing.
 
@@ -536,6 +539,7 @@ class RunManager:
             commit_hash=commit_hash,
             doc_env=list(doc_env or []),
             doc_env_groups=dict(doc_env_groups or {}),
+            doc_stacks=dict(doc_stacks or {}),
         )
 
         self.runs[run_id] = run
@@ -836,6 +840,7 @@ class RunManager:
         project_cfg = await self._load_source_project_config(
             source, commit_hash=commit_hash, ssh_client=ssh_client,
         )
+        doc_stacks: dict[str, Stack] = {}
         if project_cfg is not None:
             doc_env = list(project_cfg.env) + list(doc_env)
             # Workflow-inline keys win on collision.
@@ -843,6 +848,11 @@ class RunManager:
                 **project_cfg.env_groups,
                 **doc_env_groups,
             }
+            # Repo stacks are visible to ``stacks:`` env-rule references.
+            # The resolver merges these on top of server-config stacks
+            # (collect_stacks: server | doc_stacks), so a repo can override
+            # a server-defined stack — same convention as env_groups.
+            doc_stacks = {s.name: s for s in project_cfg.stacks}
 
         git_repo = source.url if isinstance(source, GitSourceConfig) else None
         git_branch = source.branch if isinstance(source, GitSourceConfig) else None
@@ -850,6 +860,7 @@ class RunManager:
             tasks, workflow_name, backend_name, None, ssh_client,
             git_repo=git_repo, git_branch=git_branch, commit_hash=commit_hash,
             doc_env=doc_env, doc_env_groups=doc_env_groups,
+            doc_stacks=doc_stacks,
         )
         return run
 
@@ -894,6 +905,28 @@ class RunManager:
         elif isinstance(source, PathSourceConfig):
             self._resolve_working_dirs(tasks, source.path)
 
+        # Same overlay as the real submission path so the preview reflects
+        # what would actually happen: repo env / env_groups / stacks fold
+        # in, workflow-doc inline keys win on collision.
+        ssh_for_cfg = self.get_ssh_client(backend_name)
+        try:
+            project_cfg = await self._load_source_project_config(
+                source, commit_hash=commit_hash, ssh_client=ssh_for_cfg,
+            )
+        except ValueError as e:
+            # In dry-run, surface the project-YAML error as a warning so
+            # the user sees the diagnostic without aborting the preview.
+            warnings.append(f"Source project config error: {e}")
+            project_cfg = None
+        doc_stacks: dict[str, Stack] = {}
+        if project_cfg is not None:
+            doc_env = list(project_cfg.env) + list(doc_env)
+            doc_env_groups = {
+                **project_cfg.env_groups,
+                **doc_env_groups,
+            }
+            doc_stacks = {s.name: s for s in project_cfg.stacks}
+
         self._resolve_wildcard_deps(tasks)
         self._validate_dependencies(tasks)
 
@@ -922,6 +955,7 @@ class RunManager:
                 task=task,
                 doc_env=doc_env,
                 doc_env_groups=doc_env_groups,
+                doc_stacks=doc_stacks,
             )
             if job_backend:
                 script = job_backend.generate_script(

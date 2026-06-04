@@ -23,7 +23,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from scripthut.config_schema import EnvRule, ScriptHutConfig
+from scripthut.config_schema import EnvRule, ScriptHutConfig, Stack
 from scripthut.runs.models import TaskDefinition
 
 logger = logging.getLogger(__name__)
@@ -225,18 +225,53 @@ def collect_groups(
     return groups
 
 
+def collect_stacks(
+    config: ScriptHutConfig,
+    *,
+    doc_stacks: dict[str, Stack] | None = None,
+) -> dict[str, Stack]:
+    """Build the merged ``name → Stack`` map the resolver references.
+
+    Server config's ``stacks:`` is the base; ``doc_stacks`` overlays on
+    top (already pre-merged in ``RunManager.create_run_from_source`` to
+    include the source repo's project-local stacks when present). The
+    by-name override convention matches ``_merge_configs`` — a more
+    specific layer wins.
+    """
+    stacks: dict[str, Stack] = {s.name: s for s in config.stacks}
+    if doc_stacks:
+        stacks.update(doc_stacks)
+    return stacks
+
+
 def flatten(
     rules: list[LabeledRule],
     groups: Mapping[str, list[EnvRule]],
+    stacks: Mapping[str, Stack] | None = None,
     _seen: frozenset[str] = frozenset(),
 ) -> list[LabeledRule]:
-    """Expand ``include:`` rules into the rules of the referenced groups.
+    """Expand ``include:`` rules into env_group rules and ``stacks:`` into
+    synthetic ``init:`` rules carrying the stack's prep-completion text.
 
     Inner rules inherit the parent rule's source (annotated with ``via
-    group:NAME``) and its ``if:`` guard (added to ``extra_guards`` so multiple
-    guards AND together, including non-overlapping keys with conflicting
-    values).
+    group:NAME`` or ``via stack:NAME``) and its ``if:`` guard (added to
+    ``extra_guards`` so multiple guards AND together).
+
+    Stack references differ from group references in three places:
+
+    - Unknown stack names raise ``ValueError`` (vs. the lenient
+      "skip-with-warning" for unknown groups). Stacks are explicit
+      task ↔ environment contracts; a typo there silently producing a
+      task without the expected env is a worse failure mode than
+      failing the whole run.
+    - A stack expands to exactly one synthetic ``EnvRule`` carrying its
+      ``init:`` text (no recursive expansion — stacks don't reference
+      other stacks).
+    - The expansion happens at resolve time only. The runtime does NOT
+      verify the stack is installed on the backend; that's the
+      operator's responsibility (``scripthut stack install``).
     """
+    stacks = stacks or {}
     out: list[LabeledRule] = []
     for lr in rules:
         if lr.rule.include:
@@ -261,9 +296,35 @@ def flatten(
                     )
                     for r in groups[name]
                 ]
-                expanded = flatten(wrapped, groups, _seen | {name})
+                expanded = flatten(wrapped, groups, stacks, _seen | {name})
                 out.extend(expanded)
-        # If the rule contributes anything besides include:, keep it.
+        if lr.rule.stacks:
+            for name in lr.rule.stacks:
+                if name not in stacks:
+                    raise ValueError(
+                        f"stack '{name}' referenced from {lr.source} but "
+                        f"not defined in the server config or the source's "
+                        f"project scripthut.yaml. Either define it or fix "
+                        f"the typo — silently skipping a stack reference "
+                        f"would let the task run without the env the "
+                        f"author expected."
+                    )
+                stack_init = stacks[name].init
+                if not stack_init:
+                    # Defining a stack with no `init:` is legal (the prep
+                    # may just produce files the task reads). Emit nothing
+                    # for the env layer — there's nothing to inject.
+                    continue
+                inherited_guards = list(lr.extra_guards)
+                if lr.rule.if_ is not None:
+                    inherited_guards.append(lr.rule.if_)
+                out.append(LabeledRule(
+                    rule=EnvRule(init=stack_init),
+                    source=f"{lr.source} via stack:{name}",
+                    extra_guards=list(inherited_guards),
+                ))
+        # If the rule contributes anything besides include: / stacks:,
+        # keep it so its set/append/init still applies.
         if lr.rule.set or lr.rule.append or lr.rule.init:
             out.append(lr)
     return out
@@ -282,12 +343,16 @@ def resolve_for_task(
     git_sha: str | None = None,
     doc_env: list[EnvRule] | None = None,
     doc_env_groups: dict[str, list[EnvRule]] | None = None,
+    doc_stacks: dict[str, Stack] | None = None,
 ) -> tuple[dict[str, str], str]:
     """Resolve env for a task by chaining all layers.
 
     ``doc_env`` / ``doc_env_groups`` come from the workflow JSON document
     itself (top-level ``env:`` and ``env_groups:`` on the generator's output)
     and slot between the workflow config layer and the task layer.
+    ``doc_stacks`` carries any stacks the source repo's project YAML
+    contributed (merged on top of server-config stacks with the repo
+    winning on collision); referenced via ``stacks:`` on env rules.
     """
     seed = build_seed(
         backend_name=backend_name,
@@ -306,7 +371,8 @@ def resolve_for_task(
         config, backend_name=backend_name, workflow_name=workflow_name,
         doc_env_groups=doc_env_groups,
     )
-    rules = flatten(rules, groups)
+    stacks = collect_stacks(config, doc_stacks=doc_stacks)
+    rules = flatten(rules, groups, stacks)
     return resolve(rules, seed)
 
 
@@ -323,6 +389,7 @@ def resolve_for_task_detailed(
     git_sha: str | None = None,
     doc_env: list[EnvRule] | None = None,
     doc_env_groups: dict[str, list[EnvRule]] | None = None,
+    doc_stacks: dict[str, Stack] | None = None,
 ) -> tuple[dict[str, str], str, dict[str, Provenance]]:
     """Same as ``resolve_for_task`` but also returns per-key provenance."""
     seed = build_seed(
@@ -342,5 +409,6 @@ def resolve_for_task_detailed(
         config, backend_name=backend_name, workflow_name=workflow_name,
         doc_env_groups=doc_env_groups,
     )
-    rules = flatten(rules, groups)
+    stacks = collect_stacks(config, doc_stacks=doc_stacks)
+    rules = flatten(rules, groups, stacks)
     return resolve_detailed(rules, seed)
