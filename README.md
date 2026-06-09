@@ -9,14 +9,18 @@ A Python web interface to start and track jobs on remote HPC systems (Slurm, PBS
 
 ## Features
 
-- **Multi-backend support** - Monitor Slurm, PBS/Torque, AWS Batch, and AWS EC2 queues from a single dashboard
-- **Real-time job monitoring** - View running and pending jobs with auto-refresh via SSE
-- **Task runs** - Submit batches of jobs with configurable concurrency limits and dependencies
-- **Unified job view** - See run-submitted and external jobs in one dashboard
-- **Git workflow integration** - Clone repos on the backend before running task generators
-- **Persistent SSH connections** - Maintains connections with keepalive and auto-reconnect
-- **HTMX frontend** - Dynamic updates without full page reloads
+- **Multi-backend support** - Monitor and submit to Slurm, PBS/Torque, AWS Batch, and AWS EC2 (one instance per task, SSM-tunnelled) from a single dashboard
+- **Real-time job monitoring** - Running, pending, and external (non-ScriptHut) jobs in one unified view, auto-refreshed via SSE
+- **Task runs with dependency DAGs** - Submit batches with per-run/backend concurrency caps and task dependencies, including glob-style **wildcard deps** (`build.*`) and dot-notation grouping
+- **Dynamic task generation** - A task can emit a JSON file (`generates_source`) whose tasks are appended to the running DAG — two-phase plan-then-execute workflows
+- **Stacks** - Reusable software environments (venv, Julia depot, Conda env, …) installed once per backend and reused across runs; inputs are hashed so rebuilds happen only when something changes (`scripthut stack check`)
+- **Layered environment resolution** - Compose env vars and init scripts from backend → server → workflow → task `env` rules, with reusable groups and full per-key provenance in the UI
+- **Git workflow integration** - Clone repos on the backend (or resolve the SHA for Batch/EC2) before running task generators
+- **Task outputs** - Tasks can publish plots and Markdown that render per-task and roll up into a run-level summary panel
 - **Cost estimation** - Estimate run costs using EC2 spot/on-demand pricing from [instances.vantage.sh](https://instances.vantage.sh/)
+- **CLI + remote control** - Full `scripthut` CLI that can drive a running server over its API (with Cloudflare Access support) and a coding-agent briefing via `scripthut agent prompt`
+- **Persistent SSH connections** - Keepalive and auto-reconnect for SSH backends
+- **HTMX frontend** - Dynamic updates without full page reloads
 - **Extensible** - Abstract backend system ready for additional schedulers
 
 ## Examples
