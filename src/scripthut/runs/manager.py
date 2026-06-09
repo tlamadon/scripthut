@@ -1342,12 +1342,25 @@ class RunManager:
                 log_dir = log_dir.replace("~", home_dir, 1)
             await ssh_client.run_command(f"mkdir -p {log_dir}")
 
-        merged_env, extra_init = self._resolve_environment(run, item.task)
-        script = job_backend.generate_script(
-            item.task, run.id, log_dir,
-            account=run.account, login_shell=run.login_shell,
-            env_vars=merged_env, extra_init=extra_init,
-        )
+        # Env resolution can raise ValueError for bad config (e.g. an
+        # undefined stack reference or legacy fields).  Treat that as a task
+        # failure rather than letting it bubble up — otherwise a single bad
+        # run aborts startup in restore_from_storage.
+        try:
+            merged_env, extra_init = self._resolve_environment(run, item.task)
+            script = job_backend.generate_script(
+                item.task, run.id, log_dir,
+                account=run.account, login_shell=run.login_shell,
+                env_vars=merged_env, extra_init=extra_init,
+            )
+        except ValueError as e:
+            item.status = RunItemStatus.FAILED
+            item.error = str(e)
+            item.submit_output = item.submit_output or str(e)
+            item.finished_at = datetime.now(timezone.utc)
+            logger.error(f"Failed to prepare task '{item.task.id}': {e}")
+            self._persist_run(run)
+            return False
         item.submit_script = script
 
         try:
@@ -1692,7 +1705,13 @@ class RunManager:
             if run_id not in self.runs:
                 self.runs[run_id] = run
                 if run.status in (RunStatus.PENDING, RunStatus.RUNNING):
-                    await self.process_run(run)
+                    try:
+                        await self.process_run(run)
+                    except Exception as e:
+                        # Never let a single broken run abort server startup.
+                        logger.error(
+                            f"Failed to process run '{run_id}' during restore: {e}"
+                        )
 
         logger.info(f"Restored {len(self.runs)} runs from storage")
         return len(self.runs)
