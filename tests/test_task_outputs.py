@@ -385,6 +385,30 @@ class TestMarkdownRendering:
         )
         assert "onerror" not in html
 
+    def test_fails_closed_when_bleach_unavailable(self, monkeypatch):
+        """If bleach can't be imported, the renderer must fall back to
+        escaped plain text (fail-CLOSED), never emit raw unsanitized HTML.
+        This locks in the security property so a refactor can't silently
+        turn the missing-dep path into a fail-open XSS hole.
+        """
+        import sys
+
+        # Setting the module to None in sys.modules makes ``import bleach``
+        # raise ImportError, simulating a partial install.
+        monkeypatch.setitem(sys.modules, "bleach", None)
+
+        from scripthut.main import _render_markdown_for_outputs
+        html = _render_markdown_for_outputs(
+            '<img src="x" onerror="alert(1)"><script>alert(2)</script>',
+            "/outputs/file",
+        )
+        # The payload is escaped and inert: no live tags can form because
+        # the angle brackets are entity-escaped. (The literal text
+        # "onerror" may remain, but with "<" escaped it can never fire.)
+        assert "<img" not in html
+        assert "<script>" not in html
+        assert "&lt;img" in html and "&lt;script&gt;" in html
+
 
 # ---------------------------------------------------------------------------
 # Persistence
