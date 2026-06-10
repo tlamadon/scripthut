@@ -263,6 +263,7 @@
         var _detailTaskId = null;
         var _detailType = 'output';
         var _detailRunId = '{{ run.id }}';
+        var _detailRefreshTimer = null;
 
         function switchTab(tab) {
             var views = { table: 'view-table', gantt: 'view-gantt', details: 'view-details' };
@@ -368,9 +369,25 @@
             fetchDetail();
         }
 
-        function fetchDetail() {
+        // Auto-refresh the live log tabs (Output/Error) so a changing log
+        // file is reflected without a manual click. Only those two tabs
+        // poll; switching to any other tab (or a non-log fetch) clears it.
+        function scheduleDetailAutoRefresh() {
+            if (_detailRefreshTimer) {
+                clearInterval(_detailRefreshTimer);
+                _detailRefreshTimer = null;
+            }
+            if (_detailType === 'output' || _detailType === 'error') {
+                _detailRefreshTimer = setInterval(function () { fetchDetail(true); }, 5000);
+            }
+        }
+
+        // `silent` is set by the auto-refresh timer: it skips the "Loading..."
+        // flash and keeps the last good content if the fetch fails.
+        function fetchDetail(silent) {
             if (!_detailTaskId) return;
             updateDetailTabs();
+            if (!silent) scheduleDetailAutoRefresh();
 
             if (_detailType === 'env') {
                 fetchEnvDetail();
@@ -383,8 +400,10 @@
                 if (tail) url += '?tail=' + tail;
             }
 
-            document.getElementById('detail-content').textContent = 'Loading...';
-            document.getElementById('detail-error').style.display = 'none';
+            if (!silent) {
+                document.getElementById('detail-content').textContent = 'Loading...';
+                document.getElementById('detail-error').style.display = 'none';
+            }
 
             fetch(url)
                 .then(function (r) { return r.json(); })
@@ -430,7 +449,14 @@
                         }
                     } else {
                         contentEl.className = darkPreClass;
+                        // Stick-to-bottom: on a fresh load (non-silent) always
+                        // jump to the tail; on a silent auto-refresh only stay
+                        // pinned if the user was already near the bottom, so we
+                        // don't yank them back while they scroll up to read.
+                        var nearBottom = contentEl.scrollTop + contentEl.clientHeight >= contentEl.scrollHeight - 40;
+                        var stick = !silent || nearBottom;
                         contentEl.textContent = data.content || 'No content available.';
+                        if (stick) contentEl.scrollTop = contentEl.scrollHeight;
                     }
                     var header = document.getElementById('detail-header');
                     var h = '<h2 class="text-sm font-semibold text-gray-800">' + escapeHtml(data.task_name) + '</h2>';
@@ -479,6 +505,9 @@
                     }
                 })
                 .catch(function (err) {
+                    // Auto-refresh failures are transient — keep the last good
+                    // log rather than wiping it with an error message.
+                    if (silent) return;
                     document.getElementById('detail-content').textContent = 'Error loading content: ' + err;
                 });
         }
