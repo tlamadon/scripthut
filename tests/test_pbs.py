@@ -527,6 +527,85 @@ class TestGetClusterInfo:
         # node1: 4 free; node2: 4-3=1 free; node3: down -> 0
         assert p.gpus_idle == 4 + 1
 
+    @pytest.mark.asyncio
+    async def test_dedicated_threads_accurate_idle_and_queue(self):
+        # Torque marks a partially-used node "free"; the real allocation is in
+        # dedicated_threads. Idle must be np - dedicated_threads, not all of np.
+        pbsnodes_output = (
+            "node1\n"
+            "     state = free\n"
+            "     np = 56\n"
+            "     dedicated_threads = 28\n"
+            "     status = opsys=linux,physmem=264053572kb,ncpus=56,gres=\n"
+            "\n"
+            "node2\n"
+            "     state = job-exclusive\n"
+            "     np = 56\n"
+            "     dedicated_threads = 56\n"
+            "\n"
+            "node3\n"
+            "     state = offline\n"
+            "     np = 56\n"
+            "\n"
+        )
+        qstat_qf = (
+            "Queue: batch\n"
+            "    queue_type = Execution\n"
+            "    resources_max.walltime = 24:00:00\n"
+            "    state_count = Transit:0 Queued:48 Held:248 Waiting:0 Running:34 Exiting:0 \n"
+            "\tComplete:0\n"
+            "    enabled = True\n"
+        )
+
+        async def fake_run(cmd, *a, **k):
+            if cmd.startswith("qstat -Qf"):
+                return (qstat_qf, "", 0)
+            return (pbsnodes_output, "", 0)
+
+        ssh = AsyncMock()
+        ssh.run_command = AsyncMock(side_effect=fake_run)
+        backend = PBSBackend(ssh, default_queue="batch")
+
+        result = await backend.get_cluster_info()
+        assert result is not None
+        p = result.partitions[0]
+        assert p.cpus_total == 168  # 3 * 56
+        assert p.cpus_idle == 28  # node1: 56-28; node2: 0 (exclusive); node3: offline
+        assert p.cpus_allocated == 84  # node1: 28 + node2: 56
+        assert p.cpus_other == 56  # node3 offline
+        assert p.name == "batch"
+        assert p.timelimit == "24:00:00"
+        assert p.mem_per_node_mb == 264053572 // 1024
+        # Pending badge data: queued + held (waiting=0 is dropped).
+        assert result.pending_reasons == {"Queued": 48, "Held": 248}
+
+
+# -- parse_qstat_queues --
+
+
+class TestParseQstatQueues:
+    def test_unwraps_wrapped_state_count(self):
+        from scripthut.backends.pbs import parse_qstat_queues
+
+        out = (
+            "Queue: batch\n"
+            "    queue_type = Execution\n"
+            "    state_count = Transit:0 Queued:48 Held:248 Waiting:0 Running:34 Exiting:0 \n"
+            "\tComplete:0\n"
+            "    resources_max.walltime = 100:00:00\n"
+            "\n"
+            "Queue: routeq\n"
+            "    queue_type = Route\n"
+        )
+        q = parse_qstat_queues(out)
+        assert set(q) == {"batch", "routeq"}
+        assert q["batch"]["type"] == "execution"
+        assert q["batch"]["walltime"] == "100:00:00"
+        # The Complete:0 token wrapped onto a tab-continuation line is rejoined.
+        assert q["batch"]["state_count"]["Queued"] == 48
+        assert q["batch"]["state_count"]["Complete"] == 0
+        assert q["routeq"]["type"] == "route"
+
 
 # -- Properties --
 

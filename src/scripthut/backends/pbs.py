@@ -190,6 +190,46 @@ def parse_qstat_line(line: str) -> HPCJob | None:
         return None
 
 
+def parse_qstat_queues(stdout: str) -> dict[str, dict]:
+    """Parse ``qstat -Qf`` into ``{queue: {type, walltime, state_count}}``.
+
+    ``walltime`` is the queue's ``resources_max.walltime`` (or None), and
+    ``state_count`` is the per-state job counter PBS reports, e.g.
+    ``{"Queued": 48, "Held": 248, "Running": 34}``. Long values that PBS
+    wraps onto a tab-indented continuation line are rejoined first.
+    """
+    queues: dict[str, dict] = {}
+    cur: dict | None = None
+    # qstat wraps long attribute values onto a leading-tab continuation line.
+    unwrapped = stdout.replace("\n\t", "")
+    for line in unwrapped.split("\n"):
+        stripped = line.strip()
+        m = re.match(r"^Queue:\s+(\S+)", stripped)
+        if m:
+            cur = {"type": "", "walltime": None, "state_count": {}}
+            queues[m.group(1)] = cur
+            continue
+        if cur is None or "=" not in stripped:
+            continue
+        key, _, value = stripped.partition("=")
+        key = key.strip()
+        value = value.strip()
+        if key == "queue_type":
+            cur["type"] = value.lower()
+        elif key == "resources_max.walltime":
+            cur["walltime"] = value
+        elif key == "state_count":
+            sc: dict[str, int] = {}
+            for tok in value.split():
+                state_name, _, count = tok.partition(":")
+                try:
+                    sc[state_name] = int(count)
+                except ValueError:
+                    pass
+            cur["state_count"] = sc
+    return queues
+
+
 class PBSBackend(JobBackend):
     """PBS/Torque job backend using SSH to run qstat/qsub/qdel."""
 
@@ -546,11 +586,16 @@ class PBSBackend(JobBackend):
         return None
 
     async def get_cluster_info(self, user: str | None = None) -> ClusterInfo | None:
-        """Fetch cluster availability from pbsnodes.
+        """Fetch cluster availability from pbsnodes + qstat.
 
-        PBS doesn't have Slurm-style partitions, so all nodes roll up into
-        a single ``"default"`` pseudo-partition. Per-user quota is not
-        implemented — ``user`` is accepted for interface compatibility.
+        PBS/Torque has no Slurm-style partitions, so all nodes roll up into
+        a single pseudo-partition named after the configured queue. Idle CPUs
+        are computed from each node's allocated-thread counter
+        (``dedicated_threads`` on Torque, ``resources_assigned.ncpus`` on PBS
+        Pro) rather than the node ``state`` flag — Torque reports a partially
+        used node as ``free``, so a state-only count badly overstates idle.
+        Per-user quota is not implemented — ``user`` is accepted for
+        interface compatibility.
         """
         _ = user  # unused
         cmd = "pbsnodes -a 2>/dev/null"
@@ -565,31 +610,55 @@ class PBSBackend(JobBackend):
             return None
 
         total_cpus = 0
-        free_cpus = 0
+        idle_cpus = 0
+        alloc_cpus = 0
         other_cpus = 0
         total_gpus = 0
         idle_gpus = 0
         node_count = 0
+        mem_per_node_mb: int | None = None
         current_ncpus = 0
         current_state = ""
+        current_assigned = 0
+        current_physmem_kb = 0
         current_ngpus_avail = 0
         current_ngpus_assigned = 0
 
+        def _reset():
+            nonlocal current_ncpus, current_state, current_assigned
+            nonlocal current_physmem_kb, current_ngpus_avail, current_ngpus_assigned
+            current_ncpus = 0
+            current_state = ""
+            current_assigned = 0
+            current_physmem_kb = 0
+            current_ngpus_avail = 0
+            current_ngpus_assigned = 0
+
         def _flush():
-            nonlocal total_cpus, free_cpus, other_cpus, node_count
-            nonlocal total_gpus, idle_gpus
+            nonlocal total_cpus, idle_cpus, alloc_cpus, other_cpus, node_count
+            nonlocal total_gpus, idle_gpus, mem_per_node_mb
             if current_ncpus == 0:
                 return
             total_cpus += current_ncpus
             node_count += 1
-            is_free = "free" in current_state
+            if current_physmem_kb and (
+                mem_per_node_mb is None or current_physmem_kb // 1024 > mem_per_node_mb
+            ):
+                mem_per_node_mb = current_physmem_kb // 1024
             is_other = any(
                 s in current_state for s in ("down", "offline", "drain", "unknown")
             )
-            if is_free:
-                free_cpus += current_ncpus
-            elif is_other:
+            if is_other:
                 other_cpus += current_ncpus
+            else:
+                assigned = current_assigned
+                # Exclusive/busy nodes are fully allocated even when the
+                # per-node thread counter is absent.
+                if assigned <= 0 and ("exclusive" in current_state or "busy" in current_state):
+                    assigned = current_ncpus
+                assigned = max(0, min(assigned, current_ncpus))
+                alloc_cpus += assigned
+                idle_cpus += current_ncpus - assigned
             if current_ngpus_avail > 0:
                 total_gpus += current_ngpus_avail
                 if not is_other:
@@ -601,10 +670,7 @@ class PBSBackend(JobBackend):
             line = line.strip()
             if not line:
                 _flush()
-                current_ncpus = 0
-                current_state = ""
-                current_ngpus_avail = 0
-                current_ngpus_assigned = 0
+                _reset()
                 continue
             if "=" in line:
                 key, _, value = line.partition("=")
@@ -617,6 +683,16 @@ class PBSBackend(JobBackend):
                         pass
                 elif key == "state":
                     current_state = value.lower()
+                elif key == "dedicated_threads" or key == "resources_assigned.ncpus":
+                    try:
+                        current_assigned = int(value)
+                    except ValueError:
+                        pass
+                elif key == "status":
+                    # Torque packs node metrics into one comma-list value.
+                    pm = re.search(r"physmem=(\d+)kb", value)
+                    if pm:
+                        current_physmem_kb = int(pm.group(1))
                 elif key == "resources_available.ngpus":
                     try:
                         current_ngpus_avail = int(value)
@@ -634,20 +710,58 @@ class PBSBackend(JobBackend):
         if total_cpus == 0:
             return None
 
-        allocated = max(0, total_cpus - free_cpus - other_cpus)
+        # Queue metadata (best-effort): names, walltime limit, pending counts.
+        queue_meta: dict[str, dict] = {}
+        try:
+            q_out, _, q_rc = await self._ssh.run_command(
+                "qstat -Qf 2>/dev/null", timeout=15
+            )
+            if q_rc == 0:
+                queue_meta = parse_qstat_queues(q_out)
+        except Exception as e:
+            logger.debug(f"qstat -Qf failed: {e}")
+
+        exec_queues = {
+            name: m for name, m in queue_meta.items() if "execution" in m["type"]
+        }
+        # Aggregate not-yet-running jobs across execution queues so the UI can
+        # show a pending badge (and render the partition-details table at all).
+        pending_reasons: dict[str, int] = {}
+        for m in exec_queues.values():
+            for st in ("Queued", "Held", "Waiting"):
+                count = m["state_count"].get(st, 0)
+                if count:
+                    pending_reasons[st] = pending_reasons.get(st, 0) + count
+
+        # Name the rolled-up partition after the configured queue (falling back
+        # to the first execution queue), and lift its walltime limit.
+        pname = self._default_queue or "default"
+        timelimit = None
+        if exec_queues:
+            primary = (
+                self._default_queue
+                if self._default_queue in exec_queues
+                else next(iter(exec_queues))
+            )
+            timelimit = exec_queues[primary].get("walltime")
+            if not self._default_queue:
+                pname = primary
+
         partition = PartitionInfo(
-            name="default",
+            name=pname,
             state="up",
-            cpus_allocated=allocated,
-            cpus_idle=free_cpus,
+            cpus_allocated=alloc_cpus,
+            cpus_idle=idle_cpus,
             cpus_other=other_cpus,
             cpus_total=total_cpus,
             nodes_total=node_count,
             is_default=True,
+            timelimit=timelimit,
+            mem_per_node_mb=mem_per_node_mb,
             gpus_total=total_gpus,
             gpus_idle=idle_gpus,
         )
-        return ClusterInfo(partitions=[partition], pending_reasons={})
+        return ClusterInfo(partitions=[partition], pending_reasons=pending_reasons)
 
     async def get_disk_info(self, path: str) -> DiskInfo | None:
         """Fetch disk usage for ``path`` on the backend via ``df -Pk``."""
