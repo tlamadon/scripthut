@@ -1640,7 +1640,16 @@ class RunManager:
                 item.status = RunItemStatus.FAILED
                 item.error = "Cancelled"
                 item.finished_at = datetime.now(timezone.utc)
-            elif item.status in (RunItemStatus.SUBMITTED, RunItemStatus.RUNNING):
+            elif item.status in (
+                RunItemStatus.SUBMITTED,
+                RunItemStatus.QUEUED,
+                RunItemStatus.RUNNING,
+            ):
+                # QUEUED jobs are confirmed in the scheduler's queue awaiting
+                # resources — they have a job_id and must be scancel/qdel'd,
+                # same as RUNNING. (SETTLING is intentionally excluded: it has
+                # already left the queue and may have completed successfully;
+                # let accounting resolve it rather than mislabel it cancelled.)
                 if item.job_id:
                     job_backend = self.get_job_backend(run.backend_name)
                     if job_backend:

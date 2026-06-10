@@ -2,6 +2,8 @@
 
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from scripthut.main import _compute_gantt_data
 from scripthut.runs.models import (
     Run,
@@ -137,6 +139,54 @@ class TestCancelRunStartedAt:
         item.finished_at = datetime.now(timezone.utc)
 
         assert item.started_at == started  # Not overwritten
+
+
+class TestCancelRunQueued:
+    """cancel_run must actually cancel jobs sitting in the scheduler queue."""
+
+    @pytest.mark.asyncio
+    async def test_queued_item_is_cancelled_via_backend(self):
+        """A QUEUED job (confirmed in squeue) must be scancel/qdel'd, not skipped."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from scripthut.runs.manager import RunManager
+
+        queued = _make_run_item(
+            "q1",
+            status=RunItemStatus.QUEUED,
+            submitted_at=datetime.now(timezone.utc) - timedelta(minutes=3),
+        )
+        queued.job_id = "99999"
+        pending = _make_run_item("p1", status=RunItemStatus.PENDING)
+
+        run = Run(
+            id="r-cancel",
+            workflow_name="wf",
+            backend_name="cluster",
+            created_at=datetime.now(timezone.utc),
+            items=[queued, pending],
+            max_concurrent=5,
+        )
+
+        job_backend = MagicMock()
+        job_backend.cancel_job = AsyncMock()
+        manager = RunManager(
+            config=MagicMock(),
+            backends={},
+            job_backends={"cluster": job_backend},
+        )
+        manager.runs[run.id] = run
+
+        ok = await manager.cancel_run(run.id)
+
+        assert ok is True
+        # The queued job must have been handed to the backend for cancellation.
+        job_backend.cancel_job.assert_awaited_once_with("99999")
+        assert queued.status == RunItemStatus.FAILED
+        assert queued.error == "Cancelled"
+        assert queued.finished_at is not None
+        # Pending item is cancelled too (never submitted, so no backend call).
+        assert pending.status == RunItemStatus.FAILED
 
 
 class TestRunStatusFailedWithBlockedPending:
