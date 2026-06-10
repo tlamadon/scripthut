@@ -140,6 +140,26 @@ class TaskDefinition:
             "image": self.image,
         }
 
+    @property
+    def gpu_label(self) -> str | None:
+        """Human-readable GPU summary from the gres spec, or None.
+
+        Maps Slurm-style gres values to a short label for the UI:
+        ``"gpu:2"`` → ``"2 GPU"``, ``"gpu:v100:1"`` → ``"1 GPU (v100)"``.
+        Non-GPU gres specs (or a bare ``"gpu"``) fall back to the raw value.
+        """
+        if not self.gres:
+            return None
+        parts = self.gres.split(":")
+        if parts[0] != "gpu":
+            return self.gres
+        # "gpu:<count>" or "gpu:<type>:<count>"
+        if len(parts) == 2 and parts[1].isdigit():
+            return f"{parts[1]} GPU"
+        if len(parts) == 3 and parts[2].isdigit():
+            return f"{parts[2]} GPU ({parts[1]})"
+        return self.gres
+
     @staticmethod
     def parse_document(
         data: dict[str, Any] | list[Any],

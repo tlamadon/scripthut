@@ -294,8 +294,10 @@ class SlurmBackend(JobBackend):
         Returns:
             List of SlurmJob objects.
         """
-        # Build squeue command
-        cmd = f"squeue --noheader --format='{SQUEUE_FORMAT}'"
+        # Build squeue command. TZ=UTC forces Slurm to format SubmitTime/StartTime
+        # in UTC so the naive timestamps we parse line up with the tzinfo=utc we
+        # stamp on them (otherwise they'd be cluster-local read as UTC).
+        cmd = f"TZ=UTC squeue --noheader --format='{SQUEUE_FORMAT}'"
         if user:
             cmd += f" --user={user}"
 
@@ -391,8 +393,10 @@ class SlurmBackend(JobBackend):
         # bash patterns the framework can't always defend against
         # (e.g. trailing statement after the failing command).
         ids_str = ",".join(valid_ids)
+        # TZ=UTC forces Slurm to emit Start/End in UTC, matching the
+        # tzinfo=utc we attach to the parsed naive timestamps below.
         cmd = (
-            f"sacct --noheader --parsable2"
+            f"TZ=UTC sacct --noheader --parsable2"
             f" --format=JobIDRaw,TotalCPU,Elapsed,AllocCPUS,MaxRSS,"
             f"Start,End,State,ExitCode"
             f" --jobs={ids_str}"

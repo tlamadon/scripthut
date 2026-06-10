@@ -120,7 +120,7 @@
                 </td>
                 <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-600">{{ item.task.partition }}</td>
                 <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-600">
-                    {{ item.task.cpus }} CPU, {{ item.task.memory }}, {{ item.task.time_limit }}
+                    {{ item.task.cpus }} CPU, {{ item.task.memory }}{% if item.task.gpu_label %}, {{ item.task.gpu_label }}{% endif %}, {{ item.task.time_limit }}
                 </td>
                 <td class="px-4 py-3 whitespace-nowrap text-xs">
                     {% if item.cpu_efficiency is not none %}
@@ -254,7 +254,7 @@
             <span class="font-mono">{{ item.job_id }}</span>
             {% endif %}
             <span>{{ item.task.partition }}</span>
-            <span>{{ item.task.cpus }} CPU, {{ item.task.memory }}, {{ item.task.time_limit }}</span>
+            <span>{{ item.task.cpus }} CPU, {{ item.task.memory }}{% if item.task.gpu_label %}, {{ item.task.gpu_label }}{% endif %}, {{ item.task.time_limit }}</span>
         </div>
         <!-- Row 3: Utilization + timestamps -->
         <div class="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-gray-500">
