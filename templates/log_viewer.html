@@ -42,11 +42,11 @@
                        title="{{ item.task.name }} ({{ item.status.value }})">
                         <!-- Status dot -->
                         <span class="w-2 h-2 rounded-full flex-shrink-0
-                            {% if item.status.value == 'running' %}bg-green-500 animate-pulse
+                            {% if item.status.value == 'running' %}bg-indigo-500 animate-pulse
                             {% elif item.status.value == 'pending' %}bg-gray-400
                             {% elif item.status.value == 'submitted' %}bg-yellow-400
                             {% elif item.status.value == 'queued' %}bg-yellow-600
-                            {% elif item.status.value == 'completed' %}bg-blue-500
+                            {% elif item.status.value == 'completed' %}bg-green-500
                             {% elif item.status.value == 'failed' %}bg-red-500
                             {% elif item.status.value == 'dep_failed' %}bg-orange-500
                             {% endif %}"></span>

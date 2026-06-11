@@ -68,8 +68,8 @@
                     {# Run segment #}
                     {% if gi.run_width > 0 %}
                     <div class="absolute top-0.5 bottom-0.5 rounded-sm
-                        {% if gi.status == 'completed' %}bg-blue-500
-                        {% elif gi.status == 'running' %}bg-green-500 animate-pulse
+                        {% if gi.status == 'completed' %}bg-green-500
+                        {% elif gi.status == 'running' %}bg-indigo-500 animate-pulse
                         {% elif gi.status == 'failed' %}bg-red-500
                         {% elif gi.status == 'dep_failed' %}bg-orange-400
                         {% else %}bg-yellow-400{% endif %}"
@@ -97,11 +97,11 @@
             <span>Waiting</span>
         </div>
         <div class="flex items-center gap-1.5">
-            <div class="w-3 h-2 rounded-sm bg-green-500"></div>
+            <div class="w-3 h-2 rounded-sm bg-indigo-500"></div>
             <span>Running</span>
         </div>
         <div class="flex items-center gap-1.5">
-            <div class="w-3 h-2 rounded-sm bg-blue-500"></div>
+            <div class="w-3 h-2 rounded-sm bg-green-500"></div>
             <span>Completed</span>
         </div>
         <div class="flex items-center gap-1.5">
