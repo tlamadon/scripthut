@@ -289,6 +289,10 @@ class RunItem:
     task: TaskDefinition
     status: RunItemStatus = RunItemStatus.PENDING
     job_id: str | None = None  # Scheduler-assigned job ID
+    # Owning username as reported by the scheduler (squeue %u / qstat).
+    # Set for external jobs (which may belong to any cluster user); None
+    # for scripthut-submitted items, which belong to the configured user.
+    user: str | None = None
     submitted_at: datetime | None = None
     started_at: datetime | None = None
     finished_at: datetime | None = None
@@ -322,6 +326,7 @@ class RunItem:
             "task": self.task.to_dict(),
             "status": self.status.value,
             "job_id": self.job_id,
+            "user": self.user,
             "submitted_at": self.submitted_at.isoformat() if self.submitted_at else None,
             "started_at": self.started_at.isoformat() if self.started_at else None,
             "finished_at": self.finished_at.isoformat() if self.finished_at else None,
@@ -352,6 +357,7 @@ class RunItem:
             task=TaskDefinition.from_dict(data["task"]),
             status=RunItemStatus(data["status"]),
             job_id=data.get("job_id") or data.get("slurm_job_id"),
+            user=data.get("user"),
             submitted_at=parse_dt(data.get("submitted_at")),
             started_at=parse_dt(data.get("started_at")),
             finished_at=parse_dt(data.get("finished_at")),

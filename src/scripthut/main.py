@@ -1120,7 +1120,9 @@ def _collect_all_job_views() -> list[JobView]:
             views.append(JobView(
                 job_id=item.job_id,
                 name=item.task.name,
-                user=user,
+                # scripthut-submitted items have no scheduler-reported user;
+                # they belong to the configured user.
+                user=item.user or user,
                 backend_name=run.backend_name,
                 state=item.status.value,
                 source="run" if run.workflow_name != "_default" else "external",
@@ -1150,7 +1152,10 @@ def _collect_all_job_views() -> list[JobView]:
                     views.append(JobView(
                         job_id=item.job_id,
                         name=item.task.name,
-                        user=user,
+                        # External jobs carry their real owner (squeue %u /
+                        # qstat). Never fall back to the configured user —
+                        # that would mislabel other users' jobs as ours.
+                        user=item.user or "unknown",
                         backend_name=run.backend_name,
                         state=item.status.value,
                         source="external",

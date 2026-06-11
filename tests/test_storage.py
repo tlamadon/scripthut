@@ -188,6 +188,40 @@ class TestWeeklyBins:
         assert len(run.items) == 1
         assert run.items[0].job_id == "99999"
         assert run.items[0].task.name == "external-job"
+        # The scheduler-reported owner must be preserved, not dropped —
+        # otherwise the dashboard mislabels other users' jobs as ours.
+        assert run.items[0].user == "testuser"
+
+    def test_external_job_user_persists_roundtrip(self, tmp_path: Path):
+        storage = RunStorageManager(base_dir=tmp_path)
+        submit_time = datetime(2026, 2, 11, 10, 0, 0)
+        storage.add_external_job(
+            backend_name="midway", job_id="42", name="theirs",
+            user="alice", state="running", submit_time=submit_time,
+        )
+        storage.save_if_dirty({})
+
+        # Fresh manager reads it back from disk.
+        reloaded = RunStorageManager(base_dir=tmp_path)
+        run = reloaded.get_or_create_weekly_run("midway", submit_time)
+        assert run.items[0].user == "alice"
+
+    def test_add_external_job_updates_user(self, tmp_path: Path):
+        # A job_id can be reused across users over time; an update with a
+        # new owner should overwrite the stored one.
+        storage = RunStorageManager(base_dir=tmp_path)
+        submit_time = datetime(2026, 2, 11, 10, 0, 0)
+        storage.add_external_job(
+            backend_name="midway", job_id="7", name="j",
+            user="bob", state="running", submit_time=submit_time,
+        )
+        storage.add_external_job(
+            backend_name="midway", job_id="7", name="j",
+            user="carol", state="completed", submit_time=submit_time,
+        )
+        run = storage.get_or_create_weekly_run("midway", submit_time)
+        assert len(run.items) == 1
+        assert run.items[0].user == "carol"
 
     def test_add_external_job_updates_existing(self, tmp_path: Path):
         storage = RunStorageManager(base_dir=tmp_path)

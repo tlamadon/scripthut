@@ -322,6 +322,8 @@ class RunStorageManager:
                 existing.cpu_efficiency = cpu_efficiency
             if max_rss is not None:
                 existing.max_rss = max_rss
+            if user:
+                existing.user = user
         else:
             # Create new item
             task = TaskDefinition(
@@ -342,6 +344,7 @@ class RunStorageManager:
                 task=task,
                 status=status,
                 job_id=job_id,
+                user=user,
                 submitted_at=submit_time,
                 started_at=start_time,
                 finished_at=finish_time,
