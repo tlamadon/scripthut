@@ -1627,6 +1627,29 @@ class RunManager:
 
             await self.update_run_status(run, job_states)
 
+        # Cross-run backpressure: a job finishing in one run frees a
+        # backend-level concurrency slot that a *different* run may be
+        # blocked on. update_run_status only re-drives the run whose own
+        # items changed, so a run sitting in PENDING purely because the
+        # backend cap was full would otherwise never be reconsidered when
+        # an unrelated run frees a slot — it would stay stuck forever.
+        # Re-drive every active run that still has submittable work.
+        # process_run recomputes the backend slot count and submits nothing
+        # when the cap is still full, so this is cheap and safe to run each
+        # poll; it also self-heals runs that are already stuck.
+        for run in self.runs.values():
+            if run.status in (RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED):
+                continue
+            if self._has_submittable_items(run):
+                await self.process_run(run)
+
+    def _has_submittable_items(self, run: Run) -> bool:
+        """True if the run has PENDING items whose dependencies are satisfied."""
+        return any(
+            item.status == RunItemStatus.PENDING and run.are_deps_satisfied(item)
+            for item in run.items
+        )
+
     async def cancel_run(self, run_id: str) -> bool:
         """Cancel all pending and running items in a run."""
         run = self.runs.get(run_id)
