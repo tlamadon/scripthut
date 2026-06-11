@@ -1,3 +1,4 @@
+{% from '_status.html' import status_dot %}
 {% if run %}
 <div class="grid grid-cols-2 md:grid-cols-5 {% if cost_summary is defined and cost_summary and cost_summary.costed_tasks > 0 %}lg:grid-cols-6{% endif %} gap-4">
     <div>
@@ -9,17 +10,7 @@
             {% elif run.status.value == 'failed' %}bg-red-100 text-red-700
             {% elif run.status.value == 'cancelled' %}bg-gray-100 text-gray-600
             {% else %}bg-gray-100 text-gray-600{% endif %}">
-            {% if run.status.value == 'running' %}
-            <span class="w-2 h-2 bg-indigo-500 rounded-full animate-pulse"></span>
-            {% elif run.status.value == 'pending' %}
-            <span class="w-2 h-2 bg-gray-400 rounded-full"></span>
-            {% elif run.status.value == 'completed' %}
-            <span class="w-2 h-2 bg-green-500 rounded-full"></span>
-            {% elif run.status.value == 'failed' %}
-            <span class="w-2 h-2 bg-red-500 rounded-full"></span>
-            {% elif run.status.value == 'cancelled' %}
-            <span class="w-2 h-2 bg-gray-400 rounded-full"></span>
-            {% endif %}
+            {{ status_dot(run.status.value) }}
             {{ run.status.value }}
         </span>
     </div>

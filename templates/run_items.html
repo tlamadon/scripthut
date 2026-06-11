@@ -1,3 +1,4 @@
+{% from '_status.html' import status_dot %}
 {% if run and run.items %}
 <div class="px-6 py-4 bg-gray-50 border-b flex justify-between items-center">
     <h2 class="text-xl font-semibold text-gray-800">Tasks</h2>
@@ -97,21 +98,7 @@
                         {% elif item.status.value == 'failed' %}bg-red-100 text-red-700
                         {% elif item.status.value == 'dep_failed' %}bg-orange-100 text-orange-700
                         {% else %}bg-gray-100 text-gray-600{% endif %}">
-                        {% if item.status.value == 'running' %}
-                        <span class="w-2 h-2 bg-indigo-500 rounded-full animate-pulse"></span>
-                        {% elif item.status.value == 'pending' %}
-                        <span class="w-2 h-2 bg-gray-400 rounded-full"></span>
-                        {% elif item.status.value == 'submitted' %}
-                        <span class="w-2 h-2 bg-yellow-400 rounded-full"></span>
-                        {% elif item.status.value == 'queued' %}
-                        <span class="w-2 h-2 bg-yellow-600 rounded-full"></span>
-                        {% elif item.status.value == 'completed' %}
-                        <span class="w-2 h-2 bg-green-500 rounded-full"></span>
-                        {% elif item.status.value == 'failed' %}
-                        <span class="w-2 h-2 bg-red-500 rounded-full"></span>
-                        {% elif item.status.value == 'dep_failed' %}
-                        <span class="w-2 h-2 bg-orange-500 rounded-full"></span>
-                        {% endif %}
+                        {{ status_dot(item.status.value) }}
                         {% if item.status.value == 'dep_failed' %}dep failed{% else %}{{ item.status.value }}{% endif %}
                     </span>
                 </td>
@@ -230,21 +217,7 @@
                 {% elif item.status.value == 'failed' %}bg-red-100 text-red-700
                 {% elif item.status.value == 'dep_failed' %}bg-orange-100 text-orange-700
                 {% else %}bg-gray-100 text-gray-600{% endif %}">
-                {% if item.status.value == 'running' %}
-                <span class="w-2 h-2 bg-indigo-500 rounded-full animate-pulse"></span>
-                {% elif item.status.value == 'pending' %}
-                <span class="w-2 h-2 bg-gray-400 rounded-full"></span>
-                {% elif item.status.value == 'submitted' %}
-                <span class="w-2 h-2 bg-yellow-400 rounded-full"></span>
-                {% elif item.status.value == 'queued' %}
-                <span class="w-2 h-2 bg-yellow-600 rounded-full"></span>
-                {% elif item.status.value == 'completed' %}
-                <span class="w-2 h-2 bg-green-500 rounded-full"></span>
-                {% elif item.status.value == 'failed' %}
-                <span class="w-2 h-2 bg-red-500 rounded-full"></span>
-                {% elif item.status.value == 'dep_failed' %}
-                <span class="w-2 h-2 bg-orange-500 rounded-full"></span>
-                {% endif %}
+                {{ status_dot(item.status.value) }}
                 {% if item.status.value == 'dep_failed' %}dep failed{% else %}{{ item.status.value }}{% endif %}
             </span>
         </div>

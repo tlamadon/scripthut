@@ -1,3 +1,4 @@
+{% from '_status.html' import status_dot %}
 <!-- Jobs Header -->
 <div class="px-6 py-4 bg-gray-50 border-b flex justify-between items-center">
     <h2 class="text-xl font-semibold text-gray-800">Jobs</h2>
@@ -115,19 +116,7 @@
                         {% elif job.state == 'completed' %}bg-green-100 text-green-700
                         {% elif job.state == 'failed' %}bg-red-100 text-red-700
                         {% else %}bg-gray-100 text-gray-600{% endif %}">
-                        {% if job.state == 'running' %}
-                        <span class="w-2 h-2 bg-indigo-500 rounded-full animate-pulse"></span>
-                        {% elif job.state == 'pending' %}
-                        <span class="w-2 h-2 bg-gray-400 rounded-full"></span>
-                        {% elif job.state == 'submitted' %}
-                        <span class="w-2 h-2 bg-yellow-400 rounded-full"></span>
-                        {% elif job.state == 'queued' %}
-                        <span class="w-2 h-2 bg-yellow-600 rounded-full"></span>
-                        {% elif job.state == 'completed' %}
-                        <span class="w-2 h-2 bg-green-500 rounded-full"></span>
-                        {% elif job.state == 'failed' %}
-                        <span class="w-2 h-2 bg-red-500 rounded-full"></span>
-                        {% endif %}
+                        {{ status_dot(job.state) }}
                         {{ job.state }}
                     </span>
                 </td>
@@ -222,17 +211,7 @@
                 {% elif job.state == 'completed' %}bg-green-100 text-green-700
                 {% elif job.state == 'failed' %}bg-red-100 text-red-700
                 {% else %}bg-gray-100 text-gray-600{% endif %}">
-                {% if job.state == 'running' %}
-                <span class="w-2 h-2 bg-indigo-500 rounded-full animate-pulse"></span>
-                {% elif job.state == 'pending' %}
-                <span class="w-2 h-2 bg-gray-400 rounded-full"></span>
-                {% elif job.state == 'submitted' %}
-                <span class="w-2 h-2 bg-yellow-500 rounded-full"></span>
-                {% elif job.state == 'completed' %}
-                <span class="w-2 h-2 bg-green-500 rounded-full"></span>
-                {% elif job.state == 'failed' %}
-                <span class="w-2 h-2 bg-red-500 rounded-full"></span>
-                {% endif %}
+                {{ status_dot(job.state) }}
                 {{ job.state }}
             </span>
         </div>

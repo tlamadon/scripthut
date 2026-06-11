@@ -1,0 +1,31 @@
+{#
+  Single source of truth for task/run status visuals.
+
+  status_dot(status): renders the status indicator — a glyph for the
+  terminal states (completed -> check, failed -> x, dep_failed ->
+  skipped) and a colored dot for the in-flight states (pending,
+  submitted, queued, running, settling) and cancelled.
+
+  Centralising this means no view can drift or silently forget a state
+  (settling was previously missing a dot in four separate templates).
+  Pass the *string* value, e.g. item.status.value or run.status.value.
+#}
+{% macro status_dot(status) -%}
+{%- if status == 'completed' -%}
+<svg class="w-3 h-3 flex-shrink-0 text-green-600" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7"/></svg>
+{%- elif status == 'failed' -%}
+<svg class="w-3 h-3 flex-shrink-0 text-red-600" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg>
+{%- elif status == 'dep_failed' -%}
+<svg class="w-3 h-3 flex-shrink-0 text-orange-600" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="8" cy="8" r="6"/><path d="M3.9 3.9l8.2 8.2" stroke-linecap="round"/></svg>
+{%- elif status == 'running' -%}
+<span class="w-2 h-2 rounded-full flex-shrink-0 bg-indigo-500 animate-pulse"></span>
+{%- elif status == 'settling' -%}
+<span class="w-2 h-2 rounded-full flex-shrink-0 bg-gray-400 animate-pulse"></span>
+{%- elif status == 'submitted' -%}
+<span class="w-2 h-2 rounded-full flex-shrink-0 bg-yellow-400"></span>
+{%- elif status == 'queued' -%}
+<span class="w-2 h-2 rounded-full flex-shrink-0 bg-yellow-600"></span>
+{%- else -%}{# pending, cancelled, and any unknown state #}
+<span class="w-2 h-2 rounded-full flex-shrink-0 bg-gray-400"></span>
+{%- endif -%}
+{%- endmacro %}
