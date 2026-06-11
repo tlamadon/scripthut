@@ -78,3 +78,105 @@
         </a>
     </div>
 </div>
+
+<!-- Live notifications + page-title progress (global, see /notifications/stream) -->
+<div id="sh-toasts" class="fixed top-4 right-4 z-50 flex flex-col gap-2 w-80 max-w-[90vw] pointer-events-none"></div>
+<script>
+(function () {
+    if (window.__shNotifyInit) return;
+    window.__shNotifyInit = true;
+
+    // The page's own <title>; progress stats are prefixed onto this.
+    var baseTitle = document.title || 'ScriptHut';
+
+    // Desktop permission can only be requested from a user gesture, so
+    // ask the first time the user clicks/keys anywhere. Toasts work
+    // regardless of permission.
+    function requestPerm() {
+        if ('Notification' in window && Notification.permission === 'default') {
+            try { Notification.requestPermission(); } catch (e) {}
+        }
+    }
+    if ('Notification' in window && Notification.permission === 'default') {
+        document.addEventListener('click', requestPerm, { once: true });
+        document.addEventListener('keydown', requestPerm, { once: true });
+    }
+
+    var BAR = { info: 'bg-indigo-500', success: 'bg-green-500', error: 'bg-red-500' };
+
+    function esc(s) {
+        var d = document.createElement('div');
+        d.textContent = (s === null || s === undefined) ? '' : String(s);
+        return d.innerHTML;
+    }
+
+    function showToast(n) {
+        var box = document.getElementById('sh-toasts');
+        if (!box) return;
+        var bar = BAR[n.level] || BAR.info;
+        var el = document.createElement('div');
+        el.className = 'pointer-events-auto bg-white rounded-lg shadow-lg border border-gray-200 flex overflow-hidden opacity-0 translate-x-3 transition-all duration-300';
+        if (n.run_id) { el.style.cursor = 'pointer'; }
+        el.innerHTML =
+            '<div class="w-1 ' + bar + '"></div>' +
+            '<div class="px-3 py-2 flex-1 min-w-0">' +
+                '<p class="text-sm font-semibold text-gray-800 truncate">' + esc(n.title) + '</p>' +
+                (n.body ? '<p class="text-xs text-gray-500 truncate">' + esc(n.body) + '</p>' : '') +
+            '</div>' +
+            '<button type="button" class="px-2 text-gray-400 hover:text-gray-600" aria-label="Dismiss">&times;</button>';
+        function remove() {
+            clearTimeout(timer);
+            el.classList.add('opacity-0', 'translate-x-3');
+            setTimeout(function () { el.remove(); }, 300);
+        }
+        el.querySelector('button').addEventListener('click', function (ev) {
+            ev.stopPropagation();
+            remove();
+        });
+        if (n.run_id) {
+            el.addEventListener('click', function () { window.location.href = '/runs/' + n.run_id; });
+        }
+        box.appendChild(el);
+        requestAnimationFrame(function () { el.classList.remove('opacity-0', 'translate-x-3'); });
+        var timer = setTimeout(remove, n.level === 'error' ? 12000 : 7000);
+    }
+
+    function desktop(n) {
+        if (!('Notification' in window) || Notification.permission !== 'granted') return;
+        // Only pop a desktop notification when the tab is in the
+        // background — the in-page toast already covers the focused case.
+        if (!document.hidden) return;
+        try {
+            var note = new Notification(n.title, { body: n.body || '', tag: n.tag || undefined });
+            note.onclick = function () {
+                window.focus();
+                if (n.run_id) { window.location.href = '/runs/' + n.run_id; }
+                note.close();
+            };
+        } catch (e) {}
+    }
+
+    function onNotify(ev) {
+        var n;
+        try { n = JSON.parse(ev.data); } catch (e) { return; }
+        showToast(n);
+        desktop(n);
+    }
+
+    function onStats(ev) {
+        var s;
+        try { s = JSON.parse(ev.data); } catch (e) { return; }
+        var parts = [];
+        if (s.running) parts.push('▶' + s.running);
+        if (s.waiting) parts.push('◷' + s.waiting);
+        if (s.completed) parts.push('✓' + s.completed);
+        if (s.failed) parts.push('✕' + s.failed);
+        document.title = parts.length ? parts.join(' ') + ' — ' + baseTitle : baseTitle;
+    }
+
+    var es = new EventSource('/notifications/stream');
+    es.addEventListener('notify', onNotify);
+    es.addEventListener('stats', onStats);
+    // EventSource reconnects automatically on error; nothing to do.
+})();
+</script>

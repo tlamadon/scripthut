@@ -29,6 +29,7 @@ from scripthut.config_schema import (
     ScriptHutConfig,
 )
 from scripthut.models import ConnectionStatus, HPCJob, JobState
+from scripthut.notifications import NotificationHub
 from scripthut.runs import Run, RunManager
 from scripthut.runs.manager import (
     DISAPPEARED_BEFORE_RUNNING_MARKER,
@@ -128,6 +129,11 @@ class AppState:
 
 
 state = AppState()
+
+# Run lifecycle notifications + page-title progress stats. Fed by the
+# poll loop (scan/update_stats) and run-creation routes (run_scheduled);
+# streamed to browsers via /notifications/stream.
+notification_hub = NotificationHub()
 
 # CLI argument for config path (set by run())
 _config_path: Path | None = None
@@ -598,6 +604,13 @@ async def poll_jobs() -> None:
         if state.run_manager:
             state.run_manager.save_dirty()
 
+        # Emit run lifecycle notifications and refresh progress stats from
+        # the freshly-updated run statuses.
+        if state.run_manager:
+            runs = state.run_manager.runs.values()
+            notification_hub.scan(runs)
+            notification_hub.update_stats(runs)
+
         # Record poll time and notify SSE listeners
         state._last_poll_time = time.monotonic()
         state.notify_poll()
@@ -665,6 +678,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     state.backends.update(runtime.backends)
     state.run_storage = runtime.run_storage
     state.run_manager = runtime.run_manager
+
+    # Record existing runs/failures so we don't announce them as "new" —
+    # only transitions from here on generate notifications.
+    notification_hub.prime(state.run_manager.runs.values())
 
     # Initialize pricing service (optional)
     if config.pricing and config.pricing.partitions:
@@ -1312,6 +1329,35 @@ async def runs_stream(request: Request) -> EventSourceResponse:
     return EventSourceResponse(event_generator())
 
 
+@app.get("/notifications/stream")
+async def notifications_stream(request: Request) -> EventSourceResponse:
+    """SSE stream of run lifecycle notifications + compact progress stats.
+
+    Decoupled from the HTMX HTML-swapping streams: this carries structured
+    JSON the browser turns into desktop notifications / toasts (``notify``
+    events) and a live progress figure for the page title (``stats``).
+    """
+    queue = notification_hub.subscribe()
+
+    async def event_generator() -> AsyncGenerator[dict[str, Any], None]:
+        try:
+            # Prime the client with current progress so the title is right
+            # immediately, before the next poll cycle.
+            yield {"event": "stats", "data": json.dumps(notification_hub.stats)}
+            while True:
+                if state._shutdown_event.is_set() or await request.is_disconnected():
+                    break
+                try:
+                    msg = await asyncio.wait_for(queue.get(), timeout=15.0)
+                    yield msg
+                except (TimeoutError, asyncio.TimeoutError):
+                    yield {"comment": "keepalive"}
+        finally:
+            notification_hub.unsubscribe(queue)
+
+    return EventSourceResponse(event_generator())
+
+
 @app.post("/poll")
 async def force_poll() -> dict[str, str]:
     """Trigger an immediate poll of all backends."""
@@ -1497,6 +1543,8 @@ async def run_source_workflow(name: str, filename: str, backend: str = ""):
 
     try:
         run = await state.run_manager.create_run_from_source(name, filename, wf.tasks_json, backend=backend)
+        notification_hub.run_scheduled(run)
+        notification_hub.update_stats(state.run_manager.runs.values())
         state.notify_poll()
         return {
             "run_id": run.id,
@@ -2137,6 +2185,9 @@ async def rerun_run(run_id: str, mode: str = "in_place") -> Response:
 
     try:
         run = await state.run_manager.rerun_in_place(run_id)
+        notification_hub.run_scheduled(run)
+        notification_hub.update_stats(state.run_manager.runs.values())
+        state.notify_poll()
         return JSONResponse(
             content={
                 "run_id": run.id,
