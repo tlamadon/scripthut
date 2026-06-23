@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
@@ -152,6 +153,49 @@ def _tres_get(tres: str, key: str) -> int | None:
     return None
 
 
+def _parse_cpus_state(field: str) -> int:
+    """Return the idle CPU count from a sinfo ``CPUsState`` field.
+
+    The field is formatted ``allocated/idle/other/total`` (e.g.
+    ``4/12/0/16``). Returns the idle half; 0 for empty / malformed input.
+    """
+    parts = (field or "").strip().split("/")
+    if len(parts) != 4:
+        return 0
+    try:
+        return int(parts[1])
+    except ValueError:
+        return 0
+
+
+def _parse_free_mem(field: str) -> int | None:
+    """Return free memory in MB from a sinfo ``FreeMem`` field.
+
+    ``FreeMem`` is an integer count of megabytes, or ``N/A`` when the
+    node doesn't report it. Returns ``None`` for missing / unparseable
+    values so the caller doesn't invent a number.
+    """
+    field = (field or "").strip()
+    if not field or field in ("N/A", "(null)", "-"):
+        return None
+    try:
+        return int(field)
+    except ValueError:
+        return None
+
+
+@dataclass
+class _PartitionNodeStats:
+    """Per-partition aggregates derived from the node-level sinfo walk."""
+
+    gpus_total: int = 0
+    gpus_idle: int = 0
+    gpu_types: str | None = None
+    cpus_free_max_node: int = 0
+    mem_free_max_node_mb: int | None = None
+    gpus_schedulable: int = 0
+
+
 def _parse_gres_gpu(gres_str: str) -> tuple[int, set[str]]:
     """Sum GPU counts from a Slurm Gres or GresUsed string.
 
@@ -194,8 +238,11 @@ def _parse_gres_gpu(gres_str: str) -> tuple[int, set[str]]:
 
 
 # squeue format string for extended job info
-# Fields: JobID, Name, User, State, Partition, TimeUsed, NodeList, NumCPUs, MinMemory, SubmitTime, StartTime
-SQUEUE_FORMAT = "%i|%j|%u|%T|%P|%M|%N|%C|%m|%V|%S"
+# Fields: JobID, Name, User, State, Partition, TimeUsed, NodeList, NumCPUs,
+#         MinMemory, SubmitTime, StartTime, Reason
+# %R is the pending reason (in parentheses) for waiting jobs; for running
+# jobs it's the nodelist, so we only keep it for PENDING jobs below.
+SQUEUE_FORMAT = "%i|%j|%u|%T|%P|%M|%N|%C|%m|%V|%S|%R"
 
 # sbatch typically writes: "Submitted batch job 12345"
 # Pull the numeric ID out of any line that matches this; tolerates extra
@@ -221,16 +268,25 @@ def parse_slurm_datetime(dt_str: str) -> datetime | None:
 def parse_squeue_line(line: str) -> SlurmJob | None:
     """Parse a single line of squeue output into a SlurmJob."""
     parts = line.strip().split("|")
-    if len(parts) < 11:
-        logger.warning(f"Invalid squeue line (expected 11 fields): {line}")
+    if len(parts) < 12:
+        logger.warning(f"Invalid squeue line (expected 12 fields): {line}")
         return None
 
     try:
+        state = JobState.from_string(parts[3])
+        # %R is only a "why am I waiting" reason for PENDING jobs; for
+        # running/terminal jobs it's the nodelist (already in %N), so we
+        # drop it to avoid showing "nid00123" as a pending reason. Slurm
+        # wraps the reason in parentheses — strip them for display.
+        reason: str | None = None
+        if state == JobState.PENDING:
+            raw_reason = parts[11].strip().strip("()")
+            reason = raw_reason or None
         return SlurmJob(
             job_id=parts[0],
             name=parts[1],
             user=parts[2],
-            state=JobState.from_string(parts[3]),
+            state=state,
             partition=parts[4],
             time_used=parts[5] if parts[5] else "0:00",
             nodes=parts[6] if parts[6] else "-",
@@ -238,6 +294,7 @@ def parse_squeue_line(line: str) -> SlurmJob | None:
             memory=parts[8] if parts[8] else "-",
             submit_time=parse_slurm_datetime(parts[9]),
             start_time=parse_slurm_datetime(parts[10]),
+            reason=reason,
         )
     except (ValueError, IndexError) as e:
         logger.warning(f"Failed to parse squeue line: {line}, error: {e}")
@@ -538,20 +595,25 @@ class SlurmBackend(JobBackend):
     async def get_cluster_info(self, user: str | None = None) -> ClusterInfo | None:
         """Fetch per-partition availability, pending reasons, and optional quota.
 
-        Runs ``sinfo`` (partition-level), ``sinfo --Node`` (Gres for GPU
-        counts), ``squeue`` (pending reasons), and, when ``user`` is set,
-        ``sshare`` + ``sacctmgr`` for fair-share and scheduling limits.
-        Each query is best-effort: a failure of one does not block the
-        others.
+        Runs ``sinfo`` (partition-level), ``sinfo --Node`` (per-node CPU
+        state, free memory, and Gres for GPU counts), ``squeue`` (pending
+        reasons), and, when ``user`` is set, ``sshare`` + ``sacctmgr`` for
+        fair-share and scheduling limits. Each query is best-effort: a
+        failure of one does not block the others.
         """
         partitions = await self._fetch_partitions()
         if partitions is None:
             return None
-        gpu_by_part = await self._fetch_gpu_info()
+        node_by_part = await self._fetch_node_info()
         for p in partitions:
-            gpu = gpu_by_part.get(p.name)
-            if gpu is not None:
-                p.gpus_total, p.gpus_idle, p.gpu_types = gpu
+            ns = node_by_part.get(p.name)
+            if ns is not None:
+                p.gpus_total = ns.gpus_total
+                p.gpus_idle = ns.gpus_idle
+                p.gpu_types = ns.gpu_types
+                p.cpus_free_max_node = ns.cpus_free_max_node
+                p.mem_free_max_node_mb = ns.mem_free_max_node_mb
+                p.gpus_schedulable = ns.gpus_schedulable
         pending_reasons = await self._fetch_pending_reasons()
         user_quota = await self._fetch_user_quota(user) if user else None
         return ClusterInfo(
@@ -624,67 +686,89 @@ class SlurmBackend(JobBackend):
 
         return partitions
 
-    async def _fetch_gpu_info(self) -> dict[str, tuple[int, int, str | None]]:
-        """Return per-partition ``(gpus_total, gpus_idle, types)``.
+    async def _fetch_node_info(self) -> dict[str, _PartitionNodeStats]:
+        """Return per-partition node-level availability for scheduling hints.
 
-        Walks ``sinfo --Node`` (one row per node) and aggregates GPU
-        counts from each node's Gres / GresUsed strings. Nodes in
-        down/drain/reserved states count toward total but not idle.
+        Walks ``sinfo --Node`` (one row per node, per partition) and, for
+        each partition, aggregates:
 
-        Uses ``-O`` with explicit field widths so we can split by column
-        position (sinfo doesn't accept a custom delimiter in long-Format
-        mode). Wide enough to hold any realistic Gres string.
+        * ``gpus_total`` / ``gpus_idle`` / ``gpu_types`` — from each node's
+          Gres / GresUsed (nodes in down/drain/reserved states count toward
+          total only).
+        * ``cpus_free_max_node`` / ``mem_free_max_node_mb`` — the single
+          biggest free slot on any one schedulable node, so the UI can show
+          the largest job that would start immediately.
+        * ``gpus_schedulable`` — idle GPUs sitting on a node that *also* has
+          a free CPU. This is the number you can actually claim now;
+          ``gpus_idle`` minus it is idle-but-stuck (the usual reason a
+          GPU job queues despite "idle GPUs").
+
+        Uses explicit field widths so we can split by column position
+        (sinfo doesn't accept a custom delimiter in long-Format mode).
         """
-        fmt = "Partition:32,StateLong:16,Gres:256,GresUsed:256"
+        fmt = "Partition:32,StateLong:16,CPUsState:20,FreeMem:14,Gres:256,GresUsed:256"
         cmd = f"sinfo --noheader --Node --Format='{fmt}'"
         try:
             stdout, stderr, exit_code = await self._ssh.run_command(cmd, timeout=15)
         except Exception as e:
-            logger.warning(f"sinfo -N (gpu) failed: {e}")
+            logger.warning(f"sinfo -N (nodes) failed: {e}")
             return {}
         if exit_code != 0:
-            logger.warning(f"sinfo -N (gpu) failed (exit {exit_code}): {stderr}")
+            logger.warning(f"sinfo -N (nodes) failed (exit {exit_code}): {stderr}")
             return {}
 
         # Slice indices match the widths declared above.
-        P_END, S_END, G_END, U_END = 32, 48, 304, 560
+        P_END, S_END, C_END, F_END, G_END, U_END = 32, 48, 68, 82, 338, 594
 
-        # State strings considered "schedulable now" (GPUs on these nodes
-        # contribute to the idle pool). Anything else is counted toward
-        # total only.
+        # State strings considered "schedulable now". Anything else (down,
+        # drain, reserved, …) counts toward totals only — its free CPUs/GPUs
+        # can't actually be claimed.
         schedulable = {"idle", "mix", "mixed", "allocated", "alloc"}
 
-        totals: dict[str, int] = {}
-        idle_counts: dict[str, int] = {}
+        stats: dict[str, _PartitionNodeStats] = {}
         types_by_part: dict[str, set[str]] = {}
 
         for raw in stdout.splitlines():
             line = raw.ljust(U_END)
             partition = line[0:P_END].strip()
             state = line[P_END:S_END].strip().lower()
-            gres = line[S_END:G_END].strip()
+            cpus_state = line[S_END:C_END].strip()
+            free_mem = line[C_END:F_END].strip()
+            gres = line[F_END:G_END].strip()
             gres_used = line[G_END:U_END].strip()
             if not partition:
                 continue
 
-            total, types = _parse_gres_gpu(gres)
-            used, _ = _parse_gres_gpu(gres_used)
-            if total == 0:
-                continue
+            is_schedulable = state in schedulable
+            gpu_total, types = _parse_gres_gpu(gres)
+            gpu_used, _ = _parse_gres_gpu(gres_used)
+            free_cpus = _parse_cpus_state(cpus_state) if is_schedulable else 0
+            free_gpus = max(0, gpu_total - gpu_used) if is_schedulable else 0
+            free_mem_mb = _parse_free_mem(free_mem) if is_schedulable else None
 
-            totals[partition] = totals.get(partition, 0) + total
-            if state in schedulable:
-                idle_counts[partition] = idle_counts.get(partition, 0) + max(0, total - used)
-            else:
-                idle_counts.setdefault(partition, 0)
-            types_by_part.setdefault(partition, set()).update(types)
+            st = stats.setdefault(partition, _PartitionNodeStats())
+            st.gpus_total += gpu_total
+            st.gpus_idle += free_gpus
+            # Largest single-node slot wins — a 4-CPU job needs 4 CPUs on
+            # ONE node, not 4 spread across the partition.
+            if free_cpus > st.cpus_free_max_node:
+                st.cpus_free_max_node = free_cpus
+            if free_mem_mb is not None and (
+                st.mem_free_max_node_mb is None
+                or free_mem_mb > st.mem_free_max_node_mb
+            ):
+                st.mem_free_max_node_mb = free_mem_mb
+            # GPUs are only grabbable if the node has a free CPU to pair them
+            # with — this is what makes "idle GPUs" actually schedulable.
+            if free_cpus > 0:
+                st.gpus_schedulable += free_gpus
+            if types:
+                types_by_part.setdefault(partition, set()).update(types)
 
-        result: dict[str, tuple[int, int, str | None]] = {}
-        for name, total in totals.items():
+        for name, st in stats.items():
             type_set = types_by_part.get(name, set())
-            label = ",".join(sorted(t for t in type_set if t)) or None
-            result[name] = (total, idle_counts.get(name, 0), label)
-        return result
+            st.gpu_types = ",".join(sorted(t for t in type_set if t)) or None
+        return stats
 
     async def _fetch_user_quota(self, user: str) -> QuotaInfo | None:
         """Combine ``sshare`` (fair-share), ``sacctmgr`` (limits), and

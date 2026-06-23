@@ -71,6 +71,16 @@ class PartitionInfo:
     gpus_total: int = 0  # 0 means "no GPUs in this partition"
     gpus_idle: int = 0
     gpu_types: str | None = None  # comma-separated GPU type labels, e.g. "a100,v100"
+    # --- "Can I schedule right now?" hints (node-level, single biggest slot) ---
+    # Partition-level idle counts can lie: 100 idle CPUs spread one-per-node
+    # can't run a 4-CPU job, and idle GPUs on a CPU-saturated node aren't
+    # grabbable. These look at individual nodes so the UI can show the
+    # largest job that would actually start immediately.
+    cpus_free_max_node: int = 0  # most idle CPUs on any single schedulable node
+    mem_free_max_node_mb: int | None = None  # most free memory on a single node
+    # Idle GPUs that sit on a node which also has a free CPU — i.e. GPUs you
+    # could actually claim now. ``gpus_idle`` minus this is "idle but stuck".
+    gpus_schedulable: int = 0
 
 
 @dataclass

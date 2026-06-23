@@ -315,3 +315,81 @@ class TestManagerDisappearance:
 
         assert item.status == RunItemStatus.RUNNING
         assert item.started_at is not None
+
+
+class TestPendingReason:
+    @pytest.mark.asyncio
+    async def test_pending_reason_set_on_queued(self):
+        # squeue %R reason is recorded on the item while it waits.
+        item = RunItem(
+            task=TaskDefinition(id="t1", name="t1", command="echo hi"),
+            status=RunItemStatus.SUBMITTED,
+            job_id="12345",
+            submitted_at=datetime.now(timezone.utc),
+        )
+        manager, run = _make_manager_with_run(item)
+
+        await manager.update_run_status(
+            run,
+            slurm_jobs={"12345": JobState.PENDING},
+            pending_reasons={"12345": "Resources"},
+        )
+
+        assert item.status == RunItemStatus.QUEUED
+        assert item.pending_reason == "Resources"
+
+    @pytest.mark.asyncio
+    async def test_pending_reason_refreshes_while_queued(self):
+        item = RunItem(
+            task=TaskDefinition(id="t1", name="t1", command="echo hi"),
+            status=RunItemStatus.QUEUED,
+            job_id="12345",
+            submitted_at=datetime.now(timezone.utc),
+            pending_reason="Priority",
+        )
+        manager, run = _make_manager_with_run(item)
+
+        await manager.update_run_status(
+            run,
+            slurm_jobs={"12345": JobState.PENDING},
+            pending_reasons={"12345": "Resources"},
+        )
+
+        assert item.pending_reason == "Resources"
+
+    @pytest.mark.asyncio
+    async def test_pending_reason_cleared_when_running(self):
+        item = RunItem(
+            task=TaskDefinition(id="t1", name="t1", command="echo hi"),
+            status=RunItemStatus.QUEUED,
+            job_id="12345",
+            submitted_at=datetime.now(timezone.utc),
+            pending_reason="Resources",
+        )
+        manager, run = _make_manager_with_run(item)
+
+        await manager.update_run_status(
+            run, slurm_jobs={"12345": JobState.RUNNING}
+        )
+
+        assert item.status == RunItemStatus.RUNNING
+        assert item.pending_reason is None
+
+    @pytest.mark.asyncio
+    async def test_update_all_runs_threads_reason_from_tuple(self):
+        # The (job_id, state, reason) 3-tuple from main.py is unpacked
+        # and the reason lands on the item; 2-tuples still work elsewhere.
+        item = RunItem(
+            task=TaskDefinition(id="t1", name="t1", command="echo hi"),
+            status=RunItemStatus.SUBMITTED,
+            job_id="12345",
+            submitted_at=datetime.now(timezone.utc),
+        )
+        manager, run = _make_manager_with_run(item)
+
+        await manager.update_all_runs(
+            {"b1": [("12345", JobState.PENDING, "QOSMaxCpuPerUserLimit")]}
+        )
+
+        assert item.status == RunItemStatus.QUEUED
+        assert item.pending_reason == "QOSMaxCpuPerUserLimit"

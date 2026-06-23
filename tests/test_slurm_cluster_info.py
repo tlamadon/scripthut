@@ -10,8 +10,29 @@ from scripthut.backends.slurm import (
     _parse_gres_gpu,
     _safe_float,
     _tres_get,
+    parse_squeue_line,
 )
+from scripthut.models import JobState
 from scripthut.runs.models import TaskDefinition
+
+
+class TestParseSqueueReason:
+    def test_pending_job_reason_stripped_of_parens(self):
+        # %R for a pending job is the wait reason, wrapped in parens.
+        line = "12345|job|alice|PENDING|cpu|0:00|-|4|4G|N/A|N/A|(Resources)"
+        job = parse_squeue_line(line)
+        assert job is not None
+        assert job.state == JobState.PENDING
+        assert job.reason == "Resources"
+
+    def test_running_job_reason_is_none(self):
+        # %R for a running job is the nodelist — not a wait reason — so
+        # we drop it to avoid showing "nid001" as a reason.
+        line = "12345|job|alice|RUNNING|cpu|1:00|nid001|4|4G|N/A|N/A|nid001"
+        job = parse_squeue_line(line)
+        assert job is not None
+        assert job.state == JobState.RUNNING
+        assert job.reason is None
 
 
 @pytest.fixture
@@ -218,9 +239,26 @@ def _pad(s: str, w: int) -> str:
     return s.ljust(w)
 
 
-def _node_row(partition: str, state: str, gres: str, gres_used: str) -> str:
-    """Build a fixed-width sinfo -N row matching widths 32/16/256/256."""
-    return _pad(partition, 32) + _pad(state, 16) + _pad(gres, 256) + _pad(gres_used, 256)
+def _node_row(
+    partition: str,
+    state: str,
+    gres: str = "(null)",
+    gres_used: str = "(null)",
+    cpus_state: str = "0/0/0/0",
+    free_mem: str = "N/A",
+) -> str:
+    """Build a fixed-width sinfo -N row matching widths 32/16/20/14/256/256.
+
+    Columns: Partition, StateLong, CPUsState, FreeMem, Gres, GresUsed.
+    """
+    return (
+        _pad(partition, 32)
+        + _pad(state, 16)
+        + _pad(cpus_state, 20)
+        + _pad(free_mem, 14)
+        + _pad(gres, 256)
+        + _pad(gres_used, 256)
+    )
 
 
 class TestGpuAggregation:
@@ -290,6 +328,64 @@ class TestGpuAggregation:
         assert info is not None
         assert info.partitions[0].gpus_total == 0
         assert info.partitions[0].gpus_idle == 0
+
+
+class TestSchedulingHints:
+    @pytest.mark.asyncio
+    async def test_largest_free_cpu_slot_is_per_node(self):
+        # 8 idle CPUs total but spread 4+4 across two nodes — the biggest
+        # job that starts now is 4 CPUs, not 8.
+        sinfo_out = "cpu*|up|0/0/0/0|0|0|1-00:00:00|\n"
+        node_out = "\n".join([
+            _node_row("cpu", "mix", cpus_state="12/4/0/16", free_mem="32000"),
+            _node_row("cpu", "mix", cpus_state="12/4/0/16", free_mem="8000"),
+        ]) + "\n"
+        ssh = _make_ssh_with_responses(sinfo_out, "", node_out)
+        backend = SlurmBackend(ssh)
+
+        info = await backend.get_cluster_info()
+        assert info is not None
+        p = info.partitions[0]
+        assert p.cpus_free_max_node == 4
+        assert p.mem_free_max_node_mb == 32000
+
+    @pytest.mark.asyncio
+    async def test_idle_gpu_on_full_cpu_node_is_not_schedulable(self):
+        # The exact "idle GPUs but I still get queued" case: a node has a
+        # free GPU but zero free CPUs, so the GPU can't actually be claimed.
+        sinfo_out = "gpu*|up|0/0/0/0|0|0|1-00:00:00|\n"
+        node_out = "\n".join([
+            # free GPU but CPUs fully allocated
+            _node_row("gpu", "mix", "gpu:a100:4", "gpu:a100:3", cpus_state="16/0/0/16"),
+            # free GPU AND a free CPU -> genuinely schedulable
+            _node_row("gpu", "mix", "gpu:a100:4", "gpu:a100:2", cpus_state="14/2/0/16"),
+        ]) + "\n"
+        ssh = _make_ssh_with_responses(sinfo_out, "", node_out)
+        backend = SlurmBackend(ssh)
+
+        info = await backend.get_cluster_info()
+        assert info is not None
+        p = info.partitions[0]
+        assert p.gpus_idle == 1 + 2  # all free GPUs
+        assert p.gpus_schedulable == 2  # only those on the node with a free CPU
+
+    @pytest.mark.asyncio
+    async def test_down_node_contributes_no_free_slot(self):
+        sinfo_out = "cpu*|up|0/0/0/0|0|0|1-00:00:00|\n"
+        node_out = "\n".join([
+            _node_row("cpu", "drain", cpus_state="0/16/0/16", free_mem="64000"),
+            _node_row("cpu", "idle", cpus_state="0/8/0/8", free_mem="16000"),
+        ]) + "\n"
+        ssh = _make_ssh_with_responses(sinfo_out, "", node_out)
+        backend = SlurmBackend(ssh)
+
+        info = await backend.get_cluster_info()
+        assert info is not None
+        p = info.partitions[0]
+        # The drained node's 16 idle CPUs are unschedulable; only the idle
+        # node's 8 count.
+        assert p.cpus_free_max_node == 8
+        assert p.mem_free_max_node_mb == 16000
 
 
 class TestTresHelpers:

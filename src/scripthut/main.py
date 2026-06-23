@@ -548,6 +548,7 @@ async def poll_backend(backend_state: BackendState, filter_user: str | None = No
                         start_time=slurm_job.start_time,
                         cpu_efficiency=stats.cpu_efficiency if stats else None,
                         max_rss=stats.max_rss if stats else None,
+                        pending_reason=getattr(slurm_job, "reason", None),
                     )
 
             # Reconcile stale external jobs no longer in squeue
@@ -595,9 +596,12 @@ async def poll_jobs() -> None:
 
         # Update run statuses based on polled jobs
         if state.run_manager and state.run_manager.get_active_runs():
-            backend_jobs: dict[str, list[tuple[str, JobState]]] = {}
+            backend_jobs: dict[str, list[tuple]] = {}
             for name, bs in state.backends.items():
-                backend_jobs[name] = [(job.job_id, job.state) for job in bs.jobs]
+                backend_jobs[name] = [
+                    (job.job_id, job.state, getattr(job, "reason", None))
+                    for job in bs.jobs
+                ]
             await state.run_manager.update_all_runs(backend_jobs)
 
         # Save dirty runs
@@ -995,6 +999,9 @@ class JobView:
     cpu_efficiency: float | None
     max_rss: str | None
     workflow_name: str | None
+    # Scheduler's reason a queued job is waiting (squeue %R). Shown as a
+    # tooltip on the queued state pill; None unless the job is queued.
+    pending_reason: str | None = None
 
     @property
     def state_class(self) -> str:
@@ -1157,6 +1164,7 @@ def _collect_all_job_views() -> list[JobView]:
                 cpu_efficiency=item.cpu_efficiency,
                 max_rss=item.max_rss,
                 workflow_name=run.workflow_name,
+                pending_reason=item.pending_reason,
             ))
 
     # Weekly default runs (external jobs from storage)
@@ -1190,6 +1198,7 @@ def _collect_all_job_views() -> list[JobView]:
                         cpu_efficiency=item.cpu_efficiency,
                         max_rss=item.max_rss,
                         workflow_name="_default",
+                        pending_reason=item.pending_reason,
                             ))
 
     views.sort(key=lambda v: v.submit_time or datetime.min.replace(tzinfo=UTC), reverse=True)

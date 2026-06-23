@@ -319,6 +319,11 @@ class RunItem:
     # ``/runs/{id}/summary`` know which items contribute to the
     # aggregated panel without doing N stat probes at request time.
     has_run_summary: bool = False
+    # Scheduler's reason a QUEUED job is still waiting (Slurm squeue %R,
+    # e.g. "Resources", "Priority", "QOSMaxCpuPerUserLimit"). Surfaced as
+    # a tooltip on the queued status pill. Set while the item is QUEUED,
+    # cleared once it starts running or reaches a terminal state.
+    pending_reason: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to dictionary for JSON storage."""
@@ -339,6 +344,7 @@ class RunItem:
             "exit_code": self.exit_code,
             "outputs": [o.to_dict() for o in self.outputs],
             "has_run_summary": self.has_run_summary,
+            "pending_reason": self.pending_reason,
         }
 
     @classmethod
@@ -370,6 +376,7 @@ class RunItem:
             exit_code=data.get("exit_code"),
             outputs=[TaskOutput.from_dict(o) for o in data.get("outputs", [])],
             has_run_summary=bool(data.get("has_run_summary", False)),
+            pending_reason=data.get("pending_reason"),
         )
 
     @property

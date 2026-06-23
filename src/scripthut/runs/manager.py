@@ -1483,8 +1483,19 @@ class RunManager:
         except asyncio.TimeoutError:
             return False
 
-    async def update_run_status(self, run: Run, slurm_jobs: dict[str, JobState]) -> None:
-        """Update run item statuses based on Slurm job states."""
+    async def update_run_status(
+        self,
+        run: Run,
+        slurm_jobs: dict[str, JobState],
+        pending_reasons: dict[str, str] | None = None,
+    ) -> None:
+        """Update run item statuses based on Slurm job states.
+
+        ``pending_reasons`` maps job_id -> the scheduler's reason a still-
+        pending job is waiting (squeue %R). Surfaced on QUEUED items and
+        cleared once they leave the queue.
+        """
+        pending_reasons = pending_reasons or {}
         changed = False
         changed_items: list[RunItem] = []
 
@@ -1527,6 +1538,7 @@ class RunManager:
                     # `run watch --exit-status` automation.
                     item.started_at = item.started_at or item.submitted_at
                     item.status = RunItemStatus.SETTLING
+                    item.pending_reason = None  # no longer waiting
                     # ``finished_at`` is set to "now" — the timestamp
                     # when scripthut noticed the job left the queue.
                     # This is approximate (the job may have finished
@@ -1554,6 +1566,10 @@ class RunManager:
 
             # squeue gave us something — translate to our state.
             if job_state in (JobState.RUNNING, JobState.COMPLETING):
+                # No longer waiting — drop any stale pending reason.
+                if item.pending_reason is not None:
+                    item.pending_reason = None
+                    changed = True
                 if item.status != RunItemStatus.RUNNING:
                     item.status = RunItemStatus.RUNNING
                     item.started_at = item.started_at or datetime.now(timezone.utc)
@@ -1574,6 +1590,13 @@ class RunManager:
                         f"Task '{item.task.id}' (job {item.job_id}) "
                         f"acknowledged by scheduler — QUEUED"
                     )
+                # Refresh the pending reason on every observation — the
+                # scheduler can change it (Priority -> Resources -> ...)
+                # while the job waits.
+                new_reason = pending_reasons.get(item.job_id)
+                if item.pending_reason != new_reason:
+                    item.pending_reason = new_reason
+                    changed = True
             elif job_state == JobState.COMPLETED:
                 # squeue says COMPLETED, but the script's exit code might
                 # still disagree (the v0.6.5 fix specifically handles this
@@ -1584,6 +1607,7 @@ class RunManager:
                 # ExitCode was non-zero.
                 item.started_at = item.started_at or item.submitted_at
                 item.status = RunItemStatus.SETTLING
+                item.pending_reason = None  # no longer waiting
                 changed = True
                 changed_items.append(item)
                 logger.info(
@@ -1602,6 +1626,7 @@ class RunManager:
             ):
                 item.started_at = item.started_at or item.submitted_at
                 item.status = RunItemStatus.FAILED
+                item.pending_reason = None  # no longer waiting
                 item.error = f"Slurm job {job_state.value}"
                 item.finished_at = datetime.now(timezone.utc)
                 changed = True
@@ -1616,16 +1641,30 @@ class RunManager:
             await self.process_run(run)
             self.notify_run(run.id)
 
-    async def update_all_runs(self, backend_jobs: dict[str, list[tuple[str, JobState]]]) -> None:
-        """Update all active runs based on Slurm job states."""
+    async def update_all_runs(
+        self, backend_jobs: dict[str, list[tuple]]
+    ) -> None:
+        """Update all active runs based on Slurm job states.
+
+        Each entry in a backend's list is ``(job_id, state)`` or
+        ``(job_id, state, reason)`` — the optional third element is the
+        scheduler's pending reason (squeue %R). Two-element tuples stay
+        supported so existing callers/tests don't break.
+        """
         for run in self.runs.values():
             if run.status in (RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED):
                 continue
 
             jobs = backend_jobs.get(run.backend_name, [])
-            job_states = {job_id: state for job_id, state in jobs}
+            job_states: dict[str, JobState] = {}
+            pending_reasons: dict[str, str] = {}
+            for entry in jobs:
+                job_id, job_state = entry[0], entry[1]
+                job_states[job_id] = job_state
+                if len(entry) > 2 and entry[2]:
+                    pending_reasons[job_id] = entry[2]
 
-            await self.update_run_status(run, job_states)
+            await self.update_run_status(run, job_states, pending_reasons)
 
         # Cross-run backpressure: a job finishing in one run frees a
         # backend-level concurrency slot that a *different* run may be

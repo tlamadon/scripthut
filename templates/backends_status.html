@@ -112,14 +112,35 @@
             <span class="ml-1 text-yellow-700">• {{ ci.pending_reasons.values()|sum }} pending</span>
             {% endif %}
         </summary>
+        {% set cpu_avail = ci.partitions | selectattr('cpus_free_max_node', 'gt', 0) | sort(attribute='cpus_free_max_node', reverse=true) | list %}
+        {% set gpu_avail = ci.partitions | selectattr('gpus_schedulable', 'gt', 0) | sort(attribute='gpus_schedulable', reverse=true) | list %}
+        <div class="mt-1 text-xs">
+            {% if cpu_avail %}
+            <span class="text-gray-400">Easiest to start now:</span>
+            <span class="font-mono font-medium text-green-700">{{ cpu_avail[0].name }}</span>
+            <span class="text-gray-500">(up to {{ cpu_avail[0].cpus_free_max_node }} CPU{% if cpu_avail[0].mem_free_max_node_mb %}/{{ (cpu_avail[0].mem_free_max_node_mb // 1024) }}G{% endif %} on one node)</span>
+            {% else %}
+            <span class="text-yellow-700">No partition can start a job immediately — every node is full or unavailable, so jobs will queue.</span>
+            {% endif %}
+            {% if has_gpus %}
+                {% if gpu_avail %}
+                <span class="text-gray-400 ml-2">· GPUs now:</span>
+                <span class="font-mono font-medium text-green-700">{{ gpu_avail[0].name }}</span>
+                <span class="text-gray-500">({{ gpu_avail[0].gpus_schedulable }} {{ gpu_avail[0].gpu_types or 'gpu' }})</span>
+                {% else %}
+                <span class="text-yellow-700 ml-2">· No GPUs schedulable right now (idle GPUs are on CPU-saturated nodes)</span>
+                {% endif %}
+            {% endif %}
+        </div>
         <div class="mt-1 overflow-x-auto">
             <table class="text-xs w-full">
                 <thead>
                     <tr class="text-gray-400 border-b">
                         <th class="text-left pr-3 font-normal py-1">Partition</th>
                         <th class="text-right pr-3 font-normal py-1">Idle/Total CPUs</th>
+                        <th class="text-right pr-3 font-normal py-1" title="Largest job that would start immediately — the biggest free slot on a single node (idle CPUs, and free memory). Partition-wide idle counts can't run a job if they're scattered across nodes.">Free now (1 node)</th>
                         {% if has_gpus %}
-                        <th class="text-right pr-3 font-normal py-1">Idle/Total GPUs</th>
+                        <th class="text-right pr-3 font-normal py-1" title="Schedulable now / idle / total. A GPU is only schedulable if its node also has a free CPU — idle GPUs on a CPU-saturated node can't be claimed, which is why a job queues despite 'idle GPUs'.">GPUs (now/idle/total)</th>
                         {% endif %}
                         <th class="text-right pr-3 font-normal py-1">Nodes</th>
                         <th class="text-right pr-3 font-normal py-1">Mem/Node</th>
@@ -137,10 +158,14 @@
                         <td class="text-right pr-3 py-0.5 font-mono {% if p.cpus_idle == 0 %}text-red-600{% elif p.cpus_total and p.cpus_idle * 10 < p.cpus_total %}text-yellow-600{% else %}text-green-700{% endif %}">
                             {{ p.cpus_idle }} / {{ p.cpus_total }}
                         </td>
+                        <td class="text-right pr-3 py-0.5 font-mono {% if p.cpus_free_max_node == 0 %}text-red-600{% else %}text-green-700{% endif %}"
+                            title="Largest job that starts immediately: up to {{ p.cpus_free_max_node }} CPUs{% if p.mem_free_max_node_mb %} + {{ (p.mem_free_max_node_mb // 1024) }}G{% endif %} on a single node{% if p.cpus_free_max_node == 0 %} (no node has a free CPU — jobs will queue){% endif %}">
+                            {% if p.cpus_free_max_node %}{{ p.cpus_free_max_node }}c{% if p.mem_free_max_node_mb %}/{{ (p.mem_free_max_node_mb // 1024) }}G{% endif %}{% else %}full{% endif %}
+                        </td>
                         {% if has_gpus %}
-                        <td class="text-right pr-3 py-0.5 font-mono {% if p.gpus_total == 0 %}text-gray-400{% elif p.gpus_idle == 0 %}text-red-600{% elif p.gpus_idle * 4 < p.gpus_total %}text-yellow-600{% else %}text-green-700{% endif %}"
-                            {% if p.gpu_types %}title="{{ p.gpu_types }}"{% endif %}>
-                            {% if p.gpus_total %}{{ p.gpus_idle }} / {{ p.gpus_total }}{% if p.gpu_types %}<span class="text-gray-400 ml-1">{{ p.gpu_types }}</span>{% endif %}{% else %}—{% endif %}
+                        <td class="text-right pr-3 py-0.5 font-mono {% if p.gpus_total == 0 %}text-gray-400{% elif p.gpus_schedulable > 0 %}text-green-700{% elif p.gpus_idle > 0 %}text-yellow-600{% else %}text-red-600{% endif %}"
+                            title="{% if p.gpus_total %}{{ p.gpus_schedulable }} schedulable now (on a node with a free CPU), {{ p.gpus_idle }} idle, {{ p.gpus_total }} total{% if p.gpus_idle > p.gpus_schedulable %} — {{ p.gpus_idle - p.gpus_schedulable }} idle GPU(s) are stuck on CPU-saturated nodes{% endif %}{% if p.gpu_types %} · {{ p.gpu_types }}{% endif %}{% else %}no GPUs{% endif %}">
+                            {% if p.gpus_total %}{{ p.gpus_schedulable }} / {{ p.gpus_idle }} / {{ p.gpus_total }}{% if p.gpu_types %}<span class="text-gray-400 ml-1">{{ p.gpu_types }}</span>{% endif %}{% else %}—{% endif %}
                         </td>
                         {% endif %}
                         <td class="text-right pr-3 py-0.5 font-mono text-gray-600">{{ p.nodes_total }}</td>

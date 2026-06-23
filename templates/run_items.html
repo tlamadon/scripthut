@@ -93,11 +93,12 @@
                         {% if item.status.value == 'running' %}bg-indigo-100 text-indigo-700
                         {% elif item.status.value == 'pending' %}bg-gray-100 text-gray-600
                         {% elif item.status.value == 'submitted' %}bg-yellow-50 text-yellow-700
-                        {% elif item.status.value == 'queued' %}bg-yellow-100 text-yellow-800
+                        {% elif item.status.value == 'queued' %}bg-yellow-100 text-yellow-800{% if item.pending_reason %} cursor-help{% endif %}
                         {% elif item.status.value == 'completed' %}bg-green-100 text-green-700
                         {% elif item.status.value == 'failed' %}bg-red-100 text-red-700
                         {% elif item.status.value == 'dep_failed' %}bg-orange-100 text-orange-700
-                        {% else %}bg-gray-100 text-gray-600{% endif %}">
+                        {% else %}bg-gray-100 text-gray-600{% endif %}"
+                        {% if item.status.value == 'queued' and item.pending_reason %}title="Waiting: {{ item.pending_reason }}"{% endif %}>
                         {{ status_dot(item.status.value) }}
                         {% if item.status.value == 'dep_failed' %}dep failed{% else %}{{ item.status.value }}{% endif %}
                     </span>
@@ -212,11 +213,12 @@
                 {% if item.status.value == 'running' %}bg-indigo-100 text-indigo-700
                 {% elif item.status.value == 'pending' %}bg-gray-100 text-gray-600
                 {% elif item.status.value == 'submitted' %}bg-yellow-50 text-yellow-700
-                {% elif item.status.value == 'queued' %}bg-yellow-100 text-yellow-800
+                {% elif item.status.value == 'queued' %}bg-yellow-100 text-yellow-800{% if item.pending_reason %} cursor-help{% endif %}
                 {% elif item.status.value == 'completed' %}bg-green-100 text-green-700
                 {% elif item.status.value == 'failed' %}bg-red-100 text-red-700
                 {% elif item.status.value == 'dep_failed' %}bg-orange-100 text-orange-700
-                {% else %}bg-gray-100 text-gray-600{% endif %}">
+                {% else %}bg-gray-100 text-gray-600{% endif %}"
+                {% if item.status.value == 'queued' and item.pending_reason %}title="Waiting: {{ item.pending_reason }}"{% endif %}>
                 {{ status_dot(item.status.value) }}
                 {% if item.status.value == 'dep_failed' %}dep failed{% else %}{{ item.status.value }}{% endif %}
             </span>

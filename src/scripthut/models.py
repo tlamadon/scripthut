@@ -81,6 +81,10 @@ class HPCJob:
     start_time: datetime | None
     cpu_efficiency: float | None = None  # 0-100%, from sacct
     max_rss: str | None = None  # Peak memory usage, e.g. "1.2G"
+    # Scheduler's explanation for why a PENDING job is waiting (Slurm
+    # squeue %R, e.g. "Resources", "Priority", "QOSMaxCpuPerUserLimit").
+    # Only meaningful while pending; None for running/terminal jobs.
+    reason: str | None = None
 
     @property
     def state_class(self) -> str:

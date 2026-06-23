@@ -300,6 +300,7 @@ class RunStorageManager:
         finish_time: datetime | None = None,
         cpu_efficiency: float | None = None,
         max_rss: str | None = None,
+        pending_reason: str | None = None,
     ) -> None:
         """Add or update an external job in the appropriate weekly bin."""
         dt = submit_time or datetime.now(timezone.utc)
@@ -324,6 +325,13 @@ class RunStorageManager:
                 existing.max_rss = max_rss
             if user:
                 existing.user = user
+            # Only meaningful while queued; clear it once the job moves on
+            # so a stale "Resources" doesn't linger on a running job.
+            existing.pending_reason = (
+                pending_reason
+                if existing.status == RunItemStatus.QUEUED
+                else None
+            )
         else:
             # Create new item
             task = TaskDefinition(
@@ -350,6 +358,11 @@ class RunStorageManager:
                 finished_at=finish_time,
                 cpu_efficiency=cpu_efficiency,
                 max_rss=max_rss,
+                pending_reason=(
+                    pending_reason
+                    if status == RunItemStatus.QUEUED
+                    else None
+                ),
             )
             run.items.append(item)
 

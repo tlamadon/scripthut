@@ -112,10 +112,11 @@
                         {% if job.state == 'running' %}bg-indigo-100 text-indigo-700
                         {% elif job.state == 'pending' %}bg-gray-100 text-gray-600
                         {% elif job.state == 'submitted' %}bg-yellow-50 text-yellow-700
-                        {% elif job.state == 'queued' %}bg-yellow-100 text-yellow-800
+                        {% elif job.state == 'queued' %}bg-yellow-100 text-yellow-800{% if job.pending_reason %} cursor-help{% endif %}
                         {% elif job.state == 'completed' %}bg-green-100 text-green-700
                         {% elif job.state == 'failed' %}bg-red-100 text-red-700
-                        {% else %}bg-gray-100 text-gray-600{% endif %}">
+                        {% else %}bg-gray-100 text-gray-600{% endif %}"
+                        {% if job.state == 'queued' and job.pending_reason %}title="Waiting: {{ job.pending_reason }}"{% endif %}>
                         {{ status_dot(job.state) }}
                         {{ job.state }}
                     </span>
@@ -208,9 +209,11 @@
                 {% if job.state == 'running' %}bg-indigo-100 text-indigo-700
                 {% elif job.state == 'pending' %}bg-gray-100 text-gray-600
                 {% elif job.state == 'submitted' %}bg-yellow-100 text-yellow-700
+                {% elif job.state == 'queued' %}bg-yellow-100 text-yellow-800{% if job.pending_reason %} cursor-help{% endif %}
                 {% elif job.state == 'completed' %}bg-green-100 text-green-700
                 {% elif job.state == 'failed' %}bg-red-100 text-red-700
-                {% else %}bg-gray-100 text-gray-600{% endif %}">
+                {% else %}bg-gray-100 text-gray-600{% endif %}"
+                {% if job.state == 'queued' and job.pending_reason %}title="Waiting: {{ job.pending_reason }}"{% endif %}>
                 {{ status_dot(job.state) }}
                 {{ job.state }}
             </span>
