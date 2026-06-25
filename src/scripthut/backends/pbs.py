@@ -787,8 +787,11 @@ class PBSBackend(JobBackend):
         Captures stdout/stderr so users can inspect the raw qsub response
         even when submission appeared successful.
         """
-        escaped_script = script.replace("'", "'\\''")
-        submit_cmd = f"qsub <<'SCRIPTHUT_EOF'\n{escaped_script}\nSCRIPTHUT_EOF"
+        # Quoted heredoc delimiter (<<'SCRIPTHUT_EOF') already passes the body
+        # through literally — no shell processing — so the script must NOT be
+        # quote-escaped. Escaping single quotes here would inject literal
+        # ``'\''`` sequences and corrupt any command containing a single quote.
+        submit_cmd = f"qsub <<'SCRIPTHUT_EOF'\n{script}\nSCRIPTHUT_EOF"
         stdout, stderr, exit_code = await self._ssh.run_command(submit_cmd)
         combined = format_submit_output(stdout, stderr)
 
