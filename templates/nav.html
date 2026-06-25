@@ -1,3 +1,33 @@
+<script>
+// SSE connection hygiene (loaded on every page via nav.html, before htmx wires
+// up its sse-connect streams). Wraps EventSource so every stream — htmx's
+// page-level streams and the notifications stream below — is tracked and
+// force-closed on navigation. Without this, streams from the page being left
+// linger through the navigation overlap and pile up against the browser's
+// ~6-connections-per-host limit, deadlocking the next document load (the "page
+// hangs when clicking between tabs" symptom). pagehide (not beforeunload) keeps
+// the back/forward cache eligible.
+(function () {
+    if (window.__sseHygiene || !window.EventSource) return;
+    window.__sseHygiene = true;
+    var Native = window.EventSource;
+    var open = [];
+    function Tracked(url, config) {
+        var es = new Native(url, config);
+        open.push(es);
+        return es;
+    }
+    Tracked.prototype = Native.prototype;
+    Tracked.CONNECTING = Native.CONNECTING;
+    Tracked.OPEN = Native.OPEN;
+    Tracked.CLOSED = Native.CLOSED;
+    window.EventSource = Tracked;
+    window.addEventListener('pagehide', function () {
+        open.forEach(function (es) { try { es.close(); } catch (e) {} });
+        open = [];
+    });
+})();
+</script>
 <div class="flex items-center justify-between">
     <div class="flex items-center gap-6">
         <a href="/" class="text-2xl font-bold text-gray-800 hover:text-gray-600 transition-colors">ScriptHut</a>
