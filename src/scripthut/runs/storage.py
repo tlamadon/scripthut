@@ -110,6 +110,9 @@ class RunStorageManager:
                 name: s.model_dump(exclude_defaults=True)
                 for name, s in run.doc_stacks.items()
             },
+            "agent_session": run.agent_session,
+            "agent_mode": run.agent_mode,
+            "agent_session_name": run.agent_session_name,
             "items": [item.to_dict() for item in run.items],
         }
 
@@ -161,6 +164,9 @@ class RunStorageManager:
                 doc_env=doc_env,
                 doc_env_groups=doc_env_groups,
                 doc_stacks=doc_stacks,
+                agent_session=data.get("agent_session", False),
+                agent_mode=data.get("agent_mode"),
+                agent_session_name=data.get("agent_session_name"),
             )
         except Exception as e:
             logger.error(f"Failed to load run from {run_dir}: {e}")

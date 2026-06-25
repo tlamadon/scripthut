@@ -438,6 +438,13 @@ class Run:
     # YAML, source wins on collision) so the resolver doesn't have to
     # know about the merge layers.
     doc_stacks: dict[str, Stack] = field(default_factory=dict)
+    # Coding-agent runs (one task launching a Claude Code session in a fresh
+    # clone). ``agent_mode`` is "remote" (claude.ai-driven server session) or
+    # "tui" (interactive TUI attached via the browser terminal). Drives the
+    # mode-aware banner / controls on the run detail page.
+    agent_session: bool = False
+    agent_mode: str | None = None
+    agent_session_name: str | None = None
 
     @property
     def status(self) -> RunStatus:

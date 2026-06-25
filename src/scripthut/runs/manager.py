@@ -6,6 +6,7 @@ import asyncio
 import base64
 import json
 import logging
+import shlex
 import uuid
 from datetime import datetime, timezone
 from fnmatch import fnmatch
@@ -14,6 +15,7 @@ from typing import TYPE_CHECKING
 
 from scripthut.backends.base import JobBackend
 from scripthut.config_schema import (
+    AgentConfig,
     EnvRule,
     GitSourceConfig,
     PathSourceConfig,
@@ -923,6 +925,70 @@ class RunManager:
             postclone=source.postclone,
         )
 
+    async def _clone_agent_workspace(
+        self, ssh_client: SSHClient, source: GitSourceConfig, *, full_history: bool,
+    ) -> tuple[str, str]:
+        """Clone a *fresh, writable, unique* workspace for a coding-agent run.
+
+        Unlike ``_clone_source_repo`` (which is content-addressed by commit and
+        shared/reused across runs), each agent gets its own throwaway clone at
+        ``<clone_dir>/agent-<uid>`` so it can create branches, commit, and push
+        without colliding with other runs or dirtying the shared cache. When
+        ``full_history`` is True the clone keeps full history (needed for branch
+        + PR work); otherwise it's a shallow single-branch clone.
+
+        Returns ``(workspace_path, short_hash)``.
+        """
+        wsid = uuid.uuid4().hex[:8]
+        remote_key: str | None = None
+        try:
+            if source.deploy_key is not None:
+                remote_key = await self._upload_deploy_key(
+                    ssh_client, source.deploy_key.expanduser()
+                )
+
+            git_ssh = self._build_remote_git_ssh_command(remote_key)
+            effective_repo = source.url if remote_key else self._to_https_url(source.url)
+
+            # Resolve HEAD commit for run metadata.
+            cmd = (
+                f"{git_ssh}GIT_TERMINAL_PROMPT=0 git ls-remote "
+                f"{effective_repo} refs/heads/{source.branch}"
+            )
+            stdout, stderr, exit_code = await ssh_client.run_command(cmd, timeout=30)
+            if exit_code != 0 or not stdout.strip():
+                raise ValueError(
+                    f"Failed to resolve branch '{source.branch}' from "
+                    f"'{source.url}': {stderr}"
+                )
+            short_hash = stdout.split()[0][:12]
+
+            workspace = f"{source.clone_dir}/agent-{wsid}"
+            depth = "" if full_history else "--single-branch --depth 1 "
+            logger.info(
+                f"Cloning agent workspace {source.url}@{source.branch} "
+                f"({short_hash}) to {workspace}"
+            )
+            cmd = (
+                f"{git_ssh}GIT_TERMINAL_PROMPT=0 git clone --branch {source.branch} "
+                f"{depth}{effective_repo} {workspace}"
+            )
+            _, stderr, exit_code = await ssh_client.run_command(cmd, timeout=600)
+            if exit_code != 0:
+                raise ValueError(f"Git clone failed: {stderr}")
+
+            if source.postclone:
+                logger.info(f"Running postclone command in {workspace}")
+                cmd = f"cd {workspace} && {source.postclone}"
+                _, stderr, exit_code = await ssh_client.run_command(cmd, timeout=600)
+                if exit_code != 0:
+                    raise ValueError(f"Postclone command failed: {stderr}")
+
+            return workspace, short_hash
+        finally:
+            if remote_key is not None:
+                await self._cleanup_deploy_key(ssh_client, remote_key)
+
     def _resolve_working_dirs(
         self, tasks: list[TaskDefinition], clone_dir: str,
     ) -> None:
@@ -1143,6 +1209,144 @@ class RunManager:
             doc_env=doc_env, doc_env_groups=doc_env_groups,
             doc_stacks=doc_stacks,
         )
+        return run
+
+    @staticmethod
+    def _build_agent_command(agent_cfg: AgentConfig, mode: str, name: str) -> str:
+        """Render the job command for a coding-agent run.
+
+        ``remote`` substitutes the (shell-quoted) session name into
+        ``remote_command``. ``tui`` runs the program inside a tmux session named
+        ``sh-<jobid>`` — the same convention the interactive-debug flow uses
+        (``backends/utils.py``) so the browser terminal's ``session_type=job``
+        attach (``tmux attach -t sh-<jobid>``) works unchanged. The job stays
+        alive while that tmux session (and thus claude) lives.
+        """
+        quoted_name = shlex.quote(name)
+        hint = (
+            "install Claude Code on the compute nodes, or set agent.env_group "
+            "to an env_group whose init activates an environment that provides "
+            "it (e.g. via conda; see scripthut.example.yaml)"
+        )
+        if mode == "remote":
+            bin_ = RunManager._agent_binary(agent_cfg.remote_command)
+            cmd = agent_cfg.remote_command.format(name=quoted_name)
+            # Fail fast with a clear message if the binary is missing, so the
+            # run shows FAILED with an actionable reason rather than an opaque
+            # "command not found".
+            return (
+                f"if ! command -v {bin_} >/dev/null 2>&1; then\n"
+                f'  echo "ERROR: {bin_} not found on $(hostname). {hint}." >&2\n'
+                "  exit 127\n"
+                "fi\n"
+                f"{cmd}\n"
+            )
+        # TUI: run the program inside tmux, but if it exits (e.g. claude not
+        # installed -> exit 127, or a crash) fall back to a login shell so the
+        # tmux session — and therefore the Slurm/PBS allocation — survives.
+        # Otherwise the job ends within seconds, the node allocation is
+        # released, and the browser-terminal attach is rejected by pam_slurm
+        # ("you have no job on this node"). Keeping a shell open also lets the
+        # user see the failure and install/fix things in place; Ctrl-D or
+        # cancelling the run ends it. (No single quotes in `inner` — it gets
+        # shlex.quoted into the tmux argument.)
+        bin_ = RunManager._agent_binary(agent_cfg.tui_command)
+        inner = (
+            f'{agent_cfg.tui_command} || {{ rc=$?; echo; '
+            f'if [ "$rc" = 127 ]; then '
+            f'echo "[ {bin_} not found on $(hostname) -- {hint}; opening a shell ]"; '
+            f'else echo "[ agent command exited $rc -- opening a shell to inspect ]"; fi; '
+            f'echo "[ Ctrl-D or cancel the run to end ]"; exec bash -l; }}'
+        )
+        return (
+            'S="sh-${SLURM_JOB_ID:-${PBS_JOBID:-$$}}"\n'
+            f'tmux new-session -d -s "$S" {shlex.quote(inner)}\n'
+            'echo "Agent TUI session $S ready on $(hostname)"\n'
+            'while tmux has-session -t "$S" 2>/dev/null; do sleep 10; done\n'
+        )
+
+    @staticmethod
+    def _agent_binary(command: str) -> str:
+        """First token (executable) of an agent command, for a presence check."""
+        try:
+            parts = shlex.split(command)
+        except ValueError:
+            parts = command.split()
+        return parts[0] if parts else command
+
+    async def create_agent_run(
+        self,
+        source_name: str,
+        backend: str,
+        *,
+        mode: str = "remote",
+        session_name: str | None = None,
+    ) -> Run:
+        """Create a one-task run that launches a Claude coding agent in a fresh clone.
+
+        Modes:
+          - ``remote``: ``claude remote-control`` server session, driven from the
+            claude.ai web interface.
+          - ``tui``: interactive ``claude`` TUI inside a tmux session the browser
+            terminal attaches to.
+
+        Restricted to git sources on SSH backends (needs a fresh writable clone on
+        a real filesystem). Raises ``ValueError`` otherwise.
+        """
+        if mode not in ("remote", "tui"):
+            raise ValueError(
+                f"Unknown agent mode '{mode}' (expected 'remote' or 'tui')"
+            )
+
+        source = self.config.get_source(source_name)
+        if source is None:
+            raise ValueError(f"Source '{source_name}' not found")
+        if not isinstance(source, GitSourceConfig):
+            raise ValueError(
+                f"Coding agents require a git source; '{source_name}' is not one"
+            )
+
+        backend_name = backend
+        ssh_client = self.get_ssh_client(backend_name)
+        if ssh_client is None:
+            raise ValueError(
+                f"Coding agents require an SSH backend; '{backend_name}' is not "
+                "available or has no filesystem"
+            )
+
+        agent_cfg = self.config.agent
+        name = session_name or f"{source_name}-{uuid.uuid4().hex[:6]}"
+
+        workspace, commit_hash = await self._clone_agent_workspace(
+            ssh_client, source, full_history=agent_cfg.clone_full_history,
+        )
+
+        env_rules: list[EnvRule] = []
+        if agent_cfg.env_group:
+            env_rules.append(EnvRule(include=[agent_cfg.env_group]))
+
+        task = TaskDefinition(
+            id="agent",
+            name=f"Claude agent: {name}",
+            command=self._build_agent_command(agent_cfg, mode, name),
+            working_dir=workspace,
+            cpus=agent_cfg.cpus,
+            memory=agent_cfg.memory,
+            time_limit=agent_cfg.time_limit,
+            partition=agent_cfg.partition or "normal",
+            env=env_rules,
+        )
+
+        workflow_name = f"_agent/{source_name}/{name}"
+        run = await self._build_run(
+            [task], workflow_name, backend_name, max_concurrent=None,
+            ssh_client=ssh_client,
+            git_repo=source.url, git_branch=source.branch, commit_hash=commit_hash,
+        )
+        run.agent_session = True
+        run.agent_mode = mode
+        run.agent_session_name = name
+        self._persist_run(run)
         return run
 
     async def dry_run_source(

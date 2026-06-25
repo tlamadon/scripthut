@@ -498,6 +498,51 @@ SourceConfig = Annotated[
 ]
 
 
+class AgentConfig(BaseModel):
+    """Defaults for launching a Claude Code coding-agent job on a git source.
+
+    Two interaction modes share these defaults (see ``RunManager.create_agent_run``):
+
+    - ``remote`` — ``remote_command`` starts a ``claude remote-control`` server
+      session on the compute node, driven from the claude.ai web interface.
+    - ``tui`` — ``tui_command`` runs the interactive ``claude`` TUI inside a tmux
+      session the existing browser terminal attaches to.
+
+    Credentials (``GH_TOKEN``, ``ANTHROPIC_API_KEY``, optional ``CLAUDE_CONFIG_DIR``)
+    are supplied as ordinary env rules referenced via ``env_group`` — there's no
+    dedicated secret mechanism here.
+    """
+
+    remote_command: str = Field(
+        default="claude remote-control --name {name} --capacity 1",
+        description="Mode 'remote': command launching a Remote Control server session. "
+        "'{name}' is substituted with the (shell-quoted) session name.",
+    )
+    tui_command: str = Field(
+        default="claude",
+        description="Mode 'tui': interactive program run inside the tmux session the "
+        "browser terminal attaches to.",
+    )
+    cpus: int = Field(default=2, ge=1, description="CPUs requested for the agent job")
+    memory: str = Field(default="8G", description="Memory requested for the agent job")
+    time_limit: str = Field(
+        default="12:00:00",
+        description="Wall-clock limit; the session lives as long as the job does",
+    )
+    partition: str | None = Field(
+        default=None,
+        description="Partition/queue for the agent job (None = TaskDefinition default)",
+    )
+    env_group: str | None = Field(
+        default=None,
+        description="Name of an env_group to apply to the agent task (tokens/creds)",
+    )
+    clone_full_history: bool = Field(
+        default=True,
+        description="Clone the repo with full history so the agent can branch/commit/push",
+    )
+
+
 class PricingConfig(BaseModel):
     """EC2-equivalent cost estimation configuration."""
 
@@ -730,6 +775,10 @@ class ScriptHutConfig(BaseModel):
     stacks: list[Stack] = Field(
         default_factory=list,
         description="Reusable software stacks (Python venv, Julia depot, etc.) installed once per backend",
+    )
+    agent: AgentConfig = Field(
+        default_factory=AgentConfig,
+        description="Defaults for launching Claude coding-agent jobs on git sources",
     )
     pricing: PricingConfig | None = Field(
         default=None,

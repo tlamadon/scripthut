@@ -78,6 +78,40 @@
                 </div>
             </div>
 
+            {% if not src_disabled and src_cfg and src_cfg.type == 'git' %}
+            <div class="mb-4 border border-dashed border-purple-200 bg-purple-50/40 rounded-lg p-4">
+                <div class="flex flex-wrap items-center gap-3">
+                    <div>
+                        <h3 class="font-semibold text-gray-800 text-sm">Start coding agent</h3>
+                        <p class="text-xs text-gray-500">Launches Claude in a fresh clone of this repo.</p>
+                    </div>
+                    <div class="flex items-center gap-1">
+                        <span class="text-sm text-gray-400">Backend:</span>
+                        <select id="agent-backend-{{ source_name }}"
+                            class="text-sm border border-gray-300 rounded px-1.5 py-0.5 text-gray-700 bg-white">
+                            {% for bn in backend_names %}
+                            <option value="{{ bn }}">{{ bn }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <input id="agent-name-{{ source_name }}" type="text" placeholder="session name (optional)"
+                        class="text-sm border border-gray-300 rounded px-2 py-0.5 text-gray-700 bg-white w-48">
+                    <div class="flex items-center gap-2 ml-auto">
+                        <button onclick="startAgent('{{ source_name }}', 'remote')"
+                            class="px-3 py-1.5 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors text-sm font-medium"
+                            title="Remote Control session driven from claude.ai">
+                            Remote (claude.ai)
+                        </button>
+                        <button onclick="startAgent('{{ source_name }}', 'tui')"
+                            class="px-3 py-1.5 bg-purple-100 text-purple-700 border border-purple-300 rounded-lg hover:bg-purple-200 transition-colors text-sm font-medium"
+                            title="Interactive claude TUI in the browser terminal">
+                            Browser TUI
+                        </button>
+                    </div>
+                </div>
+            </div>
+            {% endif %}
+
             {% if not src_disabled %}
             {% if wfs %}
             <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -135,6 +169,33 @@
         function showLoading(msg) {
             document.getElementById('loading-message').textContent = msg || 'Loading…';
             document.getElementById('loading-overlay').classList.remove('hidden');
+        }
+
+        function startAgent(sourceName, mode) {
+            var backend = document.getElementById('agent-backend-' + sourceName).value;
+            var name = document.getElementById('agent-name-' + sourceName).value;
+            showLoading('Cloning repo and starting agent…');
+            var params = new URLSearchParams({ backend: backend, mode: mode, session_name: name });
+            fetch('/sources/' + encodeURIComponent(sourceName) + '/agent?' + params.toString(), { method: 'POST' })
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    if (data.error) {
+                        document.getElementById('loading-overlay').classList.add('hidden');
+                        var errorMsg = document.getElementById('run-error-msg');
+                        errorMsg.textContent = 'Failed to start agent for ' + sourceName + ': ' + data.error;
+                        document.getElementById('run-error').classList.remove('hidden');
+                        window.scrollTo({ top: 0, behavior: 'smooth' });
+                    } else {
+                        window.location.href = '/runs/' + data.run_id;
+                    }
+                })
+                .catch(function(err) {
+                    document.getElementById('loading-overlay').classList.add('hidden');
+                    var errorMsg = document.getElementById('run-error-msg');
+                    errorMsg.textContent = 'Agent request failed: ' + err.message;
+                    document.getElementById('run-error').classList.remove('hidden');
+                    window.scrollTo({ top: 0, behavior: 'smooth' });
+                });
         }
 
         function syncSource(btn, name) {

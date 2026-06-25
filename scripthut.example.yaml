@@ -145,6 +145,60 @@ sources:
   #   backend: hpc-cluster
   #   # workflows_glob: "**/*.hut.json"  # default: .hut/workflows/*.json
 
+# Coding agents — the "Start coding agent" button on each git source launches a
+# Claude Code session as a job, in a fresh writable clone of the repo. Two modes:
+#   - Remote (claude.ai):  runs `claude remote-control`; you drive it from the web.
+#   - Browser TUI:         runs the interactive `claude` TUI in ScriptHut's terminal.
+#
+# AUTH (one setup covers both modes): run `claude auth login` once on a node that
+# shares $HOME with the compute nodes (typical NFS) so the credential at
+# ~/.claude/.credentials.json is visible to the job. Remote mode REQUIRES this
+# full-scope login (the inference-only CLAUDE_CODE_OAUTH_TOKEN is rejected).
+# Browser TUI also works with this login; it additionally accepts an
+# ANTHROPIC_API_KEY if you prefer (optional, TUI only).
+#
+# Branch push + PRs are driven by the agent via local git/gh, so the job also
+# needs a writable remote and a GH_TOKEN. Supply tokens via an env_group named
+# in `env_group` below (these are ordinary env rules — no special secret store).
+#
+# CLAUDE ON THE NODES: `claude` must be on PATH on the compute nodes. If it isn't,
+# the agent job reports a clear "claude not found …" message (Remote mode fails;
+# Browser TUI drops you into a shell so you can fix it in place). The cleanest way
+# to guarantee it is an env_group `init:` that activates a conda env containing it
+# — `init` runs in the job before the agent starts, so it works for both modes.
+# See the `claude-env` group below; reference it via `agent.env_group`.
+# agent:
+#   # remote_command: "claude remote-control --name {name} --capacity 1"
+#   # tui_command: "claude"
+#   cpus: 2
+#   memory: 8G
+#   time_limit: "12:00:00"
+#   # partition: gpu              # default: the task default ("normal")
+#   env_group: claude-env         # env_group applied to the agent task (creds + claude)
+#   # clone_full_history: true    # full clone so the agent can branch/commit/push
+#
+# env_groups:
+#   claude-env:
+#     - set:
+#         GH_TOKEN: "${GH_TOKEN}"            # for `gh pr create` + authenticated push
+#         # ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"   # optional, Browser TUI only
+#     # Ensure `claude` is on PATH, bootstrapping a conda env on first use.
+#     # Idempotent: if claude already resolves, this is a no-op. Requires conda
+#     # and outbound network on the node for the one-time create/install.
+#     - init: |
+#         if ! command -v claude >/dev/null 2>&1; then
+#           source "$(conda info --base)/etc/profile.d/conda.sh"
+#           conda activate scripthut-claude 2>/dev/null || {
+#             conda create -y -n scripthut-claude 'nodejs>=18'
+#             conda activate scripthut-claude
+#             npm install -g @anthropic-ai/claude-code
+#           }
+#         fi
+#     # Or, if you already have a conda env with claude, just activate it:
+#     # - init: |
+#     #     source "$(conda info --base)/etc/profile.d/conda.sh"
+#     #     conda activate my-claude-env
+
 # Workflows for batch job submission
 # These are SSH commands that return JSON task lists
 # Trigger them via the UI to create a queue of jobs

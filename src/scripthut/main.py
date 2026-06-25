@@ -5,6 +5,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -1569,6 +1570,42 @@ async def run_source_workflow(name: str, filename: str, backend: str = ""):
         )
 
 
+@app.post("/sources/{name}/agent", response_model=None)
+async def start_source_agent(
+    name: str, backend: str = "", mode: str = "remote", session_name: str = "",
+):
+    """Launch a Claude coding-agent run on a git source.
+
+    ``mode`` is ``remote`` (claude.ai-driven Remote Control session) or ``tui``
+    (interactive TUI attached via the browser terminal).
+    """
+    if state.run_manager is None:
+        return JSONResponse(
+            status_code=500,
+            content={"error": "Run manager not initialized"},
+        )
+    if not backend:
+        return JSONResponse(status_code=422, content={"error": "No backend specified"})
+
+    try:
+        run = await state.run_manager.create_agent_run(
+            name, backend, mode=mode, session_name=session_name or None,
+        )
+        notification_hub.run_scheduled(run)
+        notification_hub.update_stats(state.run_manager.runs.values())
+        state.notify_poll()
+        return {
+            "run_id": run.id,
+            "workflow_name": run.workflow_name,
+            "mode": run.agent_mode,
+            "session_name": run.agent_session_name,
+            "status": run.status.value,
+        }
+    except Exception as e:
+        logger.error(f"Failed to start coding agent for source {name}: {e}")
+        return JSONResponse(status_code=422, content={"error": str(e)})
+
+
 @app.post("/filter/toggle", response_class=HTMLResponse)
 async def toggle_filter(request: Request) -> HTMLResponse:
     """Toggle the user filter on/off and trigger immediate refresh."""
@@ -2088,6 +2125,33 @@ async def run_detail_page(request: Request, run_id: str) -> HTMLResponse:
             "cost_summary": _get_run_cost(run),
         },
     )
+
+
+_CLAUDE_SESSION_URL_RE = re.compile(r"https://[^\s\"']*claude\.ai[^\s\"']*")
+
+
+@app.get("/runs/{run_id}/agent-link")
+async def run_agent_link(run_id: str) -> JSONResponse:
+    """Return the Remote Control session URL printed by a ``mode=remote`` agent.
+
+    Best-effort: server-mode ``claude remote-control`` prints the claude.ai
+    session URL to stdout. We scan the agent task's stdout for it; ``url`` is
+    null until it appears (or for non-remote runs).
+    """
+    if state.run_manager is None:
+        return JSONResponse(status_code=500, content={"error": "Run manager not initialized"})
+
+    run = state.run_manager.get_run(run_id)
+    if run is None or not run.agent_session or run.agent_mode != "remote":
+        return JSONResponse(content={"url": None})
+
+    content, _error = await state.run_manager.fetch_log_file(run_id, "agent", "output")
+    url = None
+    if content:
+        match = _CLAUDE_SESSION_URL_RE.search(content)
+        if match:
+            url = match.group(0)
+    return JSONResponse(content={"url": url})
 
 
 @app.get("/runs/{run_id}/info", response_class=HTMLResponse)
