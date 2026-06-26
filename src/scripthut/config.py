@@ -33,7 +33,7 @@ GLOBAL_CONFIG_PATHS = [
 # they describe the user's infrastructure (backends, secrets, settings),
 # not the project. A project-local config that uses any of these is
 # rejected with a clear error.
-PROJECT_FORBIDDEN_FIELDS = {"backends", "sources", "settings", "pricing"}
+PROJECT_FORBIDDEN_FIELDS = {"backends", "sources", "settings", "pricing", "cache"}
 
 
 class LegacySettings(BaseSettings):

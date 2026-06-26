@@ -23,6 +23,7 @@ from scripthut.config_schema import (
     Stack,
 )
 from scripthut.models import JobState
+from scripthut.runs.cache import CacheManager
 from scripthut.runs.env import resolve_for_task
 from scripthut.runs.models import (
     Run,
@@ -125,6 +126,14 @@ class RunManager:
         self.runs: dict[str, Run] = {}
         self.storage = storage
         self.job_backends = job_backends or {}
+        # Task result cache (no-op unless config.cache.enabled + store set).
+        # ``getattr`` keeps lightweight test config stubs (which omit the
+        # field) working — they fall back to a disabled default.
+        cache_cfg = getattr(self.config, "cache", None)
+        if cache_cfg is None:
+            from scripthut.config_schema import CacheConfig
+            cache_cfg = CacheConfig()
+        self.cache_manager = CacheManager(cache_cfg)
         # SSE event bus: version counter + Event per run
         self._run_versions: dict[str, int] = {}
         self._run_events: dict[str, asyncio.Event] = {}
@@ -448,6 +457,10 @@ class RunManager:
         if item.task.generates_source:
             await self._handle_generates_source(run, item)
         await self._handle_task_outputs(run, item)
+        # Persist the task's declared output artifacts to the result cache so
+        # a future run with the same inputs can skip it. No-op for cache hits
+        # and non-cacheable tasks.
+        await self._maybe_store_cache(run, item)
 
     def get_ssh_client(self, backend_name: str) -> SSHClient | None:
         """Get SSH client for a backend."""
@@ -1524,6 +1537,119 @@ class RunManager:
         """Get the JobBackend for a backend name."""
         return self.job_backends.get(backend_name)
 
+    async def _try_restore_from_cache(
+        self,
+        run: Run,
+        item: RunItem,
+        merged_env: dict[str, str],
+        ssh_client: SSHClient | None,
+    ) -> bool:
+        """Restore a prior run's artifacts for this task if the cache matches.
+
+        Returns ``True`` when the item was satisfied from cache (the caller
+        then skips submission). Every uncertainty — caching off, no SSH
+        backend, the task opted out or declares no outputs, input hashing
+        failed, a miss, or a failed restore — returns ``False`` so the task
+        runs normally. A cache must never *replace* computation it can't
+        positively prove is reusable.
+
+        As a side effect on a cacheable task, ``item.cache_key`` is set so the
+        completion path can store this task's outputs under the same key on a
+        miss.
+        """
+        cm = self.cache_manager
+        task = item.task
+        if not cm.enabled or ssh_client is None:
+            return False
+        # Only tasks that declare real outputs are cacheable — otherwise
+        # there is nothing to restore. ``cache: false`` opts a task out.
+        if not task.cache or not task.outputs:
+            return False
+
+        input_hashes = await cm.hash_inputs(
+            ssh_client, task.working_dir, task.inputs
+        )
+        if input_hashes is None:
+            # Couldn't verify the inputs (missing files / SSH error). Don't
+            # risk a stale hit — run the task.
+            return False
+
+        key = cm.compute_key(
+            command=task.command,
+            env=merged_env,
+            commit_hash=run.commit_hash,
+            input_hashes=input_hashes,
+        )
+        item.cache_key = key  # remembered for the miss → store path
+
+        manifest = await cm.lookup(ssh_client, key)
+        if manifest is None:
+            return False  # miss
+
+        # Never reuse a cached failure.
+        cached_exit = manifest.get("exit_code")
+        if cached_exit not in (0, None):
+            logger.info(
+                f"cache: key {key[:12]} hit for '{task.id}' but cached "
+                f"exit_code={cached_exit} — re-running"
+            )
+            return False
+
+        if not await cm.restore(ssh_client, task.working_dir, manifest):
+            return False
+
+        now = datetime.now(timezone.utc)
+        item.status = RunItemStatus.COMPLETED
+        item.cache_hit = True
+        item.started_at = item.started_at or now
+        item.finished_at = now
+        item.exit_code = 0
+        item.scheduler_state = "CACHED"
+        self._persist_run(run)
+        logger.info(
+            f"cache: restored '{task.id}' from key {key[:12]} — "
+            f"skipped scheduler submission"
+        )
+        return True
+
+    async def _maybe_store_cache(self, run: Run, item: RunItem) -> None:
+        """Store a freshly-completed task's declared outputs to the cache.
+
+        Best-effort: any failure is logged and swallowed — a cache write must
+        never fail the run. Skips cache hits (already in the store), tasks
+        that weren't cacheable at submit time (no ``cache_key``), and tasks
+        with no declared outputs.
+        """
+        cm = self.cache_manager
+        task = item.task
+        if not cm.enabled or item.cache_hit:
+            return
+        if item.cache_key is None or not task.outputs:
+            return
+        if item.status != RunItemStatus.COMPLETED:
+            return
+        ssh_client = self.get_ssh_client(run.backend_name)
+        if ssh_client is None:
+            return
+
+        meta = {
+            "command": task.command,
+            "commit": run.commit_hash or "",
+            "run_id": run.id,
+            "workflow": run.workflow_name,
+            "exit_code": item.exit_code if item.exit_code is not None else 0,
+            "created_at": run.created_at.isoformat(),
+        }
+        try:
+            await cm.store(
+                ssh_client, task.working_dir,
+                key=item.cache_key, outputs=task.outputs, meta=meta,
+            )
+        except Exception as e:  # noqa: BLE001 — storing must not fail the run
+            logger.warning(
+                f"cache: storing outputs for '{task.id}' failed: {e}"
+            )
+
     async def submit_task(self, run: Run, item: RunItem) -> bool:
         """Submit a single task to the scheduler."""
         job_backend = self.get_job_backend(run.backend_name)
@@ -1566,6 +1692,12 @@ class RunManager:
             self._persist_run(run)
             return False
         item.submit_script = script
+
+        # Before touching the scheduler, see if a prior run already produced
+        # this exact task (same command + env + commit + input hashes). On a
+        # hit we restore its artifacts and mark the item COMPLETED here.
+        if await self._try_restore_from_cache(run, item, merged_env, ssh_client):
+            return True
 
         try:
             result = await job_backend.submit_task(
@@ -1633,6 +1765,7 @@ class RunManager:
                 f"(run_slots={run_slots}, backend_slots={backend_slots})"
             )
 
+        cache_completed: list[RunItem] = []
         for item in to_submit:
             success = await self.submit_task(run, item)
             if not success:
@@ -1644,9 +1777,26 @@ class RunManager:
                         pending_item.finished_at = datetime.now(timezone.utc)
                 self._persist_run(run)
                 break
+            # A cache hit completes the item synchronously instead of
+            # submitting a job; collect it so post-completion hooks run.
+            if item.cache_hit and item.status == RunItemStatus.COMPLETED:
+                cache_completed.append(item)
+
+        # Run completion hooks for cache hits (outputs panel, generates_source,
+        # and the cache-store no-op). Done after the submit loop so we're not
+        # mutating run.items mid-iteration.
+        for item in cache_completed:
+            await self._after_item_completed(run, item)
 
         if to_submit:
             self.notify_run(run.id)
+
+        # Cache hits finish items immediately, which can unblock dependents.
+        # Re-drive so they're submitted now rather than waiting for the next
+        # poll. Terminates: each hit moves an item out of PENDING, so the
+        # ready set strictly shrinks until no cache-completions remain.
+        if cache_completed:
+            await self.process_run(run)
 
     def _backend_running_count(self, backend_name: str) -> int:
         """Count all running/submitted tasks across all runs on a backend."""

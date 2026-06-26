@@ -268,3 +268,36 @@ settings:
   # Filter jobs by username (shows toggle button in UI)
   # Set to your username to enable "My Jobs" filter
   filter_user: your_username
+
+# -----------------------------------------------------------------------------
+# Task result cache (optional)
+# -----------------------------------------------------------------------------
+# When enabled, a task that declares `outputs` is content-addressed by a key
+# derived from its command, resolved environment, git commit, and the hashes
+# of its declared `inputs`. If a previous run produced the same key, scripthut
+# restores that run's output artifacts onto the backend instead of resubmitting
+# the job.
+#
+# How it works: hashing and artifact transfer run cluster-side over SSH (so the
+# chosen `tool` must be on the backend's PATH). The authoritative copy of files
+# lives on the cluster; the object store below is the durable, shared tier.
+# Keyed by an input/action hash; blobs are stored content-addressed (so
+# identical outputs upload once and are reused across runs, branches, clusters).
+# SSH backends only (Slurm/PBS) — API-only backends silently skip caching.
+#
+# cache:
+#   enabled: true
+#   # Base URI of the object store. For tool=aws an S3 URI; for tool=rclone an
+#   # rclone remote. Entries live under <store>/ac/ (manifests) and
+#   # <store>/cas/ (artifact blobs).
+#   store: s3://my-bucket/scripthut-cache
+#   tool: aws            # "aws" (aws s3 cp/ls) or "rclone" (cat/rcat/copyto/lsf)
+#
+# Per task (in a workflow JSON), declare what to hash and what to cache:
+#   {
+#     "id": "train",
+#     "command": "python train.py --config base.yaml",
+#     "inputs":  ["data/train.parquet", "base.yaml"],  # content feeds the key
+#     "outputs": ["models/model.pt"],                   # restored on a hit
+#     "cache":   true                                   # default; false opts out
+#   }

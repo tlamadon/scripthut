@@ -560,6 +560,54 @@ class PricingConfig(BaseModel):
     )
 
 
+class CacheConfig(BaseModel):
+    """Task-level result cache backed by an object store (S3-compatible).
+
+    When enabled, a task that declares ``outputs`` is content-addressed by a
+    key derived from its command, resolved environment, git commit, and the
+    hashes of its declared ``inputs``. If a previous run produced the same
+    key, scripthut restores that run's output artifacts onto the backend
+    instead of resubmitting the job — see :mod:`scripthut.runs.cache`.
+
+    The store is shared infrastructure (an S3 bucket/prefix or an rclone
+    remote), so this lives in the user-global config — never project-local.
+    Hashing and artifact transfer run cluster-side over SSH, so the backend
+    must have the chosen ``tool`` (``aws`` or ``rclone``) on its PATH. Only
+    SSH-based backends (Slurm, PBS) support caching; API-only backends
+    (Batch/EC2) silently skip it, exactly like the task-outputs feature.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description="Master switch for the task result cache.",
+    )
+    store: str | None = Field(
+        default=None,
+        description=(
+            "Base URI of the object store for cache entries. For tool=aws an "
+            "S3 URI like 's3://my-bucket/scripthut-cache'; for tool=rclone an "
+            "rclone remote like 'myremote:my-bucket/scripthut-cache'. Required "
+            "when enabled."
+        ),
+    )
+    tool: Literal["aws", "rclone"] = Field(
+        default="aws",
+        description=(
+            "CLI used on the backend to talk to the store. 'aws' uses the AWS "
+            "CLI ('aws s3 cp/ls'); 'rclone' uses rclone (cat/rcat/copyto/lsf)."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _check_store_when_enabled(self) -> "CacheConfig":
+        if self.enabled and not self.store:
+            raise ValueError(
+                "cache.enabled is true but cache.store is unset — set it to "
+                "the object-store base URI (e.g. s3://bucket/prefix)."
+            )
+        return self
+
+
 class CliAuthConfig(BaseModel):
     """Auth credentials the CLI sends when talking to ``cli_server``.
 
@@ -787,6 +835,10 @@ class ScriptHutConfig(BaseModel):
     settings: GlobalSettings = Field(
         default_factory=GlobalSettings,
         description="Global application settings",
+    )
+    cache: CacheConfig = Field(
+        default_factory=CacheConfig,
+        description="Task-level result cache backed by an object store (S3/rclone)",
     )
 
     def get_backend(self, name: str) -> BackendConfig | None:
