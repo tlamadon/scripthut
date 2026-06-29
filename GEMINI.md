@@ -8,7 +8,7 @@ Use descriptive filenames like `todos.md`, `architecture-decisions.md`, `feature
 
 ## Project Context
 
-ScriptHut is a Python web interface for managing and tracking jobs on remote HPC systems (Slurm, with PBS and ECS planned) over SSH. The codebase uses FastAPI, asyncssh, Pydantic, and HTMX.
+ScriptHut runs compute workflows on the user's own infrastructure — HPC clusters (Slurm, PBS/Torque) over SSH, AWS Batch via the API, and AWS EC2 (one instance per task, SSM-tunnelled). It's driven from a local CLI (also usable by coding agents) backed by a small-footprint control plane that monitors flows and surfaces logs, errors, and status. The codebase uses FastAPI, asyncssh, Pydantic, and HTMX.
 
 ## Architecture Principles
 
