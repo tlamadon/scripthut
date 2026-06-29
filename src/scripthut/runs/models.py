@@ -90,6 +90,19 @@ class TaskDefinition:
     env: list[EnvRule] = field(default_factory=list)  # Task-level env rules
     gres: str | None = None  # Slurm-style generic resource spec, e.g. "gpu:2" or "gpu:v100:1"
     image: str | None = None  # Container image URI (AWS Batch/ECS); overrides backend default
+    # --- Result caching (see scripthut.runs.cache) ---
+    # Paths/globs (relative to working_dir) whose *content* feeds the cache
+    # key, so the task re-runs when its data changes. Empty means the key
+    # depends only on command + env + git commit.
+    inputs: list[str] = field(default_factory=list)
+    # Paths/globs (relative to working_dir) that constitute the task's real
+    # artifacts. These are tar'd and stored on a cache hit's *miss*, and
+    # restored to working_dir on a hit. A task with no outputs is never
+    # cached (there is nothing to restore).
+    outputs: list[str] = field(default_factory=list)
+    # Per-task opt-out: set false to always run even when the global cache
+    # is enabled and outputs are declared.
+    cache: bool = True
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "TaskDefinition":
@@ -118,6 +131,9 @@ class TaskDefinition:
             env=env_rules,
             gres=data.get("gres"),
             image=data.get("image"),
+            inputs=list(data.get("inputs", [])),
+            outputs=list(data.get("outputs", [])),
+            cache=bool(data.get("cache", True)),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -138,6 +154,9 @@ class TaskDefinition:
             "env": [r.model_dump(by_alias=True, exclude_defaults=True) for r in self.env],
             "gres": self.gres,
             "image": self.image,
+            "inputs": self.inputs,
+            "outputs": self.outputs,
+            "cache": self.cache,
         }
 
     @property
@@ -324,6 +343,15 @@ class RunItem:
     # a tooltip on the queued status pill. Set while the item is QUEUED,
     # cleared once it starts running or reaches a terminal state.
     pending_reason: str | None = None
+    # --- Result caching (see scripthut.runs.cache) ---
+    # The content-address (input/action hash) computed at submit time for a
+    # cacheable task. ``None`` means the task wasn't cacheable (cache off,
+    # no declared outputs, opted out, or input hashing failed). Persisted so
+    # the completion path can store artifacts under the same key.
+    cache_key: str | None = None
+    # True when this item was satisfied by restoring a prior run's artifacts
+    # from the cache instead of submitting a job. Such items never re-store.
+    cache_hit: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to dictionary for JSON storage."""
@@ -345,6 +373,8 @@ class RunItem:
             "outputs": [o.to_dict() for o in self.outputs],
             "has_run_summary": self.has_run_summary,
             "pending_reason": self.pending_reason,
+            "cache_key": self.cache_key,
+            "cache_hit": self.cache_hit,
         }
 
     @classmethod
@@ -377,6 +407,8 @@ class RunItem:
             outputs=[TaskOutput.from_dict(o) for o in data.get("outputs", [])],
             has_run_summary=bool(data.get("has_run_summary", False)),
             pending_reason=data.get("pending_reason"),
+            cache_key=data.get("cache_key"),
+            cache_hit=bool(data.get("cache_hit", False)),
         )
 
     @property
