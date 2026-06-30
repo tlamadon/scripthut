@@ -1,15 +1,14 @@
 # ScriptHut
 
-Web interface to start and track jobs on remote systems (Slurm, ECS, AWS Batch).
+Run your compute workflows the way GitHub Actions runs CI — declarative runs defined in your git repo — but on **your own** infrastructure: HPC clusters (Slurm, PBS/Torque), AWS Batch, and AWS EC2. Drive everything from a local CLI built for humans and coding agents alike, backed by a small-footprint control plane that watches your flows and surfaces logs, errors, and status.
 
-## Features
+## Why ScriptHut
 
-- Define and manage computational tasks via YAML configuration
-- Submit jobs to Slurm, PBS/Torque, or AWS Batch clusters
-- Real-time job monitoring with live log streaming
-- SSH connection management with key-based authentication
-- Task runs with concurrency limits and parameter sweeps
-- EC2-equivalent cost estimation for runs
+- **Local-first CLI** — submit workflows, watch runs, tail logs, inspect errors, cancel, and check cluster status from your terminal. The CLI runs standalone or drives a running control plane over its API.
+- **Small-footprint control plane** — one lightweight server (a single `pip install`) gives a live view of every run — status, dependency DAGs, streamed logs, errors — over SSE. No database; state is plain JSON files.
+- **Agent-native** — every operation is exposed through the CLI and its API, so a coding agent can drive ScriptHut end to end (`scripthut agent prompt`), or you can launch [Claude coding agents](coding-agents.md) onto a git source.
+- **GitHub Action-style runs** — define workflows as files in your git repo; ScriptHut clones the repo on your backend (or pins the commit for Batch/EC2) and runs the task DAG with dependencies and concurrency caps.
+- **Optional result caching** — tasks that declare `inputs`/`outputs` are content-addressed and their artifacts cached to an S3-compatible store, so a matching later run restores results instead of recomputing. Off by default, opt-in per task.
 
 ## Quick install
 

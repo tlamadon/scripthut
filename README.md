@@ -5,23 +5,24 @@
 [![Docker](https://ghcr-badge.egpl.dev/tlamadon/scripthut/latest_tag?trim=major&label=docker)](https://github.com/tlamadon/scripthut/pkgs/container/scripthut)
 [![Docs](https://img.shields.io/badge/docs-tlamadon.github.io%2Fscripthut-blue)](https://tlamadon.github.io/scripthut/)
 
-A Python web interface to start and track jobs on remote HPC systems (Slurm, PBS/Torque) over SSH, on **AWS Batch** via the AWS API, and on **AWS EC2** directly (one instance per task, SSH tunnelled via SSM).
+ScriptHut runs your compute workflows the way GitHub Actions runs CI — declarative runs defined in your git repo — but on **your own** infrastructure: HPC clusters (Slurm, PBS/Torque) over SSH, **AWS Batch** via the API, and **AWS EC2** (one instance per task, SSM-tunnelled). You drive everything from a local CLI built for humans and coding agents alike, backed by a small-footprint control plane that watches your flows and surfaces logs, errors, and status in real time.
 
-## Features
+## Why ScriptHut
 
-- **Multi-backend support** - Monitor and submit to Slurm, PBS/Torque, AWS Batch, and AWS EC2 (one instance per task, SSM-tunnelled) from a single dashboard
-- **Real-time job monitoring** - Running, pending, and external (non-ScriptHut) jobs in one unified view, auto-refreshed via SSE
-- **Task runs with dependency DAGs** - Submit batches with per-run/backend concurrency caps and task dependencies, including glob-style **wildcard deps** (`build.*`) and dot-notation grouping
-- **Dynamic task generation** - A task can emit a JSON file (`generates_source`) whose tasks are appended to the running DAG — two-phase plan-then-execute workflows
-- **Stacks** - Reusable software environments (venv, Julia depot, Conda env, …) installed once per backend and reused across runs; inputs are hashed so rebuilds happen only when something changes (`scripthut stack check`)
-- **Layered environment resolution** - Compose env vars and init scripts from backend → server → workflow → task `env` rules, with reusable groups and full per-key provenance in the UI
-- **Git workflow integration** - Clone repos on the backend (or resolve the SHA for Batch/EC2) before running task generators
-- **Task outputs** - Tasks can publish plots and Markdown that render per-task and roll up into a run-level summary panel
-- **Cost estimation** - Estimate run costs using EC2 spot/on-demand pricing from [instances.vantage.sh](https://instances.vantage.sh/)
-- **CLI + remote control** - Full `scripthut` CLI that can drive a running server over its API (with Cloudflare Access support) and a coding-agent briefing via `scripthut agent prompt`
-- **Persistent SSH connections** - Keepalive and auto-reconnect for SSH backends
-- **HTMX frontend** - Dynamic updates without full page reloads
-- **Extensible** - Abstract backend system ready for additional schedulers
+- **Local-first CLI** — Do everything from your terminal: submit workflows, watch runs, tail logs, inspect errors, cancel, and check cluster status. The CLI runs standalone or talks to a running control plane over its API (with Cloudflare Access support), so the same commands work on your laptop and against a shared server.
+- **Small-footprint control plane** — A single lightweight server (one `pip install`, or a container) monitors your flows and gives you a live view of every run: status, dependency DAGs, streamed logs, errors, and resource usage — auto-refreshed over SSE. No database to run, no heavy infra; state lives in plain JSON files.
+- **Agent-native** — Every operation is exposed through the CLI and its API, so a coding agent can drive ScriptHut end to end. `scripthut agent prompt` hands an agent a briefing of the available commands, and you can launch [Claude coding agents](docs/coding-agents.md) directly onto a git source from the CLI or browser.
+- **GitHub Action-style runs** — Define workflows as files in your git repo. ScriptHut clones the repo on your backend (or pins the commit for Batch/EC2), runs the task DAG with dependencies and concurrency caps, and tracks the whole run — your compute, your cluster, your account.
+- **Optional result caching** — Tasks that declare `inputs`/`outputs` are content-addressed (command + env + git commit + input hashes) and their artifacts cached to an S3-compatible store. A matching later run restores results instead of recomputing — shared across runs, branches, and clusters. Off by default; opt in per task. See [caching](#task-result-cache).
+
+### Also includes
+
+- **Multi-backend** — submit and monitor Slurm, PBS/Torque, AWS Batch, and AWS EC2 from one place, including external (non-ScriptHut) jobs in a unified view.
+- **Dynamic task generation** — a task can emit a JSON file (`generates_source`) whose tasks are appended to the running DAG (two-phase plan-then-execute).
+- **Stacks** — reusable software environments (venv, Julia depot, Conda env, …) installed once per backend, content-hashed so rebuilds happen only on change.
+- **Layered environment resolution** — compose env vars and init scripts from backend → server → workflow → task rules, with reusable groups and per-key provenance.
+- **Task outputs** — publish plots and Markdown that render per-task and roll up into a run-level summary.
+- **Cost estimation** — estimate run costs from EC2 spot/on-demand pricing via [instances.vantage.sh](https://instances.vantage.sh/).
 
 ## Examples
 
@@ -422,6 +423,39 @@ Sources are git repositories or backend filesystem paths containing workflow def
 | `server_host` | Web server bind host | `127.0.0.1` |
 | `server_port` | Web server bind port | `8000` |
 | `sources_cache_dir` | Directory for cloned repos (overrides `<data_dir>/sources`) | `None` |
+
+### Task result cache
+
+When enabled, a task that declares `outputs` is content-addressed by a key derived from its **command**, **resolved environment**, **git commit**, and the **content hashes of its declared `inputs`**. If a previous run produced the same key, ScriptHut restores that run's output artifacts onto the backend instead of resubmitting the job.
+
+Two hashes do the work, Bazel-style: the *input/action hash* is the lookup key (`<store>/ac/<key>.json` manifest), and output blobs are stored *content-addressed* (`<store>/cas/<content_hash>.tar.gz`) so identical artifacts upload once and are reused across runs, branches, and clusters. Hashing and artifact transfer run cluster-side over SSH — the chosen `tool` (`aws` or `rclone`) must be on the backend's PATH. SSH backends only (Slurm/PBS); API-only backends silently skip caching.
+
+It's **off by default** and opt-in per task. A cache never replaces work it can't prove reusable: a missing/unhashable input, a miss, or a failed restore all fall back to running the task, and cached failures (non-zero exit) are never reused.
+
+```yaml
+# scripthut.yaml — global cache config (shared infrastructure)
+cache:
+  enabled: true
+  store: s3://my-bucket/scripthut-cache   # or an rclone remote: myremote:bucket/prefix
+  tool: aws                               # "aws" or "rclone"
+```
+
+```jsonc
+// in a workflow task — declare what to hash and what to cache
+{
+  "id": "train",
+  "command": "python train.py --config base.yaml",
+  "inputs":  ["data/train.parquet", "base.yaml"],  // content feeds the cache key
+  "outputs": ["models/model.pt"],                   // restored on a hit
+  "cache":   true                                   // default; set false to opt out
+}
+```
+
+| Field | Description | Default |
+|-------|-------------|---------|
+| `cache.enabled` | Master switch for the result cache | `false` |
+| `cache.store` | Object-store base URI (S3 for `aws`, remote for `rclone`); required when enabled | `None` |
+| `cache.tool` | Backend CLI used to talk to the store: `aws` or `rclone` | `aws` |
 
 ## Usage
 
@@ -1014,6 +1048,7 @@ pytest
 - [x] **Phase 3**: PBS/Torque backend support
 - [x] **Phase 3**: AWS Batch backend support (boto3 + CloudWatch Logs)
 - [x] **Phase 3**: AWS EC2-direct backend support (SSM-tunnelled SSH, one instance per task)
+- [x] **Phase 3**: Task result cache (S3/rclone, content-addressed)
 - [ ] **Phase 3**: ECS backend support
 - [ ] **Phase 4**: Job notifications and alerts
 
