@@ -470,10 +470,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#features" class="md-nav__link">
+  <a href="#why-scripthut" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Features
+        Why ScriptHut
       
     </span>
   </a>
@@ -987,10 +987,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#features" class="md-nav__link">
+  <a href="#why-scripthut" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Features
+        Why ScriptHut
       
     </span>
   </a>
@@ -1040,15 +1040,14 @@
 
 
 <h1 id="scripthut">ScriptHut<a class="headerlink" href="#scripthut" title="Permanent link">&para;</a></h1>
-<p>Web interface to start and track jobs on remote systems (Slurm, ECS, AWS Batch).</p>
-<h2 id="features">Features<a class="headerlink" href="#features" title="Permanent link">&para;</a></h2>
+<p>Run your compute workflows the way GitHub Actions runs CI — declarative runs defined in your git repo — but on <strong>your own</strong> infrastructure: HPC clusters (Slurm, PBS/Torque), AWS Batch, and AWS EC2. Drive everything from a local CLI built for humans and coding agents alike, backed by a small-footprint control plane that watches your flows and surfaces logs, errors, and status.</p>
+<h2 id="why-scripthut">Why ScriptHut<a class="headerlink" href="#why-scripthut" title="Permanent link">&para;</a></h2>
 <ul>
-<li>Define and manage computational tasks via YAML configuration</li>
-<li>Submit jobs to Slurm, PBS/Torque, or AWS Batch clusters</li>
-<li>Real-time job monitoring with live log streaming</li>
-<li>SSH connection management with key-based authentication</li>
-<li>Task runs with concurrency limits and parameter sweeps</li>
-<li>EC2-equivalent cost estimation for runs</li>
+<li><strong>Local-first CLI</strong> — submit workflows, watch runs, tail logs, inspect errors, cancel, and check cluster status from your terminal. The CLI runs standalone or drives a running control plane over its API.</li>
+<li><strong>Small-footprint control plane</strong> — one lightweight server (a single <code>pip install</code>) gives a live view of every run — status, dependency DAGs, streamed logs, errors — over SSE. No database; state is plain JSON files.</li>
+<li><strong>Agent-native</strong> — every operation is exposed through the CLI and its API, so a coding agent can drive ScriptHut end to end (<code>scripthut agent prompt</code>), or you can launch <a href="coding-agents/">Claude coding agents</a> onto a git source.</li>
+<li><strong>GitHub Action-style runs</strong> — define workflows as files in your git repo; ScriptHut clones the repo on your backend (or pins the commit for Batch/EC2) and runs the task DAG with dependencies and concurrency caps.</li>
+<li><strong>Optional result caching</strong> — tasks that declare <code>inputs</code>/<code>outputs</code> are content-addressed and their artifacts cached to an S3-compatible store, so a matching later run restores results instead of recomputing. Off by default, opt-in per task.</li>
 </ul>
 <h2 id="quick-install">Quick install<a class="headerlink" href="#quick-install" title="Permanent link">&para;</a></h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>pip<span class="w"> </span>install<span class="w"> </span>scripthut
