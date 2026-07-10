@@ -1,4 +1,4 @@
-{% from '_status.html' import status_dot %}
+{% from '_status.html' import status_dot, status_bar %}
 {% if runs %}
 <!-- Runs Table (desktop) -->
 <div class="hidden md:block overflow-x-auto">
@@ -30,10 +30,7 @@
                 </td>
                 <td class="px-6 py-4 whitespace-nowrap">
                     <div class="flex items-center gap-2">
-                        <div class="w-24 bg-gray-200 rounded-full h-2">
-                            <div class="bg-blue-600 h-2 rounded-full" style="width: {{ run.progress_percent }}%">
-                            </div>
-                        </div>
+                        {{ status_bar(run.status_counts, 'w-24 h-2 flex-shrink-0') }}
                         <span class="text-sm text-gray-600">
                             {{ run.progress[0] }}/{{ run.progress[1] }}
                         </span>
@@ -111,9 +108,7 @@
         <!-- Row 3: Progress bar + CPU hours -->
         <div class="mt-2 flex items-center gap-3">
             <div class="flex-1 flex items-center gap-2">
-                <div class="flex-1 bg-gray-200 rounded-full h-2">
-                    <div class="bg-blue-600 h-2 rounded-full" style="width: {{ run.progress_percent }}%"></div>
-                </div>
+                {{ status_bar(run.status_counts, 'flex-1 h-2') }}
                 <span class="text-xs text-gray-600 flex-shrink-0">
                     {{ run.progress[0] }}/{{ run.progress[1] }}
                 </span>

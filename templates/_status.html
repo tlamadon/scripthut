@@ -1,10 +1,10 @@
 {#
   Single source of truth for task/run status visuals.
 
-  status_dot(status): renders the status indicator — a glyph for the
-  terminal states (completed -> check, failed -> x, dep_failed ->
-  skipped) and a colored dot for the in-flight states (pending,
-  submitted, queued, running, settling) and cancelled.
+  status_dot(status): renders the status indicator — a glyph per state
+  (completed -> check, failed -> x, dep_failed -> skipped,
+  pending -> hourglass, submitted -> arrow up, queued -> arrow-to-bar,
+  settling -> arrow down) and a colored dot for running and cancelled.
 
   Centralising this means no view can drift or silently forget a state
   (settling was previously missing a dot in four separate templates).
@@ -20,12 +20,43 @@
 {%- elif status == 'running' -%}
 <span class="w-2 h-2 rounded-full flex-shrink-0 bg-indigo-500 animate-pulse"></span>
 {%- elif status == 'settling' -%}
-<span class="w-2 h-2 rounded-full flex-shrink-0 bg-gray-400 animate-pulse"></span>
+<svg class="w-3 h-3 flex-shrink-0 text-gray-400 animate-pulse" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3v10M4 9l4 4 4-4"/></svg>
 {%- elif status == 'submitted' -%}
-<span class="w-2 h-2 rounded-full flex-shrink-0 bg-yellow-400"></span>
+<svg class="w-3 h-3 flex-shrink-0 text-yellow-500" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 13V3M4 7l4-4 4 4"/></svg>
 {%- elif status == 'queued' -%}
-<span class="w-2 h-2 rounded-full flex-shrink-0 bg-yellow-600"></span>
-{%- else -%}{# pending, cancelled, and any unknown state #}
+<svg class="w-3 h-3 flex-shrink-0 text-yellow-600" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 8h8.5M7.5 4.5L11 8l-3.5 3.5M13.5 3.5v9"/></svg>
+{%- elif status == 'pending' -%}
+<svg class="w-3 h-3 flex-shrink-0 text-gray-400" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 3h7L8 8l3.5 5h-7L8 8z"/></svg>
+{%- else -%}{# cancelled and any unknown state #}
 <span class="w-2 h-2 rounded-full flex-shrink-0 bg-gray-400"></span>
 {%- endif -%}
+{%- endmacro %}
+
+{#
+  status_bar(counts, classes): stacked run progress bar with one segment
+  per item state, sized by its share of the item count. Colors mirror
+  status_dot. Pass run.status_counts and the sizing classes for the
+  outer track (width + height); segments fill via flex-grow so shares
+  always sum to the full track with no rounding gaps. Pending keeps the
+  track color so "empty = not started" still reads as before; hover any
+  segment for its count.
+#}
+{% macro status_bar(counts, classes='w-full h-2') -%}
+<div class="{{ classes }} bg-gray-200 rounded-full flex overflow-hidden">
+{%- for s, color in [
+    ('completed', 'bg-green-600'),
+    ('failed', 'bg-red-600'),
+    ('dep_failed', 'bg-orange-600'),
+    ('settling', 'bg-gray-400 animate-pulse'),
+    ('running', 'bg-indigo-500 animate-pulse'),
+    ('queued', 'bg-yellow-600'),
+    ('submitted', 'bg-yellow-500'),
+    ('pending', 'bg-gray-200'),
+] -%}
+{%- set n = counts.get(s, 0) -%}
+{%- if n > 0 -%}
+<div class="{{ color }}" style="flex-grow: {{ n }}" title="{{ n }} {{ s }}"></div>
+{%- endif -%}
+{%- endfor -%}
+</div>
 {%- endmacro %}

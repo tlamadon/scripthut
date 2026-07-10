@@ -536,6 +536,14 @@ class Run:
         return int((completed / total) * 100)
 
     @property
+    def status_counts(self) -> dict[str, int]:
+        """Count of items per status value, e.g. {"completed": 3, "running": 2}."""
+        counts: dict[str, int] = {}
+        for item in self.items:
+            counts[item.status.value] = counts.get(item.status.value, 0) + 1
+        return counts
+
+    @property
     def running_count(self) -> int:
         """Count of items that consume a concurrency slot.
 

@@ -1,4 +1,4 @@
-{% from '_status.html' import status_dot %}
+{% from '_status.html' import status_dot, status_bar %}
 {% if run %}
 <div class="grid grid-cols-2 md:grid-cols-5 {% if cost_summary is defined and cost_summary and cost_summary.costed_tasks > 0 %}lg:grid-cols-6{% endif %} gap-4">
     <div>
@@ -53,9 +53,7 @@
 
 <!-- Progress Bar -->
 <div class="mt-4">
-    <div class="w-full bg-gray-200 rounded-full h-3">
-        <div class="bg-blue-600 h-3 rounded-full transition-all" style="width: {{ run.progress_percent }}%"></div>
-    </div>
+    {{ status_bar(run.status_counts, 'w-full h-3') }}
     <div class="flex justify-between text-sm text-gray-500 mt-1">
         <span>{{ run.completed_count }} completed</span>
         <span>{{ run.running_count }} running</span>
