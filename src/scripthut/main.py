@@ -1376,9 +1376,9 @@ async def force_poll() -> dict[str, str]:
 
 
 @app.get("/ping")
-async def ping() -> dict[str, str]:
-    """Simple ping endpoint for debugging - no dependencies."""
-    return {"status": "pong"}
+async def ping() -> dict[str, Any]:
+    """Simple ping endpoint - no dependencies. Used by the CLI daemon probe."""
+    return {"status": "pong", "pid": os.getpid(), "version": __version__}
 
 
 @app.get("/health")
@@ -3258,7 +3258,7 @@ def parse_args() -> argparse.Namespace:
 # import cost — and trigger asyncssh / runtime imports — just to start the web
 # server. Must stay in sync with the top-level parsers in cli.py.
 _CLI_SUBCOMMANDS = frozenset(
-    {"workflow", "run", "backend", "source", "stack", "agent", "task", "status"}
+    {"workflow", "run", "backend", "source", "stack", "agent", "task", "status", "daemon"}
 )
 _SUBCOMMANDS = _CLI_SUBCOMMANDS | {"setup-aws-ec2"}
 

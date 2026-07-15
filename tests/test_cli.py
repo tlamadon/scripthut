@@ -1400,7 +1400,7 @@ async def test_stack_install_remote_submits_run_and_prints_id(capsys):
     call_log: dict = {}
 
     async def fake_remote_call(args, server, method, path, *,
-                               params=None, timeout=60.0):
+                               params=None, timeout=60.0, use_auth=True):
         call_log["method"] = method
         call_log["path"] = path
         call_log["params"] = params
@@ -1415,7 +1415,7 @@ async def test_stack_install_remote_submits_run_and_prints_id(capsys):
         }
 
     args = _stack_args(name="foo", backend="cluster", source="src", rebuild=True)
-    with patch.object(cli, "_resolve_server", return_value="https://srv"), \
+    with patch.object(cli, "_resolve_server_with_source", return_value=("https://srv", "flag")), \
          patch.object(cli, "_remote_stack_call", side_effect=fake_remote_call):
         rc = await cli._cmd_stack_install(args)
 
@@ -1452,7 +1452,7 @@ async def test_stack_install_remote_watch_blocks_until_done(capsys):
         return 0
 
     args = _stack_args(name="foo", backend="cluster", watch=True)
-    with patch.object(cli, "_resolve_server", return_value="https://srv"), \
+    with patch.object(cli, "_resolve_server_with_source", return_value=("https://srv", "flag")), \
          patch.object(cli, "_remote_stack_call", side_effect=fake_remote_call), \
          patch.object(cli, "_cmd_run_watch", side_effect=fake_watch):
         rc = await cli._cmd_stack_install(args)
@@ -1480,7 +1480,7 @@ async def test_stack_install_remote_json_flag_prints_run_summary(capsys):
             "status_counts": {},
         }
     args = _stack_args(name="foo", backend="cluster", json=True)
-    with patch.object(cli, "_resolve_server", return_value="https://srv"), \
+    with patch.object(cli, "_resolve_server_with_source", return_value=("https://srv", "flag")), \
          patch.object(cli, "_remote_stack_call", side_effect=fake_remote_call):
         rc = await cli._cmd_stack_install(args)
     out = capsys.readouterr().out
@@ -1494,14 +1494,14 @@ async def test_stack_check_remote_dispatches_to_api(capsys):
     call_log: dict = {}
 
     async def fake_remote_call(args, server, method, path, *,
-                               params=None, timeout=1800.0):
+                               params=None, timeout=1800.0, use_auth=True):
         call_log["path"] = path
         return {"name": "foo", "backend": "cluster", "state": "ready",
                 "hash": "abc12345", "path": "/c/foo/abc12345",
                 "last_built": None, "size_bytes": None, "error": None}
 
     args = _stack_args(name="foo", backend="cluster")
-    with patch.object(cli, "_resolve_server", return_value="https://srv"), \
+    with patch.object(cli, "_resolve_server_with_source", return_value=("https://srv", "flag")), \
          patch.object(cli, "_remote_stack_call", side_effect=fake_remote_call):
         rc = await cli._cmd_stack_check(args)
 
@@ -1520,7 +1520,7 @@ async def test_stack_check_remote_missing_state_returns_one():
                 "size_bytes": None, "error": None}
 
     args = _stack_args(name="foo", backend="cluster")
-    with patch.object(cli, "_resolve_server", return_value="https://srv"), \
+    with patch.object(cli, "_resolve_server_with_source", return_value=("https://srv", "flag")), \
          patch.object(cli, "_remote_stack_call", side_effect=fake_remote_call):
         rc = await cli._cmd_stack_check(args)
     assert rc == 1
@@ -1531,13 +1531,13 @@ async def test_stack_delete_remote_dispatches_to_api(capsys):
     call_log: dict = {}
 
     async def fake_remote_call(args, server, method, path, *,
-                               params=None, timeout=1800.0):
+                               params=None, timeout=1800.0, use_auth=True):
         call_log["method"] = method
         call_log["path"] = path
         return {"name": "foo", "backend": "cluster", "deleted": True}
 
     args = _stack_args(name="foo", backend="cluster")
-    with patch.object(cli, "_resolve_server", return_value="https://srv"), \
+    with patch.object(cli, "_resolve_server_with_source", return_value=("https://srv", "flag")), \
          patch.object(cli, "_remote_stack_call", side_effect=fake_remote_call):
         rc = await cli._cmd_stack_delete(args)
 
@@ -1553,7 +1553,7 @@ async def test_stack_install_remote_requires_backend(capsys):
     The error message must point at the right fix.
     """
     args = _stack_args(name="foo", backend=None)
-    with patch.object(cli, "_resolve_server", return_value="https://srv"):
+    with patch.object(cli, "_resolve_server_with_source", return_value=("https://srv", "flag")):
         with pytest.raises(RuntimeError, match="--backend is required"):
             await cli._cmd_stack_install(args)
 
@@ -1564,19 +1564,20 @@ async def test_stack_check_remote_requires_name(capsys):
     but in server mode the URL needs a name — error rather than guess.
     """
     args = _stack_args(name=None, backend="cluster")
-    with patch.object(cli, "_resolve_server", return_value="https://srv"):
+    with patch.object(cli, "_resolve_server_with_source", return_value=("https://srv", "flag")):
         rc = await cli._cmd_stack_check(args)
     assert rc == 2
 
 
 @pytest.mark.asyncio
 async def test_stack_install_local_path_unchanged_when_no_server(monkeypatch):
-    """No server resolvable → fall through to the existing local-SSH
-    path, which is what the existing tests already cover. This just
-    confirms the dispatch picks the right branch.
+    """``--server local`` → the in-process local-SSH path, which is what
+    the existing tests already cover. This just confirms the dispatch
+    picks the right branch. (Without the local keyword, no-server now
+    routes through the local daemon — see the _ensure_local_server tests.)
     """
     monkeypatch.delenv("SCRIPTHUT_SERVER", raising=False)
-    args = _stack_args(name="foo", backend="cluster")
+    args = _stack_args(name="foo", backend="cluster", server="local")
     fake_cfg = MagicMock()
     fake_cfg.get_stack.return_value = None  # short-circuits with "not found"
     fake_cfg.settings.cli_server = None
@@ -1590,3 +1591,190 @@ async def test_stack_install_local_path_unchanged_when_no_server(monkeypatch):
     # _remote_stack_call was never invoked.
     assert rc == 2
     remote_called.assert_not_called()
+
+
+# -- local daemon autostart ---------------------------------------------------
+
+
+def _daemon_cfg(tmp_path, autostart="ask", port=8123):
+    from scripthut.config_schema import GlobalSettings, ScriptHutConfig
+    return ScriptHutConfig(settings=GlobalSettings(
+        data_dir=tmp_path, server_host="127.0.0.1", server_port=port,
+        cli_autostart=autostart,
+    ))
+
+
+def _tty(monkeypatch, is_tty: bool):
+    import sys as _sys
+    monkeypatch.setattr(_sys, "stdin", MagicMock(isatty=lambda: is_tty))
+
+
+def _answers(monkeypatch, *replies):
+    it = iter(replies)
+    monkeypatch.setattr("builtins.input", lambda: next(it))
+
+
+def test_parser_daemon_subcommands_dispatch():
+    parser = cli.build_parser()
+    assert parser.parse_args(["daemon", "start"]).handler is cli._cmd_daemon_start
+    assert parser.parse_args(["daemon", "stop"]).handler is cli._cmd_daemon_stop
+    assert parser.parse_args(["daemon", "status", "--json"]).handler is cli._cmd_daemon_status
+    logs = parser.parse_args(["daemon", "logs", "--tail", "7"])
+    assert logs.handler is cli._cmd_daemon_logs
+    assert logs.tail == 7
+
+
+def test_ensure_local_server_uses_running_daemon(tmp_path, monkeypatch):
+    """A live daemon is used as-is: no prompt, no spawn, whatever the mode."""
+    cfg = _daemon_cfg(tmp_path, autostart="never")
+    monkeypatch.setattr(
+        "builtins.input",
+        lambda: (_ for _ in ()).throw(AssertionError("prompted!")),
+    )
+    with patch.object(cli, "load_config", return_value=cfg), \
+         patch("scripthut.daemon.ping", return_value={"status": "pong", "pid": 1}), \
+         patch("scripthut.daemon.start_daemon",
+               side_effect=AssertionError("spawned!")):
+        url = cli._ensure_local_server(_ns())
+    assert url == "http://127.0.0.1:8123"
+
+
+def test_ensure_local_server_never_mode_fails_with_guidance(tmp_path, monkeypatch):
+    cfg = _daemon_cfg(tmp_path, autostart="never")
+    _tty(monkeypatch, True)
+    with patch.object(cli, "load_config", return_value=cfg), \
+         patch("scripthut.daemon.ping", return_value=None):
+        with pytest.raises(RuntimeError) as exc:
+            cli._ensure_local_server(_ns())
+    msg = str(exc.value)
+    assert "--server local" in msg
+    assert "scripthut daemon start" in msg
+    assert "not prompting" not in msg
+
+
+def test_ensure_local_server_ask_non_tty_fails_without_prompt(tmp_path, monkeypatch):
+    cfg = _daemon_cfg(tmp_path, autostart="ask")
+    _tty(monkeypatch, False)
+    monkeypatch.setattr(
+        "builtins.input",
+        lambda: (_ for _ in ()).throw(AssertionError("prompted!")),
+    )
+    with patch.object(cli, "load_config", return_value=cfg), \
+         patch("scripthut.daemon.ping", return_value=None), \
+         patch("scripthut.daemon.start_daemon",
+               side_effect=AssertionError("spawned!")):
+        with pytest.raises(RuntimeError, match="not prompting"):
+            cli._ensure_local_server(_ns())
+
+
+def test_ensure_local_server_ask_yes_spawns(tmp_path, monkeypatch):
+    from scripthut.daemon import DaemonInfo
+    cfg = _daemon_cfg(tmp_path, autostart="ask")
+    _tty(monkeypatch, True)
+    _answers(monkeypatch, "y", "n")  # start? yes; remember? no
+    info = DaemonInfo(pid=99, host="127.0.0.1", port=8123, started_at="")
+    remember = MagicMock()
+    with patch.object(cli, "load_config", return_value=cfg), \
+         patch("scripthut.daemon.ping", return_value=None), \
+         patch("scripthut.daemon.start_daemon", return_value=info) as start, \
+         patch.object(cli, "set_global_setting", remember):
+        url = cli._ensure_local_server(_ns())
+    assert url == "http://127.0.0.1:8123"
+    start.assert_called_once()
+    remember.assert_not_called()
+
+
+def test_ensure_local_server_ask_yes_remembers_always(tmp_path, monkeypatch):
+    from scripthut.daemon import DaemonInfo
+    cfg = _daemon_cfg(tmp_path, autostart="ask")
+    _tty(monkeypatch, True)
+    _answers(monkeypatch, "y", "y")  # start? yes; remember? yes
+    info = DaemonInfo(pid=99, host="127.0.0.1", port=8123, started_at="")
+    remember = MagicMock(return_value=tmp_path / "scripthut.yaml")
+    with patch.object(cli, "load_config", return_value=cfg), \
+         patch("scripthut.daemon.ping", return_value=None), \
+         patch("scripthut.daemon.start_daemon", return_value=info), \
+         patch.object(cli, "set_global_setting", remember):
+        cli._ensure_local_server(_ns())
+    remember.assert_called_once_with("cli_autostart", "always")
+
+
+def test_ensure_local_server_ask_no_remembers_never_and_fails(tmp_path, monkeypatch):
+    cfg = _daemon_cfg(tmp_path, autostart="ask")
+    _tty(monkeypatch, True)
+    _answers(monkeypatch, "n", "y")  # start? no; remember? yes
+    remember = MagicMock(return_value=tmp_path / "scripthut.yaml")
+    with patch.object(cli, "load_config", return_value=cfg), \
+         patch("scripthut.daemon.ping", return_value=None), \
+         patch("scripthut.daemon.start_daemon",
+               side_effect=AssertionError("spawned!")), \
+         patch.object(cli, "set_global_setting", remember):
+        with pytest.raises(RuntimeError, match="--server local"):
+            cli._ensure_local_server(_ns())
+    remember.assert_called_once_with("cli_autostart", "never")
+
+
+def test_ensure_local_server_always_spawns_without_prompt(tmp_path, monkeypatch):
+    from scripthut.daemon import DaemonInfo
+    cfg = _daemon_cfg(tmp_path, autostart="always")
+    _tty(monkeypatch, False)  # even non-interactive: always is an explicit opt-in
+    monkeypatch.setattr(
+        "builtins.input",
+        lambda: (_ for _ in ()).throw(AssertionError("prompted!")),
+    )
+    info = DaemonInfo(pid=99, host="127.0.0.1", port=8123, started_at="")
+    with patch.object(cli, "load_config", return_value=cfg), \
+         patch("scripthut.daemon.ping", return_value=None), \
+         patch("scripthut.daemon.start_daemon", return_value=info) as start:
+        url = cli._ensure_local_server(_ns())
+    assert url == "http://127.0.0.1:8123"
+    start.assert_called_once()
+
+
+def test_make_client_three_way_split(monkeypatch):
+    """flag/env/config URL → RemoteClient with auth; --server local →
+    LocalClient; nothing → RemoteClient at the daemon URL with NO auth
+    resolution (it could shell out to cloudflared)."""
+    args = _ns()
+
+    with patch.object(cli, "_resolve_server_with_source",
+                      return_value=("https://srv", "flag")), \
+         patch.object(cli, "_resolve_auth", return_value=None) as auth:
+        client = cli._make_client(args)
+    assert isinstance(client, cli.RemoteClient)
+    auth.assert_called_once()
+
+    with patch.object(cli, "_resolve_server_with_source",
+                      return_value=(None, "local-keyword")):
+        client = cli._make_client(args)
+    assert isinstance(client, cli.LocalClient)
+
+    with patch.object(cli, "_resolve_server_with_source",
+                      return_value=(None, "none")), \
+         patch.object(cli, "_ensure_local_server",
+                      return_value="http://127.0.0.1:8123"), \
+         patch.object(cli, "_resolve_auth",
+                      side_effect=AssertionError("auth resolved!")):
+        client = cli._make_client(args)
+    assert isinstance(client, cli.RemoteClient)
+    assert client.base_url == "http://127.0.0.1:8123"
+    assert client.auth is None
+
+
+def test_main_renders_connection_errors_cleanly(capsys):
+    """httpx.RequestError must become a friendly message, not a traceback."""
+    async def boom(args):
+        raise httpx.ConnectError(
+            "[Errno 61] Connection refused",
+            request=httpx.Request("GET", "http://127.0.0.1:8123/api/v1/runs"),
+        )
+
+    fake_parser = MagicMock()
+    fake_parser.parse_args.return_value = argparse.Namespace(handler=boom)
+    with patch.object(cli, "build_parser", return_value=fake_parser):
+        rc = cli.main(["run", "list"])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "could not reach the server" in err
+    assert "http://127.0.0.1:8123/api/v1/runs" in err
+    assert "daemon status" in err

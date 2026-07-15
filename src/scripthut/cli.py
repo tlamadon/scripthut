@@ -12,7 +12,10 @@ share a single ``Client`` interface:
 
 Server resolution order: ``--server`` argument → ``SCRIPTHUT_SERVER``
 env var → ``settings.cli_server`` in scripthut.yaml.  If none of those
-are set, commands run locally.
+are set, commands talk to a local daemon (a detached ``scripthut``
+server on ``settings.server_host:server_port``), starting one first if
+allowed by ``settings.cli_autostart`` — see ``_ensure_local_server``.
+``--server local`` forces the in-process ``LocalClient`` instead.
 
 When the resolved server sits behind Cloudflare Access, the CLI sends
 auth headers built from (per field, highest wins): ``--cf-client-id`` /
@@ -37,7 +40,7 @@ from typing import Any
 
 import httpx
 
-from scripthut.config import ConfigError, load_config
+from scripthut.config import ConfigError, load_config, set_global_setting
 from scripthut.config_schema import (
     PBSBackendConfig,
     ScriptHutConfig,
@@ -734,12 +737,108 @@ def _resolve_server(args: argparse.Namespace) -> str | None:
     return _resolve_server_with_source(args)[0]
 
 
+def _confirm_stderr(question: str, default_yes: bool = True) -> bool:
+    """Yes/no prompt on stderr (keeps ``--json | jq`` pipelines clean).
+
+    Mirrors ``scripthut.setup.aws_ec2._confirm`` — stdlib only, no
+    click/prompt_toolkit dependency. EOF (ctrl-d, closed stdin) counts
+    as "no".
+    """
+    suffix = "[Y/n]" if default_yes else "[y/N]"
+    while True:
+        print(f"{question} {suffix}: ", end="", file=sys.stderr, flush=True)
+        try:
+            answer = input().strip().lower()
+        except EOFError:
+            print(file=sys.stderr)
+            return False
+        if not answer:
+            return default_yes
+        if answer in ("y", "yes"):
+            return True
+        if answer in ("n", "no"):
+            return False
+        print("Please answer y or n.", file=sys.stderr)
+
+
+def _ensure_local_server(args: argparse.Namespace) -> str:
+    """Return the base URL of a local daemon, starting one if allowed.
+
+    Called when nothing resolves a server. A running daemon (or a
+    foreground ``scripthut`` server) on ``settings.server_host:port`` is
+    always used as-is; otherwise ``settings.cli_autostart`` decides
+    whether to prompt (``ask``, TTY only), spawn silently (``always``),
+    or fail with guidance (``never``, or ``ask`` off a TTY).
+
+    Raises RuntimeError (rendered cleanly by ``main()``) when autostart
+    is declined, disabled, or the daemon fails to come up.
+    """
+    from scripthut import daemon
+
+    # A daemon with no backends is useless — let the friendly
+    # "No configuration found" FileNotFoundError propagate instead.
+    config = load_config(getattr(args, "config", None))
+    host, port = daemon.resolve_host_port(config)
+    url = f"http://{host}:{port}"
+
+    if daemon.ping(host, port) is not None:
+        return url
+
+    mode = config.settings.cli_autostart
+    interactive = sys.stdin.isatty()
+
+    if mode == "never" or (mode == "ask" and not interactive):
+        raise RuntimeError(
+            f"No server configured and no local daemon running at {url}.\n"
+            f"  - start one:          scripthut daemon start\n"
+            f"  - run in-process:     add --server local\n"
+            f"  - point at a server:  --server <url> / SCRIPTHUT_SERVER / settings.cli_server\n"
+            f"  - always autostart:   set settings.cli_autostart: always"
+            + ("" if mode == "never" else "\n  (non-interactive session: not prompting)")
+        )
+
+    if mode == "ask":
+        wants = _confirm_stderr(
+            f"No scripthut server running at {url}. "
+            f"Start a local daemon (background web admin)?",
+            default_yes=True,
+        )
+        if _confirm_stderr("Remember this choice in the global config?", default_yes=False):
+            try:
+                saved_to = set_global_setting(
+                    "cli_autostart", "always" if wants else "never",
+                )
+                print(f"Saved settings.cli_autostart to {saved_to}", file=sys.stderr)
+            except RuntimeError as e:
+                print(f"Warning: {e}", file=sys.stderr)
+        if not wants:
+            raise RuntimeError(
+                "Not starting a daemon. Use --server local for in-process "
+                "mode, or `scripthut daemon start` to launch one explicitly."
+            )
+
+    # mode == "always", or the user said yes.
+    info = daemon.start_daemon(config, getattr(args, "config", None))
+    print(
+        f"Started local daemon (pid {info.pid}) at {info.url}; "
+        f"logs: {daemon.logfile_path(config)}",
+        file=sys.stderr,
+    )
+    return info.url
+
+
 def _make_client(args: argparse.Namespace) -> Any:
     """Build the right Client subclass for this invocation."""
-    server = _resolve_server(args)
+    server, source = _resolve_server_with_source(args)
     if server:
         return RemoteClient(server, auth=_resolve_auth(args))
-    return LocalClient(getattr(args, "config", None))
+    if source == "local-keyword":
+        # Explicit --server local: in-process Runtime, no daemon involved.
+        return LocalClient(getattr(args, "config", None))
+    # Nothing configured: route through the local daemon. No auth — the
+    # daemon is on localhost, and resolving auth could shell out to
+    # cloudflared when settings.cli_auth.cloudflared_app is set.
+    return RemoteClient(_ensure_local_server(args), auth=None)
 
 
 # ---------------------------------------------------------------------------
@@ -1717,9 +1816,29 @@ def _render_status(data: dict[str, Any], probe: dict[str, Any] | None) -> str:
         lines.append("Server:        local mode (--server local)")
     else:
         lines.append(
-            "Server:        local mode "
+            "Server:        local daemon "
             "(no --server / SCRIPTHUT_SERVER / settings.cli_server set)"
         )
+
+    ld = data.get("local_daemon")
+    if ld is not None:
+        if ld.get("error"):
+            lines.append(f"Local daemon:  ?  {ld['error']}")
+        elif ld.get("running"):
+            lines.append(
+                f"Local daemon:  ✓  running (pid {ld['pid']}) at {ld['url']}"
+            )
+            lines.append(f"               log: {ld['log_path']}")
+        elif ld.get("foreign"):
+            lines.append(
+                "Local daemon:  ✗  the configured port is serving something "
+                "that isn't scripthut"
+            )
+        else:
+            lines.append(
+                f"Local daemon:  ○  not running "
+                f"(autostart: {ld.get('autostart')})"
+            )
 
     auth = data["auth"]
     if not server:
@@ -1843,6 +1962,28 @@ def _authorization_hint(
 
 async def _cmd_status(args: argparse.Namespace) -> int:
     data = _gather_status(args)
+
+    # In daemon mode (nothing configured), report whether a local daemon
+    # is up — informational only, never triggers a spawn.
+    if data["server"] is None and data["server_source"] == "none" and not getattr(
+        args, "quick", False,
+    ):
+        from scripthut import daemon
+
+        cfg: ScriptHutConfig | None
+        try:
+            cfg = load_config(getattr(args, "config", None))
+        except Exception:
+            cfg = None
+        try:
+            local_daemon = daemon.daemon_status(cfg)
+        except Exception as e:
+            local_daemon = {"error": str(e)}
+        local_daemon["autostart"] = (
+            cfg.settings.cli_autostart if cfg is not None else "ask"
+        )
+        data["local_daemon"] = local_daemon
+
     probe: dict[str, Any] | None = None
     if data["server"] and not getattr(args, "quick", False):
         # Re-resolve auth with cloudflared fetch enabled so the probe is
@@ -2124,6 +2265,7 @@ async def _remote_stack_call(
     args: argparse.Namespace, server: str, method: str, path: str,
     *, params: dict[str, Any] | None = None,
     timeout: float = 1800.0,
+    use_auth: bool = True,
 ) -> dict[str, Any]:
     """Hit a ``/api/v1/stacks/...`` endpoint with auth + sensible error mapping.
 
@@ -2131,8 +2273,12 @@ async def _remote_stack_call(
     Cloudflare-Access tunnels generally hold while data is flowing
     (prep emits output). Each per-backend call is independent — a slow
     one doesn't block the others if the CLI iterates.
+
+    ``use_auth=False`` skips auth resolution entirely — used when the
+    target is the local daemon, where resolving auth could needlessly
+    shell out to cloudflared.
     """
-    auth = _resolve_auth(args)
+    auth = _resolve_auth(args) if use_auth else None
     base = server.rstrip("/") + "/api/v1"
     headers = auth.headers() if auth is not None else {}
     async with httpx.AsyncClient(timeout=timeout, headers=headers) as client:
@@ -2227,7 +2373,11 @@ async def _cmd_stack_list(args: argparse.Namespace) -> int:
 
 
 async def _cmd_stack_check(args: argparse.Namespace) -> int:
-    server = _resolve_server(args)
+    server, source = _resolve_server_with_source(args)
+    via_daemon = False
+    if server is None and source == "none":
+        server = _ensure_local_server(args)
+        via_daemon = True
     if server:
         if not args.name:
             print(
@@ -2240,6 +2390,7 @@ async def _cmd_stack_check(args: argparse.Namespace) -> int:
         data = await _remote_stack_call(
             args, server, "GET", f"/stacks/{args.name}/check",
             params={"backend": backend, "source": getattr(args, "source", None)},
+            use_auth=not via_daemon,
         )
         _render_remote_stack_result(args.name, data, as_json=args.json)
         return 0 if data.get("state") == "ready" else 1
@@ -2294,7 +2445,11 @@ async def _cmd_stack_check(args: argparse.Namespace) -> int:
 
 
 async def _cmd_stack_install(args: argparse.Namespace) -> int:
-    server = _resolve_server(args)
+    server, source = _resolve_server_with_source(args)
+    via_daemon = False
+    if server is None and source == "none":
+        server = _ensure_local_server(args)
+        via_daemon = True
     if server:
         backend = _require_remote_backend(args)
         data = await _remote_stack_call(
@@ -2304,6 +2459,7 @@ async def _cmd_stack_install(args: argparse.Namespace) -> int:
                 "source": getattr(args, "source", None),
                 "rebuild": "true" if args.rebuild else "false",
             },
+            use_auth=not via_daemon,
             # Submission is now non-blocking — the synthesized install
             # workflow is queued and the run summary returns right away.
             # Keep the timeout short so a stuck network surfaces quickly.
@@ -2361,12 +2517,17 @@ async def _cmd_stack_install(args: argparse.Namespace) -> int:
 
 
 async def _cmd_stack_delete(args: argparse.Namespace) -> int:
-    server = _resolve_server(args)
+    server, source = _resolve_server_with_source(args)
+    via_daemon = False
+    if server is None and source == "none":
+        server = _ensure_local_server(args)
+        via_daemon = True
     if server:
         backend = _require_remote_backend(args)
         data = await _remote_stack_call(
             args, server, "DELETE", f"/stacks/{args.name}",
             params={"backend": backend, "source": getattr(args, "source", None)},
+            use_auth=not via_daemon,
         )
         if data.get("deleted"):
             print(f"  ✓ {args.name} deleted on backend {data.get('backend')}")
@@ -2392,6 +2553,83 @@ async def _cmd_stack_delete(args: argparse.Namespace) -> int:
     _print_status_table(results)
     failed = any(note is not None for _, _, _, note in results)
     return 1 if failed else 0
+
+
+# ---------------------------------------------------------------------------
+# `daemon` subcommands — manage the local background scripthut server
+# ---------------------------------------------------------------------------
+
+
+def _load_config_or_none(args: argparse.Namespace) -> ScriptHutConfig | None:
+    """Config if loadable, else None — stop/status/logs must work without one."""
+    try:
+        return load_config(getattr(args, "config", None))
+    except (FileNotFoundError, ConfigError):
+        return None
+
+
+async def _cmd_daemon_start(args: argparse.Namespace) -> int:
+    from scripthut import daemon
+
+    # A daemon needs a config (backends to talk to) — propagate the
+    # friendly FileNotFoundError when there is none.
+    config = load_config(getattr(args, "config", None))
+    host, port = daemon.resolve_host_port(config)
+    already = daemon.ping(host, port) is not None
+    info = daemon.start_daemon(config, getattr(args, "config", None))
+    if already:
+        print(f"Already running (pid {info.pid}) at {info.url}")
+    else:
+        print(f"Started local daemon (pid {info.pid}) at {info.url}")
+        print(f"  logs: {daemon.logfile_path(config)}")
+    return 0
+
+
+async def _cmd_daemon_stop(args: argparse.Namespace) -> int:
+    from scripthut import daemon
+
+    print(daemon.stop_daemon(_load_config_or_none(args)))
+    return 0
+
+
+async def _cmd_daemon_status(args: argparse.Namespace) -> int:
+    from scripthut import daemon
+
+    status = daemon.daemon_status(_load_config_or_none(args))
+    if args.json:
+        print(json.dumps(status, indent=2))
+        return 0 if status["running"] else 3
+    if status["running"]:
+        line = f"● running (pid {status['pid']}) at {status['url']}"
+        if status.get("version"):
+            line += f"  v{status['version']}"
+        print(line)
+        if status.get("uptime_s") is not None:
+            print(f"  up {int(status['uptime_s'] // 60)} min")
+    elif status["foreign"]:
+        print(
+            "✗ the configured port is serving something that isn't "
+            "scripthut — change settings.server_port or stop that process"
+        )
+    else:
+        print("○ not running")
+    if status.get("stale_pidfile"):
+        print(f"  ! stale pidfile: {status['pidfile']}")
+    print(f"  log: {status['log_path']}")
+    return 0 if status["running"] else 3
+
+
+async def _cmd_daemon_logs(args: argparse.Namespace) -> int:
+    from scripthut import daemon
+
+    path = daemon.logfile_path(_load_config_or_none(args))
+    if not path.exists():
+        print(f"No daemon log at {path}", file=sys.stderr)
+        return 2
+    print(f"# {path}", file=sys.stderr)
+    for line in path.read_text(errors="replace").splitlines()[-args.tail:]:
+        print(line)
+    return 0
 
 
 # ---------------------------------------------------------------------------
@@ -2490,12 +2728,13 @@ async def _cmd_source_view(args: argparse.Namespace) -> int:
 
 
 async def _cmd_workflow_run(args: argparse.Namespace) -> int:
-    server = _resolve_server(args)
     async with _make_client(args) as client:
         summary = await client.run_source_workflow(
             args.source, args.name, backend=args.backend,
         )
-    _print_run_submitted(summary, remote_base=server)
+    # base_url covers the daemon path too, where _resolve_server is None
+    # but a server is in fact processing the run.
+    _print_run_submitted(summary, remote_base=getattr(client, "base_url", None))
     return 0
 
 
@@ -2589,10 +2828,9 @@ async def _cmd_run_cancel(args: argparse.Namespace) -> int:
 
 
 async def _cmd_run_rerun(args: argparse.Namespace) -> int:
-    server = _resolve_server(args)
     async with _make_client(args) as client:
         summary = await client.rerun(args.id)
-    _print_run_submitted(summary, remote_base=server)
+    _print_run_submitted(summary, remote_base=getattr(client, "base_url", None))
     return 0
 
 
@@ -2980,6 +3218,44 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common(p_src_sync)
     p_src_sync.set_defaults(handler=_cmd_source_sync)
 
+    # ----- daemon -----------------------------------------------------------
+    # Deliberately no _add_common: --server and the CF auth flags are
+    # meaningless for managing a localhost process; only --config matters.
+    p_dm = sub.add_parser(
+        "daemon", help="Manage the local background scripthut server",
+    )
+    dm_sub = p_dm.add_subparsers(dest="daemon_cmd", required=True)
+
+    p_dm_start = dm_sub.add_parser(
+        "start",
+        help=(
+            "Start the local daemon (detached; idempotent). For a "
+            "foreground server just run `scripthut` with no subcommand."
+        ),
+    )
+    p_dm_start.add_argument("--config", "-c", type=Path, help="Path to scripthut.yaml")
+    p_dm_start.set_defaults(handler=_cmd_daemon_start)
+
+    p_dm_stop = dm_sub.add_parser(
+        "stop", help="Stop the local daemon (SIGTERM, then SIGKILL)",
+    )
+    p_dm_stop.add_argument("--config", "-c", type=Path, help="Path to scripthut.yaml")
+    p_dm_stop.set_defaults(handler=_cmd_daemon_stop)
+
+    p_dm_status = dm_sub.add_parser(
+        "status", help="Show local daemon state (exit 0 running, 3 not)",
+    )
+    p_dm_status.add_argument("--config", "-c", type=Path, help="Path to scripthut.yaml")
+    p_dm_status.add_argument("--json", action="store_true")
+    p_dm_status.set_defaults(handler=_cmd_daemon_status)
+
+    p_dm_logs = dm_sub.add_parser(
+        "logs", help="Print the daemon log path and its last lines",
+    )
+    p_dm_logs.add_argument("--config", "-c", type=Path, help="Path to scripthut.yaml")
+    p_dm_logs.add_argument("--tail", type=int, default=100, help="Lines to print (default 100)")
+    p_dm_logs.set_defaults(handler=_cmd_daemon_logs)
+
     # ----- status -----------------------------------------------------------
     p_status = sub.add_parser(
         "status",
@@ -3008,6 +3284,21 @@ def main(argv: list[str]) -> int:
     except FileNotFoundError as e:
         print(f"Error: {e}", file=sys.stderr)
         return 2
+    except httpx.RequestError as e:
+        # Connection refused / DNS / timeout — render cleanly instead of
+        # a traceback, with the target so the user knows what was probed.
+        try:
+            target = f"\n  target: {e.request.url}"
+        except RuntimeError:
+            target = ""
+        print(
+            f"Error: could not reach the server "
+            f"({type(e).__name__}: {e}).{target}\n"
+            f"  Is it running? Try `scripthut status` or "
+            f"`scripthut daemon status`.",
+            file=sys.stderr,
+        )
+        return 1
     except RuntimeError as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1

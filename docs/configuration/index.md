@@ -93,6 +93,7 @@ settings:
 | `sources_cache_dir` | path | `<data_dir>/sources` | Directory to cache cloned repositories. |
 | `filter_user` | string | `null` | Default username for the "My Jobs" filter in the UI. If `null`, all users' jobs are shown. |
 | `cli_server` | string | `null` | Default URL of a running scripthut server for the CLI. Overridden by `--server` and `SCRIPTHUT_SERVER`. See [CLI](../cli.md). |
+| `cli_autostart` | `ask` / `always` / `never` | `"ask"` | What the CLI does when no server is configured and no local daemon is running: prompt on a TTY, start one without asking, or fail with guidance. See [CLI § Local daemon](../cli.md#local-daemon). |
 
 ---
 

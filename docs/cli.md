@@ -1,6 +1,6 @@
 # CLI
 
-ScriptHut ships a `gh`-style CLI for triggering workflows, managing stacks, firing one-off tasks, inspecting runs, and tailing logs without opening the web UI. The single binary is the same `scripthut` entry point that runs the server — when called with a subcommand (`workflow`, `run`, `backend`, `project`, `stack`, `task`, `agent`) it dispatches to the CLI instead.
+ScriptHut ships a `gh`-style CLI for triggering workflows, managing stacks, firing one-off tasks, inspecting runs, and tailing logs without opening the web UI. The single binary is the same `scripthut` entry point that runs the server — when called with a subcommand (`workflow`, `run`, `backend`, `project`, `stack`, `task`, `agent`, `daemon`) it dispatches to the CLI instead.
 
 ```bash
 scripthut workflow list          # CLI
@@ -11,19 +11,20 @@ The CLI is designed to feel native from inside a project directory: it walks up 
 
 ## Transports — local vs remote
 
-The CLI talks to your workflows through one of two clients, picked automatically by the *server-resolution chain*:
+The CLI talks to your workflows through a client picked automatically by the *server-resolution chain*:
 
-1. **`--server <url>`** argument on the command (overrides everything; pass `local` to force local mode)
+1. **`--server <url>`** argument on the command (overrides everything; pass `local` to force in-process mode)
 2. **`SCRIPTHUT_SERVER`** environment variable
 3. **`settings.cli_server`** in `scripthut.yaml`
-4. None of the above → **local mode**
+4. None of the above → **local daemon** (auto-started if allowed — see [Local daemon](#local-daemon))
 
 | Transport | Picked when | Behavior |
 |-----------|-------------|----------|
 | `RemoteClient` (HTTP) | a server URL is resolved | Calls the running server's `/api/v1` endpoints via httpx. The server submits and tracks the work; the CLI just queries it. |
-| `LocalClient` (in-process) | no server URL anywhere | Boots a `Runtime` in-process — same backend SSH connections, storage, and `RunManager` the server uses. No web server required. |
+| Local daemon (HTTP) | no server URL anywhere | Same `RemoteClient`, pointed at a background `scripthut` server on `settings.server_host:server_port`. Started on demand (with your consent) and shared by every subsequent command — plus you get the web admin for free. |
+| `LocalClient` (in-process) | `--server local` | Boots a `Runtime` in-process — same backend SSH connections, storage, and `RunManager` the server uses. Paid on every invocation; escape hatch for debugging and one-off scripting. |
 
-So `scripthut workflow run train` on a laptop with no config will boot connections, submit the run, and exit. The same command pointed at a running server (`--server https://scripthut.team.example`) hits its API instead.
+So `scripthut workflow run train` on a laptop offers to start a local daemon on the first command, then every later command is fast. The same command pointed at a running server (`--server https://scripthut.team.example`) hits its API instead.
 
 Set the default server once in `scripthut.yaml` so day-to-day CLI use is point-free:
 
@@ -31,6 +32,29 @@ Set the default server once in `scripthut.yaml` so day-to-day CLI use is point-f
 settings:
   cli_server: "https://scripthut.team.example"
 ```
+
+## Local daemon
+
+When nothing resolves a server, the CLI probes `settings.server_host:server_port` (default `127.0.0.1:8000`). A running server there — daemon or a foreground `scripthut` — is used as-is. If nothing answers, `settings.cli_autostart` decides what happens:
+
+| `cli_autostart` | On a TTY | In a script / CI (no TTY) |
+|-----------------|----------|---------------------------|
+| `ask` (default) | Prompts `Start a local daemon? [Y/n]`, with an offer to remember your answer in the global config | Fails with guidance — never prompts, never spawns |
+| `always` | Starts the daemon silently (one notice on stderr) | Same — `always` is an explicit opt-in, so it works unattended |
+| `never` | Fails with guidance (`scripthut daemon start`, `--server local`, or configure a server) | Same |
+
+The daemon is a detached `scripthut` server: it keeps running until you stop it (or reboot), serves the web admin at its URL, and is spawned from `$HOME` so it always uses your user-global config regardless of which project directory triggered it. Its pidfile and log live under `<data_dir>/daemon/` (default `~/.cache/scripthut/daemon/`).
+
+Manage it explicitly with the `daemon` noun:
+
+```bash
+scripthut daemon start     # start detached (idempotent — no-op if running)
+scripthut daemon status    # pid, url, uptime; exit 0 running / 3 not
+scripthut daemon logs      # print the log path and its last 100 lines
+scripthut daemon stop      # SIGTERM, then SIGKILL after 10s
+```
+
+Prompts and notices go to **stderr**, so `scripthut run list --json | jq` stays clean. If the configured port is occupied by something that isn't scripthut, the CLI says so and refuses to wait — change `settings.server_port` or stop that process.
 
 ## Global flags
 
@@ -301,7 +325,8 @@ Setting `SCRIPTHUT_SERVER` once at the top means the rest of the script reads na
 | Code | Meaning |
 |------|---------|
 | `0` | Command succeeded (and for `run watch --exit-status`, the run completed successfully) |
-| `1` | Command-level error: bad arguments, missing workflow/run, server unreachable, etc. |
+| `1` | Command-level error: bad arguments, missing workflow/run, server unreachable, autostart declined/disabled, etc. |
 | `2` | (`run watch --exit-status` only) The run terminated in a non-success state (`FAILED` / `CANCELLED`) |
+| `3` | (`daemon status` only) No local daemon is running |
 
 Without `--exit-status`, `run watch` always returns 0 once the run reaches a terminal state — the watch itself succeeded, even if the work didn't.

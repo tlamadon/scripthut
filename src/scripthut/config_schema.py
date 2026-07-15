@@ -682,6 +682,16 @@ class GlobalSettings(BaseModel):
             "Overridden by per-command flags and SCRIPTHUT_CF_* env vars."
         ),
     )
+    cli_autostart: Literal["ask", "always", "never"] = Field(
+        default="ask",
+        description=(
+            "What the CLI does when no server is configured and no local "
+            "daemon is running: 'ask' prompts on a TTY (fails in "
+            "non-interactive sessions), 'always' starts a daemon without "
+            "asking, 'never' neither prompts nor starts one (use "
+            "`--server local` or `scripthut daemon start` instead)."
+        ),
+    )
 
     @property
     def data_dir_resolved(self) -> Path:

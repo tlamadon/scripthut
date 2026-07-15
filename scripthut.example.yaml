@@ -269,6 +269,11 @@ settings:
   # Set to your username to enable "My Jobs" filter
   filter_user: your_username
 
+  # What the CLI does when no server is configured and no local daemon is
+  # running: "ask" prompts on a TTY (fails in scripts), "always" starts a
+  # daemon without asking, "never" neither prompts nor starts one.
+  # cli_autostart: ask
+
 # -----------------------------------------------------------------------------
 # Task result cache (optional)
 # -----------------------------------------------------------------------------

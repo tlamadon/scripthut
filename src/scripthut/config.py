@@ -1,6 +1,7 @@
 """Configuration management - supports YAML config and .env fallback."""
 
 import logging
+import re
 import warnings
 from pathlib import Path
 
@@ -398,6 +399,49 @@ def load_config(config_path: Path | None = None) -> ScriptHutConfig:
             "project, or ~/.config/scripthut/scripthut.yaml. "
             "See scripthut.example.yaml for the recommended format."
         ) from e
+
+
+def set_global_setting(key: str, value: str) -> Path:
+    """Set ``settings.<key>: <value>`` in the user-global config file.
+
+    Edits the YAML with line-level text surgery rather than a parse/dump
+    round-trip so the user's comments and formatting survive. Creates
+    ``~/.config/scripthut/scripthut.yaml`` when no global config exists.
+    The edited text is validated as a :class:`ScriptHutConfig` before being
+    written; if the edit would produce an invalid config nothing is written
+    and a ``RuntimeError`` asks the user to edit the file manually.
+    """
+    path = discover_global_config()
+    if path is None:
+        path = GLOBAL_CONFIG_PATHS[0]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"settings:\n  {key}: {value}\n")
+        return path
+
+    original = path.read_text()
+    key_re = re.compile(rf"^(\s+){re.escape(key)}:.*$", re.MULTILINE)
+    settings_re = re.compile(r"^settings:\s*(#.*)?$", re.MULTILINE)
+
+    if key_re.search(original):
+        updated = key_re.sub(lambda m: f"{m.group(1)}{key}: {value}", original, count=1)
+    elif (section := settings_re.search(original)) is not None:
+        insert_at = section.end()
+        updated = original[:insert_at] + f"\n  {key}: {value}" + original[insert_at:]
+    else:
+        sep = "" if (not original or original.endswith("\n")) else "\n"
+        updated = original + f"{sep}settings:\n  {key}: {value}\n"
+
+    try:
+        raw = yaml.safe_load(updated) or {}
+        ScriptHutConfig.model_validate(raw)
+    except Exception as e:
+        raise RuntimeError(
+            f"Could not update {path} automatically; add '{key}: {value}' "
+            f"under the 'settings:' section manually."
+        ) from e
+
+    path.write_text(updated)
+    return path
 
 
 # Global config instance (set by main.py)

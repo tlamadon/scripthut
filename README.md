@@ -472,9 +472,13 @@ scripthut --host 0.0.0.0 --port 9000
 
 Open http://127.0.0.1:8000 in your browser.
 
+### Local daemon
+
+You don't have to start the server by hand. When a CLI command runs with no server configured, it looks for a local one on `settings.server_host:server_port` and offers to start a background daemon (the same server, detached) if nothing is there — so the first `scripthut run list` on a fresh machine gets you both a fast CLI and the web admin. Control it with `scripthut daemon start|stop|status|logs`, and tune the behavior with `settings.cli_autostart: ask|always|never`. See [docs/cli.md](docs/cli.md#local-daemon).
+
 ### Talking to a remote server from the CLI
 
-The CLI subcommands (`scripthut run list`, `scripthut workflow run …`, etc.) can hit a running server's `/api/v1` instead of booting an in-process runtime. Server selection is resolved from `--server <url>` → `SCRIPTHUT_SERVER` env var → `settings.cli_server` in `scripthut.yaml`. Pass `--server local` to force local mode.
+The CLI subcommands (`scripthut run list`, `scripthut workflow run …`, etc.) can hit a running server's `/api/v1` instead of the local daemon. Server selection is resolved from `--server <url>` → `SCRIPTHUT_SERVER` env var → `settings.cli_server` in `scripthut.yaml` → local daemon. Pass `--server local` to force the in-process runtime (no server at all).
 
 #### Cloudflare Access
 
