@@ -1632,6 +1632,43 @@ async def _cmd_agent_prompt(args: argparse.Namespace) -> int:
     return 0
 
 
+async def _cmd_agent_install(args: argparse.Namespace) -> int:
+    from scripthut import agent_skill
+
+    if args.user:
+        claude_dir = Path.home() / ".claude"
+    else:
+        claude_dir = Path.cwd() / ".claude"
+
+    results = agent_skill.install_assets(claude_dir, force=args.force)
+
+    skipped = False
+    for r in results:
+        try:
+            shown: Path | str = r.path.relative_to(Path.cwd())
+        except ValueError:
+            shown = r.path
+        print(f"  {r.action:<9} {shown}")
+        if r.action == "skipped":
+            skipped = True
+
+    if skipped:
+        sys.stdout.flush()
+        print(
+            "\nSkipped files exist but weren't written by scripthut; "
+            "re-run with --force to overwrite.",
+            file=sys.stderr,
+        )
+        return 1
+    print(
+        "\nInstalled. Claude Code picks these up automatically: the "
+        "`scripthut` skill loads when a task involves submitting or "
+        "monitoring compute, and `/scripthut:debug <run-id>` diagnoses a "
+        "failed run."
+    )
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # `status` subcommand — diagnose CLI connectivity to the server
 # ---------------------------------------------------------------------------
@@ -3043,6 +3080,25 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_common(p_ag_prompt)
     p_ag_prompt.set_defaults(handler=_cmd_agent_prompt)
+
+    p_ag_install = ag_sub.add_parser(
+        "install",
+        help=(
+            "Install a Claude Code skill and /scripthut:debug command "
+            "into ./.claude (or ~/.claude with --user)"
+        ),
+    )
+    p_ag_install.add_argument(
+        "--user",
+        action="store_true",
+        help="Install into ~/.claude (all projects) instead of ./.claude",
+    )
+    p_ag_install.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite existing files even if scripthut didn't write them",
+    )
+    p_ag_install.set_defaults(handler=_cmd_agent_install)
 
     # ----- task -------------------------------------------------------------
     p_tk = sub.add_parser(
