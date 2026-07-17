@@ -340,7 +340,9 @@ def stop_daemon(config: "ScriptHutConfig | None") -> str:
             remove_pidfile(pidfile)
             return f"stopped pid {info.pid}"
         time.sleep(0.2)
-    os.kill(info.pid, signal.SIGKILL)
+    # Windows has no SIGKILL; os.kill with SIGTERM there is already an
+    # unconditional TerminateProcess, so it doubles as the hard kill.
+    os.kill(info.pid, getattr(signal, "SIGKILL", signal.SIGTERM))
     remove_pidfile(pidfile)
     return f"stopped pid {info.pid} (SIGKILL after {STOP_TERM_TIMEOUT:.0f}s)"
 

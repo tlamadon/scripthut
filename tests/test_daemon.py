@@ -113,6 +113,10 @@ def test_ping_wrong_json_shape_raises():
 # -- spawn_daemon ------------------------------------------------------------
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="spawn_daemon is unsupported on Windows (raises DaemonError)",
+)
 def test_spawn_daemon_argv_and_detachment(tmp_path):
     logfile = tmp_path / "d" / "daemon.log"
     with patch.object(daemon.subprocess, "Popen") as popen:
@@ -128,6 +132,10 @@ def test_spawn_daemon_argv_and_detachment(tmp_path):
     assert "--- daemon started" in logfile.read_text()
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="spawn_daemon is unsupported on Windows (raises DaemonError)",
+)
 def test_spawn_daemon_passes_config_path(tmp_path):
     cfg_file = tmp_path / "scripthut.yaml"
     cfg_file.write_text("settings: {}\n")
@@ -137,6 +145,14 @@ def test_spawn_daemon_passes_config_path(tmp_path):
         )
     cmd = popen.call_args.args[0]
     assert cmd[-2:] == ["--config", str(cfg_file.resolve())]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows-only guard")
+def test_spawn_daemon_refuses_on_windows(tmp_path):
+    with pytest.raises(daemon.DaemonError, match="not supported on Windows"):
+        daemon.spawn_daemon(
+            "127.0.0.1", 8123, config_path=None, logfile=tmp_path / "daemon.log",
+        )
 
 
 # -- wait_ready --------------------------------------------------------------
@@ -256,7 +272,9 @@ def test_stop_daemon_sigkill_fallback(tmp_path, monkeypatch):
     kills: list = []
     monkeypatch.setattr(daemon.os, "kill", lambda pid, sig: kills.append((pid, sig)))
     result = daemon.stop_daemon(cfg)
-    assert kills == [(123, signal.SIGTERM), (123, signal.SIGKILL)]
+    # No SIGKILL on Windows — stop_daemon hard-kills with SIGTERM there.
+    hard_kill = getattr(signal, "SIGKILL", signal.SIGTERM)
+    assert kills == [(123, signal.SIGTERM), (123, hard_kill)]
     assert "SIGKILL" in result
 
 
