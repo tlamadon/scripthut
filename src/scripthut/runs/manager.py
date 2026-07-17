@@ -33,6 +33,7 @@ from scripthut.runs.models import (
     TaskDefinition,
     TaskOutput,
 )
+from scripthut.sources.git import is_safe_branch_name
 from scripthut.ssh.client import SSHClient
 
 if TYPE_CHECKING:
@@ -1132,7 +1133,7 @@ class RunManager:
 
     async def create_run_from_source(
         self, source_name: str, workflow_filename: str, tasks_json: str,
-        backend: str,
+        backend: str, branch: str | None = None,
     ) -> Run:
         """Create a run from a source workflow's JSON task list.
 
@@ -1147,10 +1148,27 @@ class RunManager:
             workflow_filename: Filename of the workflow (e.g. "train.json").
             tasks_json: Raw JSON task list content.
             backend: Name of the backend to submit tasks to.
+            branch: Git branch to run from, overriding the source's
+                configured branch. Only valid for git sources. The
+                caller is responsible for ``tasks_json`` matching this
+                branch (the API fetches + discovers at the branch first).
         """
         source = self.config.get_source(source_name)
         if source is None:
             raise ValueError(f"Source '{source_name}' not found")
+
+        if branch is not None and branch != getattr(source, "branch", None):
+            if not isinstance(source, GitSourceConfig):
+                raise ValueError(
+                    f"Source '{source_name}' is not a git source; "
+                    "branch override is only supported for git sources."
+                )
+            if not is_safe_branch_name(branch):
+                raise ValueError(f"Invalid branch name: {branch!r}")
+            # Everything downstream (backend clone, ls-remote, the
+            # scripthut.yaml overlay, run.git_branch) reads source.branch,
+            # so a shallow copy with the override is all it takes.
+            source = source.model_copy(update={"branch": branch})
 
         backend_name = backend
         ssh_client = self.get_ssh_client(backend_name)

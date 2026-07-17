@@ -285,6 +285,7 @@ class LocalClient:
 
     async def run_source_workflow(
         self, source: str, workflow: str, *, backend: str | None = None,
+        branch: str | None = None,
     ) -> dict[str, Any]:
         """Local-mode source-workflow submission is not supported.
 
@@ -492,9 +493,11 @@ class RemoteClient:
 
     async def run_source_workflow(
         self, source: str, workflow: str, *, backend: str | None = None,
+        branch: str | None = None,
     ) -> dict[str, Any]:
         return await self._post(
             f"/sources/{source}/run", workflow=workflow, backend=backend,
+            branch=branch,
         )
 
     async def view_run(self, run_id: str) -> dict[str, Any]:
@@ -1096,6 +1099,9 @@ def _render_agent_prompt(config: ScriptHutConfig | None) -> str:
                 "pinned to a branch above — `scripthut workflow run` "
                 "re-syncs the source on the server before submitting, so "
                 "the run executes against **latest HEAD on that branch**. "
+                "Pass `--branch <name>` to run from a different branch "
+                "instead (workflow file and repo config are read at that "
+                "branch's tip). "
                 "If the user just pushed a *new* workflow file (not just "
                 "edits to existing ones), run `scripthut source sync "
                 "<name>` first so the workflow list picks it up."
@@ -1173,6 +1179,9 @@ def _render_agent_prompt(config: ScriptHutConfig | None) -> str:
         "so the run executes against **latest HEAD on the source's "
         "configured branch**. The user doesn't have to sync first to pick "
         "up edits to existing workflow files.\n"
+        "- `--branch <name>` runs from a different branch of a git source "
+        "(fetched on demand; the workflow file and the repo's "
+        "`scripthut.yaml` are read at that branch's tip).\n"
         "- If the user pushed a *new* workflow file and `source view` "
         "doesn't show it yet, run `scripthut source sync <name>` to "
         "refresh the file list.\n"
@@ -2768,6 +2777,7 @@ async def _cmd_workflow_run(args: argparse.Namespace) -> int:
     async with _make_client(args) as client:
         summary = await client.run_source_workflow(
             args.source, args.name, backend=args.backend,
+            branch=getattr(args, "branch", None),
         )
     # base_url covers the daemon path too, where _resolve_server is None
     # but a server is in fact processing the run.
@@ -2997,6 +3007,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_wf_run.add_argument(
         "--backend",
         help="Override the source's default backend",
+    )
+    p_wf_run.add_argument(
+        "--branch",
+        help=(
+            "Run from this git branch instead of the source's configured "
+            "one (git sources only)"
+        ),
     )
     _add_common(p_wf_run)
     p_wf_run.set_defaults(handler=_cmd_workflow_run)

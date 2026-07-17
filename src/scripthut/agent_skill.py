@@ -98,6 +98,9 @@ Submit and track:
      --source <name> --backend <backend> --json | jq -r .id)
    ```
 
+   Runs execute against latest HEAD on the source's configured branch;
+   add `--branch <name>` to run from a different branch of a git source
+   (the workflow file and repo config are read at that branch's tip).
    Ad-hoc tasks use `scripthut task run` with the same `--json` shape.
 7. Poll `scripthut run view $RUN_ID --json` until the top-level status is
    terminal. Against a running server,
@@ -152,7 +155,10 @@ recent failed run with `scripthut run list --json`.
    - **Code/workflow bug** — quote the failing lines from stderr and
      point at the source file if it's in this repo.
 4. Report the root cause and the concrete fix. Only resubmit (as a NEW
-   run — never rerun the failed one) if the user asks.
+   run — never rerun the failed one) if the user asks. If the fix lives
+   on an unmerged branch of the workflow's git source, test it with
+   `scripthut workflow run <file> --source <name> --branch <fix-branch>`
+   before merging.
 """
 
 

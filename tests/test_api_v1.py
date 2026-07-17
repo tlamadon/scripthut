@@ -206,7 +206,7 @@ def test_run_source_workflow_uses_source_default_backend():
 
     assert resp.status_code == 200
     rm.create_run_from_source.assert_awaited_once_with(
-        "src", "train.json", "[]", backend="cluster",
+        "src", "train.json", "[]", backend="cluster", branch=None,
     )
 
 
@@ -232,7 +232,7 @@ def test_run_source_workflow_passes_backend_override():
 
     assert resp.status_code == 200
     rm.create_run_from_source.assert_awaited_once_with(
-        "src", "train.json", "[]", backend="cluster-b",
+        "src", "train.json", "[]", backend="cluster-b", branch=None,
     )
 
 

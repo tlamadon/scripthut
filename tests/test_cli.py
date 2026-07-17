@@ -468,7 +468,7 @@ async def test_workflow_run_forwards_backend_override():
             await cli._cmd_workflow_run(args)
 
     fake.run_source_workflow.assert_awaited_once_with(
-        "src", "train.json", backend="cluster-b",
+        "src", "train.json", backend="cluster-b", branch=None,
     )
 
 
@@ -484,7 +484,7 @@ async def test_workflow_run_with_source_calls_source_endpoint():
             rc = await cli._cmd_workflow_run(args)
 
     fake.run_source_workflow.assert_awaited_once_with(
-        "src", "train.json", backend=None,
+        "src", "train.json", backend=None, branch=None,
     )
     assert rc == 0
 
