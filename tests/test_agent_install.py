@@ -88,10 +88,10 @@ class TestInstallAssets:
     def test_fresh_install_creates_both_files(self, tmp_path: Path):
         results = install_assets(tmp_path / ".claude")
         assert [r.action for r in results] == ["created", "created"]
-        assert (tmp_path / ".claude" / SKILL_RELPATH).read_text() == render_skill()
+        assert (tmp_path / ".claude" / SKILL_RELPATH).read_text(encoding="utf-8") == render_skill()
         assert (
             tmp_path / ".claude" / DEBUG_COMMAND_RELPATH
-        ).read_text() == render_debug_command()
+        ).read_text(encoding="utf-8") == render_debug_command()
 
     def test_reinstall_is_idempotent(self, tmp_path: Path):
         claude = tmp_path / ".claude"
@@ -107,7 +107,7 @@ class TestInstallAssets:
         skill_path.write_text(f"old content\n{MANAGED_MARKER}\n")
         results = install_assets(claude)
         assert results[0].action == "updated"
-        assert skill_path.read_text() == render_skill()
+        assert skill_path.read_text(encoding="utf-8") == render_skill()
 
     def test_foreign_file_is_skipped_without_force(self, tmp_path: Path):
         claude = tmp_path / ".claude"
@@ -116,7 +116,7 @@ class TestInstallAssets:
         skill_path.write_text("hand-written skill, no marker\n")
         results = install_assets(claude)
         assert results[0].action == "skipped"
-        assert skill_path.read_text() == "hand-written skill, no marker\n"
+        assert skill_path.read_text(encoding="utf-8") == "hand-written skill, no marker\n"
         # The other file is still installed.
         assert results[1].action == "created"
 
@@ -127,7 +127,7 @@ class TestInstallAssets:
         skill_path.write_text("hand-written skill, no marker\n")
         results = install_assets(claude, force=True)
         assert results[0].action == "updated"
-        assert skill_path.read_text() == render_skill()
+        assert skill_path.read_text(encoding="utf-8") == render_skill()
 
 
 # ---------- CLI handler ---------------------------------------------------
@@ -165,7 +165,7 @@ class TestCmdAgentInstall:
         skill_path.write_text("foreign\n")
         rc = await _cmd_agent_install(_args())
         assert rc == 1
-        assert skill_path.read_text() == "foreign\n"
+        assert skill_path.read_text(encoding="utf-8") == "foreign\n"
 
 
 def test_parser_agent_install_dispatches_to_handler():
