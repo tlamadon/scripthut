@@ -8,8 +8,10 @@ without dragging in FastAPI/uvicorn machinery.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -223,20 +225,27 @@ async def init_backend(backend_config: SlurmBackendConfig | PBSBackendConfig) ->
 
 async def init_runtime(
     config: ScriptHutConfig, *, restore_runs: bool = True,
+    on_phase: Callable[[str], None] | None = None,
 ) -> Runtime:
     """Initialize backends, storage, and run manager from a loaded config.
 
     Mirrors the web server's startup chain (minus polling and SSE state)
     so the CLI can produce a fully functional ``RunManager`` against the
-    same on-disk store.
+    same on-disk store. ``on_phase`` (optional) receives coarse progress
+    labels so a caller can surface startup state while this runs.
     """
+    if on_phase:
+        on_phase("connecting backends")
     backends: dict[str, BackendState] = {}
 
-    for slurm_config in config.slurm_backends:
-        backends[slurm_config.name] = await init_backend(slurm_config)
-
-    for pbs_config in config.pbs_backends:
-        backends[pbs_config.name] = await init_backend(pbs_config)
+    # SSH backends connect concurrently — one slow or unreachable cluster
+    # shouldn't stack its handshake/timeout on top of the others'.
+    ssh_configs = [*config.slurm_backends, *config.pbs_backends]
+    ssh_states = await asyncio.gather(
+        *(init_backend(c) for c in ssh_configs)
+    )
+    for backend_state in ssh_states:
+        backends[backend_state.name] = backend_state
 
     for ecs_config in config.ecs_backends:
         logger.warning(
@@ -266,6 +275,8 @@ async def init_runtime(
     )
 
     if restore_runs:
+        if on_phase:
+            on_phase("restoring runs")
         restored = await run_manager.restore_from_storage()
         if restored:
             logger.info(f"Restored {restored} runs from storage")

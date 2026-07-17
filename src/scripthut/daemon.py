@@ -166,10 +166,22 @@ def ping(host: str, port: int, *, timeout: float = PROBE_TIMEOUT) -> dict[str, A
 
 
 def _api_ready(host: str, port: int, *, timeout: float = PROBE_TIMEOUT) -> bool:
-    """Whether the API layer is up with a loaded config (not just uvicorn)."""
+    """Whether the API layer is up with a loaded config (not just uvicorn).
+
+    Servers v0.12.3+ bind the socket before backends/storage finish
+    initializing and report the in-flight phase as ``starting``; treat
+    that as not-ready so CLI autostart keeps waiting. Older servers never
+    send the key, which reads as ready — matching their behavior of only
+    answering once fully initialized.
+    """
     try:
         resp = httpx.get(f"http://{host}:{port}/api/v1/health", timeout=timeout)
-        return resp.status_code == 200 and bool(resp.json().get("config_loaded"))
+        body = resp.json()
+        return (
+            resp.status_code == 200
+            and bool(body.get("config_loaded"))
+            and body.get("starting") is None
+        )
     except (httpx.RequestError, ValueError):
         return False
 

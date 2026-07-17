@@ -78,6 +78,12 @@ class AppState:
     filter_enabled: bool = False
     filter_user: str | None = None
     live_view: bool = True
+    # Startup readiness: a phase string ("connecting backends", ...) while
+    # background initialization runs; None once the server is fully ready.
+    # The default is None so CLI/local-runtime contexts that never run the
+    # web lifespan behave as before.
+    startup_phase: str | None = None
+    _startup_task: asyncio.Task[None] | None = None
     _polling_task: asyncio.Task[None] | None = None
     _shutdown_event: asyncio.Event = field(default_factory=asyncio.Event)
     # SSE: global poll event for dashboard/runs pages
@@ -675,42 +681,26 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         elif isinstance(source, PathSourceConfig):
             state.path_sources.append(source)
 
-    if config.sources:
-        asyncio.create_task(sync_sources_background())
-
-    # Initialize backends, storage, and run manager (shared with CLI)
-    runtime = await init_runtime(config)
-    state.backends.update(runtime.backends)
-    state.run_storage = runtime.run_storage
-    state.run_manager = runtime.run_manager
-
-    # Record existing runs/failures so we don't announce them as "new" —
-    # only transitions from here on generate notifications.
-    notification_hub.prime(state.run_manager.runs.values())
-
-    # Initialize pricing service (optional)
-    if config.pricing and config.pricing.partitions:
-        try:
-            from scripthut.pricing import PricingService
-
-            pricing_service = PricingService(config.pricing, config.settings.data_dir_resolved)
-            await pricing_service.initialize()
-            if pricing_service.ready:
-                state.pricing_service = pricing_service
-                logger.info("Pricing service initialized")
-            else:
-                logger.warning("Pricing service loaded but has no data")
-        except Exception as e:
-            logger.warning(f"Failed to initialize pricing service: {e}")
-
-    # Start background polling
-    state._polling_task = asyncio.create_task(poll_jobs())
+    # Everything slow — SSH connects, run restore, pricing — happens in a
+    # background task so uvicorn binds the socket immediately. Until the
+    # task clears state.startup_phase, the gate middleware answers with a
+    # "starting…" page / 503 instead of connection-refused.
+    state.startup_phase = "connecting backends"
+    state._startup_task = asyncio.create_task(_finish_startup(config))
 
     yield
 
     # Shutdown
     logger.info("Shutting down...")
     state._shutdown_event.set()
+
+    # If init is still in flight, stop it before tearing anything down.
+    if state._startup_task and not state._startup_task.done():
+        state._startup_task.cancel()
+        try:
+            await state._startup_task
+        except asyncio.CancelledError:
+            pass
 
     # Wake all SSE listeners so they can exit cleanly
     state.notify_poll()
@@ -736,6 +726,62 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             )
         )
         logger.info("Saved run data on shutdown")
+
+
+async def _finish_startup(config: ScriptHutConfig) -> None:
+    """Background half of startup: backends, run restore, pricing, polling.
+
+    Runs after uvicorn is already accepting connections; progress is
+    reported through ``state.startup_phase`` (shown by the gate middleware
+    and ``/api/v1/health``) and cleared when the server is fully ready.
+    """
+    try:
+        # Initialize backends, storage, and run manager (shared with CLI)
+        def on_phase(phase: str) -> None:
+            state.startup_phase = phase
+
+        runtime = await init_runtime(config, on_phase=on_phase)
+        state.backends.update(runtime.backends)
+        state.run_storage = runtime.run_storage
+        state.run_manager = runtime.run_manager
+
+        # Record existing runs/failures so we don't announce them as "new" —
+        # only transitions from here on generate notifications.
+        notification_hub.prime(state.run_manager.runs.values())
+
+        # Sources sync after backends so path-source discovery (which needs
+        # a connected SSH client) doesn't race the connects.
+        if config.sources:
+            asyncio.create_task(sync_sources_background())
+
+        # Initialize pricing service (optional)
+        if config.pricing and config.pricing.partitions:
+            state.startup_phase = "loading pricing data"
+            try:
+                from scripthut.pricing import PricingService
+
+                pricing_service = PricingService(config.pricing, config.settings.data_dir_resolved)
+                await pricing_service.initialize()
+                if pricing_service.ready:
+                    state.pricing_service = pricing_service
+                    logger.info("Pricing service initialized")
+                else:
+                    logger.warning("Pricing service loaded but has no data")
+            except Exception as e:
+                logger.warning(f"Failed to initialize pricing service: {e}")
+
+        # Start background polling
+        state._polling_task = asyncio.create_task(poll_jobs())
+        logger.info("Startup complete — server ready")
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        # Fatal init failure: surface it the same way a broken config is
+        # surfaced (homepage banner + API 503s carry the message).
+        logger.exception("Startup initialization failed")
+        state.config_error = f"Startup failed: {e}"
+    finally:
+        state.startup_phase = None
 
 
 async def sync_sources_background() -> None:
@@ -948,6 +994,68 @@ app.include_router(make_api_router(state))
 templates_path = Path(__file__).parent.parent.parent / "templates"
 templates = Jinja2Templates(directory=str(templates_path))
 templates.env.globals["scripthut_version"] = __version__
+
+
+_STARTING_PAGE = """\
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="refresh" content="2">
+  <title>ScriptHut — starting…</title>
+  <style>
+    body {{ margin: 0; min-height: 100vh; display: flex; align-items: center;
+           justify-content: center; background: #0f172a; color: #e2e8f0;
+           font-family: ui-sans-serif, system-ui, sans-serif; }}
+    .card {{ text-align: center; }}
+    .spinner {{ width: 2.5rem; height: 2.5rem; margin: 0 auto 1.25rem;
+               border: 3px solid #334155; border-top-color: #38bdf8;
+               border-radius: 50%; animation: spin 0.8s linear infinite; }}
+    @keyframes spin {{ to {{ transform: rotate(360deg); }} }}
+    h1 {{ font-size: 1.1rem; font-weight: 600; margin: 0 0 0.4rem; }}
+    p {{ color: #94a3b8; font-size: 0.85rem; margin: 0; }}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="spinner"></div>
+    <h1>ScriptHut is starting</h1>
+    <p>{phase}&hellip; this page refreshes automatically.</p>
+  </div>
+</body>
+</html>
+"""
+
+_GATE_EXEMPT_PATHS = ("/ping", "/health", "/api/v1/health")
+
+
+@app.middleware("http")
+async def _startup_gate(request: Request, call_next):  # type: ignore[no-untyped-def]
+    """While background init runs, answer instead of exposing half-built state.
+
+    Uvicorn accepts connections as soon as the (fast) lifespan yields; the
+    slow initialization continues in ``_finish_startup``. Until it clears
+    ``state.startup_phase``, HTML routes get an auto-refreshing starting
+    page and API routes get a structured 503 — both far better signals
+    than the connection-refused a restarting container shows otherwise.
+    """
+    phase = state.startup_phase
+    if phase is None or request.url.path in _GATE_EXEMPT_PATHS:
+        return await call_next(request)
+    if request.url.path.startswith("/api/"):
+        return JSONResponse(
+            status_code=503,
+            headers={"Retry-After": "2"},
+            content={
+                "detail": f"Server is starting ({phase}); retry shortly",
+                "starting": phase,
+            },
+        )
+    return HTMLResponse(
+        status_code=503,
+        headers={"Retry-After": "2"},
+        content=_STARTING_PAGE.format(phase=phase),
+    )
 
 
 def _format_disk_bytes(byte_val: int | None) -> str:

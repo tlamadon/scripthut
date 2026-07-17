@@ -88,10 +88,14 @@ def make_api_router(state: AppState) -> APIRouter:
 
     @router.get("/health")
     async def health() -> dict[str, Any]:
+        # isinstance (not a bare getattr) so MagicMock states in tests and
+        # states without the field read as "not starting".
+        phase = getattr(state, "startup_phase", None)
         return {
             "status": "ok",
             "config_loaded": state.config is not None,
             "config_error": state.config_error,
+            "starting": phase if isinstance(phase, str) else None,
             "backends": [
                 {"name": name, "type": bs.backend_type, "connected": bs.status.connected}
                 for name, bs in state.backends.items()

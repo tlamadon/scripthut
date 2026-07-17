@@ -158,6 +158,26 @@ def test_spawn_daemon_refuses_on_windows(tmp_path):
 # -- wait_ready --------------------------------------------------------------
 
 
+def test_api_ready_false_while_server_reports_starting():
+    body = {"config_loaded": True, "starting": "connecting backends"}
+    with patch.object(daemon.httpx, "get", return_value=_response(200, body)):
+        assert daemon._api_ready("127.0.0.1", 8123) is False
+
+
+def test_api_ready_true_when_not_starting():
+    body = {"config_loaded": True, "starting": None}
+    with patch.object(daemon.httpx, "get", return_value=_response(200, body)):
+        assert daemon._api_ready("127.0.0.1", 8123) is True
+
+
+def test_api_ready_true_for_old_servers_without_starting_key():
+    # Pre-0.12.3 servers only answer once fully initialized and never send
+    # the key — absence must read as ready.
+    body = {"config_loaded": True}
+    with patch.object(daemon.httpx, "get", return_value=_response(200, body)):
+        assert daemon._api_ready("127.0.0.1", 8123) is True
+
+
 def test_wait_ready_returns_once_healthy(monkeypatch):
     monkeypatch.setattr(daemon.time, "sleep", lambda s: None)
     monkeypatch.setattr(daemon, "ping", MagicMock(side_effect=[None, None, _pong()]))
