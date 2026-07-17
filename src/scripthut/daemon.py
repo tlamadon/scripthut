@@ -110,6 +110,28 @@ def remove_pidfile(path: Path) -> None:
 
 def pid_alive(pid: int) -> bool:
     """Whether a process with this pid exists (may belong to someone else)."""
+    if sys.platform == "win32":
+        # os.kill(pid, 0) is NOT an existence probe on Windows: signal 0
+        # is CTRL_C_EVENT, broadcast to the whole console group — it would
+        # interrupt our own console. Ask the kernel for a handle instead.
+        import ctypes
+        from ctypes import wintypes
+
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        STILL_ACTIVE = 259
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION, False, pid
+        )
+        if not handle:
+            return False
+        try:
+            code = wintypes.DWORD()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return False
+            return code.value == STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(handle)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
