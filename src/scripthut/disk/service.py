@@ -14,7 +14,7 @@ import asyncio
 import logging
 import time
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Coroutine
+from typing import TYPE_CHECKING, Coroutine, Sequence
 
 from scripthut.disk.classify import build_run_references, classify_entries
 from scripthut.disk.cleanup import (
@@ -31,7 +31,7 @@ from scripthut.disk.models import DiskEntry, DiskScanResult, ScanSpec
 from scripthut.disk.scan import build_scan_script, parse_scan_output, raw_to_entries
 
 if TYPE_CHECKING:
-    from scripthut.config_schema import ScriptHutConfig
+    from scripthut.config_schema import ScriptHutConfig, Stack
     from scripthut.runs.manager import RunManager
     from scripthut.runs.models import Run
     from scripthut.runs.storage import RunStorageManager
@@ -133,13 +133,16 @@ class DiskScanService:
         spec: ScanSpec,
         ssh: SSHClient,
         runs: list[Run],
-        current_stack_hashes: dict[str, str] | None = None,
+        current_stack_hashes: dict[str, set[str]] | None = None,
+        extra_errors: list[str] | None = None,
         timeout: int = SCAN_TIMEOUT,
     ) -> DiskScanResult:
         """Run one scan end-to-end: SSH script, parse, classify.
 
         Always returns a result — SSH/timeout failures come back as a
         result with ``errors`` set so the caller can cache and show it.
+        ``extra_errors`` (e.g. unreadable project scripthut.yaml files)
+        are carried onto the result so they surface with the scan.
         """
         started = time.monotonic()
         scanned_at = datetime.now(timezone.utc)
@@ -156,10 +159,10 @@ class DiskScanService:
                 backend=spec.backend,
                 scanned_at=scanned_at,
                 duration_ms=_elapsed_ms(),
-                errors=[f"scan failed: {e}"],
+                errors=list(extra_errors or []) + [f"scan failed: {e}"],
             )
 
-        errors: list[str] = []
+        errors: list[str] = list(extra_errors or [])
         if exit_code != 0:
             errors.append(f"scan exited {exit_code}: {stderr.strip()[:500]}")
 
@@ -212,9 +215,15 @@ class DiskScanService:
         self._cleanups[spec.backend] = report
 
         runs = await gather_all_runs(run_manager, run_storage)
-        hashes = compute_current_stack_hashes(config)
+        # Re-gather project stacks so the post-clean rescan classifies
+        # project-declared env dirs the same way the original scan did.
+        project_stacks, gather_errors = await gather_project_stacks(
+            config, spec.backend, ssh=ssh,
+        )
+        hashes = compute_current_stack_hashes(config, project_stacks)
         return await self.scan_backend(
-            spec=spec, ssh=ssh, runs=runs, current_stack_hashes=hashes
+            spec=spec, ssh=ssh, runs=runs, current_stack_hashes=hashes,
+            extra_errors=gather_errors,
         )
 
 
@@ -318,11 +327,66 @@ async def gather_all_runs(
     return list(all_runs.values())
 
 
-def compute_current_stack_hashes(config: ScriptHutConfig) -> dict[str, str]:
-    """Current content hash per configured stack (for superseded detection)."""
+def compute_current_stack_hashes(
+    config: ScriptHutConfig, extra_stacks: Sequence[Stack] = (),
+) -> dict[str, set[str]]:
+    """Valid content hashes per stack name (for superseded detection).
+
+    A *set* per name because the same stack name can be legitimately
+    declared with different inputs by the server config and by several
+    sources' project files — none of those declarations should mark the
+    others superseded.
+    """
     from scripthut.stacks.manager import compute_stack_hash
 
-    return {s.name: compute_stack_hash(s) for s in config.stacks}
+    hashes: dict[str, set[str]] = {}
+    for s in list(config.stacks) + list(extra_stacks):
+        hashes.setdefault(s.name, set()).add(compute_stack_hash(s))
+    return hashes
+
+
+async def gather_project_stacks(
+    config: ScriptHutConfig, backend_name: str, *, ssh: SSHClient | None = None,
+) -> tuple[list[Stack], list[str]]:
+    """Stacks declared by each source's project ``scripthut.yaml``.
+
+    Users keep project-specific env folders as stacks with a custom
+    ``cache_dir`` in the repo's own scripthut.yaml; without this the
+    scan only sees server-config stacks. Git sources read from the
+    server's local sources cache (soft-skip when not synced); path
+    sources need SSH and are only readable on their own backend. A
+    broken project file becomes an error string, never an exception —
+    one bad repo must not sink the whole scan.
+    """
+    from scripthut.config_schema import PathSourceConfig
+    from scripthut.runs.manager import load_source_project_config
+
+    stacks: list[Stack] = []
+    errors: list[str] = []
+    for source in config.sources:
+        if isinstance(source, PathSourceConfig):
+            if ssh is None or source.backend != backend_name:
+                continue
+            source_ssh: SSHClient | None = ssh
+        else:
+            source_ssh = None
+        try:
+            project_cfg = await load_source_project_config(
+                config, source, ssh_client=source_ssh,
+            )
+        except ValueError as e:
+            errors.append(f"source '{source.name}': {e}")
+            continue
+        except Exception as e:
+            logger.warning(
+                "reading project config for source '%s' failed: %s",
+                source.name, e,
+            )
+            errors.append(f"source '{source.name}': {e}")
+            continue
+        if project_cfg is not None:
+            stacks.extend(project_cfg.stacks)
+    return stacks, errors
 
 
 async def start_scan_for_backend(
@@ -344,13 +408,19 @@ async def start_scan_for_backend(
 
     if service.is_busy(backend_name):
         return False
-    spec = build_scan_spec(config, backend_name, clone_dir)
+    project_stacks, gather_errors = await gather_project_stacks(
+        config, backend_name, ssh=ssh,
+    )
+    spec = build_scan_spec(
+        config, backend_name, clone_dir, extra_stacks=project_stacks,
+    )
     runs = await gather_all_runs(run_manager, run_storage)
-    hashes = compute_current_stack_hashes(config)
+    hashes = compute_current_stack_hashes(config, project_stacks)
     return service.start_scan(
         backend_name,
         service.scan_backend(
-            spec=spec, ssh=ssh, runs=runs, current_stack_hashes=hashes
+            spec=spec, ssh=ssh, runs=runs, current_stack_hashes=hashes,
+            extra_errors=gather_errors,
         ),
     )
 
@@ -365,19 +435,27 @@ async def plan_cleanup_for_backend(
     run_storage: RunStorageManager | None,
     paths: list[str] | None,
     allow_referenced: frozenset[str] = frozenset(),
+    ssh: SSHClient | None = None,
 ) -> CleanupPlan | None:
     """Plan a cleanup against the cached scan and *current* runs.
 
     Returns None when no scan is cached for the backend (callers tell
-    the user to scan first). Pure inputs only — no SSH — so this is
-    safe to call synchronously for dry runs.
+    the user to scan first). ``ssh`` is only used to read path-sources'
+    project scripthut.yaml files (git sources read from the local
+    cache); without it those stacks are simply not part of the safety
+    roots, which fails toward skipping — never toward deleting.
     """
     from scripthut.disk.scan import build_scan_spec
 
     cached = service.get_cached(backend_name)
     if cached is None:
         return None
-    spec = build_scan_spec(config, backend_name, clone_dir)
+    project_stacks, _ = await gather_project_stacks(
+        config, backend_name, ssh=ssh,
+    )
+    spec = build_scan_spec(
+        config, backend_name, clone_dir, extra_stacks=project_stacks,
+    )
     runs = await gather_all_runs(run_manager, run_storage)
     refs = build_run_references(
         runs, backend_name, spec.clone_dirs, cached.home_dir
@@ -386,7 +464,7 @@ async def plan_cleanup_for_backend(
         cached,
         refs,
         spec=spec,
-        current_stack_hashes=compute_current_stack_hashes(config),
+        current_stack_hashes=compute_current_stack_hashes(config, project_stacks),
         planned_at=datetime.now(timezone.utc),
         paths=paths,
         allow_referenced=allow_referenced,
@@ -425,6 +503,7 @@ async def start_clean_for_backend(
         run_storage=run_storage,
         paths=paths,
         allow_referenced=allow_referenced,
+        ssh=ssh,
     )
     if plan is None:
         return "no_scan", None
@@ -432,7 +511,12 @@ async def start_clean_for_backend(
         return "invalid", plan
     if not plan.to_delete:
         return "nothing_to_clean", plan
-    spec = build_scan_spec(config, backend_name, clone_dir)
+    project_stacks, _ = await gather_project_stacks(
+        config, backend_name, ssh=ssh,
+    )
+    spec = build_scan_spec(
+        config, backend_name, clone_dir, extra_stacks=project_stacks,
+    )
     started = service.start_clean(
         backend_name,
         service.clean_backend(

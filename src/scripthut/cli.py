@@ -2678,6 +2678,7 @@ async def _disk_scan_local(args: argparse.Namespace) -> int:
     from scripthut.disk.service import (
         DiskScanService,
         compute_current_stack_hashes,
+        gather_project_stacks,
     )
     from scripthut.runs.storage import RunStorageManager
 
@@ -2699,7 +2700,6 @@ async def _disk_scan_local(args: argparse.Namespace) -> int:
 
     storage = RunStorageManager(config.settings.data_dir_resolved / "workflows")
     runs = list(storage.load_all_runs().values())
-    hashes = compute_current_stack_hashes(config)
     svc = DiskScanService()
 
     results: dict[str, Any] = {}
@@ -2713,9 +2713,17 @@ async def _disk_scan_local(args: argparse.Namespace) -> int:
             failures += 1
             continue
         try:
-            spec = build_scan_spec(config, b.name, b.clone_dir)
+            # Project-declared stacks (per-source scripthut.yaml env dirs);
+            # git sources only resolve where the server's sources cache
+            # exists locally, path sources over this backend's SSH.
+            stacks, gather_errors = await gather_project_stacks(
+                config, b.name, ssh=ssh,
+            )
+            spec = build_scan_spec(config, b.name, b.clone_dir, extra_stacks=stacks)
             result = await svc.scan_backend(
-                spec=spec, ssh=ssh, runs=runs, current_stack_hashes=hashes,
+                spec=spec, ssh=ssh, runs=runs,
+                current_stack_hashes=compute_current_stack_hashes(config, stacks),
+                extra_errors=gather_errors,
             )
             results[b.name] = result
         finally:
@@ -2877,6 +2885,7 @@ async def _disk_clean_local(args: argparse.Namespace) -> int:
         DiskScanService,
         compute_current_stack_hashes,
         execute_cleanup,
+        gather_project_stacks,
     )
     from scripthut.runs.storage import RunStorageManager
 
@@ -2903,7 +2912,6 @@ async def _disk_clean_local(args: argparse.Namespace) -> int:
 
     storage = RunStorageManager(config.settings.data_dir_resolved / "workflows")
     runs = list(storage.load_all_runs().values())
-    hashes = compute_current_stack_hashes(config)
     svc = DiskScanService()
     paths = getattr(args, "paths", None)
 
@@ -2918,9 +2926,16 @@ async def _disk_clean_local(args: argparse.Namespace) -> int:
             rc = 1
             continue
         try:
-            spec = build_scan_spec(config, b.name, b.clone_dir)
+            stacks, gather_errors = await gather_project_stacks(
+                config, b.name, ssh=ssh,
+            )
+            for err in gather_errors:
+                print(f"{b.name}: {err}", file=sys.stderr)
+            hashes = compute_current_stack_hashes(config, stacks)
+            spec = build_scan_spec(config, b.name, b.clone_dir, extra_stacks=stacks)
             result = await svc.scan_backend(
                 spec=spec, ssh=ssh, runs=runs, current_stack_hashes=hashes,
+                extra_errors=gather_errors,
             )
             refs = build_run_references(
                 runs, b.name, spec.clone_dirs, result.home_dir,

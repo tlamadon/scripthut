@@ -409,3 +409,92 @@ class TestCleanRoute:
         resp = _client(state).post("/api/v1/disk/clean", json={"backend": "hpc"})
         assert resp.status_code == 200
         assert resp.json()["status"] == "nothing_to_clean"
+
+
+# -- project-declared stacks -------------------------------------------------
+
+from unittest.mock import patch  # noqa: E402
+
+from scripthut.config_schema import GitSourceConfig, Stack  # noqa: E402
+from scripthut.disk.service import (  # noqa: E402
+    compute_current_stack_hashes,
+    gather_project_stacks,
+)
+
+
+class TestComputeCurrentStackHashes:
+    def test_merges_server_and_project_declarations(self):
+        cfg = ScriptHutConfig(stacks=[Stack(name="julia", prep="server prep")])
+        extras = [
+            Stack(name="julia", prep="project prep"),  # same name, new hash
+            Stack(name="proj-env"),
+        ]
+        hashes = compute_current_stack_hashes(cfg, extras)
+        assert set(hashes) == {"julia", "proj-env"}
+        assert len(hashes["julia"]) == 2  # both declarations stay valid
+        assert len(hashes["proj-env"]) == 1
+
+    def test_identical_declarations_collapse(self):
+        cfg = ScriptHutConfig(stacks=[Stack(name="julia")])
+        hashes = compute_current_stack_hashes(cfg, [Stack(name="julia")])
+        assert len(hashes["julia"]) == 1
+
+
+class TestGatherProjectStacks:
+    def _git_cfg(self) -> ScriptHutConfig:
+        return ScriptHutConfig(
+            sources=[GitSourceConfig(name="proj", url="git@x:proj.git")]
+        )
+
+    async def test_git_source_contributes_stacks(self):
+        overlay = ScriptHutConfig(
+            stacks=[Stack(name="proj-env", cache_dir="~/proj-envs")]
+        )
+        with patch(
+            "scripthut.runs.manager.load_source_project_config",
+            new=AsyncMock(return_value=overlay),
+        ):
+            stacks, errors = await gather_project_stacks(self._git_cfg(), "hpc")
+        assert [s.name for s in stacks] == ["proj-env"]
+        assert errors == []
+
+    async def test_source_without_overlay_is_noop(self):
+        with patch(
+            "scripthut.runs.manager.load_source_project_config",
+            new=AsyncMock(return_value=None),
+        ):
+            stacks, errors = await gather_project_stacks(self._git_cfg(), "hpc")
+        assert stacks == [] and errors == []
+
+    async def test_bad_yaml_collected_not_raised(self):
+        with patch(
+            "scripthut.runs.manager.load_source_project_config",
+            new=AsyncMock(side_effect=ValueError("scripthut.yaml: invalid YAML")),
+        ):
+            stacks, errors = await gather_project_stacks(self._git_cfg(), "hpc")
+        assert stacks == []
+        assert errors == ["source 'proj': scripthut.yaml: invalid YAML"]
+
+    async def test_path_source_gating(self):
+        cfg = ScriptHutConfig(
+            sources=[
+                {"name": "same", "type": "path", "path": "/d", "backend": "hpc"},
+                {"name": "other", "type": "path", "path": "/d", "backend": "elsewhere"},
+            ]
+        )
+        loader = AsyncMock(return_value=None)
+        with patch("scripthut.runs.manager.load_source_project_config", new=loader):
+            # no ssh: every path source skipped, loader never called
+            await gather_project_stacks(cfg, "hpc", ssh=None)
+            assert loader.await_count == 0
+            # with ssh: only the source on the scanned backend is read
+            await gather_project_stacks(cfg, "hpc", ssh=AsyncMock())
+            assert loader.await_count == 1
+
+    async def test_scan_result_carries_gather_errors(self):
+        svc = DiskScanService()
+        result = await svc.scan_backend(
+            spec=_spec(), ssh=_ssh_returning(SCAN_STDOUT), runs=[],
+            extra_errors=["source 'proj': broken overlay"],
+        )
+        assert "source 'proj': broken overlay" in result.errors

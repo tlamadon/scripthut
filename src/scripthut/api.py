@@ -859,6 +859,10 @@ def make_api_router(state: AppState) -> APIRouter:
                 status_code=404, detail=f"Unknown backend '{req.backend}'"
             )
         rm = _require_manager()
+        # Fetched before the dry-run branch so dry-run and exec classify
+        # path-source project stacks identically; dry-run tolerates None
+        # (path-source overlays are then skipped, git ones still read).
+        ssh = rm.get_ssh_client(req.backend)
 
         if req.dry_run:
             plan = await plan_cleanup_for_backend(
@@ -870,6 +874,7 @@ def make_api_router(state: AppState) -> APIRouter:
                 run_storage=state.run_storage,
                 paths=req.paths,
                 allow_referenced=frozenset(req.allow_referenced),
+                ssh=ssh,
             )
             if plan is None:
                 raise HTTPException(
@@ -881,7 +886,6 @@ def make_api_router(state: AppState) -> APIRouter:
                 raise HTTPException(status_code=400, detail="; ".join(plan.errors))
             return {"backend": req.backend, "dry_run": True, "plan": plan.to_dict()}
 
-        ssh = rm.get_ssh_client(req.backend)
         if ssh is None:
             raise HTTPException(
                 status_code=503,

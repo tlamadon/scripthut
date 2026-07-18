@@ -179,14 +179,30 @@ class TestClassifyEntries:
             _entry(DiskEntryKind.STACK, "/s/gone/111111111111", ready=True, detail="gone/111111111111"),
         ]
         classify_entries(
-            entries, self._refs([]), current_stack_hashes={"julia": "ab12cd34ef56"}
+            entries, self._refs([]), current_stack_hashes={"julia": {"ab12cd34ef56"}}
         )
         assert entries[0].classification == DiskEntryClass.REFERENCED
         assert "superseded" not in (entries[0].detail or "")
         assert entries[1].classification == DiskEntryClass.REFERENCED
-        assert "(superseded)" in entries[1].detail
+        assert "(superseded)" in (entries[1].detail or "")
         assert entries[2].classification == DiskEntryClass.ORPHANED
-        assert "(unconfigured)" in entries[2].detail
+        assert "(unconfigured)" in (entries[2].detail or "")
+
+    def test_stack_multiple_valid_hashes_none_superseded(self):
+        # server config and a source's project file both declare "julia"
+        # with different inputs — both hashes are current, neither is
+        # marked superseded by the other
+        entries = [
+            _entry(DiskEntryKind.STACK, "/s/julia/ab12cd34ef56", ready=True, detail="julia/ab12cd34ef56"),
+            _entry(DiskEntryKind.STACK, "/s/julia/000000000000", ready=True, detail="julia/000000000000"),
+        ]
+        classify_entries(
+            entries,
+            self._refs([]),
+            current_stack_hashes={"julia": {"ab12cd34ef56", "000000000000"}},
+        )
+        assert all(e.classification == DiskEntryClass.REFERENCED for e in entries)
+        assert all("superseded" not in (e.detail or "") for e in entries)
 
     def test_stack_without_config_knowledge(self):
         entries = [_entry(DiskEntryKind.STACK, "/s/julia/ab12cd34ef56", ready=True)]

@@ -191,7 +191,7 @@ class TestStacks:
             self._stack_result(),
             _refs([]),
             spec=SPEC,
-            current_stack_hashes={"julia": "aaaaaaaaaaaa"},
+            current_stack_hashes={"julia": {"aaaaaaaaaaaa"}},
             planned_at=NOW,
         )
         by_path = {e.entry.path: e for e in plan.entries}
@@ -210,7 +210,7 @@ class TestStacks:
             self._stack_result(),
             _refs([]),
             spec=SPEC,
-            current_stack_hashes={"julia": "aaaaaaaaaaaa"},
+            current_stack_hashes={"julia": {"aaaaaaaaaaaa"}},
             planned_at=NOW,
             paths=[path],
             allow_referenced=frozenset({path}),

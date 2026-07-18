@@ -184,7 +184,7 @@ def _base_detail(e: DiskEntry) -> str | None:
 def _fresh_copies(
     result: DiskScanResult,
     refs: RunReferences,
-    current_stack_hashes: dict[str, str] | None,
+    current_stack_hashes: dict[str, set[str]] | None,
 ) -> list[DiskEntry]:
     copies = [
         replace(
@@ -263,7 +263,7 @@ def plan_cleanup(
     refs: RunReferences,
     *,
     spec: ScanSpec,
-    current_stack_hashes: dict[str, str] | None,
+    current_stack_hashes: dict[str, set[str]] | None,
     planned_at: datetime,
     paths: list[str] | None = None,
     allow_referenced: frozenset[str] = frozenset(),

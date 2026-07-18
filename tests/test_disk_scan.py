@@ -62,6 +62,16 @@ class TestBuildScanSpec:
         spec = build_scan_spec(_config(), "ec2", "")
         assert spec.clone_dirs == []
 
+    def test_extra_stacks_extend_stack_dirs(self):
+        cfg = _config(stacks=[Stack(name="server")])  # default cache_dir
+        extra = [
+            Stack(name="proj-env", cache_dir="~/proj-envs/"),
+            Stack(name="dupe"),  # default cache_dir -> dedupes with server
+            Stack(name="elsewhere", backends=["other"], cache_dir="~/other-envs"),
+        ]
+        spec = build_scan_spec(cfg, "hpc", "~/scripthut-repos", extra_stacks=extra)
+        assert spec.stack_dirs == ["~/.cache/scripthut/stacks", "~/proj-envs"]
+
 
 class TestBuildScanScript:
     def test_script_structure(self):

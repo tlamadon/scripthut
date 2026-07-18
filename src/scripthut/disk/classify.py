@@ -108,13 +108,15 @@ def classify_entries(
     entries: list[DiskEntry],
     refs: RunReferences,
     *,
-    current_stack_hashes: dict[str, str] | None = None,
+    current_stack_hashes: dict[str, set[str]] | None = None,
 ) -> None:
     """Set classification/run_ids on each entry in place.
 
-    ``current_stack_hashes`` maps configured stack name -> its current
-    content hash (from ``compute_stack_hash``); when provided, stack
-    entries get "(superseded)"/"(unconfigured)" annotations.
+    ``current_stack_hashes`` maps a declared stack name -> the set of
+    currently valid content hashes (a set because the server config and
+    several sources' project files may each declare the name with
+    different inputs); when provided, stack entries get
+    "(superseded)"/"(unconfigured)" annotations.
     """
     for e in entries:
         if e.kind == DiskEntryKind.CLONE:
@@ -146,7 +148,7 @@ def _apply_refs(e: DiskEntry, refs: RunReferences, ids: set[str] | None) -> None
 
 
 def _classify_stack(
-    e: DiskEntry, current_stack_hashes: dict[str, str] | None
+    e: DiskEntry, current_stack_hashes: dict[str, set[str]] | None
 ) -> None:
     if e.ready is False:
         # Interrupted install: rebuild rm -rf's it anyway, safe to flag
@@ -159,7 +161,7 @@ def _classify_stack(
     elif name not in current_stack_hashes:
         e.classification = DiskEntryClass.ORPHANED
         e.detail = (e.detail or "") + " (unconfigured)"
-    elif current_stack_hashes[name] != hash_:
+    elif hash_ not in current_stack_hashes[name]:
         e.classification = DiskEntryClass.REFERENCED
         e.detail = (e.detail or "") + " (superseded)"
     else:

@@ -24,13 +24,13 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Sequence
 
 from scripthut.backends.utils import shell_quote_path
 from scripthut.disk.models import DiskEntry, DiskEntryKind, ScanSpec
 
 if TYPE_CHECKING:
-    from scripthut.config_schema import ScriptHutConfig
+    from scripthut.config_schema import ScriptHutConfig, Stack
 
 CLONE_HASH_RE = re.compile(r"^[0-9a-f]{12}$")
 AGENT_DIR_RE = re.compile(r"^agent-[0-9a-f]{8}$")
@@ -92,7 +92,10 @@ scan_stacks() {{
 
 
 def build_scan_spec(
-    config: ScriptHutConfig, backend_name: str, clone_dir: str
+    config: ScriptHutConfig,
+    backend_name: str,
+    clone_dir: str,
+    extra_stacks: Sequence[Stack] = (),
 ) -> ScanSpec:
     """Assemble the roots to scan for one backend.
 
@@ -101,6 +104,9 @@ def build_scan_spec(
     sources carry their own independent clone_dir, so the union of all
     of them is scanned. Stack cache dirs are filtered to stacks
     available on this backend (empty ``backends`` = every SSH backend).
+    ``extra_stacks`` are stacks declared outside the server config —
+    typically by sources' project scripthut.yaml files — whose
+    ``cache_dir``s must be scanned too.
     """
     from scripthut.config_schema import GitSourceConfig
 
@@ -113,7 +119,7 @@ def build_scan_spec(
             clone_dirs.append(d)
 
     stack_dirs: list[str] = []
-    for stack in config.stacks:
+    for stack in list(config.stacks) + list(extra_stacks):
         if stack.backends and backend_name not in stack.backends:
             continue
         d = stack.cache_dir.rstrip("/")
