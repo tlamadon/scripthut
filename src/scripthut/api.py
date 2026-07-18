@@ -15,6 +15,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, Field
 
 from scripthut.config_schema import (
     BatchBackendConfig,
@@ -68,6 +69,27 @@ def _run_summary(run: Run) -> dict[str, Any]:
         "submitted_count": submitted_count,
         "status_counts": counts,
     }
+
+
+class DiskCleanRequest(BaseModel):
+    """Body of ``POST /api/v1/disk/clean``.
+
+    A JSON body (not query params) because ``paths`` is a variable-
+    length list of absolute remote paths — spaces, unicode, possibly
+    hundreds of entries — which query strings encode fragilely and
+    proxies cap in length.
+    """
+
+    backend: str
+    paths: list[str] | None = Field(
+        default=None,
+        description="Explicit scanned paths to delete; null = all orphaned",
+    )
+    allow_referenced: list[str] = Field(
+        default_factory=list,
+        description="Paths that may be deleted even while referenced by a terminal run",
+    )
+    dry_run: bool = False
 
 
 def make_api_router(state: AppState) -> APIRouter:
@@ -743,6 +765,160 @@ def make_api_router(state: AppState) -> APIRouter:
             logger.exception(f"stack delete '{name}' on '{backend}' failed")
             raise HTTPException(status_code=500, detail=str(e)) from e
         return {"name": name, "backend": backend, "deleted": True}
+
+    def _disk_backend_names() -> list[str]:
+        """SSH-based backends — the only ones with a scannable filesystem."""
+        return [
+            name
+            for name, bs in state.backends.items()
+            if bs.backend_type in ("slurm", "pbs")
+        ]
+
+    def _disk_status(name: str) -> dict[str, Any]:
+        result = state.disk_service.get_cached(name)
+        report = state.disk_service.get_last_cleanup(name)
+        return {
+            "scanning": state.disk_service.is_scanning(name),
+            "cleaning": state.disk_service.is_cleaning(name),
+            "result": result.to_dict() if result else None,
+            "last_cleanup": report.to_dict() if report else None,
+        }
+
+    @router.get("/disk")
+    async def get_disk_v1(backend: str | None = None) -> dict[str, Any]:
+        """Cached disk-scan results per backend. Never triggers a scan."""
+        if backend is not None:
+            if backend not in state.backends:
+                raise HTTPException(
+                    status_code=404, detail=f"Unknown backend '{backend}'"
+                )
+            names = [backend]
+        else:
+            names = _disk_backend_names()
+        return {"backends": {n: _disk_status(n) for n in names}}
+
+    @router.post("/disk/scan")
+    async def scan_disk_v1(backend: str) -> dict[str, Any]:
+        """Kick off a background disk scan; poll GET /disk for the result.
+
+        Non-blocking on purpose: a ``du`` over a large shared filesystem
+        can exceed the request limits of proxies like Cloudflare Access,
+        so the only shape that works everywhere is start-then-poll.
+        """
+        from scripthut.disk.service import start_scan_for_backend
+
+        if state.config is None:
+            raise HTTPException(status_code=503, detail="No configuration loaded")
+        backend_state = state.backends.get(backend)
+        if backend_state is None:
+            raise HTTPException(
+                status_code=404, detail=f"Unknown backend '{backend}'"
+            )
+        rm = _require_manager()
+        ssh = rm.get_ssh_client(backend)
+        if ssh is None:
+            raise HTTPException(
+                status_code=503,
+                detail=f"Backend '{backend}' has no SSH connection on the server",
+            )
+        started = await start_scan_for_backend(
+            state.disk_service,
+            config=state.config,
+            backend_name=backend,
+            clone_dir=backend_state.clone_dir,
+            ssh=ssh,
+            run_manager=state.run_manager,
+            run_storage=state.run_storage,
+        )
+        return {
+            "backend": backend,
+            "status": "started" if started else "already_running",
+        }
+
+    @router.post("/disk/clean")
+    async def clean_disk_v1(req: DiskCleanRequest) -> dict[str, Any]:
+        """Delete scanned artifacts (guardrailed); poll GET /disk for the result.
+
+        Bulk mode (``paths=null``) deletes every currently-orphaned
+        entry from the last scan. Explicit paths must all be present in
+        that scan — the server never deletes a path it didn't scan —
+        and referenced entries additionally need per-path opt-in via
+        ``allow_referenced``. ``dry_run`` returns the plan without
+        touching the backend (synchronous, no SSH).
+        """
+        from scripthut.disk.service import (
+            plan_cleanup_for_backend,
+            start_clean_for_backend,
+        )
+
+        if state.config is None:
+            raise HTTPException(status_code=503, detail="No configuration loaded")
+        backend_state = state.backends.get(req.backend)
+        if backend_state is None:
+            raise HTTPException(
+                status_code=404, detail=f"Unknown backend '{req.backend}'"
+            )
+        rm = _require_manager()
+
+        if req.dry_run:
+            plan = await plan_cleanup_for_backend(
+                state.disk_service,
+                config=state.config,
+                backend_name=req.backend,
+                clone_dir=backend_state.clone_dir,
+                run_manager=state.run_manager,
+                run_storage=state.run_storage,
+                paths=req.paths,
+                allow_referenced=frozenset(req.allow_referenced),
+            )
+            if plan is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"No disk scan cached for '{req.backend}' — "
+                    "POST /api/v1/disk/scan first",
+                )
+            if plan.errors:
+                raise HTTPException(status_code=400, detail="; ".join(plan.errors))
+            return {"backend": req.backend, "dry_run": True, "plan": plan.to_dict()}
+
+        ssh = rm.get_ssh_client(req.backend)
+        if ssh is None:
+            raise HTTPException(
+                status_code=503,
+                detail=f"Backend '{req.backend}' has no SSH connection on the server",
+            )
+        status, plan = await start_clean_for_backend(
+            state.disk_service,
+            config=state.config,
+            backend_name=req.backend,
+            clone_dir=backend_state.clone_dir,
+            ssh=ssh,
+            run_manager=state.run_manager,
+            run_storage=state.run_storage,
+            paths=req.paths,
+            allow_referenced=frozenset(req.allow_referenced),
+        )
+        if status == "no_scan":
+            raise HTTPException(
+                status_code=409,
+                detail=f"No disk scan cached for '{req.backend}' — "
+                "POST /api/v1/disk/scan first",
+            )
+        if status == "invalid":
+            raise HTTPException(
+                status_code=400,
+                detail="; ".join(plan.errors if plan else ["invalid request"]),
+            )
+        body: dict[str, Any] = {"backend": req.backend, "status": status}
+        if plan is not None:
+            counts = plan.counts
+            body["planned"] = {
+                "delete": counts["delete"],
+                "check": counts["check"],
+                "skip": counts["skip"],
+                "bytes": plan.delete_bytes,
+            }
+        return body
 
     return router
 

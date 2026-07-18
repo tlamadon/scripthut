@@ -85,6 +85,22 @@ def format_rss(rss_str: str) -> str:
     return format_bytes(parse_rss_to_bytes(rss_str))
 
 
+def shell_quote_path(path: str) -> str:
+    """Quote ``path`` for shell embedding while preserving ``~`` expansion.
+
+    ``shlex.quote`` uses single quotes, which block tilde expansion —
+    a command built that way looks for a literal ``~`` file instead of
+    one under ``$HOME``. We rewrite a leading ``~`` to ``$HOME`` first,
+    then wrap in *double* quotes so ``$HOME`` expands while spaces in
+    the rest of the path stay as one token. Scripthut's controlled
+    config space doesn't allow paths with shell metachars beyond ``$``,
+    so this is safe enough for the closed set of strings we feed in.
+    """
+    if path.startswith("~"):
+        path = "$HOME" + path[1:]
+    return f'"{path}"'
+
+
 def parse_df_output(stdout: str) -> tuple[int, int] | None:
     """Parse ``df -Pk <path>`` output. Returns ``(total_bytes, avail_bytes)`` or None.
 

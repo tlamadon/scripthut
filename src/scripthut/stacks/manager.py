@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 
+from scripthut.backends.utils import shell_quote_path
 from scripthut.config_schema import Stack
 from scripthut.ssh.client import SSHClient
 
@@ -108,20 +109,8 @@ class StackManager:
 
     @staticmethod
     def _shell_quote_path(path: str) -> str:
-        """Quote ``path`` for shell embedding while preserving ``~`` expansion.
-
-        ``shlex.quote`` uses single quotes, which block tilde expansion —
-        a check command built that way looks for a literal ``~`` file
-        instead of one under ``$HOME``. We rewrite a leading ``~`` to
-        ``$HOME`` first, then wrap in *double* quotes so ``$HOME``
-        expands while spaces in the rest of the path (cache_dir, stack
-        names) stay as one token. Scripthut's controlled config space
-        doesn't allow paths with shell metachars beyond ``$``, so this
-        is safe enough for the closed set of strings we feed in.
-        """
-        if path.startswith("~"):
-            path = "$HOME" + path[1:]
-        return f'"{path}"'
+        """Tilde-safe shell quoting; see :func:`scripthut.backends.utils.shell_quote_path`."""
+        return shell_quote_path(path)
 
     async def check(
         self, stack: Stack, backend_name: str, ssh: SSHClient

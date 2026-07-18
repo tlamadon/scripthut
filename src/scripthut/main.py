@@ -29,6 +29,7 @@ from scripthut.config_schema import (
     PathSourceConfig,
     ScriptHutConfig,
 )
+from scripthut.disk.service import DiskScanService
 from scripthut.models import ConnectionStatus, HPCJob, JobState
 from scripthut.notifications import NotificationHub
 from scripthut.runs import Run, RunManager
@@ -72,6 +73,7 @@ class AppState:
     run_manager: RunManager | None = None
     run_storage: RunStorageManager | None = None
     terminal_manager: TerminalManager = field(default_factory=TerminalManager)
+    disk_service: DiskScanService = field(default_factory=DiskScanService)
     pricing_service: Any = None  # Optional PricingService instance
     debug_job_ids: set[str] = field(default_factory=set)  # job IDs submitted via interactive debug
     disabled_sources: set[str] = field(default_factory=set)  # Source names toggled off
@@ -1074,6 +1076,23 @@ def _format_disk_bytes(byte_val: int | None) -> str:
 templates.env.filters["disk_bytes"] = _format_disk_bytes
 
 
+def _format_age_filter(dt: datetime | None) -> str:
+    """Render a datetime as a relative age ('3h ago') for templates."""
+    if dt is None:
+        return "–"
+    seconds = max(0, int((datetime.now(UTC) - dt).total_seconds()))
+    if seconds < 60:
+        return f"{seconds}s ago"
+    if seconds < 3600:
+        return f"{seconds // 60}m ago"
+    if seconds < 86400:
+        return f"{seconds // 3600}h ago"
+    return f"{seconds // 86400}d ago"
+
+
+templates.env.filters["age"] = _format_age_filter
+
+
 def _backend_job_counts() -> dict[str, int]:
     """Count active (pending/submitted/running) jobs per backend from active runs."""
     counts: dict[str, int] = {}
@@ -1854,6 +1873,134 @@ async def runs_page(request: Request) -> HTMLResponse:
             "request": request,
             "runs": runs,
         },
+    )
+
+
+def _disk_card_context(name: str) -> dict[str, Any] | None:
+    """Template context for one backend's disk card, or None if unknown."""
+    bs = state.backends.get(name)
+    if bs is None:
+        return None
+    return {
+        "name": name,
+        "type": bs.backend_type,
+        "ssh": bs.backend_type in ("slurm", "pbs"),
+        "scanning": state.disk_service.is_scanning(name),
+        "cleaning": state.disk_service.is_cleaning(name),
+        "result": state.disk_service.get_cached(name),
+        "report": state.disk_service.get_last_cleanup(name),
+    }
+
+
+@app.get("/disk", response_class=HTMLResponse)
+async def disk_page(request: Request) -> HTMLResponse:
+    """Per-backend inventory of scripthut's remote disk footprint."""
+    cards = [_disk_card_context(name) for name in state.backends]
+    return templates.TemplateResponse(
+        "disk.html", {"request": request, "disk_backends": cards},
+    )
+
+
+@app.get("/disk/partial", response_class=HTMLResponse)
+async def disk_partial(request: Request, backend: str) -> HTMLResponse:
+    """One backend's disk card — polled by the card while a scan runs."""
+    card = _disk_card_context(backend)
+    if card is None:
+        return HTMLResponse(f"Unknown backend '{backend}'", status_code=404)
+    return templates.TemplateResponse(
+        "disk_backend.html", {"request": request, "b": card},
+    )
+
+
+@app.post("/disk/scan/{backend}", response_class=HTMLResponse)
+async def disk_scan_start(request: Request, backend: str) -> HTMLResponse:
+    """Kick off a background scan and return the card in its scanning state."""
+    from scripthut.disk.service import start_scan_for_backend
+
+    card = _disk_card_context(backend)
+    if card is None:
+        return HTMLResponse(f"Unknown backend '{backend}'", status_code=404)
+
+    error: str | None = None
+    if state.config is None or state.run_manager is None:
+        error = "Server is not fully initialized yet"
+    else:
+        ssh = state.run_manager.get_ssh_client(backend)
+        if ssh is None:
+            error = f"No SSH connection to '{backend}'"
+        else:
+            backend_state = state.backends[backend]
+            await start_scan_for_backend(
+                state.disk_service,
+                config=state.config,
+                backend_name=backend,
+                clone_dir=backend_state.clone_dir,
+                ssh=ssh,
+                run_manager=state.run_manager,
+                run_storage=state.run_storage,
+            )
+    card = _disk_card_context(backend) or card
+    card["start_error"] = error
+    return templates.TemplateResponse(
+        "disk_backend.html", {"request": request, "b": card},
+    )
+
+
+@app.post("/disk/clean/{backend}", response_class=HTMLResponse)
+async def disk_clean_start(request: Request, backend: str) -> HTMLResponse:
+    """Kick off a guardrailed cleanup of the form-selected paths.
+
+    The form carries the exact paths rendered on the card, so the user
+    confirms precisely what they saw; server-side re-classification can
+    only shrink that set, never grow it.
+    """
+    from scripthut.disk.service import start_clean_for_backend
+
+    card = _disk_card_context(backend)
+    if card is None:
+        return HTMLResponse(f"Unknown backend '{backend}'", status_code=404)
+    form = await request.form()
+    paths = [str(v) for v in form.getlist("path")]
+    allow = frozenset(str(v) for v in form.getlist("allow_referenced"))
+
+    error: str | None = None
+    if not paths:
+        error = "Nothing selected to clean"
+    elif state.config is None or state.run_manager is None:
+        error = "Server is not fully initialized yet"
+    else:
+        ssh = state.run_manager.get_ssh_client(backend)
+        if ssh is None:
+            error = f"No SSH connection to '{backend}'"
+        else:
+            backend_state = state.backends[backend]
+            status, plan = await start_clean_for_backend(
+                state.disk_service,
+                config=state.config,
+                backend_name=backend,
+                clone_dir=backend_state.clone_dir,
+                ssh=ssh,
+                run_manager=state.run_manager,
+                run_storage=state.run_storage,
+                paths=paths,
+                allow_referenced=allow,
+            )
+            if status == "no_scan":
+                error = "No scan cached for this backend — scan first"
+            elif status == "invalid":
+                error = "; ".join(plan.errors) if plan else "Invalid request"
+            elif status == "nothing_to_clean":
+                error = (
+                    "Nothing deletable in the selection — entries may have "
+                    "become referenced since the scan"
+                )
+            elif status == "already_running":
+                error = "A scan or cleanup is already running on this backend"
+    card = _disk_card_context(backend) or card
+    if error:
+        card["start_error"] = error
+    return templates.TemplateResponse(
+        "disk_backend.html", {"request": request, "b": card},
     )
 
 
@@ -3366,7 +3513,7 @@ def parse_args() -> argparse.Namespace:
 # import cost — and trigger asyncssh / runtime imports — just to start the web
 # server. Must stay in sync with the top-level parsers in cli.py.
 _CLI_SUBCOMMANDS = frozenset(
-    {"workflow", "run", "backend", "source", "stack", "agent", "task", "status", "daemon"}
+    {"workflow", "run", "backend", "source", "stack", "agent", "task", "status", "daemon", "disk"}
 )
 _SUBCOMMANDS = _CLI_SUBCOMMANDS | {"setup-aws-ec2"}
 

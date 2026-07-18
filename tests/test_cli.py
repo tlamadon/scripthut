@@ -1778,3 +1778,255 @@ def test_main_renders_connection_errors_cleanly(capsys):
     assert "could not reach the server" in err
     assert "http://127.0.0.1:8123/api/v1/runs" in err
     assert "daemon status" in err
+
+
+# -- disk subcommands --------------------------------------------------------
+
+
+def _disk_result_dict(**overrides):
+    base = {
+        "backend": "hpc",
+        "scanned_at": "2026-07-17T10:00:00+00:00",
+        "duration_ms": 1200,
+        "home_dir": "/home/alice",
+        "disk_total_bytes": 100 * 1024**3,
+        "disk_avail_bytes": 41 * 1024**3,
+        "total_bytes": 3 * 1024**3,
+        "totals_by_class": {"orphaned": [2, 2 * 1024**3], "active": [1, 1024**3]},
+        "totals_by_kind": {"clone": [3, 3 * 1024**3]},
+        "entries": [
+            {
+                "path": "/home/alice/scripthut-repos/a1b2c3d4e5f6",
+                "kind": "clone",
+                "size_bytes": 1024**3,
+                "mtime": "2026-07-17T08:00:00+00:00",
+                "classification": "active",
+                "run_ids": ["r1", "r2", "r3"],
+                "detail": None,
+                "ready": None,
+            },
+            {
+                "path": "/home/alice/scripthut-repos/ffffffffffff",
+                "kind": "clone",
+                "size_bytes": None,
+                "mtime": None,
+                "classification": "orphaned",
+                "run_ids": [],
+                "detail": None,
+                "ready": None,
+            },
+        ],
+        "errors": ["scan exited 1: boom"],
+    }
+    base.update(overrides)
+    return base
+
+
+def test_parser_disk_defaults_to_status():
+    parser = cli.build_parser()
+    args = parser.parse_args(["disk"])
+    assert args.handler is cli._cmd_disk_status
+    assert args.backend is None
+    assert args.json is False
+
+
+def test_parser_disk_scan_flags():
+    parser = cli.build_parser()
+    args = parser.parse_args(["disk", "scan", "--backend", "hpc", "--json"])
+    assert args.handler is cli._cmd_disk_scan
+    assert args.backend == "hpc"
+    assert args.json is True
+
+
+def test_print_disk_result_table(capsys):
+    cli._print_disk_result("hpc", _disk_result_dict())
+    captured = capsys.readouterr()
+    out = captured.out
+    assert "KIND" in out and "CLASS" in out
+    assert "a1b2c3d4e5f6" in out
+    assert "active" in out and "orphaned" in out
+    # three run ids truncate to two plus a count
+    assert "r1,r2 +1" in out
+    # unsized entry renders a dash
+    assert "ffffffffffff" in out
+    # summary line
+    assert "orphaned 2.0G in 2" in out
+    assert "disk 41.0G free" in out
+    # errors go to stderr
+    assert "scan exited 1" in captured.err
+
+
+def test_render_disk_response_states(capsys):
+    data = {
+        "backends": {
+            "a": {"scanning": True, "result": None},
+            "b": {"scanning": False, "result": None},
+            "c": {"scanning": False, "result": _disk_result_dict(backend="c")},
+        }
+    }
+    rc = cli._render_disk_response(data, as_json=False)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "a: scan in progress" in out
+    assert "b: never scanned" in out
+    assert "c:" in out
+
+
+def test_render_disk_response_json(capsys):
+    import json as _json
+
+    data = {"backends": {"hpc": {"scanning": False, "result": None}}}
+    cli._render_disk_response(data, as_json=True)
+    parsed = _json.loads(capsys.readouterr().out)
+    assert parsed == data
+
+
+# -- disk clean --------------------------------------------------------------
+
+CLEAN_PLAN = {
+    "backend": "hpc",
+    "planned_at": "2026-07-17T12:00:00+00:00",
+    "entries": [
+        {
+            "entry": {
+                "path": "/h/r/aaaaaaaaaaaa", "kind": "clone", "size_bytes": 1024,
+                "mtime": None, "classification": "orphaned", "run_ids": [],
+                "detail": None, "ready": None,
+            },
+            "action": "delete", "reason": None,
+            "warnings": ["may contain logs of forgotten runs (not archived)"],
+        },
+        {
+            "entry": {
+                "path": "/h/r/agent-11111111", "kind": "agent", "size_bytes": 512,
+                "mtime": None, "classification": "orphaned", "run_ids": [],
+                "detail": None, "ready": None,
+            },
+            "action": "skip", "reason": "workspace has uncommitted changes",
+            "warnings": [],
+        },
+    ],
+    "counts": {"delete": 1, "check": 0, "skip": 1},
+    "delete_bytes": 1024,
+    "errors": [],
+}
+
+CLEAN_REPORT = {
+    "backend": "hpc",
+    "outcomes": [
+        {"path": "/h/r/aaaaaaaaaaaa", "kind": "clone", "size_bytes": 1024,
+         "outcome": "deleted", "reason": None},
+        {"path": "/h/r/agent-11111111", "kind": "agent", "size_bytes": 512,
+         "outcome": "skipped", "reason": "workspace has uncommitted changes"},
+    ],
+    "errors": [],
+    "counts": {"deleted": 1, "skipped": 1, "failed": 0},
+    "freed_bytes": 1024,
+    "freed_is_lower_bound": False,
+}
+
+
+def _fake_disk_server():
+    """(calls, fake _remote_stack_call) recording every HTTP interaction."""
+    calls = []
+
+    async def fake(args, server, method, path, **kw):
+        calls.append((method, path, kw.get("json_body")))
+        if method == "GET" and path == "/disk":
+            return {"backends": {"hpc": {
+                "scanning": False, "cleaning": False,
+                "result": None, "last_cleanup": CLEAN_REPORT,
+            }}}
+        if path == "/disk/scan":
+            return {"backend": "hpc", "status": "started"}
+        if path == "/disk/clean":
+            body = kw.get("json_body") or {}
+            if body.get("dry_run"):
+                return {"backend": "hpc", "dry_run": True, "plan": CLEAN_PLAN}
+            return {"backend": "hpc", "status": "started"}
+        raise AssertionError(f"unexpected call {method} {path}")
+
+    return calls, fake
+
+
+def _clean_args(*extra):
+    return cli.build_parser().parse_args(
+        ["disk", "clean", "--server", "http://x", "--interval", "0.01", *extra]
+    )
+
+
+def _exec_calls(calls):
+    return [
+        c for c in calls
+        if c[1] == "/disk/clean" and not (c[2] or {}).get("dry_run")
+    ]
+
+
+def test_parser_disk_clean_flags():
+    args = cli.build_parser().parse_args(
+        ["disk", "clean", "--backend", "hpc", "--path", "/x", "--yes", "--dry-run"]
+    )
+    assert args.handler is cli._cmd_disk_clean
+    assert args.paths == ["/x"]
+    assert args.yes is True and args.dry_run is True
+
+
+async def test_disk_clean_path_requires_backend(capsys):
+    args = _clean_args("--path", "/x")
+    assert await cli._cmd_disk_clean(args) == 2
+    assert "--path requires --backend" in capsys.readouterr().err
+
+
+async def test_disk_clean_dry_run_never_execs(capsys):
+    calls, fake = _fake_disk_server()
+    with patch.object(cli, "_remote_stack_call", new=fake):
+        rc = await cli._cmd_disk_clean(_clean_args("--dry-run"))
+    assert rc == 0
+    assert _exec_calls(calls) == []
+    out = capsys.readouterr().out
+    assert "would delete 1 entries" in out
+    assert "uncommitted changes" in out  # skip reason shown in the plan
+
+
+async def test_disk_clean_declined_confirm_no_exec(capsys):
+    calls, fake = _fake_disk_server()
+    with patch.object(cli, "_remote_stack_call", new=fake), \
+         patch.object(cli, "_confirm_stderr", return_value=False):
+        rc = await cli._cmd_disk_clean(_clean_args())
+    assert rc == 0
+    assert _exec_calls(calls) == []
+    assert "not confirmed" in capsys.readouterr().err
+
+
+async def test_disk_clean_yes_sends_plan_paths(capsys):
+    calls, fake = _fake_disk_server()
+    with patch.object(cli, "_remote_stack_call", new=fake):
+        rc = await cli._cmd_disk_clean(_clean_args("--yes"))
+    assert rc == 0
+    execs = _exec_calls(calls)
+    assert len(execs) == 1
+    # exec sends exactly the non-skip paths the user was shown
+    assert execs[0][2]["paths"] == ["/h/r/aaaaaaaaaaaa"]
+    out = capsys.readouterr().out
+    assert "deleted 1" in out and "freed 1.0K" in out
+
+
+def test_print_cleanup_plan_table(capsys):
+    cli._print_cleanup_plan("hpc", CLEAN_PLAN)
+    out = capsys.readouterr().out
+    assert "ACTION" in out
+    assert "aaaaaaaaaaaa" in out and "delete" in out
+    assert "agent-11111111" in out and "skip" in out
+    assert "would delete 1 entries (~1.0K); 1 skipped" in out
+
+
+def test_print_cleanup_report_lines(capsys):
+    report = dict(CLEAN_REPORT)
+    report["errors"] = ["delete script failed: boom"]
+    report["freed_is_lower_bound"] = True
+    cli._print_cleanup_report("hpc", report)
+    captured = capsys.readouterr()
+    assert "✓ deleted" in captured.out
+    assert "- skipped" in captured.out
+    assert "freed at least 1.0K" in captured.out
+    assert "delete script failed: boom" in captured.err

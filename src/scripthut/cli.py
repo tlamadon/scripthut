@@ -2310,6 +2310,7 @@ async def _overlay_source_stacks(
 async def _remote_stack_call(
     args: argparse.Namespace, server: str, method: str, path: str,
     *, params: dict[str, Any] | None = None,
+    json_body: Any | None = None,
     timeout: float = 1800.0,
     use_auth: bool = True,
 ) -> dict[str, Any]:
@@ -2331,6 +2332,7 @@ async def _remote_stack_call(
         r = await client.request(
             method, f"{base}{path}",
             params={k: v for k, v in (params or {}).items() if v is not None},
+            json=json_body,
         )
     if r.status_code == 404:
         try:
@@ -2599,6 +2601,476 @@ async def _cmd_stack_delete(args: argparse.Namespace) -> int:
     _print_status_table(results)
     failed = any(note is not None for _, _, _, note in results)
     return 1 if failed else 0
+
+
+# ---------------------------------------------------------------------------
+# `disk` subcommands — remote disk usage (Phase 1: report only)
+# ---------------------------------------------------------------------------
+
+
+def _print_disk_result(backend: str, result: dict[str, Any]) -> None:
+    """Render one backend's scan result (API dict shape) as a table."""
+    from datetime import datetime
+
+    entries = result.get("entries", [])
+    if entries:
+        print(f"{'BACKEND':<14} {'KIND':<7} {'NAME':<36} {'CLASS':<11} "
+              f"{'SIZE':<8} {'AGE':<10} RUNS")
+        for e in entries:
+            name = e.get("detail") or e["path"].rsplit("/", 1)[-1]
+            mtime = None
+            if e.get("mtime"):
+                try:
+                    mtime = datetime.fromisoformat(e["mtime"])
+                except ValueError:
+                    pass
+            run_ids = e.get("run_ids") or []
+            runs = ",".join(run_ids[:2]) + (
+                f" +{len(run_ids) - 2}" if len(run_ids) > 2 else ""
+            ) or "-"
+            print(
+                f"{backend[:14]:<14} {e['kind']:<7} {name[:36]:<36} "
+                f"{e['classification']:<11} {_format_size(e['size_bytes']):<8} "
+                f"{_format_age(mtime):<10} {runs}"
+            )
+    else:
+        print(f"{backend}: no scripthut directories found")
+
+    parts = [f"{len(entries)} entries, {_format_size(result.get('total_bytes'))} total"]
+    by_class = result.get("totals_by_class") or {}
+    for cls in ("orphaned", "active"):
+        if cls in by_class:
+            count, size = by_class[cls]
+            parts.append(f"{cls} {_format_size(size)} in {count}")
+    if result.get("disk_avail_bytes") is not None:
+        parts.append(f"disk {_format_size(result['disk_avail_bytes'])} free")
+    scanned = result.get("scanned_at", "")[:19].replace("T", " ")
+    print(f"{backend}: {' · '.join(parts)} (scanned {scanned})")
+    for err in result.get("errors", []):
+        print(f"  ! {err}", file=sys.stderr)
+
+
+def _render_disk_response(data: dict[str, Any], *, as_json: bool) -> int:
+    """Render a GET /api/v1/disk response; 0 unless nothing was ever scanned."""
+    if as_json:
+        print(json.dumps(data, indent=2))
+        return 0
+    backends = data.get("backends", {})
+    if not backends:
+        print("No SSH backends on the server.")
+        return 0
+    for i, name in enumerate(sorted(backends)):
+        if i:
+            print()
+        info = backends[name]
+        if info.get("scanning"):
+            print(f"{name}: scan in progress — re-run to see the result")
+        elif info.get("result"):
+            _print_disk_result(name, info["result"])
+        else:
+            print(f"{name}: never scanned — run `scripthut disk scan`")
+    return 0
+
+
+async def _disk_scan_local(args: argparse.Namespace) -> int:
+    """Scan over direct SSH without a server (mirrors stack local mode)."""
+    from scripthut.disk.scan import build_scan_spec
+    from scripthut.disk.service import (
+        DiskScanService,
+        compute_current_stack_hashes,
+    )
+    from scripthut.runs.storage import RunStorageManager
+
+    config = load_config(getattr(args, "config", None))
+    ssh_types = (SlurmBackendConfig, PBSBackendConfig)
+    backends = [b for b in config.backends if isinstance(b, ssh_types)]
+    backend_filter = getattr(args, "backend", None)
+    if backend_filter:
+        backends = [b for b in backends if b.name == backend_filter]
+        if not backends:
+            print(
+                f"Backend '{backend_filter}' not found or not SSH-based",
+                file=sys.stderr,
+            )
+            return 2
+    if not backends:
+        print("No SSH backends configured.")
+        return 0
+
+    storage = RunStorageManager(config.settings.data_dir_resolved / "workflows")
+    runs = list(storage.load_all_runs().values())
+    hashes = compute_current_stack_hashes(config)
+    svc = DiskScanService()
+
+    results: dict[str, Any] = {}
+    failures = 0
+    for b in backends:
+        ssh = _ssh_client_for(b)
+        try:
+            await ssh.connect()
+        except Exception as e:
+            print(f"{b.name}: connect failed: {e}", file=sys.stderr)
+            failures += 1
+            continue
+        try:
+            spec = build_scan_spec(config, b.name, b.clone_dir)
+            result = await svc.scan_backend(
+                spec=spec, ssh=ssh, runs=runs, current_stack_hashes=hashes,
+            )
+            results[b.name] = result
+        finally:
+            await ssh.disconnect()
+
+    if args.json:
+        print(json.dumps(
+            {name: r.to_dict() for name, r in results.items()}, indent=2,
+        ))
+    else:
+        for i, name in enumerate(sorted(results)):
+            if i:
+                print()
+            _print_disk_result(name, results[name].to_dict())
+    return 1 if failures else 0
+
+
+async def _cmd_disk_status(args: argparse.Namespace) -> int:
+    server, source = _resolve_server_with_source(args)
+    via_daemon = False
+    if server is None and source == "none":
+        server = _ensure_local_server(args)
+        via_daemon = True
+    if server:
+        data = await _remote_stack_call(
+            args, server, "GET", "/disk",
+            params={"backend": getattr(args, "backend", None)},
+            use_auth=not via_daemon, timeout=60.0,
+        )
+        return _render_disk_response(data, as_json=args.json)
+    # --server local: there is no cache without a server, so just scan.
+    return await _disk_scan_local(args)
+
+
+async def _wait_disk_idle(
+    args: argparse.Namespace,
+    server: str,
+    targets: list[str],
+    *,
+    backend_filter: str | None,
+    via_daemon: bool,
+    what: str = "scans",
+) -> dict[str, Any] | None:
+    """Poll GET /disk until no target is scanning or cleaning.
+
+    Returns the final response, or None on timeout (15 min — comfortably
+    above the server's own per-operation timeouts, so a hang here means
+    something is truly wedged).
+    """
+    import time
+
+    deadline = time.monotonic() + 900
+    while True:
+        await asyncio.sleep(getattr(args, "interval", 2.0))
+        data = await _remote_stack_call(
+            args, server, "GET", "/disk", params={"backend": backend_filter},
+            use_auth=not via_daemon, timeout=60.0,
+        )
+        pending = [
+            b for b in targets
+            if data.get("backends", {}).get(b, {}).get("scanning")
+            or data.get("backends", {}).get(b, {}).get("cleaning")
+        ]
+        if not pending:
+            return data
+        if time.monotonic() > deadline:
+            print(f"Timed out waiting for {what}: {', '.join(pending)}",
+                  file=sys.stderr)
+            return None
+
+
+async def _cmd_disk_scan(args: argparse.Namespace) -> int:
+    server, source = _resolve_server_with_source(args)
+    via_daemon = False
+    if server is None and source == "none":
+        server = _ensure_local_server(args)
+        via_daemon = True
+    if server is None:
+        return await _disk_scan_local(args)
+
+    backend_filter = getattr(args, "backend", None)
+    data = await _remote_stack_call(
+        args, server, "GET", "/disk", params={"backend": backend_filter},
+        use_auth=not via_daemon, timeout=60.0,
+    )
+    targets = sorted(data.get("backends", {}))
+    if not targets:
+        print("No SSH backends on the server.")
+        return 0
+    for b in targets:
+        resp = await _remote_stack_call(
+            args, server, "POST", "/disk/scan", params={"backend": b},
+            use_auth=not via_daemon, timeout=60.0,
+        )
+        if resp.get("status") == "already_running":
+            print(f"{b}: a scan is already running; waiting for it",
+                  file=sys.stderr)
+
+    data = await _wait_disk_idle(
+        args, server, targets, backend_filter=backend_filter,
+        via_daemon=via_daemon,
+    )
+    if data is None:
+        return 1
+    return _render_disk_response(data, as_json=args.json)
+
+
+def _print_cleanup_plan(backend: str, plan: dict[str, Any]) -> None:
+    """Render a cleanup plan dict (API shape) as a table."""
+    entries = plan.get("entries", [])
+    if not entries:
+        print(f"{backend}: nothing to clean")
+        return
+    print(f"{'KIND':<7} {'NAME':<36} {'CLASS':<11} {'SIZE':<8} {'ACTION':<18} NOTE")
+    for pe in entries:
+        e = pe["entry"]
+        name = e.get("detail") or e["path"].rsplit("/", 1)[-1]
+        note = pe.get("reason") or "; ".join(pe.get("warnings") or [])
+        print(
+            f"{e['kind']:<7} {name[:36]:<36} {e['classification']:<11} "
+            f"{_format_size(e['size_bytes']):<8} {pe['action']:<18} {note}"
+        )
+    counts = plan.get("counts", {})
+    n = counts.get("delete", 0) + counts.get("check", 0)
+    print(
+        f"{backend}: would delete {n} entries "
+        f"(~{_format_size(plan.get('delete_bytes'))}); "
+        f"{counts.get('skip', 0)} skipped"
+    )
+
+
+def _print_cleanup_report(backend: str, report: dict[str, Any]) -> None:
+    """Render a cleanup report dict (API shape)."""
+    marks = {"deleted": "✓", "skipped": "-", "failed": "✗"}
+    for o in report.get("outcomes", []):
+        line = f"  {marks.get(o['outcome'], '?')} {o['outcome']:<8} {o['path']}"
+        if o.get("reason"):
+            line += f" ({o['reason']})"
+        print(line)
+    for err in report.get("errors", []):
+        print(f"  ! {err}", file=sys.stderr)
+    c = report.get("counts", {})
+    prefix = "at least " if report.get("freed_is_lower_bound") else ""
+    print(
+        f"{backend}: deleted {c.get('deleted', 0)} · "
+        f"freed {prefix}{_format_size(report.get('freed_bytes'))} · "
+        f"skipped {c.get('skipped', 0)} · failed {c.get('failed', 0)}"
+    )
+
+
+async def _disk_clean_local(args: argparse.Namespace) -> int:
+    """Guardrailed cleanup over direct SSH without a server."""
+    from datetime import datetime, timezone
+
+    from scripthut.disk.classify import build_run_references
+    from scripthut.disk.cleanup import plan_cleanup
+    from scripthut.disk.scan import build_scan_spec
+    from scripthut.disk.service import (
+        DiskScanService,
+        compute_current_stack_hashes,
+        execute_cleanup,
+    )
+    from scripthut.runs.storage import RunStorageManager
+
+    config = load_config(getattr(args, "config", None))
+    ssh_types = (SlurmBackendConfig, PBSBackendConfig)
+    backends = [b for b in config.backends if isinstance(b, ssh_types)]
+    backend_filter = getattr(args, "backend", None)
+    if backend_filter:
+        backends = [b for b in backends if b.name == backend_filter]
+        if not backends:
+            print(
+                f"Backend '{backend_filter}' not found or not SSH-based",
+                file=sys.stderr,
+            )
+            return 2
+    if not backends:
+        print("No SSH backends configured.")
+        return 0
+    print(
+        "note: local mode sees only persisted runs — prefer server mode "
+        "when a scripthut server is running",
+        file=sys.stderr,
+    )
+
+    storage = RunStorageManager(config.settings.data_dir_resolved / "workflows")
+    runs = list(storage.load_all_runs().values())
+    hashes = compute_current_stack_hashes(config)
+    svc = DiskScanService()
+    paths = getattr(args, "paths", None)
+
+    rc = 0
+    json_out: dict[str, Any] = {}
+    for b in backends:
+        ssh = _ssh_client_for(b)
+        try:
+            await ssh.connect()
+        except Exception as e:
+            print(f"{b.name}: connect failed: {e}", file=sys.stderr)
+            rc = 1
+            continue
+        try:
+            spec = build_scan_spec(config, b.name, b.clone_dir)
+            result = await svc.scan_backend(
+                spec=spec, ssh=ssh, runs=runs, current_stack_hashes=hashes,
+            )
+            refs = build_run_references(
+                runs, b.name, spec.clone_dirs, result.home_dir,
+            )
+            plan = plan_cleanup(
+                result, refs, spec=spec, current_stack_hashes=hashes,
+                planned_at=datetime.now(timezone.utc),
+                paths=paths,
+                allow_referenced=frozenset(paths or []),
+            )
+            if plan.errors:
+                for err in plan.errors:
+                    print(f"{b.name}: {err}", file=sys.stderr)
+                rc = 2
+                continue
+            if not args.json:
+                _print_cleanup_plan(b.name, plan.to_dict())
+            json_out[b.name] = {"plan": plan.to_dict()}
+            if args.dry_run or not plan.to_delete:
+                continue
+            if not args.yes and not _confirm_stderr(
+                f"Delete {len(plan.to_delete)} entries "
+                f"(~{_format_size(plan.delete_bytes)}) on {b.name}?",
+                default_yes=False,
+            ):
+                print(f"{b.name}: skipped (not confirmed)", file=sys.stderr)
+                continue
+            report = await execute_cleanup(plan, ssh)
+            fresh = await svc.scan_backend(
+                spec=spec, ssh=ssh, runs=runs, current_stack_hashes=hashes,
+            )
+            if not args.json:
+                _print_cleanup_report(b.name, report.to_dict())
+                print()
+                _print_disk_result(b.name, fresh.to_dict())
+            json_out[b.name].update(
+                report=report.to_dict(), result=fresh.to_dict(),
+            )
+            if report.counts.get("failed"):
+                rc = 1
+        finally:
+            await ssh.disconnect()
+    if args.json:
+        print(json.dumps(json_out, indent=2))
+    return rc
+
+
+async def _cmd_disk_clean(args: argparse.Namespace) -> int:
+    if getattr(args, "paths", None) and not getattr(args, "backend", None):
+        print("--path requires --backend", file=sys.stderr)
+        return 2
+    server, source = _resolve_server_with_source(args)
+    via_daemon = False
+    if server is None and source == "none":
+        server = _ensure_local_server(args)
+        via_daemon = True
+    if server is None:
+        return await _disk_clean_local(args)
+
+    backend_filter = getattr(args, "backend", None)
+    data = await _remote_stack_call(
+        args, server, "GET", "/disk", params={"backend": backend_filter},
+        use_auth=not via_daemon, timeout=60.0,
+    )
+    targets = sorted(data.get("backends", {}))
+    if not targets:
+        print("No SSH backends on the server.")
+        return 0
+
+    # Always plan from a fresh scan so the confirmation reflects reality.
+    for b in targets:
+        await _remote_stack_call(
+            args, server, "POST", "/disk/scan", params={"backend": b},
+            use_auth=not via_daemon, timeout=60.0,
+        )
+    if await _wait_disk_idle(
+        args, server, targets, backend_filter=backend_filter,
+        via_daemon=via_daemon,
+    ) is None:
+        return 1
+
+    rc = 0
+    json_out: dict[str, Any] = {}
+    for i, b in enumerate(targets):
+        if i and not args.json:
+            print()
+        plan_resp = await _remote_stack_call(
+            args, server, "POST", "/disk/clean",
+            json_body={
+                "backend": b,
+                "paths": getattr(args, "paths", None),
+                "allow_referenced": getattr(args, "paths", None) or [],
+                "dry_run": True,
+            },
+            use_auth=not via_daemon, timeout=60.0,
+        )
+        plan = plan_resp.get("plan", {})
+        if not args.json:
+            _print_cleanup_plan(b, plan)
+        json_out[b] = {"plan": plan}
+        # The exec request sends exactly the paths shown to the user, so
+        # the confirmation is pinned; server-side re-classification can
+        # only shrink that set.
+        to_delete = [
+            pe["entry"]["path"]
+            for pe in plan.get("entries", [])
+            if pe.get("action") != "skip"
+        ]
+        if args.dry_run or not to_delete:
+            continue
+        if not args.yes and not _confirm_stderr(
+            f"Delete {len(to_delete)} entries "
+            f"(~{_format_size(plan.get('delete_bytes'))}) on {b}?",
+            default_yes=False,
+        ):
+            print(f"{b}: skipped (not confirmed)", file=sys.stderr)
+            continue
+        exec_resp = await _remote_stack_call(
+            args, server, "POST", "/disk/clean",
+            json_body={
+                "backend": b,
+                "paths": to_delete,
+                "allow_referenced": getattr(args, "paths", None) or [],
+                "dry_run": False,
+            },
+            use_auth=not via_daemon, timeout=60.0,
+        )
+        if exec_resp.get("status") != "started":
+            print(f"{b}: {exec_resp.get('status')}", file=sys.stderr)
+            continue
+        final = await _wait_disk_idle(
+            args, server, [b], backend_filter=backend_filter,
+            via_daemon=via_daemon, what="cleanup",
+        )
+        if final is None:
+            rc = 1
+            continue
+        info = final.get("backends", {}).get(b, {})
+        report = info.get("last_cleanup") or {}
+        if not args.json:
+            _print_cleanup_report(b, report)
+            if info.get("result"):
+                print()
+                _print_disk_result(b, info["result"])
+        json_out[b].update(report=report, result=info.get("result"))
+        if report.get("counts", {}).get("failed"):
+            rc = 1
+    if args.json:
+        print(json.dumps(json_out, indent=2))
+    return rc
 
 
 # ---------------------------------------------------------------------------
@@ -3260,6 +3732,72 @@ def build_parser() -> argparse.ArgumentParser:
     p_st_delete.add_argument("--source", help=_SOURCE_OVERLAY_HELP)
     _add_common(p_st_delete)
     p_st_delete.set_defaults(handler=_cmd_stack_delete)
+
+    # ----- disk -------------------------------------------------------------
+    p_disk = sub.add_parser(
+        "disk",
+        help="Show what scripthut has left on each backend's filesystem",
+    )
+    # Bare `scripthut disk` = `disk status`; flags on the group parser make
+    # `scripthut disk --json` work without naming the subcommand.
+    p_disk.add_argument("--backend", help="Limit to a single backend")
+    p_disk.add_argument("--json", action="store_true")
+    _add_common(p_disk)
+    p_disk.set_defaults(handler=_cmd_disk_status)
+    disk_sub = p_disk.add_subparsers(dest="disk_cmd", required=False)
+
+    p_disk_status = disk_sub.add_parser(
+        "status",
+        help="Show the server's cached scan results (never triggers a scan)",
+    )
+    p_disk_status.add_argument("--backend", help="Limit to a single backend")
+    p_disk_status.add_argument("--json", action="store_true")
+    _add_common(p_disk_status)
+    p_disk_status.set_defaults(handler=_cmd_disk_status)
+
+    p_disk_scan = disk_sub.add_parser(
+        "scan",
+        help="Run a fresh scan (sizes + classification) and print the result",
+    )
+    p_disk_scan.add_argument("--backend", help="Scan a single backend only")
+    p_disk_scan.add_argument("--json", action="store_true")
+    p_disk_scan.add_argument(
+        "--interval", type=float, default=2.0,
+        help="Polling interval (seconds) while waiting for a server-side scan.",
+    )
+    _add_common(p_disk_scan)
+    p_disk_scan.set_defaults(handler=_cmd_disk_scan)
+
+    p_disk_clean = disk_sub.add_parser(
+        "clean",
+        help=(
+            "Delete orphaned scripthut artifacts (guardrailed; scans first, "
+            "shows the plan, asks before deleting)"
+        ),
+    )
+    p_disk_clean.add_argument("--backend", help="Clean a single backend only")
+    p_disk_clean.add_argument(
+        "--dry-run", action="store_true",
+        help="Show what would be deleted and stop",
+    )
+    p_disk_clean.add_argument(
+        "--yes", action="store_true",
+        help="Skip the confirmation prompt",
+    )
+    p_disk_clean.add_argument("--json", action="store_true")
+    p_disk_clean.add_argument(
+        "--path", action="append", dest="paths", metavar="PATH",
+        help=(
+            "Delete this specific scanned entry (repeatable; requires "
+            "--backend; may target entries still referenced by finished runs)"
+        ),
+    )
+    p_disk_clean.add_argument(
+        "--interval", type=float, default=2.0,
+        help="Polling interval (seconds) while waiting for the server.",
+    )
+    _add_common(p_disk_clean)
+    p_disk_clean.set_defaults(handler=_cmd_disk_clean)
 
     # ----- project ----------------------------------------------------------
     p_src = sub.add_parser("source", help="Inspect configured sources")
