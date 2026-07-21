@@ -800,6 +800,62 @@
   
   
     <li class="md-nav__item">
+      <a href="../task-json/caching/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Result Caching
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../task-json/manifests/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Task Manifests
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../task-json/generators/" class="md-nav__link">
         
   
@@ -964,6 +1020,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="run — inspect and control runs">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#run-manifest-a-completed-tasks-provenance-record" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        run manifest — a completed task's provenance record
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -1060,6 +1133,17 @@
     <span class="md-ellipsis">
       
         Notes for coding agents
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#task-probe-dry-run-cache-probe" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        task probe — dry-run cache probe
       
     </span>
   </a>
@@ -1296,6 +1380,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="run — inspect and control runs">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#run-manifest-a-completed-tasks-provenance-record" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        run manifest — a completed task's provenance record
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -1392,6 +1493,17 @@
     <span class="md-ellipsis">
       
         Notes for coding agents
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#task-probe-dry-run-cache-probe" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        task probe — dry-run cache probe
       
     </span>
   </a>
@@ -1654,6 +1766,8 @@
 <a id="__codelineno-4-13" name="__codelineno-4-13" href="#__codelineno-4-13"></a>scripthut<span class="w"> </span>run<span class="w"> </span>logs<span class="w"> </span>&lt;id&gt;<span class="w"> </span>&lt;task&gt;<span class="w"> </span>--follow<span class="w">       </span><span class="c1"># tail until the task ends</span>
 </code></pre></div>
 <p><code>watch --exit-status</code> is the CI-friendly form: it returns 0 only when every task in the run completes successfully.</p>
+<h3 id="run-manifest-a-completed-tasks-provenance-record"><code>run manifest</code> — a completed task's provenance record<a class="headerlink" href="#run-manifest-a-completed-tasks-provenance-record" title="Permanent link">&para;</a></h3>
+<p><code>scripthut run manifest &lt;run_id&gt; &lt;task_id&gt;</code> prints the task's <a href="../task-json/manifests/">versioned manifest</a>: input hashes as used, output paths + content hashes, executor, timestamps, duration, exit code — the self-contained record a downstream consumer can verify work from. Always JSON (the document <em>is</em> the artifact).</p>
 <h2 id="backend-inspect-configured-backends"><code>backend</code> — inspect configured backends<a class="headerlink" href="#backend-inspect-configured-backends" title="Permanent link">&para;</a></h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>scripthut<span class="w"> </span>backend<span class="w"> </span>list<span class="w">                        </span><span class="c1"># connection status, max_concurrent, type</span>
 </code></pre></div>
@@ -1776,12 +1890,25 @@
 <li>Tasks submitted this way still respect the layered config — <code>working_dir</code> resolution, env rules, partition mapping, and account selection from <code>scripthut.yaml</code> all apply.</li>
 <li>For a self-contained briefing you can paste into your context window, run <code>scripthut agent prompt</code> (see the <code>agent</code> section above).</li>
 </ul>
+<h3 id="task-probe-dry-run-cache-probe"><code>task probe</code> — dry-run cache probe<a class="headerlink" href="#task-probe-dry-run-cache-probe" title="Permanent link">&para;</a></h3>
+<p><code>task probe</code> answers, per task, whether a submission would hit the <a href="../task-json/caching/">result cache</a> — <strong>without executing anything or writing anything</strong> (no run records, no cache mutations, no restores). It takes the same JSON a submission would: a single task object, or a full workflow document (<code>{"tasks": [...]}</code> or a bare list).</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="c1"># Probe a whole task list</span>
+<a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>scripthut<span class="w"> </span>task<span class="w"> </span>probe<span class="w"> </span>--from-file<span class="w"> </span>tasks.json<span class="w"> </span>--backend<span class="w"> </span>mercury-nb
+<a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a>
+<a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a><span class="c1"># Probe from stdin, machine-readable</span>
+<a id="__codelineno-12-5" name="__codelineno-12-5" href="#__codelineno-12-5"></a>cat<span class="w"> </span>tasks.json<span class="w"> </span><span class="p">|</span><span class="w"> </span>scripthut<span class="w"> </span>task<span class="w"> </span>probe<span class="w"> </span>--from-stdin<span class="w"> </span>--backend<span class="w"> </span>mercury-nb<span class="w"> </span>--json
+<a id="__codelineno-12-6" name="__codelineno-12-6" href="#__codelineno-12-6"></a>
+<a id="__codelineno-12-7" name="__codelineno-12-7" href="#__codelineno-12-7"></a><span class="c1"># Pin the commit used for cache_scope=&quot;commit&quot; tasks&#39; keys</span>
+<a id="__codelineno-12-8" name="__codelineno-12-8" href="#__codelineno-12-8"></a>scripthut<span class="w"> </span>task<span class="w"> </span>probe<span class="w"> </span>--from-file<span class="w"> </span>tasks.json<span class="w"> </span>--backend<span class="w"> </span>mercury-nb<span class="w"> </span>--commit<span class="w"> </span>3f2a91c
+</code></pre></div>
+<p>Human output is one line per task — <code>HIT</code> (with the cached outputs' content hash), <code>MISS</code> (cacheable, would run), or <code>RUN</code> (not cacheable, with the reason) — plus a summary line. <code>--json</code> returns the full verdicts, including each task's <code>cache_key</code>, <code>input_hashes</code>, and on a hit the cached <code>outputs</code> and <code>content_hash</code>.</p>
+<p>The HTTP form is <code>POST /api/v1/tasks/probe</code> with a body of <code>{"task": {...}}</code> <strong>or</strong> <code>{"tasks": [...]}</code> plus <code>"backend"</code> and optional <code>"commit_hash"</code> / <code>"workflow_name"</code>. Verdicts are computed by the same code path a real submission uses, so a probe's hit/miss matches what submitting would have done at that moment.</p>
 <h2 id="stack-manage-reusable-software-stacks"><code>stack</code> — manage reusable software stacks<a class="headerlink" href="#stack-manage-reusable-software-stacks" title="Permanent link">&para;</a></h2>
 <p>A stack is a software environment (Python venv, Julia depot, Conda env, …) ScriptHut installs once per backend and reuses across runs. The CLI is the lifecycle interface — see <a href="../configuration/stacks/">Stacks</a> for the model and YAML schema.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a>scripthut<span class="w"> </span>stack<span class="w"> </span>list<span class="w">                                  </span><span class="c1"># configured stacks (no SSH)</span>
-<a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>scripthut<span class="w"> </span>stack<span class="w"> </span>check<span class="w"> </span><span class="o">[</span>&lt;name&gt;<span class="o">]</span><span class="w"> </span><span class="o">[</span>--backend<span class="w"> </span>X<span class="o">]</span><span class="w">          </span><span class="c1"># per-backend state table</span>
-<a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a>scripthut<span class="w"> </span>stack<span class="w"> </span>install<span class="w"> </span>&lt;name&gt;<span class="w"> </span><span class="o">[</span>--backend<span class="w"> </span>X<span class="o">]</span><span class="w"> </span><span class="o">[</span>--rebuild<span class="o">]</span>
-<a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a>scripthut<span class="w"> </span>stack<span class="w"> </span>delete<span class="w"> </span>&lt;name&gt;<span class="w"> </span><span class="o">[</span>--backend<span class="w"> </span>X<span class="o">]</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a>scripthut<span class="w"> </span>stack<span class="w"> </span>list<span class="w">                                  </span><span class="c1"># configured stacks (no SSH)</span>
+<a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a>scripthut<span class="w"> </span>stack<span class="w"> </span>check<span class="w"> </span><span class="o">[</span>&lt;name&gt;<span class="o">]</span><span class="w"> </span><span class="o">[</span>--backend<span class="w"> </span>X<span class="o">]</span><span class="w">          </span><span class="c1"># per-backend state table</span>
+<a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a>scripthut<span class="w"> </span>stack<span class="w"> </span>install<span class="w"> </span>&lt;name&gt;<span class="w"> </span><span class="o">[</span>--backend<span class="w"> </span>X<span class="o">]</span><span class="w"> </span><span class="o">[</span>--rebuild<span class="o">]</span>
+<a id="__codelineno-13-4" name="__codelineno-13-4" href="#__codelineno-13-4"></a>scripthut<span class="w"> </span>stack<span class="w"> </span>delete<span class="w"> </span>&lt;name&gt;<span class="w"> </span><span class="o">[</span>--backend<span class="w"> </span>X<span class="o">]</span>
 </code></pre></div>
 <p>Each command opens an SSH connection per (stack × selected backend). Without <code>--backend</code>, the command iterates every backend the stack declares (or every SSH-capable backend if the stack's <code>backends:</code> list is empty). Non-SSH backends (Batch, EC2) are silently skipped for now.</p>
 <ul>
@@ -1790,36 +1917,36 @@
 <li><code>delete</code> removes the entire <code>&lt;cache_dir&gt;/&lt;name&gt;/</code> directory on the backend (every hash, not just the current one). A subsequent <code>install</code> rebuilds from scratch.</li>
 </ul>
 <p>Example session from inside a project:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="nb">cd</span><span class="w"> </span>~/git/my-project
-<a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a>scripthut<span class="w"> </span>stack<span class="w"> </span>check<span class="w"> </span>julia-1.11<span class="w">        </span><span class="c1"># is it built on every backend?</span>
-<a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a>scripthut<span class="w"> </span>stack<span class="w"> </span>install<span class="w"> </span>julia-1.11<span class="w">      </span><span class="c1"># build any that aren&#39;t</span>
-<a id="__codelineno-13-4" name="__codelineno-13-4" href="#__codelineno-13-4"></a>scripthut<span class="w"> </span>workflow<span class="w"> </span>run<span class="w"> </span>grid-search<span class="w">      </span><span class="c1"># submit work that relies on the stack</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="nb">cd</span><span class="w"> </span>~/git/my-project
+<a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a>scripthut<span class="w"> </span>stack<span class="w"> </span>check<span class="w"> </span>julia-1.11<span class="w">        </span><span class="c1"># is it built on every backend?</span>
+<a id="__codelineno-14-3" name="__codelineno-14-3" href="#__codelineno-14-3"></a>scripthut<span class="w"> </span>stack<span class="w"> </span>install<span class="w"> </span>julia-1.11<span class="w">      </span><span class="c1"># build any that aren&#39;t</span>
+<a id="__codelineno-14-4" name="__codelineno-14-4" href="#__codelineno-14-4"></a>scripthut<span class="w"> </span>workflow<span class="w"> </span>run<span class="w"> </span>grid-search<span class="w">      </span><span class="c1"># submit work that relies on the stack</span>
 </code></pre></div>
 <h2 id="project-inspect-git-projects"><code>project</code> — inspect git projects<a class="headerlink" href="#project-inspect-git-projects" title="Permanent link">&para;</a></h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a>scripthut<span class="w"> </span>project<span class="w"> </span>list<span class="w">                        </span><span class="c1"># all configured projects</span>
-<a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a>scripthut<span class="w"> </span>project<span class="w"> </span>view<span class="w"> </span>&lt;name&gt;<span class="w">                 </span><span class="c1"># show sflow.json files + their workflows</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a>scripthut<span class="w"> </span>project<span class="w"> </span>list<span class="w">                        </span><span class="c1"># all configured projects</span>
+<a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a>scripthut<span class="w"> </span>project<span class="w"> </span>view<span class="w"> </span>&lt;name&gt;<span class="w">                 </span><span class="c1"># show sflow.json files + their workflows</span>
 </code></pre></div>
 <p>A "project" is a git repo on a backend that contains one or more <code>sflow.json</code> workflow files; <code>project view</code> lists them so you can pick one to feed into <code>workflow run --project</code>.</p>
 <h2 id="common-patterns">Common patterns<a class="headerlink" href="#common-patterns" title="Permanent link">&para;</a></h2>
 <h3 id="submit-a-workflow-and-follow-it-to-completion">Submit a workflow and follow it to completion<a class="headerlink" href="#submit-a-workflow-and-follow-it-to-completion" title="Permanent link">&para;</a></h3>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a><span class="nv">RUN_ID</span><span class="o">=</span><span class="k">$(</span>scripthut<span class="w"> </span>workflow<span class="w"> </span>run<span class="w"> </span>train<span class="w"> </span>--json<span class="w"> </span><span class="p">|</span><span class="w"> </span>jq<span class="w"> </span>-r<span class="w"> </span>.id<span class="k">)</span>
-<a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a>scripthut<span class="w"> </span>run<span class="w"> </span>watch<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$RUN_ID</span><span class="s2">&quot;</span><span class="w"> </span>--exit-status
+<div class="highlight"><pre><span></span><code><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a><span class="nv">RUN_ID</span><span class="o">=</span><span class="k">$(</span>scripthut<span class="w"> </span>workflow<span class="w"> </span>run<span class="w"> </span>train<span class="w"> </span>--json<span class="w"> </span><span class="p">|</span><span class="w"> </span>jq<span class="w"> </span>-r<span class="w"> </span>.id<span class="k">)</span>
+<a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a>scripthut<span class="w"> </span>run<span class="w"> </span>watch<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$RUN_ID</span><span class="s2">&quot;</span><span class="w"> </span>--exit-status
 </code></pre></div>
 <p>The two commands compose because <code>--json</code> on <code>workflow run</code> yields a stable shape (<code>{"id": "...", "items": N, ...}</code>).</p>
 <h3 id="tail-one-tasks-stderr-until-it-finishes">Tail one task's stderr until it finishes<a class="headerlink" href="#tail-one-tasks-stderr-until-it-finishes" title="Permanent link">&para;</a></h3>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a>scripthut<span class="w"> </span>run<span class="w"> </span>logs<span class="w"> </span><span class="nv">$RUN_ID</span><span class="w"> </span>train.shard-3<span class="w"> </span>--error<span class="w"> </span>--follow
+<div class="highlight"><pre><span></span><code><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a>scripthut<span class="w"> </span>run<span class="w"> </span>logs<span class="w"> </span><span class="nv">$RUN_ID</span><span class="w"> </span>train.shard-3<span class="w"> </span>--error<span class="w"> </span>--follow
 </code></pre></div>
 <p><code>--follow</code> reads the file once it appears on the backend, then polls until the task moves to a terminal state.</p>
 <h3 id="inspect-the-resolved-environment-for-a-task">Inspect the resolved environment for a task<a class="headerlink" href="#inspect-the-resolved-environment-for-a-task" title="Permanent link">&para;</a></h3>
 <p>The Env tab in the web UI shows resolved env with per-key provenance. The same data is available via the <code>/runs/{id}/tasks/{task_id}/env</code> endpoint, which <code>RemoteClient</code> can hit directly:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a>curl<span class="w"> </span>-s<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$SCRIPTHUT_SERVER</span><span class="s2">/runs/</span><span class="nv">$RUN_ID</span><span class="s2">/tasks/train.shard-3/env&quot;</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>jq
+<div class="highlight"><pre><span></span><code><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a>curl<span class="w"> </span>-s<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$SCRIPTHUT_SERVER</span><span class="s2">/runs/</span><span class="nv">$RUN_ID</span><span class="s2">/tasks/train.shard-3/env&quot;</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>jq
 </code></pre></div>
 <p>See <a href="../configuration/environments/">Environments</a> for the full env-rule resolution model that produces these values.</p>
 <h3 id="ci-automation">CI / automation<a class="headerlink" href="#ci-automation" title="Permanent link">&para;</a></h3>
 <p>In CI you usually want:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a><span class="nb">export</span><span class="w"> </span><span class="nv">SCRIPTHUT_SERVER</span><span class="o">=</span><span class="s2">&quot;https://scripthut.team.example&quot;</span>
-<a id="__codelineno-18-2" name="__codelineno-18-2" href="#__codelineno-18-2"></a><span class="nv">RUN_ID</span><span class="o">=</span><span class="k">$(</span>scripthut<span class="w"> </span>workflow<span class="w"> </span>run<span class="w"> </span>nightly-eval<span class="w"> </span>--json<span class="w"> </span><span class="p">|</span><span class="w"> </span>jq<span class="w"> </span>-r<span class="w"> </span>.id<span class="k">)</span>
-<a id="__codelineno-18-3" name="__codelineno-18-3" href="#__codelineno-18-3"></a>scripthut<span class="w"> </span>run<span class="w"> </span>watch<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$RUN_ID</span><span class="s2">&quot;</span><span class="w"> </span>--exit-status
+<div class="highlight"><pre><span></span><code><a id="__codelineno-19-1" name="__codelineno-19-1" href="#__codelineno-19-1"></a><span class="nb">export</span><span class="w"> </span><span class="nv">SCRIPTHUT_SERVER</span><span class="o">=</span><span class="s2">&quot;https://scripthut.team.example&quot;</span>
+<a id="__codelineno-19-2" name="__codelineno-19-2" href="#__codelineno-19-2"></a><span class="nv">RUN_ID</span><span class="o">=</span><span class="k">$(</span>scripthut<span class="w"> </span>workflow<span class="w"> </span>run<span class="w"> </span>nightly-eval<span class="w"> </span>--json<span class="w"> </span><span class="p">|</span><span class="w"> </span>jq<span class="w"> </span>-r<span class="w"> </span>.id<span class="k">)</span>
+<a id="__codelineno-19-3" name="__codelineno-19-3" href="#__codelineno-19-3"></a>scripthut<span class="w"> </span>run<span class="w"> </span>watch<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$RUN_ID</span><span class="s2">&quot;</span><span class="w"> </span>--exit-status
 </code></pre></div>
 <p>Setting <code>SCRIPTHUT_SERVER</code> once at the top means the rest of the script reads naturally and <code>scripthut</code> never accidentally drops into local mode.</p>
 <h2 id="exit-codes">Exit codes<a class="headerlink" href="#exit-codes" title="Permanent link">&para;</a></h2>
