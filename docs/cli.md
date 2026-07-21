@@ -248,6 +248,25 @@ Stacks are installed once; ad-hoc tasks reference them via their resolved `STACK
 - Tasks submitted this way still respect the layered config — `working_dir` resolution, env rules, partition mapping, and account selection from `scripthut.yaml` all apply.
 - For a self-contained briefing you can paste into your context window, run `scripthut agent prompt` (see the `agent` section above).
 
+### `task probe` — dry-run cache probe
+
+`task probe` answers, per task, whether a submission would hit the [result cache](task-json/caching.md) — **without executing anything or writing anything** (no run records, no cache mutations, no restores). It takes the same JSON a submission would: a single task object, or a full workflow document (`{"tasks": [...]}` or a bare list).
+
+```bash
+# Probe a whole task list
+scripthut task probe --from-file tasks.json --backend mercury-nb
+
+# Probe from stdin, machine-readable
+cat tasks.json | scripthut task probe --from-stdin --backend mercury-nb --json
+
+# Pin the commit used for cache_scope="commit" tasks' keys
+scripthut task probe --from-file tasks.json --backend mercury-nb --commit 3f2a91c
+```
+
+Human output is one line per task — `HIT` (with the cached outputs' content hash), `MISS` (cacheable, would run), or `RUN` (not cacheable, with the reason) — plus a summary line. `--json` returns the full verdicts, including each task's `cache_key`, `input_hashes`, and on a hit the cached `outputs` and `content_hash`.
+
+The HTTP form is `POST /api/v1/tasks/probe` with a body of `{"task": {...}}` **or** `{"tasks": [...]}` plus `"backend"` and optional `"commit_hash"` / `"workflow_name"`. Verdicts are computed by the same code path a real submission uses, so a probe's hit/miss matches what submitting would have done at that moment.
+
 ## `stack` — manage reusable software stacks
 
 A stack is a software environment (Python venv, Julia depot, Conda env, …) ScriptHut installs once per backend and reuses across runs. The CLI is the lifecycle interface — see [Stacks](configuration/stacks.md) for the model and YAML schema.

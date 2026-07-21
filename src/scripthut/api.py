@@ -228,6 +228,73 @@ def make_api_router(state: AppState) -> APIRouter:
         state.notify_poll()
         return _run_summary(run)
 
+    @router.post("/tasks/probe")
+    async def probe_tasks_v1(payload: dict) -> dict[str, Any]:
+        """Dry-run cache probe: hit/miss per task, executing nothing.
+
+        Takes the same task JSON a run submission would — either a single
+        ``task`` object (the ``/tasks/run`` shape) or a workflow document
+        under ``tasks`` (wrapped ``{"tasks": [...], "env": [...]}`` or a
+        bare list) — plus a ``backend`` name. Computes each task's cache
+        key exactly as a submission would and answers hit/miss, returning
+        the cached outputs' content hashes on a hit. Guaranteed
+        side-effect-free: no run records, no cache mutations, no restores.
+
+        Optional ``commit_hash`` feeds ``cache_scope="commit"`` tasks'
+        keys (defaults to null, matching ad-hoc submissions); optional
+        ``workflow_name`` matches the env-resolution context of a
+        specific workflow's submission.
+        """
+        from scripthut.runs.models import TaskDefinition
+
+        rm = _require_manager()
+        backend = payload.get("backend")
+        if not backend or not isinstance(backend, str):
+            raise HTTPException(
+                status_code=422, detail="payload must contain 'backend' (str)",
+            )
+        task_dict = payload.get("task")
+        tasks_doc = payload.get("tasks")
+        if (task_dict is None) == (tasks_doc is None):
+            raise HTTPException(
+                status_code=422,
+                detail="payload must contain exactly one of 'task' (dict) "
+                       "or 'tasks' (workflow document)",
+            )
+        try:
+            if task_dict is not None:
+                if not isinstance(task_dict, dict):
+                    raise ValueError("'task' must be a dict")
+                tasks = [TaskDefinition.from_dict(task_dict)]
+                doc_env: list = []
+                doc_env_groups: dict = {}
+            else:
+                if not isinstance(tasks_doc, (dict, list)):
+                    raise ValueError("'tasks' must be a list or dict")
+                tasks, doc_env, doc_env_groups = TaskDefinition.parse_document(
+                    tasks_doc
+                )
+        except (KeyError, ValueError) as e:
+            raise HTTPException(status_code=422, detail=f"invalid task(s): {e}")
+        try:
+            results = await rm.probe_tasks(
+                tasks, backend,
+                workflow_name=payload.get("workflow_name") or "_probe",
+                commit_hash=payload.get("commit_hash"),
+                doc_env=doc_env,
+                doc_env_groups=doc_env_groups,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+        from scripthut.runs.manager import probe_summary
+
+        return {
+            "backend": backend,
+            "cache_enabled": rm.cache_manager.enabled,
+            "results": results,
+            "summary": probe_summary(results),
+        }
+
     @router.post("/sources/{name}/run")
     async def run_source_workflow_v1(
         name: str, workflow: str, backend: str | None = None,

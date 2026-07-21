@@ -89,3 +89,22 @@ By default (`cache_scope: "commit"`), the git commit is part of the key, so **an
 
 !!! warning "Only sound with complete inputs"
     `cache_scope: "inputs"` is only correct when `inputs` covers **everything the command reads** — including the code files themselves (`preprocess.py` above), any modules they import, and config files. Anything the command reads but doesn't declare can change without busting the key, and you'd get a stale hit. When in doubt, keep the default.
+
+---
+
+## Probing the Cache (Dry Run)
+
+You can ask "would these tasks hit the cache?" without executing or writing anything:
+
+```bash
+scripthut task probe --from-file tasks.json --backend mercury-nb --json
+```
+
+or `POST /api/v1/tasks/probe` with the same task JSON a run submission takes (a single `task` object or a `tasks` document), plus `backend` and optionally `commit_hash`. Each verdict reports:
+
+- `cacheable` — whether the task participates in the cache at all (`reason` explains why not);
+- `cache_key` and the `input_hashes` that fed it;
+- `hit` — whether a usable (successful) cached result exists;
+- on a hit, the cached outputs' file list and `content_hash`.
+
+The probe runs the exact code path a real submission uses to decide hit/miss — only the read-only steps (input hashing and manifest lookup) touch the backend, and nothing is recorded, restored, or stored. See the [CLI reference](../cli.md#task-probe--dry-run-cache-probe) for output formats.

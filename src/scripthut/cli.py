@@ -283,6 +283,37 @@ class LocalClient:
         )
         return _summary_from_run(run)
 
+    async def probe_tasks(self, payload: dict) -> dict[str, Any]:
+        """Local-mode mirror of ``POST /api/v1/tasks/probe``."""
+        from scripthut.runs.manager import probe_summary
+        from scripthut.runs.models import TaskDefinition
+
+        rm = self.runtime.run_manager
+        backend = payload.get("backend")
+        if not backend:
+            raise RuntimeError("probe payload must contain 'backend'")
+        if payload.get("task") is not None:
+            tasks = [TaskDefinition.from_dict(payload["task"])]
+            doc_env: list = []
+            doc_env_groups: dict = {}
+        else:
+            tasks, doc_env, doc_env_groups = TaskDefinition.parse_document(
+                payload.get("tasks")
+            )
+        results = await rm.probe_tasks(
+            tasks, backend,
+            workflow_name=payload.get("workflow_name") or "_probe",
+            commit_hash=payload.get("commit_hash"),
+            doc_env=doc_env,
+            doc_env_groups=doc_env_groups,
+        )
+        return {
+            "backend": backend,
+            "cache_enabled": rm.cache_manager.enabled,
+            "results": results,
+            "summary": probe_summary(results),
+        }
+
     async def run_source_workflow(
         self, source: str, workflow: str, *, backend: str | None = None,
         branch: str | None = None,
@@ -490,6 +521,13 @@ class RemoteClient:
         resp = await self._client.post("/tasks/run", json=body)
         resp.raise_for_status()
         return resp.json()
+
+    async def probe_tasks(self, payload: dict) -> dict[str, Any]:
+        """POST the JSON body to ``/tasks/probe`` (see the API docstring)."""
+        if self._client is None:
+            raise RuntimeError("RemoteClient not entered")
+        resp = await self._client.post("/tasks/probe", json=payload)
+        return self._handle(resp)
 
     async def run_source_workflow(
         self, source: str, workflow: str, *, backend: str | None = None,
@@ -2238,6 +2276,56 @@ async def _cmd_task_run(args: argparse.Namespace) -> int:
     return 0
 
 
+async def _cmd_task_probe(args: argparse.Namespace) -> int:
+    """Dry-run cache probe: hit/miss per task, executing nothing.
+
+    Accepts the same JSON a submission would — a single task object or a
+    workflow document (wrapped ``{"tasks": [...]}`` or bare list) — and
+    prints one verdict per task. Guaranteed side-effect-free server-side.
+    """
+    if args.from_file and args.from_stdin:
+        raise RuntimeError("Specify only one of --from-file / --from-stdin")
+    if args.from_file:
+        raw = Path(args.from_file).expanduser().read_text()
+    elif args.from_stdin:
+        raw = sys.stdin.read()
+    else:
+        raise RuntimeError("Provide the task JSON via --from-file or --from-stdin")
+    doc = json.loads(raw)
+
+    payload: dict[str, Any] = {"backend": args.backend}
+    if args.commit:
+        payload["commit_hash"] = args.commit
+    if isinstance(doc, list) or (isinstance(doc, dict) and "tasks" in doc):
+        payload["tasks"] = doc
+    else:
+        payload["task"] = doc
+
+    async with _make_client(args) as client:
+        result = await client.probe_tasks(payload)
+
+    if args.json:
+        print(json.dumps(result, indent=2))
+        return 0
+    if not result.get("cache_enabled", False):
+        print("Note: the result cache is disabled on this server — every task would run.")
+    for r in result["results"]:
+        if r["hit"]:
+            content = r.get("content_hash") or ""
+            detail = f"cached content {content[:12]}" if content else "cached"
+            print(f"HIT   {r['task_id']}  ({detail})")
+        elif r["cacheable"]:
+            print(f"MISS  {r['task_id']}  (would run)")
+        else:
+            print(f"RUN   {r['task_id']}  (not cacheable: {r.get('reason')})")
+    s = result["summary"]
+    print(
+        f"\n{s['hit']} hit, {s['miss']} miss, "
+        f"{s['uncacheable']} not cacheable"
+    )
+    return 0
+
+
 async def _overlay_source_stacks(
     args: argparse.Namespace, config: ScriptHutConfig,
 ) -> ScriptHutConfig:
@@ -3679,6 +3767,40 @@ def build_parser() -> argparse.ArgumentParser:
     p_tk_run.add_argument("--json", action="store_true")
     _add_common(p_tk_run)
     p_tk_run.set_defaults(handler=_cmd_task_run)
+
+    p_tk_probe = tk_sub.add_parser(
+        "probe",
+        help=(
+            "Dry-run cache probe: answer hit/miss per task without "
+            "executing or writing anything"
+        ),
+    )
+    p_tk_probe.add_argument(
+        "--backend", required=True,
+        help="Backend the tasks would be submitted to (must be configured)",
+    )
+    p_tk_probe.add_argument(
+        "--from-file", default=None,
+        help=(
+            "JSON file with a single task object or a workflow document "
+            "({'tasks': [...]} or a bare list) — the same JSON a run "
+            "submission takes"
+        ),
+    )
+    p_tk_probe.add_argument(
+        "--from-stdin", action="store_true",
+        help="Read the task JSON from stdin instead of --from-file",
+    )
+    p_tk_probe.add_argument(
+        "--commit", default=None,
+        help=(
+            "Git commit hash used for cache_scope='commit' tasks' keys "
+            "(default: none, matching ad-hoc submissions)"
+        ),
+    )
+    p_tk_probe.add_argument("--json", action="store_true")
+    _add_common(p_tk_probe)
+    p_tk_probe.set_defaults(handler=_cmd_task_probe)
 
     # ----- stack ------------------------------------------------------------
     p_st = sub.add_parser("stack", help="Manage reusable software stacks")

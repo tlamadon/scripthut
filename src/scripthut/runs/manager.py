@@ -87,6 +87,19 @@ SETTLING_UNCONFIRMED_MARKER = (
 )
 
 
+def probe_summary(results: list[dict]) -> dict:
+    """Aggregate per-task probe verdicts into hit/miss/uncacheable counts.
+
+    Shared by the API endpoint and the CLI's local mode so the two
+    responses can't drift.
+    """
+    return {
+        "hit": sum(1 for r in results if r["hit"]),
+        "miss": sum(1 for r in results if r["cacheable"] and not r["hit"]),
+        "uncacheable": sum(1 for r in results if not r["cacheable"]),
+    }
+
+
 async def _run_local_shell(command: str, timeout: float = 60.0) -> tuple[str, str, int]:
     """Run ``command`` locally (``sh -c``) and return ``(stdout, stderr, exit_code)``.
 
@@ -1449,6 +1462,175 @@ class RunManager:
         """Get the JobBackend for a backend name."""
         return self.job_backends.get(backend_name)
 
+    async def probe_cache_for_task(
+        self,
+        task: TaskDefinition,
+        merged_env: dict[str, str],
+        commit_hash: str | None,
+        ssh_client: SSHClient | None,
+    ) -> tuple[dict, dict | None]:
+        """Read-only cache probe for one task: compute the key, look it up.
+
+        This is the single source of truth for "would this task cache-hit?"
+        — the real submission path (:meth:`_try_restore_from_cache`) runs
+        through it too, so a probe verdict cannot drift from what a real
+        submission would do. The only remote commands issued are the
+        read-only input hashing (``find | sha256sum``) and the manifest
+        fetch; nothing is executed, restored, stored, or recorded.
+
+        Returns ``(verdict, manifest)``. ``verdict`` is a JSON-able dict:
+
+        - ``task_id``: the task's id.
+        - ``cacheable``: whether the task participates in the cache at all
+          (with ``reason`` explaining why not).
+        - ``cache_key``: the computed key, when input hashing succeeded.
+        - ``hit``: whether a usable (successful) cached result exists.
+        - On a hit: ``content_hash`` (the output tarball's sha256),
+          ``outputs`` (cached file list), and any per-file ``output_hashes``
+          the manifest carries.
+
+        ``manifest`` is the raw action-cache manifest on a usable hit so the
+        submission path can restore from it without a second lookup; ``None``
+        otherwise.
+        """
+        cm = self.cache_manager
+
+        def _no(reason: str, key: str | None = None) -> tuple[dict, None]:
+            return ({
+                "task_id": task.id,
+                "cacheable": False,
+                "reason": reason,
+                "cache_key": key,
+                "hit": False,
+            }, None)
+
+        if not cm.enabled:
+            return _no("cache disabled (no store configured)")
+        if ssh_client is None:
+            return _no("backend has no shell access")
+        # Only tasks that declare real outputs are cacheable — otherwise
+        # there is nothing to restore. ``cache: false`` opts a task out.
+        if not task.cache:
+            return _no("task opted out (cache: false)")
+        if not task.outputs:
+            return _no("task declares no outputs")
+
+        input_hashes = await cm.hash_inputs(
+            ssh_client, task.working_dir, task.inputs
+        )
+        if input_hashes is None:
+            # Couldn't verify the inputs (missing files / SSH error). Don't
+            # risk a stale hit — the task must run.
+            return _no("input hashing failed or inputs matched no files")
+
+        key = cm.compute_key(
+            command=task.command,
+            env=merged_env,
+            # cache_scope="inputs" drops the commit from the key so runs
+            # from different commits reuse each other's results as long as
+            # command + env + declared input hashes match.
+            commit_hash=commit_hash if task.cache_scope == "commit" else None,
+            input_hashes=input_hashes,
+        )
+        verdict: dict = {
+            "task_id": task.id,
+            "cacheable": True,
+            "reason": None,
+            "cache_key": key,
+            "input_hashes": input_hashes,
+            "hit": False,
+        }
+
+        manifest = await cm.lookup(ssh_client, key)
+        if manifest is None:
+            return verdict, None  # miss
+
+        # Never reuse a cached failure.
+        cached_exit = manifest.get("exit_code")
+        if cached_exit not in (0, None):
+            logger.info(
+                f"cache: key {key[:12]} hit for '{task.id}' but cached "
+                f"exit_code={cached_exit} — not reusable"
+            )
+            verdict["reason"] = f"cached result failed (exit {cached_exit})"
+            return verdict, None
+
+        verdict["hit"] = True
+        verdict["content_hash"] = manifest.get("content_hash")
+        verdict["outputs"] = manifest.get("outputs", [])
+        if "output_hashes" in manifest:
+            verdict["output_hashes"] = manifest["output_hashes"]
+        return verdict, manifest
+
+    async def probe_tasks(
+        self,
+        tasks: list[TaskDefinition],
+        backend_name: str,
+        *,
+        workflow_name: str = "_probe",
+        commit_hash: str | None = None,
+        git_repo: str | None = None,
+        git_branch: str | None = None,
+        doc_env: list[EnvRule] | None = None,
+        doc_env_groups: dict[str, list[EnvRule]] | None = None,
+        doc_stacks: dict[str, Stack] | None = None,
+    ) -> list[dict]:
+        """Answer hit/miss for a task list without executing or writing anything.
+
+        Validates the document the same way a submission would (wildcard
+        deps expanded, missing refs / cycles rejected), resolves each task's
+        environment through the same resolver chain, and probes the cache
+        per task via :meth:`probe_cache_for_task`. No run records are
+        created, nothing is persisted, no artifacts move — the verdicts are
+        exactly what a real submission would have decided at submit time.
+
+        The env seed uses a synthetic run id; that cannot skew verdicts
+        because volatile ``SCRIPTHUT_*`` values are excluded from the cache
+        key. ``commit_hash`` feeds ``cache_scope="commit"`` tasks' keys and
+        defaults to ``None`` — matching ad-hoc submissions, which carry no
+        commit.
+        """
+        if self.config.get_backend(backend_name) is None:
+            raise ValueError(f"Backend '{backend_name}' not found in config")
+        self._resolve_wildcard_deps(tasks)
+        self._validate_dependencies(tasks)
+
+        ssh_client = self.get_ssh_client(backend_name)
+        created_at = datetime.now(timezone.utc)
+        verdicts: list[dict] = []
+        for task in tasks:
+            try:
+                merged_env, _extra_init = resolve_for_task(
+                    self.config,
+                    backend_name=backend_name,
+                    workflow_name=workflow_name,
+                    run_id="probe",
+                    created_at=created_at,
+                    task=task,
+                    git_repo=git_repo,
+                    git_branch=git_branch,
+                    git_sha=commit_hash,
+                    doc_env=list(doc_env or []),
+                    doc_env_groups=dict(doc_env_groups or {}),
+                    doc_stacks=dict(doc_stacks or {}),
+                )
+            except ValueError as e:
+                # A real submission would FAIL this item at submit time;
+                # surface the same diagnostic instead of aborting the probe.
+                verdicts.append({
+                    "task_id": task.id,
+                    "cacheable": False,
+                    "reason": f"env resolution failed: {e}",
+                    "cache_key": None,
+                    "hit": False,
+                })
+                continue
+            verdict, _manifest = await self.probe_cache_for_task(
+                task, merged_env, commit_hash, ssh_client,
+            )
+            verdicts.append(verdict)
+        return verdicts
+
     async def _try_restore_from_cache(
         self,
         run: Run,
@@ -1471,43 +1653,12 @@ class RunManager:
         """
         cm = self.cache_manager
         task = item.task
-        if not cm.enabled or ssh_client is None:
-            return False
-        # Only tasks that declare real outputs are cacheable — otherwise
-        # there is nothing to restore. ``cache: false`` opts a task out.
-        if not task.cache or not task.outputs:
-            return False
-
-        input_hashes = await cm.hash_inputs(
-            ssh_client, task.working_dir, task.inputs
+        verdict, manifest = await self.probe_cache_for_task(
+            task, merged_env, run.commit_hash, ssh_client,
         )
-        if input_hashes is None:
-            # Couldn't verify the inputs (missing files / SSH error). Don't
-            # risk a stale hit — run the task.
-            return False
-
-        key = cm.compute_key(
-            command=task.command,
-            env=merged_env,
-            # cache_scope="inputs" drops the commit from the key so runs
-            # from different commits reuse each other's results as long as
-            # command + env + declared input hashes match.
-            commit_hash=run.commit_hash if task.cache_scope == "commit" else None,
-            input_hashes=input_hashes,
-        )
-        item.cache_key = key  # remembered for the miss → store path
-
-        manifest = await cm.lookup(ssh_client, key)
-        if manifest is None:
-            return False  # miss
-
-        # Never reuse a cached failure.
-        cached_exit = manifest.get("exit_code")
-        if cached_exit not in (0, None):
-            logger.info(
-                f"cache: key {key[:12]} hit for '{task.id}' but cached "
-                f"exit_code={cached_exit} — re-running"
-            )
+        if verdict.get("cache_key"):
+            item.cache_key = verdict["cache_key"]  # for the miss → store path
+        if not verdict["hit"] or manifest is None:
             return False
 
         if not await cm.restore(ssh_client, task.working_dir, manifest):
@@ -1522,8 +1673,8 @@ class RunManager:
         item.scheduler_state = "CACHED"
         self._persist_run(run)
         logger.info(
-            f"cache: restored '{task.id}' from key {key[:12]} — "
-            f"skipped scheduler submission"
+            f"cache: restored '{task.id}' from key "
+            f"{(item.cache_key or '')[:12]} — skipped scheduler submission"
         )
         return True
 
