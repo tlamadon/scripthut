@@ -68,6 +68,7 @@ nav:
       - Overview: task-json/index.md
       - Environment Variables: task-json/environments.md
       - Result Caching: task-json/caching.md
+      - Task Manifests: task-json/manifests.md
       - Writing a Generator: task-json/generators.md
   - CLI: cli.md
   - Coding agents: coding-agents.md

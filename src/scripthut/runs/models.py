@@ -368,6 +368,15 @@ class RunItem:
     # True when this item was satisfied by restoring a prior run's artifacts
     # from the cache instead of submitting a job. Such items never re-store.
     cache_hit: bool = False
+    # --- Task manifest ingredients (see scripthut.runs.manifest) ---
+    # ``{relative_path: sha256}`` of the declared ``inputs`` as hashed at
+    # submit time — the input state the task actually saw. ``None`` when the
+    # task declares no inputs/outputs or hashing wasn't possible (no shell
+    # access, files missing).
+    input_hashes: dict[str, str] | None = None
+    # ``{relative_path: sha256}`` of the declared ``outputs`` hashed after
+    # completion (or carried over from the cache manifest on a hit).
+    output_hashes: dict[str, str] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to dictionary for JSON storage."""
@@ -391,6 +400,8 @@ class RunItem:
             "pending_reason": self.pending_reason,
             "cache_key": self.cache_key,
             "cache_hit": self.cache_hit,
+            "input_hashes": self.input_hashes,
+            "output_hashes": self.output_hashes,
         }
 
     @classmethod
@@ -425,6 +436,8 @@ class RunItem:
             pending_reason=data.get("pending_reason"),
             cache_key=data.get("cache_key"),
             cache_hit=bool(data.get("cache_hit", False)),
+            input_hashes=data.get("input_hashes"),
+            output_hashes=data.get("output_hashes"),
         )
 
     @property

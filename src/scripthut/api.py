@@ -583,13 +583,54 @@ def make_api_router(state: AppState) -> APIRouter:
         if run is None:
             raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
         summary = _run_summary(run)
-        summary["items"] = [item.to_dict() for item in run.items]
+        items = []
+        for item in run.items:
+            d = item.to_dict()
+            # Terminal items carry their assembled task manifest so a
+            # consumer of run results doesn't need a second request per
+            # task; the dedicated manifest endpoint below returns the
+            # same document standalone.
+            if item.status in (RunItemStatus.COMPLETED, RunItemStatus.FAILED):
+                d["manifest"] = rm.get_task_manifest(run, item)
+            items.append(d)
+        summary["items"] = items
         summary["log_dir"] = run.log_dir
         summary["account"] = run.account
         summary["commit_hash"] = run.commit_hash
         summary["git_repo"] = run.git_repo
         summary["git_branch"] = run.git_branch
         return summary
+
+    @router.get("/runs/{run_id}/tasks/{task_id}/manifest")
+    async def get_task_manifest_v1(run_id: str, task_id: str) -> dict[str, Any]:
+        """The versioned per-task manifest (see scripthut.runs.manifest).
+
+        Available once the task is terminal; a 409 before that keeps
+        consumers from adopting hashes that aren't final yet.
+        """
+        rm = _require_manager()
+        run = rm.get_run(run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
+        item = run.get_item_by_task_id(task_id)
+        if item is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Task '{task_id}' not found in run '{run_id}'",
+            )
+        if item.status not in (
+            RunItemStatus.COMPLETED,
+            RunItemStatus.FAILED,
+            RunItemStatus.DEP_FAILED,
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Task '{task_id}' is {item.status.value} — the manifest "
+                    "is only final once the task is terminal"
+                ),
+            )
+        return rm.get_task_manifest(run, item)
 
     @router.post("/runs/{run_id}/cancel")
     async def cancel_run(run_id: str) -> dict[str, Any]:

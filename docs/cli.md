@@ -108,6 +108,10 @@ scripthut run logs <id> <task> --follow       # tail until the task ends
 
 `watch --exit-status` is the CI-friendly form: it returns 0 only when every task in the run completes successfully.
 
+### `run manifest` — a completed task's provenance record
+
+`scripthut run manifest <run_id> <task_id>` prints the task's [versioned manifest](task-json/manifests.md): input hashes as used, output paths + content hashes, executor, timestamps, duration, exit code — the self-contained record a downstream consumer can verify work from. Always JSON (the document *is* the artifact).
+
 ## `backend` — inspect configured backends
 
 ```bash

@@ -107,4 +107,4 @@ or `POST /api/v1/tasks/probe` with the same task JSON a run submission takes (a 
 - `hit` — whether a usable (successful) cached result exists;
 - on a hit, the cached outputs' file list and `content_hash`.
 
-The probe runs the exact code path a real submission uses to decide hit/miss — only the read-only steps (input hashing and manifest lookup) touch the backend, and nothing is recorded, restored, or stored. See the [CLI reference](../cli.md#task-probe--dry-run-cache-probe) for output formats.
+The probe runs the exact code path a real submission uses to decide hit/miss — only the read-only steps (input hashing and manifest lookup) touch the backend, and nothing is recorded, restored, or stored. See the [CLI reference](../cli.md#task-probe--dry-run-cache-probe) for output formats, and [Task Manifests](manifests.md) for the full provenance record completed tasks expose.

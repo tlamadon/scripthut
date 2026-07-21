@@ -471,6 +471,23 @@ class RunManager:
         if item.task.generates_source:
             await self._handle_generates_source(run, item)
         await self._handle_task_outputs(run, item)
+        # Hash the declared outputs for the task manifest — before the
+        # cache store below, so the stored cache manifest carries the same
+        # per-file hashes a manifest consumer sees. Cache hits normally
+        # arrive with hashes copied from the cache manifest; the ``is
+        # None`` guard re-hashes restored files only for entries stored
+        # before per-file output hashing existed.
+        if (
+            item.task.outputs
+            and item.output_hashes is None
+            and item.status == RunItemStatus.COMPLETED
+        ):
+            ssh_client = self.get_ssh_client(run.backend_name)
+            if ssh_client is not None:
+                item.output_hashes = await self.cache_manager.hash_inputs(
+                    ssh_client, item.task.working_dir, item.task.outputs,
+                )
+                self._persist_run(run)
         # Persist the task's declared output artifacts to the result cache so
         # a future run with the same inputs can skip it. No-op for cache hits
         # and non-cacheable tasks.
@@ -1468,6 +1485,7 @@ class RunManager:
         merged_env: dict[str, str],
         commit_hash: str | None,
         ssh_client: SSHClient | None,
+        input_hashes: dict[str, str] | None = None,
     ) -> tuple[dict, dict | None]:
         """Read-only cache probe for one task: compute the key, look it up.
 
@@ -1492,6 +1510,10 @@ class RunManager:
         ``manifest`` is the raw action-cache manifest on a usable hit so the
         submission path can restore from it without a second lookup; ``None``
         otherwise.
+
+        ``input_hashes`` lets a caller that already hashed the task's inputs
+        (the submission path hashes once for both the manifest and the cache)
+        skip the redundant remote round-trip; ``None`` hashes here.
         """
         cm = self.cache_manager
 
@@ -1515,9 +1537,10 @@ class RunManager:
         if not task.outputs:
             return _no("task declares no outputs")
 
-        input_hashes = await cm.hash_inputs(
-            ssh_client, task.working_dir, task.inputs
-        )
+        if input_hashes is None:
+            input_hashes = await cm.hash_inputs(
+                ssh_client, task.working_dir, task.inputs
+            )
         if input_hashes is None:
             # Couldn't verify the inputs (missing files / SSH error). Don't
             # risk a stale hit — the task must run.
@@ -1637,6 +1660,7 @@ class RunManager:
         item: RunItem,
         merged_env: dict[str, str],
         ssh_client: SSHClient | None,
+        input_hashes: dict[str, str] | None = None,
     ) -> bool:
         """Restore a prior run's artifacts for this task if the cache matches.
 
@@ -1655,14 +1679,23 @@ class RunManager:
         task = item.task
         verdict, manifest = await self.probe_cache_for_task(
             task, merged_env, run.commit_hash, ssh_client,
+            input_hashes=input_hashes,
         )
         if verdict.get("cache_key"):
             item.cache_key = verdict["cache_key"]  # for the miss → store path
+        if verdict.get("input_hashes") is not None:
+            item.input_hashes = verdict["input_hashes"]
         if not verdict["hit"] or manifest is None:
             return False
 
         if not await cm.restore(ssh_client, task.working_dir, manifest):
             return False
+
+        # The task manifest's output hashes come straight from the cache
+        # manifest, so a hit reports the same content hashes the original
+        # (miss) run did. Entries stored before output hashing existed
+        # lack the field; _after_item_completed hashes the restored files.
+        item.output_hashes = manifest.get("output_hashes")
 
         now = datetime.now(timezone.utc)
         item.status = RunItemStatus.COMPLETED
@@ -1706,6 +1739,11 @@ class RunManager:
             "exit_code": item.exit_code if item.exit_code is not None else 0,
             "created_at": run.created_at.isoformat(),
         }
+        # Per-file output hashes (hashed in _after_item_completed) ride
+        # along in the cache manifest so probes and future cache hits can
+        # report content hashes without touching the blob.
+        if item.output_hashes is not None:
+            meta["output_hashes"] = item.output_hashes
         try:
             await cm.store(
                 ssh_client, task.working_dir,
@@ -1759,10 +1797,24 @@ class RunManager:
             return False
         item.submit_script = script
 
+        # Hash declared inputs once, up front: the hashes feed both the
+        # task manifest (item.input_hashes — "the input state this task
+        # actually saw") and, when caching is on, the cache key. Runs
+        # even with the cache disabled so manifests stand on their own;
+        # tasks that declare neither inputs nor outputs skip it entirely.
+        input_hashes: dict[str, str] | None = None
+        if ssh_client is not None and (item.task.inputs or item.task.outputs):
+            input_hashes = await self.cache_manager.hash_inputs(
+                ssh_client, item.task.working_dir, item.task.inputs,
+            )
+            item.input_hashes = input_hashes
+
         # Before touching the scheduler, see if a prior run already produced
         # this exact task (same command + env + commit + input hashes). On a
         # hit we restore its artifacts and mark the item COMPLETED here.
-        if await self._try_restore_from_cache(run, item, merged_env, ssh_client):
+        if await self._try_restore_from_cache(
+            run, item, merged_env, ssh_client, input_hashes=input_hashes,
+        ):
             return True
 
         try:
@@ -2168,6 +2220,18 @@ class RunManager:
 
         logger.info(f"Deleted run '{run_id}'")
         return True
+
+    def get_task_manifest(self, run: Run, item: RunItem) -> dict:
+        """Assemble the versioned per-task manifest for a run item.
+
+        Thin wrapper over :func:`scripthut.runs.manifest.build_task_manifest`
+        that resolves the backend's config ``type`` for the executor block.
+        """
+        from scripthut.runs.manifest import build_task_manifest
+
+        backend_cfg = self.config.get_backend(run.backend_name)
+        backend_type = getattr(backend_cfg, "type", None)
+        return build_task_manifest(run, item, backend_type=backend_type)
 
     def get_run(self, run_id: str) -> Run | None:
         """Get a run by ID."""

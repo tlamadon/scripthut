@@ -297,8 +297,14 @@ class LocalClient:
             doc_env: list = []
             doc_env_groups: dict = {}
         else:
+            tasks_doc = payload.get("tasks")
+            if not isinstance(tasks_doc, (dict, list)):
+                raise RuntimeError(
+                    "probe payload must contain 'task' (dict) or 'tasks' "
+                    "(list/dict)"
+                )
             tasks, doc_env, doc_env_groups = TaskDefinition.parse_document(
-                payload.get("tasks")
+                tasks_doc
             )
         results = await rm.probe_tasks(
             tasks, backend,
@@ -360,6 +366,18 @@ class LocalClient:
         summary["git_repo"] = run.git_repo
         summary["git_branch"] = run.git_branch
         return summary
+
+    async def get_task_manifest(self, run_id: str, task_id: str) -> dict[str, Any]:
+        """Local-mode mirror of GET /runs/{id}/tasks/{tid}/manifest."""
+        rm = self.runtime.run_manager
+        all_runs = rm.storage.load_all_runs() if rm.storage else {}
+        run = all_runs.get(run_id) or rm.get_run(run_id)
+        if run is None:
+            raise RuntimeError(f"Run '{run_id}' not found")
+        item = run.get_item_by_task_id(task_id)
+        if item is None:
+            raise RuntimeError(f"Task '{task_id}' not found in run '{run_id}'")
+        return rm.get_task_manifest(run, item)
 
     async def cancel_run(self, run_id: str) -> dict[str, Any]:
         # cancel_run requires the run to be in-memory; load it first.
@@ -540,6 +558,9 @@ class RemoteClient:
 
     async def view_run(self, run_id: str) -> dict[str, Any]:
         return await self._get(f"/runs/{run_id}")
+
+    async def get_task_manifest(self, run_id: str, task_id: str) -> dict[str, Any]:
+        return await self._get(f"/runs/{run_id}/tasks/{task_id}/manifest")
 
     async def cancel_run(self, run_id: str) -> dict[str, Any]:
         return await self._post(f"/runs/{run_id}/cancel")
@@ -3409,6 +3430,14 @@ async def _cmd_run_view(args: argparse.Namespace) -> int:
     return 0
 
 
+async def _cmd_run_manifest(args: argparse.Namespace) -> int:
+    """Print a task's versioned manifest (always JSON — it IS the artifact)."""
+    async with _make_client(args) as client:
+        data = await client.get_task_manifest(args.id, args.task_id)
+    print(json.dumps(data, indent=2))
+    return 0
+
+
 def _clear_lines(n: int) -> None:
     """Move cursor up n lines and erase to end of screen."""
     if n > 0:
@@ -3608,6 +3637,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_run_view.add_argument("--json", action="store_true")
     _add_common(p_run_view)
     p_run_view.set_defaults(handler=_cmd_run_view)
+
+    p_run_manifest = run_sub.add_parser(
+        "manifest",
+        help="Print a completed task's versioned manifest (JSON)",
+    )
+    p_run_manifest.add_argument("id", help="Run id")
+    p_run_manifest.add_argument("task_id", help="Task id within the run")
+    _add_common(p_run_manifest)
+    p_run_manifest.set_defaults(handler=_cmd_run_manifest)
 
     p_run_watch = run_sub.add_parser(
         "watch", help="Watch a run until it completes (polls server)",
