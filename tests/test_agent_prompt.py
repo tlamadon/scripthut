@@ -439,7 +439,7 @@ class TestNoConfigFallback:
 class TestCacheProbeManifestContent:
     def test_cache_probe_manifest_patterns_present(self):
         """The prompt must teach the cache-adjacent entry points added in
-        v0.13: the dry-run probe, the manifest command, and the caching
+        v0.12.6: the dry-run probe, the manifest command, and the caching
         TaskDefinition fields."""
         prompt = _render_agent_prompt(ScriptHutConfig())
         for snippet in (
