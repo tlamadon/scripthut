@@ -1804,7 +1804,7 @@ def _gather_status(args: argparse.Namespace) -> dict[str, Any]:
             _local_source_summaries(config) if config is not None else []
         ),
         "local_backends": (
-            [{"name": b.name, "type": b.backend_type} for b in config.backends]
+            [{"name": b.name, "type": b.type} for b in config.backends]
             if config is not None else []
         ),
     }

@@ -2030,3 +2030,35 @@ def test_print_cleanup_report_lines(capsys):
     assert "- skipped" in captured.out
     assert "freed at least 1.0K" in captured.out
     assert "delete script failed: boom" in captured.err
+
+
+def test_status_lists_local_backends_from_real_config(monkeypatch):
+    """Regression: local_backends must read BackendConfig.type (the config
+    field), not .backend_type (a BackendState attribute) — a real config
+    object raises AttributeError on the latter, which MagicMock-based
+    tests silently tolerated."""
+    from scripthut.config_schema import (
+        LocalBackendConfig,
+        ScriptHutConfig,
+        SlurmBackendConfig,
+        SSHConfig,
+    )
+
+    monkeypatch.delenv("SCRIPTHUT_SERVER", raising=False)
+    monkeypatch.delenv("SCRIPTHUT_CF_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("SCRIPTHUT_CLOUDFLARED_APP", raising=False)
+    real_cfg = ScriptHutConfig(backends=[
+        SlurmBackendConfig(
+            name="cluster", type="slurm", ssh=SSHConfig(host="h", user="u"),
+        ),
+        LocalBackendConfig(name="laptop"),
+    ])
+    with patch.object(cli, "load_config", return_value=real_cfg), \
+         patch("scripthut.config.discover_global_config", return_value=None), \
+         patch("scripthut.config.discover_project_config", return_value=None):
+        data = cli._gather_status(_status_ns())
+
+    assert data["local_backends"] == [
+        {"name": "cluster", "type": "slurm"},
+        {"name": "laptop", "type": "local"},
+    ]
