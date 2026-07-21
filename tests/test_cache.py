@@ -658,3 +658,77 @@ class TestProjectLocalRejectsCache:
                 {"cache": {"enabled": True, "store": "s3://x"}},
                 Path("scripthut.yaml"),
             )
+
+
+# ---------------------------------------------------------------------------
+# cache_scope: inputs-only cache keys
+# ---------------------------------------------------------------------------
+
+
+class TestCacheScope:
+    def test_default_is_commit(self):
+        t = TaskDefinition.from_dict({"id": "t", "name": "t", "command": "true"})
+        assert t.cache_scope == "commit"
+
+    def test_parses_inputs_scope(self):
+        t = TaskDefinition.from_dict(
+            {"id": "t", "name": "t", "command": "true", "cache_scope": "inputs"}
+        )
+        assert t.cache_scope == "inputs"
+
+    def test_rejects_unknown_scope(self):
+        with pytest.raises(ValueError, match="cache_scope"):
+            TaskDefinition.from_dict(
+                {"id": "t", "name": "t", "command": "true", "cache_scope": "bogus"}
+            )
+
+    def test_roundtrip(self):
+        t = TaskDefinition(id="t", name="t", command="true", cache_scope="inputs")
+        assert TaskDefinition.from_dict(t.to_dict()).cache_scope == "inputs"
+
+    def test_default_key_unchanged(self):
+        """Guard: adding cache_scope must not move existing cache entries.
+
+        The key for a default-scope task is byte-identical to the pre-
+        cache_scope payload format, pinned here as a literal digest.
+        """
+        import hashlib
+
+        key = CacheManager(
+            CacheConfig(enabled=True, store="s3://b/p")
+        ).compute_key(
+            command="python train.py",
+            env={"A": "1"},
+            commit_hash="abc123",
+            input_hashes={"data.csv": "deadbeef"},
+        )
+        payload = (
+            '{"command":"python train.py","commit":"abc123",'
+            '"env":{"A":"1"},"inputs":{"data.csv":"deadbeef"},"v":1}'
+        )
+        assert key == hashlib.sha256(payload.encode()).hexdigest()
+
+    async def _key_for_commit(self, commit: str, task_over: dict) -> str:
+        ssh = _route([
+            ("/ac/", ("", "", 1)),                           # lookup miss
+            ("sha256sum", ("deadbeef  data.csv\n", "", 0)),  # hash_inputs
+        ])
+        mgr, run, item, _backend = _make_manager(ssh, task_over=task_over)
+        run.commit_hash = commit
+        await mgr.submit_task(run, item)
+        assert item.cache_key is not None
+        return item.cache_key
+
+    @pytest.mark.asyncio
+    async def test_cross_commit_same_key_when_inputs_scope(self):
+        """Identical command/env/input hashes from different commits share
+        one cache entry when the task opts into cache_scope=inputs."""
+        key_a = await self._key_for_commit("commit-a", {"cache_scope": "inputs"})
+        key_b = await self._key_for_commit("commit-b", {"cache_scope": "inputs"})
+        assert key_a == key_b
+
+    @pytest.mark.asyncio
+    async def test_cross_commit_different_key_by_default(self):
+        key_a = await self._key_for_commit("commit-a", {})
+        key_b = await self._key_for_commit("commit-b", {})
+        assert key_a != key_b

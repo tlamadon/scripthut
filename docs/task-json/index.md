@@ -5,6 +5,7 @@ Workflows in ScriptHut work by executing a command that prints a JSON document t
 This page covers the JSON document shape, the per-task fields, dependencies, dynamic task generation, and task lifecycle. Two related sub-pages cover the larger concerns:
 
 - [Environment Variables](environments.md) — document-level and task-level `env:` rules
+- [Result Caching](caching.md) — content-addressed skip/restore of task outputs
 - [Writing a Task Generator](generators.md) — Python / Bash / Julia / R / static-JSON examples
 
 ---
@@ -73,6 +74,10 @@ Each task object supports the following fields:
 | `output_file` | no | string | auto | Custom path for stdout log (Slurm/PBS only). If not set, defaults to `<log_dir>/scripthut_<run_id>_<task_id>.out`. Ignored on AWS Batch — logs are routed to CloudWatch. |
 | `error_file` | no | string | auto | Custom path for stderr log (Slurm/PBS only). If not set, defaults to `<log_dir>/scripthut_<run_id>_<task_id>.err`. Ignored on AWS Batch — stderr is merged into the CloudWatch stream. |
 | `env` | no | array | `[]` | Task-level env rules. Each entry is an `EnvRule` with optional `if`, `set`, `append`, `init`, and `include` fields. See [Environment Variables](environments.md). |
+| `inputs` | no | array | `[]` | Paths/globs whose content feeds the result-cache key. See [Result Caching](caching.md). |
+| `outputs` | no | array | `[]` | Paths/globs of the task's artifacts, stored/restored by the result cache. See [Result Caching](caching.md). |
+| `cache` | no | bool | `true` | Per-task opt-out of the result cache. See [Result Caching](caching.md). |
+| `cache_scope` | no | string | `"commit"` | `"commit"` (git commit busts the key) or `"inputs"` (key from command + env + input hashes only). See [Result Caching](caching.md). |
 | `generates_source` | no | string | `null` | Path to a JSON file this task creates on the backend containing additional tasks. See [Dynamic Task Generation](#dynamic-task-generation). |
 
 ### Minimal Example

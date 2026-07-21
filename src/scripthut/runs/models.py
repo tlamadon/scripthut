@@ -103,6 +103,14 @@ class TaskDefinition:
     # Per-task opt-out: set false to always run even when the global cache
     # is enabled and outputs are declared.
     cache: bool = True
+    # What identifies "the same work" for the cache key. The default
+    # ("commit") folds the git commit in, so any commit busts the key — safe
+    # when the command may read undeclared files from the repo. "inputs"
+    # drops the commit, keying on command + env + declared input hashes
+    # only, so unrelated commits reuse cached results. Only sound when the
+    # task's ``inputs`` cover everything it reads (declare the code files
+    # too, not just the data).
+    cache_scope: Literal["commit", "inputs"] = "commit"
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "TaskDefinition":
@@ -115,6 +123,12 @@ class TaskDefinition:
             )
         env_raw = data.get("env", [])
         env_rules = [EnvRule.model_validate(r) for r in env_raw]
+        cache_scope = data.get("cache_scope", "commit")
+        if cache_scope not in ("commit", "inputs"):
+            raise ValueError(
+                f"Task '{data.get('id', '?')}': cache_scope must be 'commit' "
+                f"or 'inputs', got {cache_scope!r}"
+            )
         return cls(
             id=data["id"],
             name=data["name"],
@@ -134,6 +148,7 @@ class TaskDefinition:
             inputs=list(data.get("inputs", [])),
             outputs=list(data.get("outputs", [])),
             cache=bool(data.get("cache", True)),
+            cache_scope=cache_scope,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -157,6 +172,7 @@ class TaskDefinition:
             "inputs": self.inputs,
             "outputs": self.outputs,
             "cache": self.cache,
+            "cache_scope": self.cache_scope,
         }
 
     @property

@@ -1489,7 +1489,10 @@ class RunManager:
         key = cm.compute_key(
             command=task.command,
             env=merged_env,
-            commit_hash=run.commit_hash,
+            # cache_scope="inputs" drops the commit from the key so runs
+            # from different commits reuse each other's results as long as
+            # command + env + declared input hashes match.
+            commit_hash=run.commit_hash if task.cache_scope == "commit" else None,
             input_hashes=input_hashes,
         )
         item.cache_key = key  # remembered for the miss → store path
