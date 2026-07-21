@@ -6,6 +6,14 @@ Slurm and PBS backends connect to a cluster login node over SSH. The Local backe
 
 All backend types accept two extra optional fields not shown in the per-type tables below: `env:` (a list of env rules applied to every task on that backend) and `env_groups:` (named, reusable rule lists). See [Environments](environments.md).
 
+## How `max_concurrent` is shared
+
+Every backend type has a `max_concurrent` field capping the total number of concurrent jobs **across all runs** on that backend. Tasks over the cap stay `pending` inside scripthut — they are not handed to the cluster scheduler — so scripthut acts as a throttle in front of Slurm/PBS rather than flooding its queue.
+
+When several runs are waiting on the same backend, free slots are shared fairly: each waiting run may claim at most an equal slice, with the least-loaded run served first and older runs winning ties. A run that is the only claimant takes the whole cap, and any slice a run can't use (because it has fewer ready tasks than its share) is immediately offered to the others, so capacity is never left idle. The practical effect is that submitting a 500-task run no longer makes a subsequent one-task run wait behind the whole backlog.
+
+The cap counts **jobs, not CPUs**. Cluster-side limits (Slurm `GrpTRES`/`MaxTRES`, etc.) are read for display in the backend status panel but are not enforced by scripthut's scheduler.
+
 ## Slurm Backend
 
 ```yaml

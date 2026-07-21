@@ -1837,8 +1837,14 @@ class RunManager:
             self._persist_run(run)
             return False
 
-    async def process_run(self, run: Run) -> None:
-        """Process a run - submit tasks up to max_concurrent respecting dependencies."""
+    async def process_run(self, run: Run, *, fair_share: bool = True) -> None:
+        """Process a run - submit tasks up to max_concurrent respecting dependencies.
+
+        With ``fair_share`` (the default), the run may claim at most an equal
+        slice of the backend's free slots when other runs are also waiting, so
+        a large run can't monopolise the backend. Pass ``fair_share=False`` for
+        a greedy mop-up pass that fills slots the fair pass left idle.
+        """
         # Cascade failures
         changed = True
         while changed:
@@ -1873,14 +1879,20 @@ class RunManager:
         backend_active = self._backend_running_count(run.backend_name)
         backend_slots = backend_max - backend_active
 
-        slots_available = max(0, min(run_slots, backend_slots))
+        # Fair-share cap: don't let one run drain the backend while others wait.
+        fair_slots = (
+            self._fair_share_slots(run, backend_slots) if fair_share else backend_slots
+        )
+
+        slots_available = max(0, min(run_slots, backend_slots, fair_slots))
         to_submit = ready_items[:slots_available]
 
         if to_submit:
             task_ids = [item.task.id for item in to_submit]
             logger.info(
                 f"Run '{run.id}': submitting {len(to_submit)} tasks: {task_ids} "
-                f"(run_slots={run_slots}, backend_slots={backend_slots})"
+                f"(run_slots={run_slots}, backend_slots={backend_slots}, "
+                f"fair_slots={fair_slots})"
             )
 
         cache_completed: list[RunItem] = []
@@ -1914,7 +1926,38 @@ class RunManager:
         # poll. Terminates: each hit moves an item out of PENDING, so the
         # ready set strictly shrinks until no cache-completions remain.
         if cache_completed:
-            await self.process_run(run)
+            await self.process_run(run, fair_share=fair_share)
+
+    def _contending_runs(self, backend_name: str) -> list[Run]:
+        """Active runs on a backend that have submittable work, neediest first.
+
+        Ordered least-loaded first so a run holding many slots yields to one
+        holding none; ``created_at`` breaks ties, keeping equally-loaded runs
+        FIFO so nothing starves.
+        """
+        contenders = [
+            r
+            for r in self.runs.values()
+            if r.backend_name == backend_name
+            and r.status not in (RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED)
+            and self._has_submittable_items(r)
+        ]
+        contenders.sort(key=lambda r: (r.running_count, r.created_at))
+        return contenders
+
+    def _fair_share_slots(self, run: Run, backend_slots: int) -> int:
+        """This run's share of the backend's free slots.
+
+        A sole claimant takes everything. Otherwise each contender gets an
+        equal slice, with a floor of 1 so progress continues when there are
+        fewer free slots than waiting runs — ``process_run`` recomputes
+        ``backend_slots`` on every call, so the floor can't oversubscribe:
+        once the free slots are consumed the backend term clamps to 0.
+        """
+        contenders = self._contending_runs(run.backend_name)
+        if len(contenders) <= 1:
+            return backend_slots
+        return max(1, backend_slots // len(contenders))
 
     def _backend_running_count(self, backend_name: str) -> int:
         """Count all running/submitted tasks across all runs on a backend."""
@@ -2148,11 +2191,19 @@ class RunManager:
         # process_run recomputes the backend slot count and submits nothing
         # when the cap is still full, so this is cheap and safe to run each
         # poll; it also self-heals runs that are already stuck.
-        for run in self.runs.values():
-            if run.status in (RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED):
-                continue
-            if self._has_submittable_items(run):
+        #
+        # Two passes per backend. Pass 1 is fair: each contending run gets at
+        # most an equal slice of the free slots, neediest run first, so a big
+        # run can't re-claim every freed slot ahead of a small one. Pass 2 is
+        # greedy, filling slots pass 1 left idle because a run's share exceeded
+        # its ready set — everyone already had a fair first bite, and leaving
+        # capacity unused is strictly worse.
+        backend_names = {run.backend_name for run in self.runs.values()}
+        for backend_name in sorted(backend_names):
+            for run in self._contending_runs(backend_name):
                 await self.process_run(run)
+            for run in self._contending_runs(backend_name):
+                await self.process_run(run, fair_share=False)
 
     def _has_submittable_items(self, run: Run) -> bool:
         """True if the run has PENDING items whose dependencies are satisfied."""
