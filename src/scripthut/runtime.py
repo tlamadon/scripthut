@@ -20,11 +20,13 @@ import asyncssh
 from scripthut.backends.base import JobBackend
 from scripthut.backends.batch import BatchBackend
 from scripthut.backends.ec2 import EC2Backend
+from scripthut.backends.local import LocalBackend, LocalExecClient
 from scripthut.backends.pbs import PBSBackend
 from scripthut.backends.slurm import SlurmBackend
 from scripthut.config_schema import (
     BatchBackendConfig,
     EC2BackendConfig,
+    LocalBackendConfig,
     PBSBackendConfig,
     ScriptHutConfig,
     SlurmBackendConfig,
@@ -158,6 +160,35 @@ async def init_batch_backend(backend_config: BatchBackendConfig) -> BackendState
     return backend_state
 
 
+def init_local_backend(
+    backend_config: LocalBackendConfig, data_dir: Path,
+) -> BackendState:
+    """Initialize a local-machine backend (subprocess execution, no SSH).
+
+    The ``ssh_client`` slot gets a :class:`LocalExecClient` so every
+    shell-driven code path (cache hashing, generates_source, task-output
+    collection) works against the local filesystem unchanged. Job state
+    is spooled under ``<data_dir>/local-jobs/<name>`` so running jobs
+    survive a scripthut restart.
+    """
+    exec_client = LocalExecClient()
+    backend = LocalBackend(
+        backend_config.name,
+        spool_dir=data_dir / "local-jobs" / backend_config.name,
+    )
+    backend_state = BackendState(
+        name=backend_config.name,
+        backend_type="local",
+        ssh_client=exec_client,  # type: ignore[arg-type] — duck-typed SSHClient
+        backend=backend,
+        status=ConnectionStatus(connected=True, host="localhost"),
+        clone_dir=backend_config.clone_dir,
+    )
+    exec_client.on_command = backend_state.command_log.append
+    logger.info(f"Local backend '{backend_config.name}' ready (localhost)")
+    return backend_state
+
+
 async def init_backend(backend_config: SlurmBackendConfig | PBSBackendConfig) -> BackendState:
     """Initialize an SSH-based backend connection (Slurm or PBS)."""
     ssh_client = SSHClient(
@@ -237,6 +268,23 @@ async def init_runtime(
     if on_phase:
         on_phase("connecting backends")
     backends: dict[str, BackendState] = {}
+
+    # Escape hatch: a config with no backends at all still gets a working
+    # executor — the built-in local backend, running tasks as subprocesses
+    # on this machine. Explicitly-declared backends (including explicit
+    # ``type: local`` ones) always take precedence; this only fires when
+    # the backends list is empty, so existing configs are unaffected.
+    if not config.backends:
+        logger.info(
+            "No backends configured — registering the built-in local "
+            "backend 'local' so runs can execute on this machine"
+        )
+        config.backends.append(LocalBackendConfig(name="local"))
+
+    for local_config in config.local_backends:
+        backends[local_config.name] = init_local_backend(
+            local_config, config.settings.data_dir_resolved,
+        )
 
     # SSH backends connect concurrently — one slow or unreachable cluster
     # shouldn't stack its handshake/timeout on top of the others'.

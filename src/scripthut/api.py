@@ -21,6 +21,7 @@ from scripthut.config_schema import (
     BatchBackendConfig,
     EC2BackendConfig,
     ECSBackendConfig,
+    LocalBackendConfig,
     PBSBackendConfig,
     SlurmBackendConfig,
 )
@@ -39,6 +40,8 @@ def _backend_kind(cfg: Any) -> str:
         return "slurm"
     if isinstance(cfg, PBSBackendConfig):
         return "pbs"
+    if isinstance(cfg, LocalBackendConfig):
+        return "local"
     if isinstance(cfg, BatchBackendConfig):
         return "batch"
     if isinstance(cfg, EC2BackendConfig):

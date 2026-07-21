@@ -1,8 +1,8 @@
 # Backends
 
-Backends define the remote compute systems where jobs are submitted. ScriptHut supports **Slurm**, **PBS/Torque**, **AWS Batch**, and **AWS EC2** backend types (plus ECS, which is planned). Each backend is identified by a unique `name` and discriminated by its `type` field.
+Backends define the compute systems where jobs are submitted. ScriptHut supports **Slurm**, **PBS/Torque**, **Local**, **AWS Batch**, and **AWS EC2** backend types (plus ECS, which is planned). Each backend is identified by a unique `name` and discriminated by its `type` field.
 
-Slurm and PBS backends connect to a cluster login node over SSH. AWS Batch is API-based (boto3). AWS EC2 is API-based for launch/terminate but uses SSH tunnelled through SSM Session Manager for per-instance probes and logs — see [AWS Batch Backend](#aws-batch-backend) and [AWS EC2 Backend](#aws-ec2-backend) for credential setup.
+Slurm and PBS backends connect to a cluster login node over SSH. The Local backend runs tasks as subprocesses on the scripthut host itself. AWS Batch is API-based (boto3). AWS EC2 is API-based for launch/terminate but uses SSH tunnelled through SSM Session Manager for per-instance probes and logs — see [AWS Batch Backend](#aws-batch-backend) and [AWS EC2 Backend](#aws-ec2-backend) for credential setup.
 
 All backend types accept two extra optional fields not shown in the per-type tables below: `env:` (a list of env rules applied to every task on that backend) and `env_groups:` (named, reusable rule lists). See [Environments](environments.md).
 
@@ -62,6 +62,37 @@ backends:
 | `max_concurrent` | integer | `100` | Maximum concurrent jobs. |
 | `queue` | string | `null` | Default PBS queue. Overrides the `partition` field in task definitions. |
 | `clone_dir` | string | `~/scripthut-repos` | Path on the backend whose disk usage is shown in the backend status panel. Typically the parent directory where source repos are cloned. |
+
+## Local Backend
+
+The local backend runs tasks as detached subprocesses **on the machine scripthut itself runs on** — no cluster, no SSH. It's the escape hatch for laptop-only work, quick iteration, or environments where the remote backend isn't reachable, with the same semantics as every other backend: same task JSON, same dependency-order enforcement, same [result cache](../task-json/caching.md) participation, same logs and outputs.
+
+**When no backends are configured at all**, scripthut auto-registers a local backend named `local` at startup, so a bare config can still execute runs. Declare one explicitly to rename it, tune `max_concurrent`, or run it alongside remote backends:
+
+```yaml
+backends:
+  - name: laptop
+    type: local
+    max_concurrent: 8         # optional, default: this machine's CPU count
+    login_shell: false        # optional, default: false
+    clone_dir: ~/scripthut-repos  # optional, disk usage reported in UI
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `name` | string | **required** | Unique identifier for this backend. |
+| `type` | string | **required** | Must be `local`. |
+| `max_concurrent` | integer | CPU count | Maximum concurrent local task processes across all runs. |
+| `login_shell` | bool | `false` | Use `#!/bin/bash -l` in task scripts to source the profile. |
+| `clone_dir` | string | `~/scripthut-repos` | Directory where source repos are cloned; its disk usage shows in the status panel. |
+
+Details worth knowing:
+
+- **Execution is dumb by design.** There is no mtime or freshness logic: a task runs unconditionally unless the result cache answered *hit* before submission. Change detection belongs to the cache key (command + env + input hashes), not to the executor.
+- **Durability.** Each job writes a spool entry (pid + metadata) and records its exit code to a file when it finishes, under `<data_dir>/local-jobs/<backend>/`. Running jobs survive a scripthut restart — a restarted server picks their verdicts up from the spool, the same way sacct resolves Slurm jobs.
+- **Resource requests are informational.** `cpus`/`memory`/`time_limit` are recorded but not enforced (there is no scheduler); concurrency is bounded by `max_concurrent`.
+- **Caching and task outputs shell out to standard tools** (`sha256sum`, `tar`, GNU `find`, and your configured cache `tool`). On Linux hosts these are present; on macOS install coreutils/findutils (Homebrew) for full cache and outputs-panel support — missing tools fail soft (the task simply runs and outputs aren't listed).
+- Interactive/agent sessions (browser terminal, `tui` agent mode) are not supported on local backends.
 
 ## AWS Batch Backend
 

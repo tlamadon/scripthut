@@ -1,5 +1,6 @@
 """Pydantic models for YAML configuration schema."""
 
+import os
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
@@ -204,6 +205,44 @@ class PBSBackendConfig(BaseModel):
     env: list[EnvRule] = Field(
         default_factory=list,
         description="Backend-level env rules — cluster facts like SCRATCH and module init",
+    )
+    env_groups: dict[str, list[EnvRule]] = Field(
+        default_factory=dict,
+        description="Named, reusable rule lists. Visible to this backend's env: and to all later layers (server, workflow, task).",
+    )
+
+
+class LocalBackendConfig(BaseModel):
+    """Local-machine backend — runs tasks as subprocesses on the scripthut host.
+
+    The escape hatch for laptop-only work or when no cluster is
+    reachable: same task JSON, same dependency ordering, same result
+    cache, just executed locally. Auto-registered as ``local`` when the
+    config declares no backends at all; declare it explicitly to rename
+    it, tune ``max_concurrent``, or run it alongside remote backends.
+    """
+
+    name: str = Field(description="Unique identifier for this backend")
+    type: Literal["local"] = "local"
+    max_concurrent: int = Field(
+        default_factory=lambda: os.cpu_count() or 4,
+        ge=1,
+        description=(
+            "Maximum concurrent local task processes across all runs "
+            "(default: this machine's CPU count)"
+        ),
+    )
+    login_shell: bool = Field(
+        default=False,
+        description="Use login shell (#!/bin/bash -l) in task scripts to source profile",
+    )
+    clone_dir: str = Field(
+        default="~/scripthut-repos",
+        description="Directory where source repos are cloned; its disk usage is reported in the backend status panel",
+    )
+    env: list[EnvRule] = Field(
+        default_factory=list,
+        description="Backend-level env rules — machine facts like data paths and init",
     )
     env_groups: dict[str, list[EnvRule]] = Field(
         default_factory=dict,
@@ -419,7 +458,7 @@ class EC2BackendConfig(BaseModel):
 
 
 BackendConfig = Annotated[
-    SlurmBackendConfig | PBSBackendConfig | ECSBackendConfig | BatchBackendConfig | EC2BackendConfig,
+    SlurmBackendConfig | PBSBackendConfig | LocalBackendConfig | ECSBackendConfig | BatchBackendConfig | EC2BackendConfig,
     Field(discriminator="type"),
 ]
 
@@ -881,6 +920,11 @@ class ScriptHutConfig(BaseModel):
     def pbs_backends(self) -> list[PBSBackendConfig]:
         """Get all PBS backends."""
         return [c for c in self.backends if isinstance(c, PBSBackendConfig)]
+
+    @property
+    def local_backends(self) -> list[LocalBackendConfig]:
+        """Get all local-machine backends."""
+        return [c for c in self.backends if isinstance(c, LocalBackendConfig)]
 
     @property
     def ecs_backends(self) -> list[ECSBackendConfig]:
