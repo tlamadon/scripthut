@@ -638,6 +638,17 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#how-max_concurrent-is-shared" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How max_concurrent is shared
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#slurm-backend" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1260,6 +1271,17 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#how-max_concurrent-is-shared" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How max_concurrent is shared
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#slurm-backend" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1526,6 +1548,10 @@
 <p>Backends define the compute systems where jobs are submitted. ScriptHut supports <strong>Slurm</strong>, <strong>PBS/Torque</strong>, <strong>Local</strong>, <strong>AWS Batch</strong>, and <strong>AWS EC2</strong> backend types (plus ECS, which is planned). Each backend is identified by a unique <code>name</code> and discriminated by its <code>type</code> field.</p>
 <p>Slurm and PBS backends connect to a cluster login node over SSH. The Local backend runs tasks as subprocesses on the scripthut host itself. AWS Batch is API-based (boto3). AWS EC2 is API-based for launch/terminate but uses SSH tunnelled through SSM Session Manager for per-instance probes and logs — see <a href="#aws-batch-backend">AWS Batch Backend</a> and <a href="#aws-ec2-backend">AWS EC2 Backend</a> for credential setup.</p>
 <p>All backend types accept two extra optional fields not shown in the per-type tables below: <code>env:</code> (a list of env rules applied to every task on that backend) and <code>env_groups:</code> (named, reusable rule lists). See <a href="../environments/">Environments</a>.</p>
+<h2 id="how-max_concurrent-is-shared">How <code>max_concurrent</code> is shared<a class="headerlink" href="#how-max_concurrent-is-shared" title="Permanent link">&para;</a></h2>
+<p>Every backend type has a <code>max_concurrent</code> field capping the total number of concurrent jobs <strong>across all runs</strong> on that backend. Tasks over the cap stay <code>pending</code> inside scripthut — they are not handed to the cluster scheduler — so scripthut acts as a throttle in front of Slurm/PBS rather than flooding its queue.</p>
+<p>When several runs are waiting on the same backend, free slots are shared fairly: each waiting run may claim at most an equal slice, with the least-loaded run served first and older runs winning ties. A run that is the only claimant takes the whole cap, and any slice a run can't use (because it has fewer ready tasks than its share) is immediately offered to the others, so capacity is never left idle. The practical effect is that submitting a 500-task run no longer makes a subsequent one-task run wait behind the whole backlog.</p>
+<p>The cap counts <strong>jobs, not CPUs</strong>. Cluster-side limits (Slurm <code>GrpTRES</code>/<code>MaxTRES</code>, etc.) are read for display in the backend status panel but are not enforced by scripthut's scheduler.</p>
 <h2 id="slurm-backend">Slurm Backend<a class="headerlink" href="#slurm-backend" title="Permanent link">&para;</a></h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nt">backends</span><span class="p">:</span>
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">hpc-cluster</span>

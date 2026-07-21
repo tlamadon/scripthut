@@ -1730,7 +1730,7 @@
 </tr>
 <tr>
 <td><code>--json</code></td>
-<td>Print machine-readable JSON instead of a formatted table (where supported).</td>
+<td>Print machine-readable JSON instead of a formatted table. Accepted by <strong>every</strong> subcommand; stdout then holds exactly one JSON document (<code>run watch --json</code> suppresses the live redraw and prints the final run detail; <code>run logs --json</code> wraps the log in <code>{"content": ...}</code>; <code>run manifest</code> is JSON either way).</td>
 </tr>
 </tbody>
 </table>
