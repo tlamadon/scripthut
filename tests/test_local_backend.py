@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import shutil
 import stat
 import time
 
@@ -344,23 +343,19 @@ case "$op" in
 esac
 """
 
-_SHA256SUM_SHIM = """#!/bin/bash
-exec shasum -a 256 "$@"
-"""
-
-
 @pytest.fixture
 def fake_store(tmp_path, monkeypatch):
-    """PATH-shimmed rclone (and sha256sum, if absent) over a local dir."""
+    """PATH-shimmed rclone over a local dir.
+
+    Deliberately no sha256sum shim: content hashing must work with
+    whatever the host provides (sha256sum on Linux, the shasum fallback
+    on stock macOS) — running this suite on a Mac proves the fallback.
+    """
     bindir = tmp_path / "bin"
     bindir.mkdir()
     rclone = bindir / "rclone"
     rclone.write_text(_FAKE_RCLONE)
     rclone.chmod(rclone.stat().st_mode | stat.S_IEXEC)
-    if shutil.which("sha256sum") is None:
-        shim = bindir / "sha256sum"
-        shim.write_text(_SHA256SUM_SHIM)
-        shim.chmod(shim.stat().st_mode | stat.S_IEXEC)
     monkeypatch.setenv("PATH", f"{bindir}:{os.environ['PATH']}")
     monkeypatch.setenv("FAKE_RCLONE_ROOT", str(tmp_path / "store"))
     return tmp_path / "store"

@@ -91,7 +91,7 @@ Details worth knowing:
 - **Execution is dumb by design.** There is no mtime or freshness logic: a task runs unconditionally unless the result cache answered *hit* before submission. Change detection belongs to the cache key (command + env + input hashes), not to the executor.
 - **Durability.** Each job writes a spool entry (pid + metadata) and records its exit code to a file when it finishes, under `<data_dir>/local-jobs/<backend>/`. Running jobs survive a scripthut restart — a restarted server picks their verdicts up from the spool, the same way sacct resolves Slurm jobs.
 - **Resource requests are informational.** `cpus`/`memory`/`time_limit` are recorded but not enforced (there is no scheduler); concurrency is bounded by `max_concurrent`.
-- **Caching and task outputs shell out to standard tools** (`sha256sum`, `tar`, GNU `find`, and your configured cache `tool`). On Linux hosts these are present; on macOS install coreutils/findutils (Homebrew) for full cache and outputs-panel support — missing tools fail soft (the task simply runs and outputs aren't listed).
+- **Content hashing works out of the box on Linux and macOS.** The hashing pipeline prefers `sha256sum` and falls back to `shasum -a 256` (shipped with macOS), so the cache and [task manifests](../task-json/manifests.md) need no extra installs. Artifact transfer still needs your configured cache `tool` (`aws` or `rclone`) on the PATH. The per-task *outputs panel* listing uses GNU `find -printf` and is skipped silently on stock macOS (install findutils via Homebrew if you want it) — tasks run, cache, and produce manifests regardless.
 - Interactive/agent sessions (browser terminal, `tui` agent mode) are not supported on local backends.
 
 ## AWS Batch Backend

@@ -48,6 +48,19 @@ logger = logging.getLogger(__name__)
 # every run a unique key and defeat the cache entirely.
 _VOLATILE_ENV_PREFIX = "SCRIPTHUT_"
 
+# Portable content hasher, resolved on the *executing* machine: prefer
+# coreutils' ``sha256sum``, fall back to ``shasum -a 256`` (ships with
+# macOS/BSD via Perl). Both print "<hex>  <path>", so parsing is identical
+# either way. This must stay a shell-side resolution — hashing runs where
+# the files live (the cluster over SSH, or the host for the local
+# backend), so a Python-side hashlib can never stand in for the remote
+# case and the pipeline has to find its own tool.
+_SHA256_RESOLVE = (
+    "if command -v sha256sum >/dev/null 2>&1; "
+    "then _scripthut_sha=sha256sum; "
+    "else _scripthut_sha='shasum -a 256'; fi"
+)
+
 
 class CacheManager:
     """Computes cache keys and moves artifacts between a backend and the store.
@@ -172,8 +185,9 @@ class CacheManager:
         # on stderr (captured) and exits nonzero — surfaced below.
         cmd = (
             f"cd {working_dir} && "
+            f"{_SHA256_RESOLVE} && "
             f"find {patterns} -type f -print0 2>/dev/null "
-            f"| LC_ALL=C sort -z | xargs -0 -r sha256sum 2>/dev/null"
+            f"| LC_ALL=C sort -z | xargs -0 -r $_scripthut_sha 2>/dev/null"
         )
         try:
             stdout, stderr, exit_code = await ssh.run_command(cmd, timeout=120)
@@ -309,12 +323,13 @@ class CacheManager:
         build = (
             "set -e\n"
             f"cd {working_dir}\n"
+            f"{_SHA256_RESOLVE}\n"
             'TMP=$(mktemp /tmp/scripthut_cache_XXXXXX.tar.gz)\n'
             # Deterministic-ish tar: sort members so identical trees produce
             # identical archives across runs (helps CAS dedup).
             f"tar czf \"$TMP\" --sort=name {patterns} 2>/dev/null "
             f"|| tar czf \"$TMP\" {patterns}\n"
-            'H=$(sha256sum "$TMP" | cut -d" " -f1)\n'
+            'H=$($_scripthut_sha "$TMP" | cut -d" " -f1)\n'
             f'BLOB="{cas_dir}/$H.tar.gz"\n'
             f'if ! {exists_blob} >/dev/null 2>&1; then {put_blob}; fi\n'
             'echo "SCRIPTHUT_CACHE_HASH=$H"\n'

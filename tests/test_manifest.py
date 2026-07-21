@@ -21,7 +21,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import shutil
 import stat
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
@@ -35,7 +34,6 @@ from scripthut.runs.manifest import TASK_MANIFEST_VERSION, build_task_manifest
 from scripthut.runs.models import Run, RunItem, RunItemStatus, TaskDefinition
 from tests.test_local_backend import (
     _FAKE_RCLONE,
-    _SHA256SUM_SHIM,
     _drive,
     _make_runtimeish,
 )
@@ -46,21 +44,11 @@ def _sha256(path) -> str:
 
 
 @pytest.fixture
-def hash_shim(tmp_path, monkeypatch):
-    """Ensure ``sha256sum`` exists on PATH (macOS ships only ``shasum``)."""
-    if shutil.which("sha256sum") is not None:
-        return
-    bindir = tmp_path / "hashbin"
-    bindir.mkdir()
-    shim = bindir / "sha256sum"
-    shim.write_text(_SHA256SUM_SHIM)
-    shim.chmod(shim.stat().st_mode | stat.S_IEXEC)
-    monkeypatch.setenv("PATH", f"{bindir}:{os.environ['PATH']}")
+def fake_store(tmp_path, monkeypatch):
+    """PATH-shimmed rclone over a local directory (see test_local_backend).
 
-
-@pytest.fixture
-def fake_store(tmp_path, monkeypatch, hash_shim):
-    """PATH-shimmed rclone over a local directory (see test_local_backend)."""
+    No sha256sum shim — content hashing must work with the host's own
+    tools (sha256sum, or the shasum fallback on stock macOS)."""
     bindir = tmp_path / "bin"
     bindir.mkdir()
     rclone = bindir / "rclone"
@@ -162,7 +150,7 @@ class TestManifestShape:
 
 class TestManifestVerifiability:
     @pytest.mark.asyncio
-    async def test_hashes_match_actual_files(self, tmp_path, hash_shim):
+    async def test_hashes_match_actual_files(self, tmp_path):
         from scripthut.runs.models import RunStatus
 
         workdir = tmp_path / "work"
@@ -212,9 +200,7 @@ def _normalize(manifest: dict) -> dict:
 
 class TestExecutorEquivalence:
     @pytest.mark.asyncio
-    async def test_local_and_remote_manifests_equivalent(
-        self, tmp_path, hash_shim,
-    ):
+    async def test_local_and_remote_manifests_equivalent(self, tmp_path):
         from scripthut.runs.models import RunStatus
         from tests.test_probe import _FakeBackend, _manager
 
