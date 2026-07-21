@@ -1724,6 +1724,7 @@
 </table>
 <p>Details worth knowing:</p>
 <ul>
+<li><strong>POSIX-only (Linux/macOS hosts).</strong> The local backend drives everything through a POSIX shell — bash task scripts, exit-code supervisors, process-group cancellation. On a Windows host it is skipped at startup with a warning (and the no-backends auto-registration doesn't fire); remote SSH backends work from Windows as usual.</li>
 <li><strong>Execution is dumb by design.</strong> There is no mtime or freshness logic: a task runs unconditionally unless the result cache answered <em>hit</em> before submission. Change detection belongs to the cache key (command + env + input hashes), not to the executor.</li>
 <li><strong>Durability.</strong> Each job writes a spool entry (pid + metadata) and records its exit code to a file when it finishes, under <code>&lt;data_dir&gt;/local-jobs/&lt;backend&gt;/</code>. Running jobs survive a scripthut restart — a restarted server picks their verdicts up from the spool, the same way sacct resolves Slurm jobs.</li>
 <li><strong>Resource requests are informational.</strong> <code>cpus</code>/<code>memory</code>/<code>time_limit</code> are recorded but not enforced (there is no scheduler); concurrency is bounded by <code>max_concurrent</code>.</li>
