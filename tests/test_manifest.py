@@ -32,10 +32,18 @@ from fastapi.testclient import TestClient
 from scripthut.api import make_api_router
 from scripthut.runs.manifest import TASK_MANIFEST_VERSION, build_task_manifest
 from scripthut.runs.models import Run, RunItem, RunItemStatus, TaskDefinition
+from scripthut.backends.local import local_backend_supported
 from tests.test_local_backend import (
     _FAKE_RCLONE,
     _drive,
     _make_runtimeish,
+)
+
+# Classes below that execute tasks for real ride the local backend,
+# which is POSIX-only; the schema/API tests run everywhere.
+_posix_only = pytest.mark.skipif(
+    not local_backend_supported(),
+    reason="real execution rides the POSIX-only local backend",
 )
 
 
@@ -148,6 +156,7 @@ class TestManifestShape:
 # ---------------------------------------------------------------------------
 
 
+@_posix_only
 class TestManifestVerifiability:
     @pytest.mark.asyncio
     async def test_hashes_match_actual_files(self, tmp_path):
@@ -198,6 +207,7 @@ def _normalize(manifest: dict) -> dict:
     return m
 
 
+@_posix_only
 class TestExecutorEquivalence:
     @pytest.mark.asyncio
     async def test_local_and_remote_manifests_equivalent(self, tmp_path):
@@ -268,6 +278,7 @@ class TestExecutorEquivalence:
 # ---------------------------------------------------------------------------
 
 
+@_posix_only
 class TestCacheSymmetry:
     @pytest.mark.asyncio
     async def test_hit_manifest_matches_miss_manifest(

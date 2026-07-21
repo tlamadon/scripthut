@@ -88,6 +88,7 @@ backends:
 
 Details worth knowing:
 
+- **POSIX-only (Linux/macOS hosts).** The local backend drives everything through a POSIX shell — bash task scripts, exit-code supervisors, process-group cancellation. On a Windows host it is skipped at startup with a warning (and the no-backends auto-registration doesn't fire); remote SSH backends work from Windows as usual.
 - **Execution is dumb by design.** There is no mtime or freshness logic: a task runs unconditionally unless the result cache answered *hit* before submission. Change detection belongs to the cache key (command + env + input hashes), not to the executor.
 - **Durability.** Each job writes a spool entry (pid + metadata) and records its exit code to a file when it finishes, under `<data_dir>/local-jobs/<backend>/`. Running jobs survive a scripthut restart — a restarted server picks their verdicts up from the spool, the same way sacct resolves Slurm jobs.
 - **Resource requests are informational.** `cpus`/`memory`/`time_limit` are recorded but not enforced (there is no scheduler); concurrency is bounded by `max_concurrent`.

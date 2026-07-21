@@ -25,7 +25,21 @@ import time
 
 import pytest
 
-from scripthut.backends.local import LocalBackend, LocalExecClient
+from scripthut.backends.local import (
+    LocalBackend,
+    LocalExecClient,
+    local_backend_supported,
+)
+
+# The local backend is POSIX-only by design (bash task scripts, $?-style
+# supervisors, process-group kills); on Windows the runtime skips it with
+# a warning, so there is nothing real to exercise there. The platform
+# gate itself is covered by tests/test_local_backend_gate.py, which runs
+# on every platform.
+pytestmark = pytest.mark.skipif(
+    not local_backend_supported(),
+    reason="local backend requires a POSIX shell (skipped on Windows)",
+)
 from scripthut.config_schema import (
     CacheConfig,
     LocalBackendConfig,

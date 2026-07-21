@@ -20,7 +20,11 @@ import asyncssh
 from scripthut.backends.base import JobBackend
 from scripthut.backends.batch import BatchBackend
 from scripthut.backends.ec2 import EC2Backend
-from scripthut.backends.local import LocalBackend, LocalExecClient
+from scripthut.backends.local import (
+    LocalBackend,
+    LocalExecClient,
+    local_backend_supported,
+)
 from scripthut.backends.pbs import PBSBackend
 from scripthut.backends.slurm import SlurmBackend
 from scripthut.config_schema import (
@@ -274,14 +278,31 @@ async def init_runtime(
     # on this machine. Explicitly-declared backends (including explicit
     # ``type: local`` ones) always take precedence; this only fires when
     # the backends list is empty, so existing configs are unaffected.
+    # POSIX-only: on Windows the local backend's shell machinery can't
+    # run, so it is skipped with a warning instead of registering an
+    # executor whose every job would hang.
     if not config.backends:
-        logger.info(
-            "No backends configured — registering the built-in local "
-            "backend 'local' so runs can execute on this machine"
-        )
-        config.backends.append(LocalBackendConfig(name="local"))
+        if local_backend_supported():
+            logger.info(
+                "No backends configured — registering the built-in local "
+                "backend 'local' so runs can execute on this machine"
+            )
+            config.backends.append(LocalBackendConfig(name="local"))
+        else:
+            logger.warning(
+                "No backends configured, and the local backend is not "
+                "supported on this platform (needs a POSIX shell) — runs "
+                "cannot execute until a backend is added"
+            )
 
     for local_config in config.local_backends:
+        if not local_backend_supported():
+            logger.warning(
+                f"Skipping local backend '{local_config.name}': the local "
+                "backend needs a POSIX shell (Linux/macOS) and is not "
+                "supported on this platform"
+            )
+            continue
         backends[local_config.name] = init_local_backend(
             local_config, config.settings.data_dir_resolved,
         )

@@ -58,6 +58,21 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
+def local_backend_supported() -> bool:
+    """Whether this host can run the local backend at all.
+
+    Everything here drives a POSIX shell — bash task scripts, the
+    ``rc=$?``-style supervisor, process-group kills via ``os.killpg`` —
+    and ``create_subprocess_shell`` on Windows goes through ``cmd.exe``,
+    which silently mangles all of it (jobs launch but never record an
+    exit code). Runtime wiring consults this and skips local backends on
+    unsupported hosts rather than registering an executor whose every
+    job would hang.
+    """
+    return os.name != "nt"
+
+
 # How long a finished job stays visible in ``get_jobs`` after its exit
 # code lands. Long enough for every poll consumer to observe the
 # COMPLETED state and resolve the item via ``get_job_stats``; short
