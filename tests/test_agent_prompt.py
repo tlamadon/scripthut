@@ -431,3 +431,57 @@ class TestNoConfigFallback:
         assert "scripthut task run" in prompt
         assert "## Submitting work" in prompt
         assert "## Exit codes" in prompt
+
+
+# ---------- cache / probe / manifest / local backend ----------------------
+
+
+class TestCacheProbeManifestContent:
+    def test_cache_probe_manifest_patterns_present(self):
+        """The prompt must teach the cache-adjacent entry points added in
+        v0.13: the dry-run probe, the manifest command, and the caching
+        TaskDefinition fields."""
+        prompt = _render_agent_prompt(ScriptHutConfig())
+        for snippet in (
+            "## Result cache, probe, and manifests",
+            "scripthut task probe",
+            "--from-file",
+            "scripthut run manifest",
+            "POST /api/v1/tasks/probe",
+            "`cache_scope`",
+            "`inputs`",
+            "`outputs`",
+        ):
+            assert snippet in prompt, f"missing pattern: {snippet!r}"
+
+    def test_cache_inventory_reflects_enabled_store(self):
+        from scripthut.config_schema import CacheConfig
+
+        cfg = ScriptHutConfig(
+            cache=CacheConfig(enabled=True, store="s3://bucket/prefix"),
+        )
+        prompt = _render_agent_prompt(cfg)
+        assert "### Result cache" in prompt
+        assert "**Enabled**" in prompt
+        assert "s3://bucket/prefix" in prompt
+
+    def test_cache_inventory_reflects_disabled(self):
+        prompt = _render_agent_prompt(ScriptHutConfig())
+        assert "### Result cache" in prompt
+        assert "Disabled" in prompt
+
+    def test_local_backend_listed_with_annotation(self):
+        from scripthut.config_schema import LocalBackendConfig
+
+        cfg = ScriptHutConfig(
+            backends=[LocalBackendConfig(name="laptop", max_concurrent=4)],
+        )
+        prompt = _render_agent_prompt(cfg)
+        assert "`laptop` (local)" in prompt
+        assert "subprocesses on the scripthut host" in prompt
+
+    def test_empty_backends_mentions_auto_local(self):
+        prompt = _render_agent_prompt(ScriptHutConfig())
+        assert "No backends configured" in prompt
+        assert "auto-registers a" in prompt
+        assert "--backend local" in prompt

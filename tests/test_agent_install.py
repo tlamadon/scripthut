@@ -183,3 +183,29 @@ def test_version_appears_in_rendered_marker():
 
     assert f"v{__version__}" in render_skill()
     assert f"v{__version__}" in agent_skill.render_debug_command()
+
+
+class TestSkillCoversCacheProbeManifestLocal:
+    """The installed skill and debug command must stay current with the
+    execution-engine features (probe, manifests, local backend, caching)."""
+
+    def test_skill_description_triggers_on_new_features(self):
+        skill = render_skill()
+        head = skill.split("---", 2)[1]  # frontmatter only
+        for kw in ("local machine", "result cache", "manifest"):
+            assert kw in head, f"trigger keyword missing from description: {kw}"
+
+    def test_skill_body_teaches_probe_and_manifest(self):
+        skill = render_skill()
+        for cmd in (
+            "scripthut task probe",
+            "scripthut run manifest",
+        ):
+            assert cmd in skill, f"command missing from skill body: {cmd}"
+        assert "cache_scope" in skill
+
+    def test_debug_command_covers_stale_cache_hits(self):
+        cmd = render_debug_command()
+        assert "scripthut run manifest" in cmd
+        assert "cache_hit" in cmd
+        assert "cache: false" in cmd

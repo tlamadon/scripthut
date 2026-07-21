@@ -1072,7 +1072,8 @@ def _render_agent_prompt(config: ScriptHutConfig | None) -> str:
     out.append("# ScriptHut Agent Brief\n")
     out.append(
         "ScriptHut submits compute jobs to remote backends (Slurm, PBS, "
-        "AWS Batch, AWS EC2). Interact with it via the `scripthut` CLI. "
+        "AWS Batch, AWS EC2) or to the scripthut host itself via a "
+        "`local` backend. Interact with it via the `scripthut` CLI. "
         "This briefing tells you what's available in the current project "
         "context and the minimum set of commands you need to be useful.\n"
     )
@@ -1088,8 +1089,14 @@ def _render_agent_prompt(config: ScriptHutConfig | None) -> str:
         # ---- Backends -----------------------------------------------------
         out.append("### Backends")
         if not config.backends:
-            out.append("_No backends configured. Submitting work won't work until one is added._\n")
+            out.append(
+                "_No backends configured. The server auto-registers a "
+                "`local` backend in that case, so tasks submitted with "
+                "`--backend local` run as subprocesses on the scripthut "
+                "host — confirm with `scripthut backend list --json`._\n"
+            )
         else:
+            from scripthut.config_schema import LocalBackendConfig as _Local
             for b in config.backends:
                 bits = [f"`{b.name}` ({b.type})"]
                 # Each backend type has different surfacing fields; keep
@@ -1098,6 +1105,11 @@ def _render_agent_prompt(config: ScriptHutConfig | None) -> str:
                     bits.append(f"ssh `{b.ssh.user}@{b.ssh.host}`")
                     if b.account:
                         bits.append(f"account `{b.account}`")
+                if isinstance(b, _Local):
+                    bits.append(
+                        "runs tasks as subprocesses on the scripthut host "
+                        f"(max {b.max_concurrent} concurrent)"
+                    )
                 if isinstance(b, SlurmBackendConfig) and b.partition_map:
                     pairs = ", ".join(
                         f"{k}→{v}" for k, v in b.partition_map.items()
@@ -1105,6 +1117,24 @@ def _render_agent_prompt(config: ScriptHutConfig | None) -> str:
                     bits.append(f"partition map: {pairs}")
                 out.append(f"- {' · '.join(bits)}")
             out.append("")
+
+        # ---- Result cache ---------------------------------------------------
+        out.append("### Result cache")
+        cache_cfg = getattr(config, "cache", None)
+        if cache_cfg is not None and cache_cfg.enabled and cache_cfg.store:
+            out.append(
+                f"**Enabled** — store `{cache_cfg.store}` (tool "
+                f"`{cache_cfg.tool}`). Tasks that declare `outputs` are "
+                "content-addressed; identical work is restored instead of "
+                "re-run (item shows `CACHED`). See \"Result cache, probe, "
+                "and manifests\" below.\n"
+            )
+        else:
+            out.append(
+                "_Disabled (no `cache:` store configured on the server). "
+                "Tasks always execute; `inputs`/`outputs` declarations "
+                "still feed the per-task manifest (see below)._\n"
+            )
 
         # ---- Stacks -------------------------------------------------------
         out.append("### Stacks (reusable software environments)")
@@ -1259,6 +1289,15 @@ def _render_agent_prompt(config: ScriptHutConfig | None) -> str:
         "- **Behavior**: `dependencies` (list of other task ids), "
         "`env` (list of `{set: {KEY: VAL}}` rules), `image` (container "
         "URI for AWS Batch/EC2).\n"
+        "- **Caching / provenance**: `inputs` (paths/globs whose *content* "
+        "feeds the result-cache key and the manifest), `outputs` (the "
+        "task's artifact paths — stored/restored by the cache, hashed "
+        "into the manifest; a task with no `outputs` is never cached), "
+        "`cache` (bool, default true — set false to always run), "
+        "`cache_scope` (`\"commit\"` default: any new git commit busts "
+        "the key; `\"inputs\"`: key from command + env + input hashes "
+        "only, so unrelated commits reuse results — only safe when "
+        "`inputs` covers *everything* the command reads, code included).\n"
     )
 
     out.append("## Resource sizing — default small, escalate deliberately\n")
@@ -1288,12 +1327,70 @@ def _render_agent_prompt(config: ScriptHutConfig | None) -> str:
         "scripthut source view <name> --json         # workflow files in one source\n"
         "scripthut source sync [<name>] --json       # re-clone/re-glob + refresh workflow list\n"
         "scripthut stack check [<name>] --json       # stacks ready / missing / installing\n"
+        "scripthut task probe --from-file t.json --backend <b> --json  # cache hit/miss per task, runs NOTHING\n"
         "scripthut run list --json --limit 10        # recent runs\n"
         "scripthut run view <id> --json              # one run, item statuses + counts\n"
+        "scripthut run manifest <id> <task_id>       # provenance: input/output hashes, executor, timing\n"
         "scripthut run logs <id> <task_id> --tail 100         # stdout (task output)\n"
         "scripthut run logs <id> <task_id> --error --tail 100 # stderr (task errors)\n"
         "scripthut run logs <id> <task_id> -f                 # tail a task live until terminal\n"
         "```\n"
+    )
+
+    out.append("## Result cache, probe, and manifests\n")
+    out.append(
+        "When the server has a cache store configured (see the inventory "
+        "above), a task that declares `outputs` is **content-addressed**: "
+        "the key is command + resolved env + git commit + the sha256 of "
+        "every file matched by `inputs`. On a key match the prior run's "
+        "artifacts are restored into `working_dir` and the item completes "
+        "as `CACHED` without touching the scheduler. Failures are never "
+        "reused; unverifiable inputs mean the task just runs.\n"
+        "\n"
+        "**Probe before submitting expensive work.** The dry-run probe "
+        "answers hit/miss per task while executing nothing and writing "
+        "nothing (no run records, no cache mutations, no restores):\n"
+        "\n"
+        "```bash\n"
+        "scripthut task probe --from-file tasks.json --backend <b> --json\n"
+        "cat task.json | scripthut task probe --from-stdin --backend <b> --json\n"
+        "# pin the commit used for cache_scope=\"commit\" tasks' keys:\n"
+        "scripthut task probe --from-file tasks.json --backend <b> --commit <sha>\n"
+        "```\n"
+        "\n"
+        "It accepts the same JSON a submission takes (single task object, "
+        "or a workflow document / bare list) and returns per-task "
+        "verdicts: `cacheable` (+ `reason` when not), the `cache_key` and "
+        "`input_hashes`, `hit`, and on a hit the cached outputs' content "
+        "hashes. Verdicts are computed by the same code path a real "
+        "submission uses, so they can't drift. HTTP form: "
+        "`POST /api/v1/tasks/probe`.\n"
+        "\n"
+        "**Manifests are the provenance record.** Every terminal task "
+        "exposes a versioned document — *these exact input hashes, "
+        "through this command, produced these exact output hashes* — "
+        "plus executor, timestamps, duration, exit code:\n"
+        "\n"
+        "```bash\n"
+        "scripthut run manifest <run-id> <task-id>   # always JSON\n"
+        "```\n"
+        "\n"
+        "Also embedded per-item in `run view --json` (terminal items "
+        "only) and at `GET /api/v1/runs/{id}/tasks/{tid}/manifest` "
+        "(409 while the task is still running). `inputs`/`outputs` are "
+        "`{path: sha256}` maps; `null` means \"not hashed\" — never "
+        "treat it as \"empty and fine\". Manifest hashing works even "
+        "with the cache disabled, for tasks that declare "
+        "`inputs`/`outputs`.\n"
+        "\n"
+        "**`cache_scope: \"inputs\"` reuses across commits.** The default "
+        "scope folds the git commit into the key (any commit busts every "
+        "task's cache — safe). `\"inputs\"` drops it, giving per-task "
+        "invalidation: only changes to the declared inputs, command, or "
+        "env re-run the task. Only suggest it when `inputs` covers "
+        "everything the command reads — the code files themselves, "
+        "modules they import, config files. When unsure, keep the "
+        "default.\n"
     )
 
     out.append("## Exit codes\n")
@@ -1618,9 +1715,16 @@ def _render_agent_prompt(config: ScriptHutConfig | None) -> str:
     out.append("## Gotchas\n")
     out.append(
         "- **`working_dir` is a path on the backend**, not your local "
-        "filesystem. If you need files on the backend, either use a stack, "
-        "use a workflow that clones a git repo, or use `--inline-script` "
-        "for self-contained code.\n"
+        "filesystem (for a `local`-type backend the backend *is* the "
+        "scripthut host, so local paths are correct there). If you need "
+        "files on a remote backend, either use a stack, use a workflow "
+        "that clones a git repo, or use `--inline-script` for "
+        "self-contained code.\n"
+        "- **The local backend never second-guesses freshness.** There "
+        "is no mtime logic anywhere: a task runs unconditionally unless "
+        "the result cache answered *hit* at submit time. Don't add "
+        "make-style skip logic inside task commands; declare "
+        "`inputs`/`outputs` and let the cache do it.\n"
         "- **Partition names are remapped per backend** via `partition_map` "
         "(see the inventory above). Use the *logical* name (e.g. `gpu`, "
         "`standard`) from the project YAML, not the cluster's raw name.\n"

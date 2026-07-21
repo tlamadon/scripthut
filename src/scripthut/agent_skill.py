@@ -47,11 +47,13 @@ def render_skill() -> str:
 name: scripthut
 description: >-
   Submit and monitor compute workflows with the ScriptHut CLI — HPC
-  clusters (Slurm, PBS/Torque) over SSH, AWS Batch, and AWS EC2. Use when
-  the user wants to run or submit a workflow, job, or compute task; check
-  run, job, or cluster status; tail or inspect job logs; debug a failed
-  run; manage software stacks (venv, Conda, Julia); or estimate compute
-  costs.
+  clusters (Slurm, PBS/Torque) over SSH, AWS Batch, AWS EC2, or the
+  local machine (local backend). Use when the user wants to run or
+  submit a workflow, job, or compute task; check run, job, or cluster
+  status; tail or inspect job logs; debug a failed run; manage software
+  stacks (venv, Conda, Julia); probe the result cache (would this task
+  be a cache hit?); fetch a task's provenance manifest (input/output
+  hashes); or estimate compute costs.
 ---
 
 {_marker_line()}
@@ -59,8 +61,9 @@ description: >-
 # ScriptHut
 
 ScriptHut runs declarative workflows (GitHub Actions-style, defined in a
-git repo) on the user's own infrastructure. Everything is driven through
-the `scripthut` CLI; every command supports `--json`.
+git repo) on the user's own infrastructure — remote clusters, AWS, or
+the scripthut host itself via a `local` backend. Everything is driven
+through the `scripthut` CLI; every command supports `--json`.
 
 ## First step — always
 
@@ -88,10 +91,14 @@ Verify (cheap, read-only):
    `scripthut stack install <name>` if not ready.
 5. `scripthut task run ... --dry-run` to preview the assembled
    TaskDefinition before submitting anything non-trivial.
+6. For tasks that declare `inputs`/`outputs` (result caching):
+   `scripthut task probe --from-file tasks.json --backend <b> --json`
+   answers hit/miss per task **without executing or writing anything**
+   — know what the cache will skip before submitting expensive work.
 
 Submit and track:
 
-6. Submit with `--json` and capture the run id:
+7. Submit with `--json` and capture the run id:
 
    ```bash
    RUN_ID=$(scripthut workflow run train.json \\
@@ -102,12 +109,16 @@ Submit and track:
    add `--branch <name>` to run from a different branch of a git source
    (the workflow file and repo config are read at that branch's tip).
    Ad-hoc tasks use `scripthut task run` with the same `--json` shape.
-7. Poll `scripthut run view $RUN_ID --json` until the top-level status is
+8. Poll `scripthut run view $RUN_ID --json` until the top-level status is
    terminal. Against a running server,
    `scripthut run watch $RUN_ID --exit-status` blocks and exits 2 on
    failure.
-8. Logs: `scripthut run logs $RUN_ID <task_id> -f` to tail live;
+9. Logs: `scripthut run logs $RUN_ID <task_id> -f` to tail live;
    `--error --tail 200` first when a task ends in FAILED.
+10. Provenance: `scripthut run manifest $RUN_ID <task_id>` prints the
+    task's versioned manifest — input hashes as used, output paths +
+    content hashes, executor, timing — for anything downstream that
+    needs to verify or adopt the results.
 
 ## Failure diagnosis
 
@@ -119,9 +130,15 @@ and resubmit a **new** run rather than rerunning the failed one.
 ## Gotchas
 
 - `working_dir` and paths in TaskDefinitions are on the **backend**, not
-  the local filesystem.
+  the local filesystem (a `local`-type backend runs on the scripthut
+  host, so local paths are correct there).
 - Partition names are logical (per `partition_map`); use the names from
   `scripthut agent prompt`, not raw cluster names.
+- Result caching needs declared `outputs` (and a server-side cache
+  store); `cache_scope: "inputs"` reuses across commits but is only
+  safe when `inputs` covers everything the command reads. Never add
+  make-style freshness checks inside task commands — declare
+  `inputs`/`outputs` and let the cache decide.
 - In local mode (no server), statuses only refresh when you re-run
   `run view`.
 """
@@ -152,6 +169,12 @@ recent failed run with `scripthut run list --json`.
      `scripthut stack install <name>`.
    - **Resource limit** — OOM/TIMEOUT in stderr or scheduler state; name
      the TaskDefinition field to bump (memory, time, cpus).
+   - **Stale or unexpected cache hit** — the item shows `cache_hit: true`
+     / scheduler state `CACHED` but the results look wrong. Inspect
+     `scripthut run manifest <run-id> <task-id>`: if the task reads
+     files its declared `inputs` don't cover (a real risk with
+     `cache_scope: "inputs"`), fix the `inputs` list — or set
+     `cache: false` on the task — and resubmit.
    - **Code/workflow bug** — quote the failing lines from stderr and
      point at the source file if it's in this repo.
 4. Report the root cause and the concrete fix. Only resubmit (as a NEW
