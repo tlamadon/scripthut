@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -119,6 +120,58 @@ def test_parser_run_logs_flags():
     assert args.error is True
     assert args.follow is True
     assert args.tail == 50
+
+
+def _leaf_parsers(
+    parser: argparse.ArgumentParser, path: str = "scripthut",
+) -> list[tuple[str, argparse.ArgumentParser]]:
+    """Every runnable (handler-bearing) parser in the tree, with its path."""
+    subs = [
+        a for a in parser._actions if isinstance(a, argparse._SubParsersAction)
+    ]
+    leaves: list[tuple[str, argparse.ArgumentParser]] = []
+    if not subs:
+        return [(path, parser)]
+    seen: set[int] = set()
+    for action in subs:
+        for name, sp in action.choices.items():
+            if id(sp) in seen:  # aliases point at one parser
+                continue
+            seen.add(id(sp))
+            leaves.extend(_leaf_parsers(sp, f"{path} {name}"))
+    return leaves
+
+
+def test_every_subcommand_accepts_json():
+    """`--json` must be universal.
+
+    `scripthut agent prompt` and the installed Claude skill both tell agents
+    that every command takes --json; a subcommand that omits it dies with
+    "unrecognized arguments: --json" in the middle of a pipeline.
+    """
+    missing = [
+        path for path, sp in _leaf_parsers(cli.build_parser())
+        if not any("--json" in a.option_strings for a in sp._actions)
+    ]
+    assert not missing, f"subcommands missing --json: {missing}"
+
+
+def test_every_handler_honours_json():
+    """Accepting --json and ignoring it is the same trap, one step later.
+
+    Smoke check: each handler's source must mention json. `run manifest` is
+    exempt in spirit only — its output is JSON unconditionally, and its
+    docstring says so, which satisfies the check.
+    """
+    import inspect
+
+    deaf = []
+    for path, sp in _leaf_parsers(cli.build_parser()):
+        handler = sp.get_default("handler")
+        assert handler is not None, f"{path} has no handler"
+        if "json" not in inspect.getsource(handler).lower():
+            deaf.append(path)
+    assert not deaf, f"handlers that ignore --json: {deaf}"
 
 
 # -- _resolve_server ---------------------------------------------------------
@@ -1038,6 +1091,102 @@ async def test_run_logs_follow_streams_until_task_terminal(capsys):
     assert "line1" in out
     assert "line2" in out
     assert "final" in out
+    assert rc == 0
+
+
+# -- --json output shapes ----------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_workflow_run_json_emits_run_summary(capsys):
+    """`workflow run --json | jq -r .id` is the documented submit-and-capture
+    recipe — the output must be a single parseable document."""
+    run = _make_run(statuses=[RunItemStatus.SUBMITTED])
+    fake = _async_ctx(MagicMock())
+    fake.run_source_workflow = AsyncMock(return_value=cli._summary_from_run(run))
+
+    args = _ns(name="train.json", source="src", backend=None, json=True)
+    with patch.object(cli, "_make_client", return_value=fake):
+        with patch.object(cli, "_resolve_server", return_value=None):
+            rc = await cli._cmd_workflow_run(args)
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["id"] == "abc12345"
+    assert payload["backend_name"] == "cluster"
+    assert rc == 0
+
+
+@pytest.mark.asyncio
+async def test_run_rerun_json_emits_run_summary(capsys):
+    run = _make_run(statuses=[RunItemStatus.SUBMITTED])
+    fake = _async_ctx(MagicMock())
+    fake.rerun = AsyncMock(return_value=cli._summary_from_run(run))
+
+    args = _ns(id="old", json=True)
+    with patch.object(cli, "_make_client", return_value=fake):
+        rc = await cli._cmd_run_rerun(args)
+
+    assert json.loads(capsys.readouterr().out)["id"] == "abc12345"
+    assert rc == 0
+
+
+@pytest.mark.asyncio
+async def test_run_cancel_json_emits_ack(capsys):
+    fake = _async_ctx(MagicMock())
+    fake.cancel_run = AsyncMock(return_value={"run_id": "abc", "cancelled": True})
+
+    args = _ns(id="abc", json=True)
+    with patch.object(cli, "_make_client", return_value=fake):
+        rc = await cli._cmd_run_cancel(args)
+
+    assert json.loads(capsys.readouterr().out) == {"id": "abc", "cancelled": True}
+    assert rc == 0
+
+
+@pytest.mark.asyncio
+async def test_run_logs_json_wraps_content(capsys):
+    fake = _async_ctx(MagicMock())
+    fake.fetch_logs = AsyncMock(
+        return_value={"run_id": "r", "task_id": "t", "type": "output", "content": "hello"}
+    )
+
+    args = _ns(id="r", task="t", error=False, tail=None, follow=False,
+               interval=2.0, json=True)
+    with patch.object(cli, "_make_client", return_value=fake):
+        rc = await cli._cmd_run_logs(args)
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["content"] == "hello"
+    assert payload["task"] == "t"
+    assert rc == 0
+
+
+@pytest.mark.asyncio
+async def test_run_watch_json_prints_only_final_state(capsys):
+    """The live redraw is ANSI cursor trickery — under --json it must be
+    suppressed so stdout holds exactly one JSON document."""
+    states = ["running", "completed"]
+    n = {"i": 0}
+
+    async def fake_view(run_id):
+        idx = min(n["i"], len(states) - 1)
+        n["i"] += 1
+        return {
+            "id": run_id, "workflow_name": "demo", "backend_name": "cluster",
+            "created_at": "2026-05-15T12:00:00+00:00", "status": states[idx],
+            "task_count": 1, "completed_count": idx, "submitted_count": 1,
+            "status_counts": {}, "items": [],
+        }
+
+    fake = _async_ctx(MagicMock())
+    fake.view_run = fake_view
+
+    args = _ns(id="abc", interval=0.0, exit_status=True, json=True)
+    with patch.object(cli, "_make_client", return_value=fake):
+        rc = await cli._cmd_run_watch(args)
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "completed"
     assert rc == 0
 
 

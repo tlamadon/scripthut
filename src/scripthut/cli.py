@@ -89,6 +89,12 @@ def _summary_from_run(run: Run) -> dict[str, Any]:
     }
 
 
+def _emit_json(payload: Any) -> int:
+    """Print ``payload`` as indented JSON. Returns 0 for use as a tail call."""
+    print(json.dumps(payload, indent=2, default=str))
+    return 0
+
+
 def _print_run_submitted(summary: dict[str, Any], remote_base: str | None) -> None:
     """Human-readable confirmation after a successful run submission."""
     submitted = summary.get("submitted_count", 0)
@@ -1800,7 +1806,12 @@ async def _cmd_agent_prompt(args: argparse.Namespace) -> int:
         config: ScriptHutConfig | None = load_config(getattr(args, "config", None))
     except (FileNotFoundError, ConfigError):
         config = None
-    print(_render_agent_prompt(config))
+    prompt = _render_agent_prompt(config)
+    if args.json:
+        # The briefing is markdown; JSON mode just wraps it so a caller
+        # piping every command through jq doesn't hit a parse error.
+        return _emit_json({"prompt": prompt})
+    print(prompt)
     return 0
 
 
@@ -1813,16 +1824,22 @@ async def _cmd_agent_install(args: argparse.Namespace) -> int:
         claude_dir = Path.cwd() / ".claude"
 
     results = agent_skill.install_assets(claude_dir, force=args.force)
+    skipped = any(r.action == "skipped" for r in results)
 
-    skipped = False
+    if args.json:
+        _emit_json({
+            "claude_dir": str(claude_dir),
+            "files": [{"path": str(r.path), "action": r.action} for r in results],
+            "skipped": skipped,
+        })
+        return 1 if skipped else 0
+
     for r in results:
         try:
             shown: Path | str = r.path.relative_to(Path.cwd())
         except ValueError:
             shown = r.path
         print(f"  {r.action:<9} {shown}")
-        if r.action == "skipped":
-            skipped = True
 
     if skipped:
         sys.stdout.flush()
@@ -2633,6 +2650,28 @@ async def _cmd_stack_list(args: argparse.Namespace) -> int:
     return 0
 
 
+def _stack_results_json(results: list[Any]) -> list[dict[str, Any]]:
+    """Serialize ``_run_per_backend`` output — the local-mode --json shape."""
+    return [
+        {
+            "stack": name,
+            "backend": be,
+            "status": (
+                {
+                    "state": s.state.value,
+                    "hash": s.hash,
+                    "path": s.path,
+                    "last_built": s.last_built.isoformat() if s.last_built else None,
+                    "size_bytes": s.size_bytes,
+                    "error": s.error,
+                } if s else None
+            ),
+            "note": note,
+        }
+        for name, be, s, note in results
+    ]
+
+
 async def _cmd_stack_check(args: argparse.Namespace) -> int:
     server, source = _resolve_server_with_source(args)
     via_daemon = False
@@ -2680,25 +2719,7 @@ async def _cmd_stack_check(args: argparse.Namespace) -> int:
         config, stacks, args.backend, do_check,
     )
     if args.json:
-        print(json.dumps([
-            {
-                "stack": name,
-                "backend": be,
-                "status": (
-                    {
-                        "state": s.state.value,
-                        "hash": s.hash,
-                        "path": s.path,
-                        "last_built": s.last_built.isoformat() if s.last_built else None,
-                        "size_bytes": s.size_bytes,
-                        "error": s.error,
-                    } if s else None
-                ),
-                "note": note,
-            }
-            for name, be, s, note in results
-        ], indent=2))
-        return 0
+        return _emit_json(_stack_results_json(results))
     _print_status_table(results)
     # Exit non-zero if any stack is missing/installing — useful for CI gates.
     bad = any(s is None or s.state != StackState.READY for _, _, s, _ in results)
@@ -2728,7 +2749,10 @@ async def _cmd_stack_install(args: argparse.Namespace) -> int:
         )
         run_id = data.get("id")
         if args.json:
-            print(json.dumps(data, indent=2))
+            # Under --watch the final run detail is the more useful
+            # document, and two JSON blobs on stdout would break `jq`.
+            if not args.watch:
+                _emit_json(data)
         else:
             print(
                 f"Install submitted as run {run_id} "
@@ -2769,7 +2793,10 @@ async def _cmd_stack_install(args: argparse.Namespace) -> int:
         )
 
     results = await _run_per_backend(config, [stack], args.backend, do_install)
-    _print_status_table(results)
+    if args.json:
+        _emit_json(_stack_results_json(results))
+    else:
+        _print_status_table(results)
     failed = any(
         s is None or s.state != StackState.READY
         for _, _, s, _ in results
@@ -2790,6 +2817,9 @@ async def _cmd_stack_delete(args: argparse.Namespace) -> int:
             params={"backend": backend, "source": getattr(args, "source", None)},
             use_auth=not via_daemon,
         )
+        if args.json:
+            _emit_json(data)
+            return 0 if data.get("deleted") else 1
         if data.get("deleted"):
             print(f"  ✓ {args.name} deleted on backend {data.get('backend')}")
             return 0
@@ -2811,7 +2841,10 @@ async def _cmd_stack_delete(args: argparse.Namespace) -> int:
         return await mgr.check(stack, backend_name, ssh)
 
     results = await _run_per_backend(config, [stack], args.backend, do_delete)
-    _print_status_table(results)
+    if args.json:
+        _emit_json(_stack_results_json(results))
+    else:
+        _print_status_table(results)
     failed = any(note is not None for _, _, _, note in results)
     return 1 if failed else 0
 
@@ -3323,6 +3356,14 @@ async def _cmd_daemon_start(args: argparse.Namespace) -> int:
     host, port = daemon.resolve_host_port(config)
     already = daemon.ping(host, port) is not None
     info = daemon.start_daemon(config, getattr(args, "config", None))
+    if args.json:
+        return _emit_json({
+            "running": True,
+            "already_running": already,
+            "pid": info.pid,
+            "url": info.url,
+            "log_path": str(daemon.logfile_path(config)),
+        })
     if already:
         print(f"Already running (pid {info.pid}) at {info.url}")
     else:
@@ -3334,7 +3375,10 @@ async def _cmd_daemon_start(args: argparse.Namespace) -> int:
 async def _cmd_daemon_stop(args: argparse.Namespace) -> int:
     from scripthut import daemon
 
-    print(daemon.stop_daemon(_load_config_or_none(args)))
+    message = daemon.stop_daemon(_load_config_or_none(args))
+    if args.json:
+        return _emit_json({"running": False, "message": message})
+    print(message)
     return 0
 
 
@@ -3370,10 +3414,16 @@ async def _cmd_daemon_logs(args: argparse.Namespace) -> int:
 
     path = daemon.logfile_path(_load_config_or_none(args))
     if not path.exists():
+        if args.json:
+            _emit_json({"log_path": str(path), "exists": False, "lines": []})
+            return 2
         print(f"No daemon log at {path}", file=sys.stderr)
         return 2
+    lines = path.read_text(errors="replace").splitlines()[-args.tail:]
+    if args.json:
+        return _emit_json({"log_path": str(path), "exists": True, "lines": lines})
     print(f"# {path}", file=sys.stderr)
-    for line in path.read_text(errors="replace").splitlines()[-args.tail:]:
+    for line in lines:
         print(line)
     return 0
 
@@ -3479,6 +3529,8 @@ async def _cmd_workflow_run(args: argparse.Namespace) -> int:
             args.source, args.name, backend=args.backend,
             branch=getattr(args, "branch", None),
         )
+    if args.json:
+        return _emit_json(summary)
     # base_url covers the daemon path too, where _resolve_server is None
     # but a server is in fact processing the run.
     _print_run_submitted(summary, remote_base=getattr(client, "base_url", None))
@@ -3535,7 +3587,11 @@ async def _cmd_run_view(args: argparse.Namespace) -> int:
 
 
 async def _cmd_run_manifest(args: argparse.Namespace) -> int:
-    """Print a task's versioned manifest (always JSON — it IS the artifact)."""
+    """Print a task's versioned manifest.
+
+    Always JSON — the manifest IS the artifact — so ``--json`` is accepted
+    and has no effect.
+    """
     async with _make_client(args) as client:
         data = await client.get_task_manifest(args.id, args.task_id)
     print(json.dumps(data, indent=2))
@@ -3550,9 +3606,15 @@ def _clear_lines(n: int) -> None:
 
 
 async def _cmd_run_watch(args: argparse.Namespace) -> int:
-    """Poll a run's status until it reaches a terminal state."""
+    """Poll a run's status until it reaches a terminal state.
+
+    With ``--json`` the live redraw is suppressed (it is ANSI cursor
+    trickery, not data) and the terminal run detail is printed once at the
+    end — the same shape as ``run view --json``.
+    """
     last_lines = 0
     final_status: str | None = None
+    data: dict[str, Any] = {}
     async with _make_client(args) as client:
         while True:
             try:
@@ -3561,15 +3623,18 @@ async def _cmd_run_watch(args: argparse.Namespace) -> int:
                 _clear_lines(last_lines)
                 print(f"Error: {e}", file=sys.stderr)
                 return 1
-            block = _format_run_view(data)
-            _clear_lines(last_lines)
-            sys.stdout.write(block + "\n")
-            sys.stdout.flush()
-            last_lines = block.count("\n") + 1
+            if not args.json:
+                block = _format_run_view(data)
+                _clear_lines(last_lines)
+                sys.stdout.write(block + "\n")
+                sys.stdout.flush()
+                last_lines = block.count("\n") + 1
             final_status = data.get("status")
             if final_status in TERMINAL_RUN_STATES:
                 break
             await asyncio.sleep(args.interval)
+    if args.json:
+        _emit_json(data)
     if args.exit_status and final_status != RunStatus.COMPLETED.value:
         return 1
     return 0
@@ -3578,6 +3643,8 @@ async def _cmd_run_watch(args: argparse.Namespace) -> int:
 async def _cmd_run_cancel(args: argparse.Namespace) -> int:
     async with _make_client(args) as client:
         await client.cancel_run(args.id)
+    if args.json:
+        return _emit_json({"id": args.id, "cancelled": True})
     print(f"Cancelled run {args.id}")
     return 0
 
@@ -3585,6 +3652,8 @@ async def _cmd_run_cancel(args: argparse.Namespace) -> int:
 async def _cmd_run_rerun(args: argparse.Namespace) -> int:
     async with _make_client(args) as client:
         summary = await client.rerun(args.id)
+    if args.json:
+        return _emit_json(summary)
     _print_run_submitted(summary, remote_base=getattr(client, "base_url", None))
     return 0
 
@@ -3598,12 +3667,18 @@ async def _cmd_run_logs(args: argparse.Namespace) -> int:
             data = await client.fetch_logs(
                 args.id, args.task, log_type=log_type, tail=args.tail,
             )
+            if args.json:
+                return _emit_json(
+                    {"id": args.id, "task": args.task, "type": log_type, **data},
+                )
             sys.stdout.write(data["content"])
             if data["content"] and not data["content"].endswith("\n"):
                 sys.stdout.write("\n")
             return 0
 
         # --follow: poll, print only the delta, exit when the task is terminal.
+        # Under --json we stay silent while polling and emit one document at
+        # the end — a stream of partial JSON would not be parseable.
         seen_len = 0
         terminal_item_states = {
             RunItemStatus.COMPLETED.value,
@@ -3622,7 +3697,7 @@ async def _cmd_run_logs(args: argparse.Namespace) -> int:
                     continue
                 raise
             content = data.get("content", "")
-            if len(content) > seen_len:
+            if len(content) > seen_len and not args.json:
                 sys.stdout.write(content[seen_len:])
                 sys.stdout.flush()
                 seen_len = len(content)
@@ -3637,6 +3712,10 @@ async def _cmd_run_logs(args: argparse.Namespace) -> int:
             if item["status"] in terminal_item_states:
                 break
             await asyncio.sleep(args.interval)
+    if args.json:
+        return _emit_json(
+            {"id": args.id, "task": args.task, "type": log_type, **data},
+        )
     return 0
 
 
@@ -3646,6 +3725,15 @@ async def _cmd_run_logs(args: argparse.Namespace) -> int:
 
 
 def _add_common(parser: argparse.ArgumentParser) -> None:
+    # --json lives here so *every* subcommand accepts it. Agents are told
+    # (by `scripthut agent prompt` and the installed skill) that the flag is
+    # universal; a subcommand that omitted it died with "unrecognized
+    # arguments: --json" mid-pipeline. Handlers must honour it — see
+    # test_every_subcommand_accepts_json.
+    parser.add_argument(
+        "--json", action="store_true",
+        help="Emit machine-readable JSON on stdout instead of a table.",
+    )
     parser.add_argument(
         "--server",
         help=(
@@ -3692,6 +3780,19 @@ def _add_common(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_daemon_common(parser: argparse.ArgumentParser) -> None:
+    """Flags shared by ``daemon`` subcommands.
+
+    Not ``_add_common``: --server and the CF auth flags are meaningless for
+    managing a localhost process. --json still is, so it lives here too.
+    """
+    parser.add_argument("--config", "-c", type=Path, help="Path to scripthut.yaml")
+    parser.add_argument(
+        "--json", action="store_true",
+        help="Emit machine-readable JSON on stdout instead of a table.",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the gh-style ``scripthut`` parser (workflow/run noun groups)."""
     parser = argparse.ArgumentParser(
@@ -3732,13 +3833,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_run_list = run_sub.add_parser("list", help="List recent runs")
     p_run_list.add_argument("--limit", type=int, default=20)
-    p_run_list.add_argument("--json", action="store_true")
     _add_common(p_run_list)
     p_run_list.set_defaults(handler=_cmd_run_list)
 
     p_run_view = run_sub.add_parser("view", help="Show details for a single run")
     p_run_view.add_argument("id")
-    p_run_view.add_argument("--json", action="store_true")
     _add_common(p_run_view)
     p_run_view.set_defaults(handler=_cmd_run_view)
 
@@ -3797,7 +3896,6 @@ def build_parser() -> argparse.ArgumentParser:
     be_sub = p_be.add_subparsers(dest="be_cmd", required=True)
 
     p_be_list = be_sub.add_parser("list", help="List configured backends")
-    p_be_list.add_argument("--json", action="store_true")
     _add_common(p_be_list)
     p_be_list.set_defaults(handler=_cmd_backend_list)
 
@@ -3831,6 +3929,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--force",
         action="store_true",
         help="Overwrite existing files even if scripthut didn't write them",
+    )
+    p_ag_install.add_argument(
+        "--json", action="store_true",
+        help="Emit machine-readable JSON on stdout instead of a table.",
     )
     p_ag_install.set_defaults(handler=_cmd_agent_install)
 
@@ -3906,7 +4008,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--dry-run", action="store_true",
         help="Print the assembled task + backend as JSON without submitting",
     )
-    p_tk_run.add_argument("--json", action="store_true")
     _add_common(p_tk_run)
     p_tk_run.set_defaults(handler=_cmd_task_run)
 
@@ -3940,7 +4041,6 @@ def build_parser() -> argparse.ArgumentParser:
             "(default: none, matching ad-hoc submissions)"
         ),
     )
-    p_tk_probe.add_argument("--json", action="store_true")
     _add_common(p_tk_probe)
     p_tk_probe.set_defaults(handler=_cmd_task_probe)
 
@@ -3955,7 +4055,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     p_st_list = st_sub.add_parser("list", help="List configured stacks")
-    p_st_list.add_argument("--json", action="store_true")
     p_st_list.add_argument("--source", help=_SOURCE_OVERLAY_HELP)
     _add_common(p_st_list)
     p_st_list.set_defaults(handler=_cmd_stack_list)
@@ -3966,7 +4065,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_st_check.add_argument("name", nargs="?", help="Stack name (default: all)")
     p_st_check.add_argument("--backend", help="Limit to a single backend")
-    p_st_check.add_argument("--json", action="store_true")
     p_st_check.add_argument("--source", help=_SOURCE_OVERLAY_HELP)
     _add_common(p_st_check)
     p_st_check.set_defaults(handler=_cmd_stack_check)
@@ -3983,10 +4081,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Force a rebuild even when the input hash matches the cached build",
     )
     p_st_install.add_argument("--source", help=_SOURCE_OVERLAY_HELP)
-    p_st_install.add_argument(
-        "--json", action="store_true",
-        help="Print the submitted run summary as JSON (server mode only).",
-    )
     p_st_install.add_argument(
         "--watch", action="store_true",
         help=(
@@ -4020,7 +4114,6 @@ def build_parser() -> argparse.ArgumentParser:
     # Bare `scripthut disk` = `disk status`; flags on the group parser make
     # `scripthut disk --json` work without naming the subcommand.
     p_disk.add_argument("--backend", help="Limit to a single backend")
-    p_disk.add_argument("--json", action="store_true")
     _add_common(p_disk)
     p_disk.set_defaults(handler=_cmd_disk_status)
     disk_sub = p_disk.add_subparsers(dest="disk_cmd", required=False)
@@ -4030,7 +4123,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Show the server's cached scan results (never triggers a scan)",
     )
     p_disk_status.add_argument("--backend", help="Limit to a single backend")
-    p_disk_status.add_argument("--json", action="store_true")
     _add_common(p_disk_status)
     p_disk_status.set_defaults(handler=_cmd_disk_status)
 
@@ -4039,7 +4131,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run a fresh scan (sizes + classification) and print the result",
     )
     p_disk_scan.add_argument("--backend", help="Scan a single backend only")
-    p_disk_scan.add_argument("--json", action="store_true")
     p_disk_scan.add_argument(
         "--interval", type=float, default=2.0,
         help="Polling interval (seconds) while waiting for a server-side scan.",
@@ -4063,7 +4154,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--yes", action="store_true",
         help="Skip the confirmation prompt",
     )
-    p_disk_clean.add_argument("--json", action="store_true")
     p_disk_clean.add_argument(
         "--path", action="append", dest="paths", metavar="PATH",
         help=(
@@ -4083,7 +4173,6 @@ def build_parser() -> argparse.ArgumentParser:
     src_sub = p_src.add_subparsers(dest="src_cmd", required=True)
 
     p_src_list = src_sub.add_parser("list", help="List configured sources")
-    p_src_list.add_argument("--json", action="store_true")
     _add_common(p_src_list)
     p_src_list.set_defaults(handler=_cmd_source_list)
 
@@ -4091,7 +4180,6 @@ def build_parser() -> argparse.ArgumentParser:
         "view", help="Show source metadata and discovered workflow files",
     )
     p_src_view.add_argument("name")
-    p_src_view.add_argument("--json", action="store_true")
     _add_common(p_src_view)
     p_src_view.set_defaults(handler=_cmd_source_view)
 
@@ -4104,7 +4192,6 @@ def build_parser() -> argparse.ArgumentParser:
         nargs="?",
         help="Source name; omit to sync every configured source",
     )
-    p_src_sync.add_argument("--json", action="store_true")
     _add_common(p_src_sync)
     p_src_sync.set_defaults(handler=_cmd_source_sync)
 
@@ -4123,26 +4210,25 @@ def build_parser() -> argparse.ArgumentParser:
             "foreground server just run `scripthut` with no subcommand."
         ),
     )
-    p_dm_start.add_argument("--config", "-c", type=Path, help="Path to scripthut.yaml")
+    _add_daemon_common(p_dm_start)
     p_dm_start.set_defaults(handler=_cmd_daemon_start)
 
     p_dm_stop = dm_sub.add_parser(
         "stop", help="Stop the local daemon (SIGTERM, then SIGKILL)",
     )
-    p_dm_stop.add_argument("--config", "-c", type=Path, help="Path to scripthut.yaml")
+    _add_daemon_common(p_dm_stop)
     p_dm_stop.set_defaults(handler=_cmd_daemon_stop)
 
     p_dm_status = dm_sub.add_parser(
         "status", help="Show local daemon state (exit 0 running, 3 not)",
     )
-    p_dm_status.add_argument("--config", "-c", type=Path, help="Path to scripthut.yaml")
-    p_dm_status.add_argument("--json", action="store_true")
+    _add_daemon_common(p_dm_status)
     p_dm_status.set_defaults(handler=_cmd_daemon_status)
 
     p_dm_logs = dm_sub.add_parser(
         "logs", help="Print the daemon log path and its last lines",
     )
-    p_dm_logs.add_argument("--config", "-c", type=Path, help="Path to scripthut.yaml")
+    _add_daemon_common(p_dm_logs)
     p_dm_logs.add_argument("--tail", type=int, default=100, help="Lines to print (default 100)")
     p_dm_logs.set_defaults(handler=_cmd_daemon_logs)
 
@@ -4156,7 +4242,6 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Skip the HTTP probes; just print resolved config (no network).",
     )
-    p_status.add_argument("--json", action="store_true")
     _add_common(p_status)
     p_status.set_defaults(handler=_cmd_status)
 

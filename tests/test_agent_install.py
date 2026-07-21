@@ -134,7 +134,7 @@ class TestInstallAssets:
 
 
 def _args(**kw) -> argparse.Namespace:
-    defaults: dict = {"user": False, "force": False}
+    defaults: dict = {"user": False, "force": False, "json": False}
     defaults.update(kw)
     return argparse.Namespace(**defaults)
 

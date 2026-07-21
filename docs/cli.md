@@ -64,7 +64,7 @@ Every subcommand accepts these:
 |------|-------------|
 | `--server <url>` | Server URL to target. Pass `local` to force local mode. |
 | `--config <path>`, `-c <path>` | Path to `scripthut.yaml`. Loads **exactly that file** and skips the layered discovery. Useful in tests and one-off scripts. |
-| `--json` | Print machine-readable JSON instead of a formatted table (where supported). |
+| `--json` | Print machine-readable JSON instead of a formatted table. Accepted by **every** subcommand; stdout then holds exactly one JSON document (`run watch --json` suppresses the live redraw and prints the final run detail; `run logs --json` wraps the log in `{"content": ...}`; `run manifest` is JSON either way). |
 
 ### Config discovery (without `--config`)
 
