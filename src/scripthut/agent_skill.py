@@ -109,10 +109,17 @@ Submit and track:
    add `--branch <name>` to run from a different branch of a git source
    (the workflow file and repo config are read at that branch's tip).
    Ad-hoc tasks use `scripthut task run` with the same `--json` shape.
-8. Poll `scripthut run view $RUN_ID --json` until the top-level status is
-   terminal. Against a running server,
-   `scripthut run watch $RUN_ID --exit-status` blocks and exits 2 on
-   failure.
+8. **Get notified — don't poll.** Against a running server (the local
+   daemon counts), `scripthut run watch $RUN_ID --exit-status` blocks
+   until the run is terminal, prints a one-line verdict (`Run … COMPLETED`
+   / `Run … FAILED` with the failed task ids and a `run logs` hint), and
+   exits non-zero on failure. **Launch it as a background task** so you
+   keep working and are handed that summary the instant the run finishes —
+   this is how you stop missing completions. Submit and watch in one shot
+   with `scripthut workflow run <file> --source <name> --backend <b>
+   --watch` (also backgrounded). Fall back to re-polling
+   `scripthut run view $RUN_ID --json` only when you can't background a
+   task.
 9. Logs: `scripthut run logs $RUN_ID <task_id> -f` to tail live;
    `--error --tail 200` first when a task ends in FAILED.
 10. Provenance: `scripthut run manifest $RUN_ID <task_id>` prints the
@@ -180,8 +187,9 @@ recent failed run with `scripthut run list --json`.
 4. Report the root cause and the concrete fix. Only resubmit (as a NEW
    run — never rerun the failed one) if the user asks. If the fix lives
    on an unmerged branch of the workflow's git source, test it with
-   `scripthut workflow run <file> --source <name> --branch <fix-branch>`
-   before merging.
+   `scripthut workflow run <file> --source <name> --branch <fix-branch>
+   --watch` (run in the background to be notified of the result) before
+   merging.
 """
 
 

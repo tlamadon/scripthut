@@ -164,6 +164,82 @@ def _format_run_view(detail: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _format_run_summary(detail: dict[str, Any]) -> str:
+    """A compact terminal-state verdict for a finished run.
+
+    This is written for the agent-notify path: when a run is watched as a
+    background task, the harness hands the agent whatever the watch command
+    printed on exit. So we lead with the verdict, give the task tally, and —
+    on failure — name the offending tasks and the exact `run logs` command to
+    inspect the first real one. Reads off the same JSON shape as
+    ``run view``/``run watch``; safe on partial dicts.
+    """
+    run_id = detail.get("id", "?")
+    wf = detail.get("workflow_name", "?")
+    backend = detail.get("backend_name", "?")
+    total = detail.get("task_count", 0)
+    counts = detail.get("status_counts") or {}
+    status = detail.get("status", "unknown")
+    # `completed_count` counts *terminal* items (failures included) — it is a
+    # progress bar, not a success tally. Take successes straight from
+    # status_counts so a failed run never reads as "N/N succeeded".
+    succeeded = counts.get(RunItemStatus.COMPLETED.value, 0)
+
+    if status == RunStatus.COMPLETED.value:
+        # A COMPLETED run means every task succeeded; if status_counts is
+        # absent, task_count is the honest fallback.
+        n = counts.get(RunItemStatus.COMPLETED.value, total)
+        return (
+            f"Run {run_id} COMPLETED — {n}/{total} tasks succeeded "
+            f"(workflow '{wf}' on {backend})"
+        )
+    if status == RunStatus.CANCELLED.value:
+        return (
+            f"Run {run_id} CANCELLED — {succeeded}/{total} tasks completed "
+            f"before cancellation (workflow '{wf}')"
+        )
+
+    # FAILED, or any other non-success terminal state: enumerate the offenders.
+    failed_items = [
+        it for it in detail.get("items", [])
+        if it.get("status") in (
+            RunItemStatus.FAILED.value, RunItemStatus.DEP_FAILED.value,
+        )
+    ]
+    failed_n = counts.get(RunItemStatus.FAILED.value, 0) + counts.get(
+        RunItemStatus.DEP_FAILED.value, 0,
+    )
+    if not failed_n:
+        failed_n = len(failed_items)
+    lines = [
+        f"Run {run_id} {status.upper()} — {succeeded}/{total} succeeded, "
+        f"{failed_n} failed (workflow '{wf}' on {backend})"
+    ]
+    if failed_items:
+        names = ", ".join(
+            it["task"]["id"]
+            + (
+                " (dep_failed)"
+                if it.get("status") == RunItemStatus.DEP_FAILED.value else ""
+            )
+            for it in failed_items
+        )
+        lines.append(f"  failed tasks: {names}")
+        # Point at the first task that failed on its own merits, not one that
+        # only got skipped because a dependency failed — that's where the
+        # actionable stderr lives.
+        real = next(
+            (it for it in failed_items
+             if it.get("status") == RunItemStatus.FAILED.value),
+            failed_items[0],
+        )
+        lines.append(
+            f"  inspect:      scripthut run logs {run_id} "
+            f"{real['task']['id']} --error"
+        )
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
 # Clients
 # ---------------------------------------------------------------------------
@@ -1403,7 +1479,9 @@ def _render_agent_prompt(config: ScriptHutConfig | None) -> str:
     out.append(
         "- `0` — command succeeded.\n"
         "- `1` — error (bad arguments, unknown name, backend unreachable).\n"
-        "- `2` — `run watch --exit-status` only: the run terminated FAILED/CANCELLED.\n"
+        "- `1` — also covers `run watch --exit-status` / `workflow run "
+        "--watch` when the run itself terminated FAILED/CANCELLED. Read the "
+        "printed summary line to tell a failed run apart from a CLI error.\n"
     )
 
     out.append("## Editing scripthut.yaml (when the user wants config changes)\n")
@@ -1779,11 +1857,17 @@ def _render_agent_prompt(config: ScriptHutConfig | None) -> str:
         "     --source <name> --backend <backend> --json | jq -r .id)\n"
         "   ```\n"
         "   For an ad-hoc task: same shape, `task run` instead.\n"
-        "9. **Status**: `scripthut run view $RUN_ID --json` to see counts "
-        "and per-item statuses (`SUBMITTED`/`RUNNING`/`COMPLETED`/`FAILED`). "
-        "Re-poll until the top-level `status` is terminal. Against a "
-        "running server, `scripthut run watch $RUN_ID --exit-status` "
-        "blocks until done and exits 2 on failure.\n"
+        "9. **Get notified instead of polling.** Against a running server "
+        "(the daemon counts), `scripthut run watch $RUN_ID --exit-status` "
+        "blocks until the run is terminal, prints a one-line verdict "
+        "(`Run … COMPLETED/FAILED …` with the failed task ids), and exits "
+        "non-zero on failure. **Launch it as a background task** so you keep "
+        "working and are handed that summary the moment the run finishes — "
+        "this is how you avoid missing completions. You can submit and watch "
+        "in one shot: `scripthut workflow run train.json --source <name> "
+        "--backend <b> --watch` (run in the background). Only fall back to "
+        "manual `scripthut run view $RUN_ID --json` re-polling when you "
+        "can't background a task.\n"
         "10. **Output / logs** while running or after:\n"
         "    - `scripthut run logs $RUN_ID <task_id> -f` — tail stdout "
         "live until the task is terminal (best while running).\n"
@@ -3529,12 +3613,36 @@ async def _cmd_workflow_run(args: argparse.Namespace) -> int:
             args.source, args.name, backend=args.backend,
             branch=getattr(args, "branch", None),
         )
+        # base_url covers the daemon path too, where _resolve_server is None
+        # but a server is in fact processing the run.
+        base = getattr(client, "base_url", None)
+
+    run_id = summary.get("id")
+    watch = getattr(args, "watch", False)
     if args.json:
-        return _emit_json(summary)
-    # base_url covers the daemon path too, where _resolve_server is None
-    # but a server is in fact processing the run.
-    _print_run_submitted(summary, remote_base=getattr(client, "base_url", None))
-    return 0
+        # Under --watch the terminal run detail is the more useful document,
+        # and two JSON blobs on stdout would break `jq`.
+        if not watch:
+            return _emit_json(summary)
+    else:
+        _print_run_submitted(summary, remote_base=base)
+        if not watch and run_id:
+            print(
+                f"  scripthut run watch {run_id} --exit-status   "
+                f"# wait until done (run in the background to be notified)"
+            )
+    if not watch:
+        return 0
+
+    # `--watch`: block until the run terminates, exit non-zero on failure.
+    # We reuse `_cmd_run_watch` so the polling cadence, TTY handling, and
+    # terminal summary match the standalone `scripthut run watch` command.
+    import copy
+    watch_args = copy.copy(args)
+    watch_args.id = run_id
+    watch_args.exit_status = True
+    watch_args.interval = getattr(args, "interval", 2.0)
+    return await _cmd_run_watch(watch_args)
 
 
 # ---------------------------------------------------------------------------
@@ -3611,10 +3719,17 @@ async def _cmd_run_watch(args: argparse.Namespace) -> int:
     With ``--json`` the live redraw is suppressed (it is ANSI cursor
     trickery, not data) and the terminal run detail is printed once at the
     end — the same shape as ``run view --json``.
+
+    The live redraw is also suppressed when stdout is not a TTY (piped, or an
+    agent running this as a background task): the cursor-control codes never
+    clear in a captured buffer, so it would pile up stale run views. In that
+    case we stay quiet while polling and print a single terminal summary — the
+    line the agent is handed when the background task exits.
     """
     last_lines = 0
     final_status: str | None = None
     data: dict[str, Any] = {}
+    live = sys.stdout.isatty() and not args.json
     async with _make_client(args) as client:
         while True:
             try:
@@ -3623,7 +3738,7 @@ async def _cmd_run_watch(args: argparse.Namespace) -> int:
                 _clear_lines(last_lines)
                 print(f"Error: {e}", file=sys.stderr)
                 return 1
-            if not args.json:
+            if live:
                 block = _format_run_view(data)
                 _clear_lines(last_lines)
                 sys.stdout.write(block + "\n")
@@ -3635,6 +3750,8 @@ async def _cmd_run_watch(args: argparse.Namespace) -> int:
             await asyncio.sleep(args.interval)
     if args.json:
         _emit_json(data)
+    else:
+        print(_format_run_summary(data))
     if args.exit_status and final_status != RunStatus.COMPLETED.value:
         return 1
     return 0
@@ -3823,6 +3940,18 @@ def build_parser() -> argparse.ArgumentParser:
             "Run from this git branch instead of the source's configured "
             "one (git sources only)"
         ),
+    )
+    p_wf_run.add_argument(
+        "--watch", action="store_true",
+        help=(
+            "Block until the run finishes, then print a summary; exit "
+            "non-zero on failure. Launch this as a background task so your "
+            "agent is notified when the run terminates instead of polling."
+        ),
+    )
+    p_wf_run.add_argument(
+        "--interval", type=float, default=2.0,
+        help="Seconds between status polls when --watch is set (default: 2)",
     )
     _add_common(p_wf_run)
     p_wf_run.set_defaults(handler=_cmd_workflow_run)

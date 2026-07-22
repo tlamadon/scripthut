@@ -543,6 +543,61 @@ async def test_workflow_run_with_source_calls_source_endpoint():
 
 
 @pytest.mark.asyncio
+async def test_workflow_run_watch_blocks_until_done():
+    """``workflow run --watch`` submits then re-enters run-watch polling, so
+    an agent can submit-and-be-notified in one background command."""
+    run = _make_run(workflow_name="src/train", statuses=[RunItemStatus.SUBMITTED])
+    fake = _async_ctx(MagicMock())
+    fake.run_source_workflow = AsyncMock(return_value=cli._summary_from_run(run))
+
+    watch_calls: list = []
+
+    async def fake_watch(watch_args):
+        watch_calls.append(watch_args)
+        return 0
+
+    args = _ns(
+        name="train.json", source="src", backend=None,
+        watch=True, interval=2.0,
+    )
+    with patch.object(cli, "_make_client", return_value=fake), \
+         patch.object(cli, "_cmd_run_watch", side_effect=fake_watch):
+        rc = await cli._cmd_workflow_run(args)
+
+    assert rc == 0
+    assert len(watch_calls) == 1
+    # The watch handler must see the submitted run's id and exit_status=True
+    # so a failed run propagates a non-zero exit to the agent's task.
+    assert watch_calls[0].id == "abc12345"
+    assert watch_calls[0].exit_status is True
+
+
+@pytest.mark.asyncio
+async def test_workflow_run_watch_json_suppresses_submission_blob(capsys):
+    """Under ``--watch --json`` the submission summary must not be printed —
+    the terminal run detail from the watch is the single document, and two
+    JSON blobs on stdout would break `jq`."""
+    run = _make_run(workflow_name="src/train", statuses=[RunItemStatus.SUBMITTED])
+    fake = _async_ctx(MagicMock())
+    fake.run_source_workflow = AsyncMock(return_value=cli._summary_from_run(run))
+
+    async def fake_watch(watch_args):
+        return 0
+
+    args = _ns(
+        name="train.json", source="src", backend=None,
+        watch=True, interval=2.0, json=True,
+    )
+    with patch.object(cli, "_make_client", return_value=fake), \
+         patch.object(cli, "_cmd_run_watch", side_effect=fake_watch):
+        rc = await cli._cmd_workflow_run(args)
+
+    assert rc == 0
+    # Nothing on stdout from the submit half — the watch owns the output.
+    assert capsys.readouterr().out == ""
+
+
+@pytest.mark.asyncio
 async def test_source_list_prints_table(capsys):
     fake = _async_ctx(MagicMock())
     fake.list_sources = AsyncMock(return_value={
@@ -996,6 +1051,75 @@ async def test_run_watch_exit_status_returns_nonzero_on_failure():
         rc = await cli._cmd_run_watch(args)
 
     assert rc == 1
+
+
+def test_format_run_summary_completed():
+    detail = {
+        "id": "r1", "workflow_name": "train.py", "backend_name": "greatlakes",
+        "status": "completed", "task_count": 8, "completed_count": 8,
+        "status_counts": {"completed": 8}, "items": [],
+    }
+    out = cli._format_run_summary(detail)
+    assert "Run r1 COMPLETED" in out
+    assert "8/8 tasks succeeded" in out
+    assert "train.py" in out and "greatlakes" in out
+
+
+def test_format_run_summary_failed_names_tasks_and_logs_hint():
+    detail = {
+        "id": "r2", "workflow_name": "sim", "backend_name": "cluster",
+        "status": "failed", "task_count": 3, "completed_count": 1,
+        "status_counts": {"completed": 1, "failed": 1, "dep_failed": 1},
+        "items": [
+            {"task": {"id": "sim-1"}, "status": "completed"},
+            {"task": {"id": "sim-2"}, "status": "failed"},
+            {"task": {"id": "sim-3"}, "status": "dep_failed"},
+        ],
+    }
+    out = cli._format_run_summary(detail)
+    assert "Run r2 FAILED" in out
+    assert "1/3 succeeded, 2 failed" in out
+    # Both offenders named, the skipped one annotated.
+    assert "sim-2" in out
+    assert "sim-3 (dep_failed)" in out
+    # Logs hint points at the real failure, not the dependency-skipped task.
+    assert "scripthut run logs r2 sim-2 --error" in out
+
+
+def test_format_run_summary_cancelled():
+    detail = {
+        "id": "r3", "workflow_name": "wf", "backend_name": "cluster",
+        "status": "cancelled", "task_count": 5, "completed_count": 2,
+        "status_counts": {"completed": 2}, "items": [],
+    }
+    out = cli._format_run_summary(detail)
+    assert "Run r3 CANCELLED" in out
+    assert "2/5 tasks completed before cancellation" in out
+
+
+@pytest.mark.asyncio
+async def test_run_watch_piped_suppresses_ansi_and_prints_summary(capsys):
+    """When stdout is not a TTY (an agent backgrounding the watch), the live
+    ANSI redraw must be suppressed and a single terminal summary printed —
+    that summary is the notification the agent acts on."""
+    fake = _async_ctx(MagicMock())
+    fake.view_run = AsyncMock(return_value={
+        "id": "bg1", "workflow_name": "train.py", "backend_name": "cluster",
+        "created_at": "2026-05-15T12:00:00+00:00",
+        "status": "completed", "task_count": 2, "completed_count": 2,
+        "submitted_count": 2, "status_counts": {"completed": 2}, "items": [],
+    })
+
+    args = _ns(id="bg1", interval=0.0, exit_status=False)
+    # capsys makes stdout a non-TTY; be explicit so intent survives refactors.
+    with patch.object(cli, "_make_client", return_value=fake), \
+         patch("sys.stdout.isatty", return_value=False):
+        rc = await cli._cmd_run_watch(args)
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "\033[" not in out  # no cursor-control escape codes
+    assert "Run bg1 COMPLETED — 2/2 tasks succeeded" in out
 
 
 @pytest.mark.asyncio
