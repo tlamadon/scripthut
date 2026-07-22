@@ -48,6 +48,27 @@ class RunReferences:
     agent_dirs: dict[str, set[str]] = field(default_factory=dict)    # abs path -> run ids
     log_dirs: dict[str, set[str]] = field(default_factory=dict)      # abs path -> run ids
     active_run_ids: set[str] = field(default_factory=set)
+    # clone hash / agent-dir path -> configured source name(s) of the runs
+    # that reference it. A clone is named by commit hash on disk, so its
+    # source is only knowable through the runs pointing at it.
+    clone_sources: dict[str, set[str]] = field(default_factory=dict)
+    agent_sources: dict[str, set[str]] = field(default_factory=dict)
+
+
+def run_source_label(run: Run) -> str | None:
+    """The configured source name behind a run, or None if it has none.
+
+    Source workflows are named ``"<source>/<stem>"`` and stack installs
+    ``"_stack/<source>/<stack>"``; ad-hoc/default/probe runs (``_adhoc/…``,
+    ``_default``, ``_probe``, bare ``_stack/<stack>``) carry no source.
+    """
+    wf = run.workflow_name or ""
+    if wf.startswith("_stack/"):
+        parts = wf.split("/")
+        return parts[1] if len(parts) >= 3 else None
+    if wf.startswith("_"):
+        return None
+    return wf.split("/", 1)[0] if "/" in wf else None
 
 
 def _first_component_under(path: str, parent: str) -> str | None:
@@ -74,32 +95,41 @@ def build_run_references(
     refs = RunReferences()
     norm_clone_dirs = [normalize_remote_path(d, home) for d in clone_dirs]
 
-    def note_clone_child(path: str, run_id: str) -> None:
+    def note_clone_child(path: str, run_id: str, source: str | None) -> None:
         for cd in norm_clone_dirs:
             first = _first_component_under(path, cd)
             if first is None:
                 continue
             if CLONE_HASH_RE.match(first):
                 refs.clone_hashes.setdefault(first, set()).add(run_id)
+                if source:
+                    refs.clone_sources.setdefault(first, set()).add(source)
             elif AGENT_DIR_RE.match(first):
-                refs.agent_dirs.setdefault(f"{cd}/{first}", set()).add(run_id)
+                key = f"{cd}/{first}"
+                refs.agent_dirs.setdefault(key, set()).add(run_id)
+                if source:
+                    refs.agent_sources.setdefault(key, set()).add(source)
             return
 
     for run in runs:
         if run.backend_name != backend_name:
             continue
+        source = run_source_label(run)
         if run.status in (RunStatus.PENDING, RunStatus.RUNNING):
             refs.active_run_ids.add(run.id)
         if run.commit_hash:
-            refs.clone_hashes.setdefault(run.commit_hash[:12], set()).add(run.id)
+            h = run.commit_hash[:12]
+            refs.clone_hashes.setdefault(h, set()).add(run.id)
+            if source:
+                refs.clone_sources.setdefault(h, set()).add(source)
         for item in run.items:
             note_clone_child(
-                normalize_remote_path(item.task.working_dir, home), run.id
+                normalize_remote_path(item.task.working_dir, home), run.id, source
             )
         if run.log_dir and not run.log_dir.startswith("backend://"):
             ld = normalize_remote_path(run.log_dir, home)
             refs.log_dirs.setdefault(ld, set()).add(run.id)
-            note_clone_child(ld, run.id)
+            note_clone_child(ld, run.id, source)
 
     return refs
 
@@ -121,8 +151,10 @@ def classify_entries(
     for e in entries:
         if e.kind == DiskEntryKind.CLONE:
             _apply_refs(e, refs, refs.clone_hashes.get(e.path.rsplit("/", 1)[-1]))
+            e.source = _join_sources(refs.clone_sources.get(e.path.rsplit("/", 1)[-1]))
         elif e.kind == DiskEntryKind.AGENT:
             _apply_refs(e, refs, refs.agent_dirs.get(e.path))
+            e.source = _join_sources(refs.agent_sources.get(e.path))
         elif e.kind == DiskEntryKind.LOG:
             ids: set[str] = set()
             for ld, rids in refs.log_dirs.items():
@@ -133,6 +165,11 @@ def classify_entries(
             _classify_stack(e, current_stack_hashes)
         else:
             e.classification = DiskEntryClass.UNKNOWN
+
+
+def _join_sources(sources: set[str] | None) -> str | None:
+    """Render a set of source names as a stable label, or None if empty."""
+    return ", ".join(sorted(sources)) if sources else None
 
 
 def _apply_refs(e: DiskEntry, refs: RunReferences, ids: set[str] | None) -> None:

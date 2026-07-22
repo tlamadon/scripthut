@@ -51,6 +51,11 @@ class DiskEntry:
     run_ids: list[str] = field(default_factory=list)
     detail: str | None = None  # e.g. "julia/ab12cd34ef56", workflow name
     ready: bool | None = None  # stacks only: .ready sentinel present
+    # clones/agents only: the configured source(s) whose runs reference this
+    # entry, derived from those runs (the on-disk path is keyed by commit
+    # hash, which doesn't name a source on its own). None when no known run
+    # points at it — e.g. an orphaned clone.
+    source: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -62,6 +67,7 @@ class DiskEntry:
             "run_ids": self.run_ids,
             "detail": self.detail,
             "ready": self.ready,
+            "source": self.source,
         }
 
 

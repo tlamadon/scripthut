@@ -8,6 +8,7 @@ from scripthut.disk.classify import (
     build_run_references,
     classify_entries,
     normalize_remote_path,
+    run_source_label,
 )
 from scripthut.disk.models import DiskEntry, DiskEntryClass, DiskEntryKind
 from scripthut.runs.models import Run, RunItem, RunItemStatus, TaskDefinition
@@ -25,6 +26,7 @@ def _run(
     statuses: list[RunItemStatus] | None = None,
     log_dir: str = "",
     commit_hash: str | None = None,
+    workflow_name: str = "wf",
 ) -> Run:
     statuses = statuses or [RunItemStatus.COMPLETED]
     items = [
@@ -36,7 +38,7 @@ def _run(
     ]
     return Run(
         id=run_id,
-        workflow_name="wf",
+        workflow_name=workflow_name,
         backend_name=backend,
         created_at=datetime(2026, 7, 1, tzinfo=UTC),
         items=items,
@@ -187,6 +189,55 @@ class TestClassifyEntries:
         assert "(superseded)" in (entries[1].detail or "")
         assert entries[2].classification == DiskEntryClass.ORPHANED
         assert "(unconfigured)" in (entries[2].detail or "")
+
+
+class TestRunSourceLabel:
+    def test_source_workflow(self):
+        assert run_source_label(_run(workflow_name="paper/train.json")) == "paper"
+
+    def test_stack_install_with_source(self):
+        assert run_source_label(_run(workflow_name="_stack/paper/julia")) == "paper"
+
+    def test_synthetic_names_have_no_source(self):
+        for wf in ("_adhoc/x", "_default", "_probe", "_stack/julia", "bare"):
+            assert run_source_label(_run(workflow_name=wf)) is None
+
+
+class TestCloneSource:
+    def _refs(self, runs):
+        return build_run_references(runs, "hpc", [CLONE_DIR], HOME)
+
+    def test_clone_labelled_with_referencing_source(self):
+        refs = self._refs([
+            _run("r1", working_dir=f"{CLONE_DIR}/{HASH}", workflow_name="paper/train.json"),
+        ])
+        assert refs.clone_sources == {HASH: {"paper"}}
+        entries = [_entry(DiskEntryKind.CLONE, f"{ABS_CLONE_DIR}/{HASH}")]
+        classify_entries(entries, refs)
+        assert entries[0].source == "paper"
+
+    def test_clone_shared_by_two_sources_lists_both(self):
+        refs = self._refs([
+            _run("r1", commit_hash="a1b2c3d4e5f6789a", workflow_name="paper/a.json"),
+            _run("r2", commit_hash="a1b2c3d4e5f6789a", workflow_name="thesis/b.json"),
+        ])
+        entries = [_entry(DiskEntryKind.CLONE, f"{ABS_CLONE_DIR}/{HASH}")]
+        classify_entries(entries, refs)
+        assert entries[0].source == "paper, thesis"
+
+    def test_orphaned_clone_has_no_source(self):
+        refs = self._refs([])
+        entries = [_entry(DiskEntryKind.CLONE, f"{ABS_CLONE_DIR}/000000000000")]
+        classify_entries(entries, refs)
+        assert entries[0].source is None
+
+    def test_agent_workspace_labelled_with_source(self):
+        refs = self._refs([
+            _run("r1", working_dir=f"{CLONE_DIR}/agent-1a2b3c4d", workflow_name="paper/run.json"),
+        ])
+        entries = [_entry(DiskEntryKind.AGENT, f"{ABS_CLONE_DIR}/agent-1a2b3c4d")]
+        classify_entries(entries, refs)
+        assert entries[0].source == "paper"
 
     def test_stack_multiple_valid_hashes_none_superseded(self):
         # server config and a source's project file both declare "julia"

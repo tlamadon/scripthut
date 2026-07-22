@@ -49,6 +49,118 @@
         </div>
         {% endfor %}
     </div>
+
+    {# Disk-table interactivity: client-side column sort + batch-select delete.
+       Listeners are delegated on document so they keep working after HTMX
+       swaps a card's innerHTML. No per-swap re-binding needed. #}
+    <script>
+    (function () {
+        function fmtBytes(n) {
+            if (!n) return "0";
+            var u = ["B", "K", "M", "G", "T"], i = 0;
+            while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+            return (i === 0 ? n : n.toFixed(1)) + u[i];
+        }
+
+        function sortTable(th) {
+            var table = th.closest("table");
+            var tbody = table && table.querySelector("tbody");
+            if (!tbody) return;
+            var key = th.dataset.sort;
+            var numeric = th.dataset.sortType === "num";
+            var dir = (table.dataset.sortKey === key && table.dataset.sortDir === "asc")
+                ? "desc" : "asc";
+            table.dataset.sortKey = key;
+            table.dataset.sortDir = dir;
+            var rows = Array.prototype.slice.call(tbody.querySelectorAll("tr"));
+            rows.sort(function (a, b) {
+                var av = a.dataset[key] || "", bv = b.dataset[key] || "";
+                if (numeric) return (parseFloat(av) || 0) - (parseFloat(bv) || 0);
+                return av.localeCompare(bv);
+            });
+            if (dir === "desc") rows.reverse();
+            rows.forEach(function (r) { tbody.appendChild(r); });
+            table.querySelectorAll("th[data-sort] .dh-arrow").forEach(function (s) {
+                s.textContent = "";
+            });
+            var arrow = th.querySelector(".dh-arrow");
+            if (arrow) arrow.textContent = dir === "asc" ? " ▲" : " ▼";
+        }
+
+        function cardOf(el) { return el.closest('[id^="disk-"]'); }
+
+        function updateBar(card) {
+            if (!card) return;
+            var bar = card.querySelector(".dh-bar");
+            if (!bar) return;
+            var checks = card.querySelectorAll(".dh-check:checked");
+            if (checks.length === 0) { bar.classList.add("hidden"); return; }
+            var bytes = 0, refd = 0;
+            checks.forEach(function (c) {
+                bytes += parseInt(c.dataset.size || "0", 10) || 0;
+                if (c.dataset.ref === "1") refd++;
+            });
+            bar.classList.remove("hidden");
+            var txt = bar.querySelector(".dh-bar-text");
+            if (txt) {
+                txt.textContent = checks.length + " selected · " + fmtBytes(bytes)
+                    + (refd ? " · " + refd + " still referenced" : "");
+            }
+        }
+
+        function deleteSelected(btn) {
+            var card = cardOf(btn);
+            var name = btn.dataset.backend;
+            if (!card || !name || !window.htmx) return;
+            var checks = Array.prototype.slice.call(card.querySelectorAll(".dh-check:checked"));
+            if (!checks.length) return;
+            var refd = checks.filter(function (c) { return c.dataset.ref === "1"; });
+            var msg = "Delete " + checks.length + " selected "
+                + (checks.length === 1 ? "entry" : "entries") + " on " + name + "?";
+            if (refd.length) {
+                msg += "\n\n" + refd.length + " of them "
+                    + (refd.length === 1 ? "is" : "are")
+                    + " still referenced by runs — any logs stored inside will be lost.";
+            }
+            msg += "\n\nAgent workspaces with uncommitted or unpushed work are skipped automatically.";
+            if (!window.confirm(msg)) return;
+            var form = document.createElement("form");
+            form.style.display = "none";
+            checks.forEach(function (c) {
+                addHidden(form, "path", c.dataset.path);
+                if (c.dataset.ref === "1") addHidden(form, "allow_referenced", c.dataset.path);
+            });
+            document.body.appendChild(form);
+            htmx.ajax("POST", "/disk/clean/" + name, {
+                source: form, target: "#disk-" + name, swap: "innerHTML",
+            }).finally(function () { form.remove(); });
+        }
+
+        function addHidden(form, n, v) {
+            var i = document.createElement("input");
+            i.type = "hidden"; i.name = n; i.value = v;
+            form.appendChild(i);
+        }
+
+        document.addEventListener("click", function (ev) {
+            var th = ev.target.closest("th[data-sort]");
+            if (th) { sortTable(th); return; }
+            var del = ev.target.closest("[data-dh-delete]");
+            if (del) { ev.preventDefault(); deleteSelected(del); }
+        });
+
+        document.addEventListener("change", function (ev) {
+            var all = ev.target.closest(".dh-check-all");
+            if (all) {
+                var table = all.closest("table");
+                if (table) table.querySelectorAll(".dh-check").forEach(function (c) {
+                    c.checked = all.checked;
+                });
+            }
+            if (all || ev.target.closest(".dh-check")) updateBar(cardOf(ev.target));
+        });
+    })();
+    </script>
 </body>
 
 </html>
