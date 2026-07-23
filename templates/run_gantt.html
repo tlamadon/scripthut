@@ -1,4 +1,4 @@
-{% from "_status.html" import status_color %}
+{% from "_status.html" import status_color, status_dot %}
 {% if run and gantt_items %}
 <div class="px-6 py-4 bg-gray-50 border-b flex justify-between items-center">
     <h2 class="text-xl font-semibold text-gray-800">Timeline</h2>
@@ -94,32 +94,28 @@
         </div>
     </div>
 
-    <!-- Legend -- colors mirror the status dots/badges elsewhere (see _status.html) -->
-    <div class="flex flex-wrap items-center gap-x-4 gap-y-1.5 mt-4 text-xs text-gray-500">
+    <!-- Legend -- same state glyphs/colors/names as the table and sidebar
+         (status_dot in _status.html), so the vocabulary matches every other
+         view. The amber bar is queue time (a duration), not a state. -->
+    <div class="flex flex-wrap items-center gap-x-3 gap-y-1.5 mt-4 text-xs text-gray-500">
         <div class="flex items-center gap-1.5">
             <div class="w-3 h-2 rounded-sm bg-amber-200 opacity-70"></div>
-            <span>Waiting</span>
+            <span>Queue time</span>
         </div>
-        <div class="flex items-center gap-1.5">
-            <div class="w-3 h-2 rounded-sm bg-indigo-500"></div>
-            <span>Running</span>
-        </div>
-        <div class="flex items-center gap-1.5">
-            <div class="w-3 h-2 rounded-sm bg-green-600"></div>
-            <span>Completed</span>
-        </div>
-        <div class="flex items-center gap-1.5">
-            <div class="w-3 h-2 rounded-sm bg-red-600"></div>
-            <span>Failed</span>
-        </div>
-        <div class="flex items-center gap-1.5">
-            <div class="w-3 h-2 rounded-sm bg-orange-600"></div>
-            <span>Dep failed</span>
-        </div>
-        <div class="flex items-center gap-1.5">
-            <div class="w-2 h-2 rounded-full bg-gray-400"></div>
-            <span>Pending</span>
-        </div>
+        <span class="text-gray-300">·</span>
+        {% for s, label in [
+            ('pending', 'Pending'),
+            ('submitted', 'Submitted'),
+            ('queued', 'Queued'),
+            ('running', 'Running'),
+            ('settling', 'Settling'),
+            ('completed', 'Completed'),
+            ('failed', 'Failed'),
+            ('dep_failed', 'Dep failed'),
+        ] %}
+        <div class="flex items-center gap-1">{{ status_dot(s) }}<span>{{ label }}</span></div>
+        {% endfor %}
+        <span class="text-gray-300">·</span>
         <div class="flex items-center gap-1.5">
             <svg width="20" height="10"><path d="M0,5 L15,5" stroke="#9ca3af" stroke-width="1.5" fill="none"/><polygon points="15,2 20,5 15,8" fill="#9ca3af"/></svg>
             <span>Dependency</span>
