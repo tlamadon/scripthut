@@ -132,3 +132,7 @@ class ScanSpec:
     stack_dirs: list[str] = field(default_factory=list)
     log_roots: list[str] = field(default_factory=lambda: [DEFAULT_LOG_ROOT])
     du_entry_timeout: int = 60  # seconds; per-entry `timeout N du -sk`
+    # Max concurrent `du` walks in the remote script. The per-entry `du -sk`
+    # is the scan's cost; on a latency-bound cluster FS (NFS/Lustre) running
+    # them serially dominates wall time, so fan them out. 1 = serial.
+    parallelism: int = 16

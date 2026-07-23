@@ -46,6 +46,8 @@ printf 'HOME\\t%s\\n' "$HOME"
 {{ df -Pk {df_path} 2>/dev/null || df -Pk "$HOME" 2>/dev/null; }} \\
   | awk 'END {{ if (NF >= 5) printf "DF\\t%s\\t%s\\n", $(NF-4), $(NF-2) }}'
 
+PAR={parallelism}
+
 _sh_mtime() {{ stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0; }}
 _sh_fsize() {{ stat -c %s "$1" 2>/dev/null || stat -f %z "$1" 2>/dev/null || echo 0; }}
 if command -v timeout >/dev/null 2>&1; then
@@ -54,39 +56,60 @@ else
   _sh_du() {{ du -sk "$1" 2>/dev/null | cut -f1; }}
 fi
 
+# Size + mtime for one entry, emitted as a single line. `du -sk` is the
+# scan's cost, so these run as parallel background jobs; each line is one
+# printf (atomic under PIPE_BUF) so parallel writers don't interleave, and
+# the parser is order-independent.
+_emit_entry() {{
+  local section="$1" e="$2" m s
+  m=$(_sh_mtime "$e")
+  if [ -d "$e" ]; then
+    s=$(_sh_du "$e")
+  else
+    s=$(( ( $(_sh_fsize "$e") + 1023 ) / 1024 ))
+  fi
+  printf 'ENTRY\\t%s\\t%s\\t%s\\t%s\\n' "$section" "$e" "$m" "${{s:--}}"
+}}
+
+_emit_stack_entry() {{
+  local h="$1" m s r
+  m=$(_sh_mtime "$h")
+  s=$(_sh_du "$h")
+  if [ -f "$h/.ready" ]; then r=1; else r=0; fi
+  printf 'ENTRY\\tstacks\\t%s\\t%s\\t%s\\t%s\\n' "$h" "$m" "${{s:--}}" "$r"
+}}
+
+# Cap background jobs at PAR: launch, and every PAR-th one drain the batch.
+_throttle() {{ _n=$(( ${{_n:-0}} + 1 )); if [ "$_n" -ge "$PAR" ]; then wait; _n=0; fi; }}
+
 scan_dir() {{
   local section="$1" d="$2"
   if [ ! -d "$d" ]; then printf 'MISSING\\t%s\\t%s\\n' "$section" "$d"; return; fi
   printf 'SECTION\\t%s\\t%s\\n' "$section" "$d"
-  local e m s
+  local e; _n=0
   for e in "$d"/*; do
     [ -e "$e" ] || continue
-    m=$(_sh_mtime "$e")
-    if [ -d "$e" ]; then
-      s=$(_sh_du "$e")
-    else
-      s=$(( ( $(_sh_fsize "$e") + 1023 ) / 1024 ))
-    fi
-    printf 'ENTRY\\t%s\\t%s\\t%s\\t%s\\n' "$section" "$e" "$m" "${{s:--}}"
+    _emit_entry "$section" "$e" &
+    _throttle
   done
+  wait
 }}
 
 scan_stacks() {{
   local d="$1"
   if [ ! -d "$d" ]; then printf 'MISSING\\tstacks\\t%s\\n' "$d"; return; fi
   printf 'SECTION\\tstacks\\t%s\\n' "$d"
-  local n h m s r
+  local n h; _n=0
   for n in "$d"/*/; do
     [ -d "$n" ] || continue
     for h in "$n"*/; do
       [ -d "$h" ] || continue
       h="${{h%/}}"
-      m=$(_sh_mtime "$h")
-      s=$(_sh_du "$h")
-      if [ -f "$h/.ready" ]; then r=1; else r=0; fi
-      printf 'ENTRY\\tstacks\\t%s\\t%s\\t%s\\t%s\\n' "$h" "$m" "${{s:--}}" "$r"
+      _emit_stack_entry "$h" &
+      _throttle
     done
   done
+  wait
 }}
 """
 
@@ -132,7 +155,13 @@ def build_scan_spec(
 def build_scan_script(spec: ScanSpec) -> str:
     """Produce the full remote command (heredoc-wrapped bash script)."""
     df_path = shell_quote_path(spec.clone_dirs[0]) if spec.clone_dirs else '"$HOME"'
-    lines = [_SCRIPT_PRELUDE.format(df_path=df_path, du_timeout=spec.du_entry_timeout)]
+    lines = [
+        _SCRIPT_PRELUDE.format(
+            df_path=df_path,
+            du_timeout=spec.du_entry_timeout,
+            parallelism=max(1, spec.parallelism),
+        )
+    ]
     for d in spec.clone_dirs:
         lines.append(f"scan_dir clones {shell_quote_path(d)}")
     for d in spec.stack_dirs:

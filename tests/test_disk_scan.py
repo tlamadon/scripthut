@@ -105,6 +105,26 @@ class TestBuildScanScript:
         )
         assert "timeout 120 du -sk" in script
 
+    def test_parallelism_wired_into_script(self):
+        # Default fans du out; entries run as background jobs drained by PAR.
+        script = build_scan_script(ScanSpec(backend="x", clone_dirs=["~/r"]))
+        assert "PAR=16" in script
+        assert "_emit_entry" in script and "&" in script
+        assert "wait" in script
+
+    def test_custom_parallelism(self):
+        script = build_scan_script(
+            ScanSpec(backend="x", clone_dirs=["~/r"], parallelism=4)
+        )
+        assert "PAR=4" in script
+
+    def test_parallelism_floored_to_one(self):
+        # 0/negative would break the batch check; clamp to serial.
+        script = build_scan_script(
+            ScanSpec(backend="x", clone_dirs=["~/r"], parallelism=0)
+        )
+        assert "PAR=1" in script
+
 
 class TestParseScanOutput:
     def test_happy_path(self):
