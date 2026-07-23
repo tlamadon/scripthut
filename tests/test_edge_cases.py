@@ -4,7 +4,9 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from scripthut.main import _compute_gantt_data
+from types import SimpleNamespace
+
+from scripthut.main import _backend_usage, _compute_gantt_data
 from scripthut.runs.models import (
     Run,
     RunItem,
@@ -124,6 +126,41 @@ class TestGanttWaitBarCapping:
         assert gi["has_bar"]
         # QUEUED counts as active, so the axis stays live (grows to now).
         assert gi["bar_end"] > 90
+
+
+class TestBackendUsage:
+    """_backend_usage counts jobs/cpus from scripthut's own run items."""
+
+    def test_counts_active_jobs_and_running_cpus(self, monkeypatch):
+        from scripthut import main
+
+        def mk(status, cpus):
+            return RunItem(
+                task=TaskDefinition(id="t", name="t", command="echo", cpus=cpus),
+                status=status,
+            )
+
+        run = Run(
+            id="r1",
+            workflow_name="w",
+            backend_name="hpc",
+            created_at=datetime.now(timezone.utc),
+            items=[
+                mk(RunItemStatus.RUNNING, 4),
+                mk(RunItemStatus.RUNNING, 4),
+                mk(RunItemStatus.QUEUED, 8),       # active but not running
+                mk(RunItemStatus.COMPLETED, 16),   # terminal -> excluded
+                mk(RunItemStatus.DEP_FAILED, 16),  # terminal -> excluded
+            ],
+            max_concurrent=5,
+        )
+        monkeypatch.setattr(main.state, "run_manager", SimpleNamespace(runs={"r1": run}))
+
+        usage = _backend_usage()
+        # jobs = active items (running + queued); terminals excluded.
+        assert usage["hpc"]["jobs"] == 3
+        # cpus = only the RUNNING items' CPU requests (4 + 4), not queued.
+        assert usage["hpc"]["cpus"] == 8
 
 
 class TestCancelRunStartedAt:

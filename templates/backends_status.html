@@ -28,18 +28,8 @@
             {% if not backend.enabled %}
             <span class="text-xs text-gray-400">Disabled</span>
             {% elif backend.status.connected %}
-            {% if backend.status.cpus_user is not none and backend.status.cpus_idle is not none %}
-            <span class="text-xs text-gray-600">Using <span class="font-medium text-blue-600">{{ backend.status.cpus_user }}</span> CPUs in {{ backend_job_counts.get(name, 0) }} jobs, <span class="font-medium">{{ backend.status.cpus_idle }}</span> available</span>
-            {% else %}
-            <span class="text-xs text-gray-500">{{ backend_job_counts.get(name, 0) }} jobs</span>
-            {% endif %}
-            {% if backend.status.disk_avail_bytes is not none and backend.status.disk_total_bytes %}
-            {% set disk_used_pct = ((backend.status.disk_total_bytes - backend.status.disk_avail_bytes) * 100 / backend.status.disk_total_bytes) | round(0, 'floor') | int %}
-            <span class="text-xs {% if disk_used_pct >= 90 %}text-red-600{% elif disk_used_pct >= 75 %}text-yellow-600{% else %}text-gray-600{% endif %}"
-                title="Disk usage at {{ backend.status.disk_clone_dir }}">
-                <span class="font-medium">{{ backend.status.disk_avail_bytes | disk_bytes }}</span> free ({{ disk_used_pct }}% used)
-            </span>
-            {% endif %}
+            {# jobs/cpus usage, cluster availability and disk moved to the
+               consolidated "Your usage" line below. Keep only poll timing here. #}
             {% if backend.status.last_poll_duration_ms is not none %}
             <span
                 class="text-xs font-mono {% if backend.status.last_poll_duration_ms > 5000 %}text-red-500{% elif backend.status.last_poll_duration_ms > 2000 %}text-yellow-600{% else %}text-gray-400{% endif %}"
@@ -71,33 +61,46 @@
         {{ backend.status.error }}
     </div>
     {% endif %}
-    {% if backend.enabled and backend.status.connected and backend.status.cluster_info and backend.status.cluster_info.user_quota %}
-    {% set q = backend.status.cluster_info.user_quota %}
-    <div class="ml-4 mt-1 text-xs text-gray-600 flex flex-wrap gap-x-3 gap-y-0.5">
+    {% if backend.enabled and backend.status.connected %}
+    {# Consolidated usage line: jobs/cpus counted from scripthut's own run
+       items (reliable), fair-share / limits / account from Slurm when
+       available, plus the cluster availability and disk moved down here from
+       the card's top-right corner. #}
+    {% set q = backend.status.cluster_info.user_quota if backend.status.cluster_info else None %}
+    {% set u = backend_usage.get(name, {}) %}
+    {% set jobs_used = u.get('jobs', 0) %}
+    {% set cpus_used = u.get('cpus', 0) %}
+    <div class="ml-4 mt-1 text-xs text-gray-600 flex flex-wrap items-center gap-x-3 gap-y-0.5">
         <span class="text-gray-400">Your usage:</span>
-        {% if q.jobs_used is not none or q.jobs_max is not none %}
-        <span class="font-mono"
-            {% if q.jobs_max and q.jobs_used and q.jobs_used >= q.jobs_max %}class="text-red-600"{% endif %}>
-            jobs <span class="font-medium">{{ q.jobs_used if q.jobs_used is not none else '?' }}</span>{% if q.jobs_max %}<span class="text-gray-400">/{{ q.jobs_max }}</span>{% endif %}
+        <span class="font-mono {% if q and q.jobs_max and jobs_used >= q.jobs_max %}text-red-600{% endif %}">
+            jobs <span class="font-medium">{{ jobs_used }}</span>{% if q and q.jobs_max %}<span class="text-gray-400">/{{ q.jobs_max }}</span>{% endif %}
         </span>
-        {% endif %}
-        {% if q.cpus_used is not none or q.cpus_max is not none %}
-        <span class="font-mono {% if q.cpus_max and q.cpus_used and q.cpus_used >= q.cpus_max %}text-red-600{% elif q.cpus_max and q.cpus_used and q.cpus_used * 4 >= q.cpus_max * 3 %}text-yellow-700{% endif %}">
-            cpus <span class="font-medium">{{ q.cpus_used if q.cpus_used is not none else '?' }}</span>{% if q.cpus_max %}<span class="text-gray-400">/{{ q.cpus_max }}</span>{% endif %}
+        <span class="font-mono {% if q and q.cpus_max and cpus_used >= q.cpus_max %}text-red-600{% elif q and q.cpus_max and cpus_used * 4 >= q.cpus_max * 3 %}text-yellow-700{% endif %}">
+            cpus <span class="font-medium">{{ cpus_used }}</span>{% if q and q.cpus_max %}<span class="text-gray-400">/{{ q.cpus_max }}</span>{% endif %}
         </span>
-        {% endif %}
-        {% if q.gpus_used is not none and q.gpus_used > 0 or q.gpus_max is not none %}
+        {% if q and (q.gpus_used is not none and q.gpus_used > 0 or q.gpus_max is not none) %}
         <span class="font-mono {% if q.gpus_max and q.gpus_used and q.gpus_used >= q.gpus_max %}text-red-600{% elif q.gpus_max and q.gpus_used and q.gpus_used * 4 >= q.gpus_max * 3 %}text-yellow-700{% endif %}">
             gpus <span class="font-medium">{{ q.gpus_used if q.gpus_used is not none else '?' }}</span>{% if q.gpus_max %}<span class="text-gray-400">/{{ q.gpus_max }}</span>{% endif %}
         </span>
         {% endif %}
-        {% if q.fair_share is not none %}
+        {% if q and q.fair_share is not none %}
         <span class="font-mono" title="Slurm fair-share priority weight (0.0-1.0, higher = better)">
             fair-share <span class="font-medium {% if q.fair_share < 0.3 %}text-red-600{% elif q.fair_share < 0.5 %}text-yellow-700{% else %}text-green-700{% endif %}">{{ '%.2f'|format(q.fair_share) }}</span>
         </span>
         {% endif %}
-        {% if q.account %}
+        {% if q and q.account %}
         <span class="text-gray-400">account <span class="font-mono text-gray-600">{{ q.account }}</span></span>
+        {% endif %}
+        {% if backend.status.cpus_idle is not none %}
+        <span class="text-gray-300">·</span>
+        <span><span class="font-medium">{{ backend.status.cpus_idle }}</span> CPUs free</span>
+        {% endif %}
+        {% if backend.status.disk_avail_bytes is not none and backend.status.disk_total_bytes %}
+        {% set disk_used_pct = ((backend.status.disk_total_bytes - backend.status.disk_avail_bytes) * 100 / backend.status.disk_total_bytes) | round(0, 'floor') | int %}
+        <span class="{% if disk_used_pct >= 90 %}text-red-600{% elif disk_used_pct >= 75 %}text-yellow-600{% else %}text-gray-600{% endif %}"
+            title="Disk usage at {{ backend.status.disk_clone_dir }}">
+            <span class="font-medium">{{ backend.status.disk_avail_bytes | disk_bytes }}</span> free ({{ disk_used_pct }}% used)
+        </span>
         {% endif %}
     </div>
     {% endif %}

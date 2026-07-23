@@ -199,22 +199,10 @@ async def poll_backend(backend_state: BackendState, filter_user: str | None = No
         duration_ms = int((time.perf_counter() - start_time) * 1000)
         backend_state.jobs = jobs
 
-        # Prefer the scheduler's AllocTRES count for our SSH identity
-        # (matches what the scheduler itself sees and includes GPUs).
-        # user_quota now always reflects the login we submit as, so this
-        # is available regardless of the dashboard filter; fall back to
-        # summing cpus on RUNNING jobs only when a filter narrows the list
-        # to a single user.
-        cpus_user: int | None = None
-        quota = cluster_info.user_quota if cluster_info else None
-        if quota is not None and quota.cpus_used is not None:
-            cpus_user = quota.cpus_used
-        elif filter_user:
-            cpus_user = sum(
-                j.cpus for j in jobs
-                if j.state == JobState.RUNNING
-            )
-
+        # "Your usage" jobs/cpus are computed from scripthut's own run items
+        # (see _backend_usage) rather than a live squeue tally, so nothing
+        # per-user needs deriving here. cluster_info still carries the Slurm
+        # quota (fair-share / limits / account) for display.
         backend_state.status = ConnectionStatus(
             connected=True,
             host=backend_state.status.host,
@@ -222,7 +210,6 @@ async def poll_backend(backend_state: BackendState, filter_user: str | None = No
             last_poll_duration_ms=duration_ms,
             job_count=len(jobs),
             cluster_info=cluster_info,
-            cpus_user=cpus_user,
             disk_clone_dir=backend_state.clone_dir,
             disk_total_bytes=disk_info.total_bytes if disk_info else None,
             disk_avail_bytes=disk_info.avail_bytes if disk_info else None,
@@ -1095,15 +1082,29 @@ def _format_age_filter(dt: datetime | None) -> str:
 templates.env.filters["age"] = _format_age_filter
 
 
-def _backend_job_counts() -> dict[str, int]:
-    """Count active (pending/submitted/running) jobs per backend from active runs."""
-    counts: dict[str, int] = {}
+def _backend_usage() -> dict[str, dict[str, int]]:
+    """Per-backend usage computed from scripthut's own run items.
+
+    Returns ``{backend_name: {"jobs": <active>, "cpus": <running>}}`` where
+    ``jobs`` counts active items (pending/submitted/queued/running/settling)
+    and ``cpus`` sums the CPU request of items scripthut has RUNNING.
+
+    We count from our own tracking rather than a live ``squeue`` query: the
+    scheduler's per-user filter can disagree with what we actually submitted
+    (e.g. ``squeue -u`` returning nothing for jobs we know are running), so
+    our own RunItem state is the reliable source for "what am I using here".
+    """
+    usage: dict[str, dict[str, int]] = {}
     if state.run_manager:
         for run in state.run_manager.runs.values():
             for item in run.items:
-                if item.status not in (RunItemStatus.COMPLETED, RunItemStatus.FAILED, RunItemStatus.DEP_FAILED):
-                    counts[run.backend_name] = counts.get(run.backend_name, 0) + 1
-    return counts
+                if item.status in (RunItemStatus.COMPLETED, RunItemStatus.FAILED, RunItemStatus.DEP_FAILED):
+                    continue
+                u = usage.setdefault(run.backend_name, {"jobs": 0, "cpus": 0})
+                u["jobs"] += 1
+                if item.status == RunItemStatus.RUNNING:
+                    u["cpus"] += item.task.cpus or 0
+    return usage
 
 
 @dataclass
@@ -1367,7 +1368,7 @@ async def index(request: Request) -> HTMLResponse:
             "request": request,
             "job_views": job_views,
             "backends": state.backends,
-            "backend_job_counts": _backend_job_counts(),
+            "backend_usage": _backend_usage(),
             "status": ConnectionStatus(
                 connected=state.any_connected,
                 host=", ".join(c.status.host for c in state.backends.values() if c.status.connected),
@@ -1437,7 +1438,7 @@ async def jobs_stream(request: Request) -> EventSourceResponse:
                 yield {"event": "jobs-update", "data": html}
 
                 backends_html = templates.get_template("backends_status.html").render(
-                    {"request": request, "backends": state.backends, "backend_job_counts": _backend_job_counts()}
+                    {"request": request, "backends": state.backends, "backend_usage": _backend_usage()}
                 )
                 yield {"event": "backends-update", "data": backends_html}
             else:

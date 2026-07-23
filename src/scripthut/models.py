@@ -111,7 +111,6 @@ class ConnectionStatus:
     last_poll_duration_ms: int | None = None  # How long the last poll took in milliseconds
     job_count: int = 0  # Number of jobs returned by last poll
     cluster_info: "ClusterInfo | None" = None  # Per-partition availability + pending reasons
-    cpus_user: int | None = None  # CPUs used by the filtered user
     disk_clone_dir: str | None = None  # Path whose disk usage is reported
     disk_total_bytes: int | None = None
     disk_avail_bytes: int | None = None
