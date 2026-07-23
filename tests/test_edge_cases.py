@@ -95,6 +95,36 @@ class TestGanttWaitBarCapping:
         # Should extend close to 100% since it's growing to now
         assert gi["bar_end"] > 90
 
+    def test_wait_bar_grows_for_queued_item(self):
+        """Queued item (awaiting resources) is in-flight, so its wait bar
+        should keep growing to now rather than freezing the axis early."""
+        now = datetime.now(timezone.utc)
+        created = now - timedelta(minutes=10)
+        submitted = now - timedelta(minutes=2)
+
+        item = _make_run_item(
+            "t1",
+            status=RunItemStatus.QUEUED,
+            submitted_at=submitted,
+            started_at=None,
+            finished_at=None,
+        )
+        run = Run(
+            id="r1",
+            workflow_name="test",
+            backend_name="test",
+            created_at=created,
+            items=[item],
+            max_concurrent=5,
+        )
+
+        gantt_items, _ = _compute_gantt_data(run)
+        gi = gantt_items[0]
+
+        assert gi["has_bar"]
+        # QUEUED counts as active, so the axis stays live (grows to now).
+        assert gi["bar_end"] > 90
+
 
 class TestCancelRunStartedAt:
     """Tests for cancel_run setting started_at on cancelled items."""

@@ -33,6 +33,26 @@
 {%- endmacro %}
 
 {#
+  status_color(status): the solid Tailwind background class for a state,
+  matching the glyph colors in status_dot and the segments in status_bar.
+  Used by the Gantt timeline so bars, dots and the progress bar never drift.
+  Does NOT include animate-pulse — callers add it for live states
+  (running/settling) where a pulse is wanted.
+#}
+{% macro status_color(status) -%}
+{%- if status == 'completed' -%}bg-green-600
+{%- elif status == 'failed' -%}bg-red-600
+{%- elif status == 'dep_failed' -%}bg-orange-600
+{%- elif status == 'running' -%}bg-indigo-500
+{%- elif status == 'settling' -%}bg-gray-400
+{%- elif status == 'queued' -%}bg-yellow-600
+{%- elif status == 'submitted' -%}bg-yellow-500
+{%- elif status == 'pending' -%}bg-gray-400
+{%- else -%}bg-gray-400
+{%- endif -%}
+{%- endmacro %}
+
+{#
   status_bar(counts, classes): stacked run progress bar with one segment
   per item state, sized by its share of the item count. Colors mirror
   status_dot. Pass run.status_counts and the sizing classes for the
