@@ -199,19 +199,21 @@ async def poll_backend(backend_state: BackendState, filter_user: str | None = No
         duration_ms = int((time.perf_counter() - start_time) * 1000)
         backend_state.jobs = jobs
 
-        # Prefer the scheduler's AllocTRES count for the user (matches what
-        # the scheduler itself sees and includes GPUs); fall back to summing
-        # the cpus field on RUNNING jobs from the local list.
+        # Prefer the scheduler's AllocTRES count for our SSH identity
+        # (matches what the scheduler itself sees and includes GPUs).
+        # user_quota now always reflects the login we submit as, so this
+        # is available regardless of the dashboard filter; fall back to
+        # summing cpus on RUNNING jobs only when a filter narrows the list
+        # to a single user.
         cpus_user: int | None = None
-        if filter_user:
-            quota = cluster_info.user_quota if cluster_info else None
-            if quota is not None and quota.cpus_used is not None:
-                cpus_user = quota.cpus_used
-            else:
-                cpus_user = sum(
-                    j.cpus for j in jobs
-                    if j.state == JobState.RUNNING
-                )
+        quota = cluster_info.user_quota if cluster_info else None
+        if quota is not None and quota.cpus_used is not None:
+            cpus_user = quota.cpus_used
+        elif filter_user:
+            cpus_user = sum(
+                j.cpus for j in jobs
+                if j.state == JobState.RUNNING
+            )
 
         backend_state.status = ConnectionStatus(
             connected=True,
@@ -2246,13 +2248,17 @@ def _compute_gantt_data(run: Run) -> tuple[list[dict[str, Any]], list[dict[str, 
     time_origin = run.created_at
 
     # Determine the end of the time axis:
-    # - If any task is still running/submitted, use `now` so the chart stays live.
+    # - If any task is still in-flight (submitted/queued/running/settling), use
+    #   `now` so the chart stays live and growing bars stay within bounds.
     # - Otherwise, use the latest timestamp across all items so finished runs
     #   don't show a long blank tail stretching to the current time.
-    has_active = any(
-        item.status in (RunItemStatus.RUNNING, RunItemStatus.SUBMITTED)
-        for item in run.items
+    active_statuses = (
+        RunItemStatus.SUBMITTED,
+        RunItemStatus.QUEUED,
+        RunItemStatus.RUNNING,
+        RunItemStatus.SETTLING,
     )
+    has_active = any(item.status in active_statuses for item in run.items)
     time_end = now if has_active else time_origin
 
     for item in run.items:

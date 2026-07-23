@@ -593,13 +593,21 @@ class SlurmBackend(JobBackend):
         return stats
 
     async def get_cluster_info(self, user: str | None = None) -> ClusterInfo | None:
-        """Fetch per-partition availability, pending reasons, and optional quota.
+        """Fetch per-partition availability, pending reasons, and quota.
 
         Runs ``sinfo`` (partition-level), ``sinfo --Node`` (per-node CPU
         state, free memory, and Gres for GPU counts), ``squeue`` (pending
-        reasons), and, when ``user`` is set, ``sshare`` + ``sacctmgr`` for
-        fair-share and scheduling limits. Each query is best-effort: a
-        failure of one does not block the others.
+        reasons), plus ``sshare`` + ``sacctmgr`` for fair-share and
+        scheduling limits. Each query is best-effort: a failure of one
+        does not block the others.
+
+        ``user`` (the dashboard's job filter) is intentionally ignored for
+        quota: "Your usage" must reflect the identity we actually submit
+        and run jobs as — the SSH login — regardless of whatever user the
+        jobs list is currently filtered to (or if it isn't filtered at
+        all). Querying quota with a filter user that differs from the SSH
+        login points ``squeue``/``sshare`` at the wrong account and reports
+        all-zero usage even while our jobs are running.
         """
         partitions = await self._fetch_partitions()
         if partitions is None:
@@ -615,7 +623,8 @@ class SlurmBackend(JobBackend):
                 p.mem_free_max_node_mb = ns.mem_free_max_node_mb
                 p.gpus_schedulable = ns.gpus_schedulable
         pending_reasons = await self._fetch_pending_reasons()
-        user_quota = await self._fetch_user_quota(user) if user else None
+        quota_user = self._ssh.user
+        user_quota = await self._fetch_user_quota(quota_user) if quota_user else None
         return ClusterInfo(
             partitions=partitions,
             pending_reasons=pending_reasons,

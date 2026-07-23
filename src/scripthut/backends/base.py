@@ -114,7 +114,7 @@ class ClusterInfo:
 
     partitions: list[PartitionInfo]
     pending_reasons: dict[str, int]  # squeue reason -> count of pending jobs
-    user_quota: QuotaInfo | None = None  # Only populated when get_cluster_info(user=...) is given
+    user_quota: QuotaInfo | None = None  # Usage/limits for the backend's own SSH login; None if unsupported
 
     @property
     def cpus_total(self) -> int:
@@ -217,9 +217,12 @@ class JobBackend(ABC):
         pseudo-partition.
 
         Args:
-            user: When given, populate ``user_quota`` with this user's
-                fair-share / scheduling limits. Backends that don't
-                support per-user quota leave the field as ``None``.
+            user: The dashboard's current job-list filter, if any. It does
+                NOT choose whose quota to report: ``user_quota`` always
+                reflects the identity the backend submits as (its own SSH
+                login), since "Your usage" must track the account that
+                actually owns our jobs. Backends that don't support
+                per-user quota leave the field as ``None``.
 
         Returns:
             ClusterInfo, or None on failure.

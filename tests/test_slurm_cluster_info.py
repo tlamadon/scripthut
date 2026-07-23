@@ -461,15 +461,48 @@ class TestUserQuota:
         assert q.gpus_used == 6
 
     @pytest.mark.asyncio
-    async def test_no_user_means_no_quota_call(self):
-        ssh = _make_ssh_with_responses(
-            "compute*|up|10/20/0/30|3|65536|1-00:00:00|\n"
-        )
+    async def test_quota_uses_ssh_user_not_filter(self):
+        # "Your usage" must reflect the login we actually submit as (the
+        # SSH user), not the dashboard's job filter. Quota is fetched for
+        # the SSH user even when no filter is passed, and a filter user is
+        # ignored for quota — querying the wrong user reports all-zero
+        # usage while our jobs are running (the reported bug).
+        sinfo_out = "compute*|up|10/20/0/30|3|65536|1-00:00:00|\n"
+        sshare_out = "myaccount|alice|0.42|0.07\n"
+        alloctres_out = "cpu=4,gres/gpu=1\n"
+
+        captured: list[str] = []
+        ssh = AsyncMock()
+        ssh.user = "alice"
+
+        async def run_command(cmd, timeout=None):
+            captured.append(cmd)
+            if cmd.startswith("sinfo"):
+                return (sinfo_out, "", 0)
+            if cmd.startswith("sshare"):
+                return (sshare_out, "", 0)
+            if cmd.startswith("squeue") and "AllocTRES" in cmd:
+                return (alloctres_out, "", 0)
+            return ("", "", 0)
+
+        ssh.run_command = AsyncMock(side_effect=run_command)
         backend = SlurmBackend(ssh)
 
+        # No filter user passed -> quota is still fetched, for the SSH user.
         info = await backend.get_cluster_info()
         assert info is not None
-        assert info.user_quota is None
+        assert info.user_quota is not None
+        assert info.user_quota.fair_share == 0.42
+        assert info.user_quota.cpus_used == 4
+        # The quota queries target the SSH user (alice).
+        assert any(c.startswith("sshare") and "-u alice" in c for c in captured)
+        assert any("AllocTRES" in c and "-u alice" in c for c in captured)
+
+        # A filter user for the jobs list must NOT redirect quota to them.
+        captured.clear()
+        await backend.get_cluster_info(user="bob")
+        assert all("bob" not in c for c in captured)
+        assert any(c.startswith("sshare") and "-u alice" in c for c in captured)
 
     @pytest.mark.asyncio
     async def test_partial_failure_still_populates(self):
