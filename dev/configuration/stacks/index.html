@@ -773,6 +773,17 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#build-inside-stack_dir" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Build inside $STACK_DIR
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#states" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1229,6 +1240,17 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#build-inside-stack_dir" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Build inside $STACK_DIR
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#states" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1456,6 +1478,21 @@
 <a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>    └── depot/          ← whatever `prep` populated
 </code></pre></div>
 <p>When you change any input (literal value, file contents, prep script, or stack name), the hash changes, the old directory becomes "stale", and the next install builds into a new directory next to it. Old hash directories don't auto-evict — you remove them with <code>scripthut stack delete &lt;name&gt;</code> (which clears every hash for that stack at once).</p>
+<h3 id="build-inside-stack_dir">Build inside <code>$STACK_DIR</code><a class="headerlink" href="#build-inside-stack_dir" title="Permanent link">&para;</a></h3>
+<p><code>prep</code> can write anywhere the backend user can write, but everything ScriptHut manages for you is keyed on the hash directory. A <code>prep</code> that installs elsewhere — say a venv at a fixed <code>~/.cache/scripthut/&lt;name&gt;/venv</code> — gets none of it:</p>
+<ul>
+<li><strong>Rebuilds overwrite instead of versioning.</strong> Two hashes share the one path, so the old environment is gone the moment the new one is built and there's no going back to it.</li>
+<li><strong><code>stack delete</code> doesn't reclaim the space.</strong> It removes <code>&lt;cache_dir&gt;/&lt;name&gt;/</code>; a venv outside that tree survives and accumulates.</li>
+<li><strong>Disk reporting can't attribute it.</strong> The stack's own hash directory measures a few KiB of sentinel while the gigabytes sit somewhere else. The disk page (<code>/disk</code>, or <code>scripthut disk scan</code>) does sweep the cache root, so a stray env still shows up — under <em>Other files &amp; environments</em>, annotated with the stack whose script names it — but it is report-only there and is never a cleanup candidate.</li>
+</ul>
+<p>So prefer:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="nt">prep</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">|</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span><span class="no">python3 -m venv &quot;${STACK_DIR}/venv&quot;</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">  </span><span class="no">&quot;${STACK_DIR}/venv/bin/pip&quot; install -r requirements.txt</span>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="nt">init</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">|</span>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="w">  </span><span class="no">export PATH=&quot;${STACK_DIR}/venv/bin:$PATH&quot;</span>
+</code></pre></div>
+<p>Each hash then owns its own environment, <code>stack delete</code> frees the whole thing, and the disk page attributes the bytes to the stack.</p>
 <h3 id="states">States<a class="headerlink" href="#states" title="Permanent link">&para;</a></h3>
 <table>
 <thead>
@@ -1482,23 +1519,23 @@
 <hr />
 <h2 id="cli">CLI<a class="headerlink" href="#cli" title="Permanent link">&para;</a></h2>
 <p>All four commands compose with <code>--backend X</code> to scope to one backend; without it, they run against every backend the stack declares (or every SSH-based backend if the list is empty).</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>scripthut<span class="w"> </span>stack<span class="w"> </span>list<span class="w">                              </span><span class="c1"># configured stacks (no SSH)</span>
-<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>scripthut<span class="w"> </span>stack<span class="w"> </span>check<span class="w"> </span><span class="o">[</span>&lt;name&gt;<span class="o">]</span><span class="w"> </span><span class="o">[</span>--backend<span class="w"> </span>X<span class="o">]</span><span class="w">      </span><span class="c1"># per-backend state table</span>
-<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>scripthut<span class="w"> </span>stack<span class="w"> </span>install<span class="w"> </span>&lt;name&gt;<span class="w"> </span><span class="o">[</span>--backend<span class="w"> </span>X<span class="o">]</span><span class="w"> </span><span class="o">[</span>--rebuild<span class="o">]</span>
-<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>scripthut<span class="w"> </span>stack<span class="w"> </span>delete<span class="w"> </span>&lt;name&gt;<span class="w"> </span><span class="o">[</span>--backend<span class="w"> </span>X<span class="o">]</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>scripthut<span class="w"> </span>stack<span class="w"> </span>list<span class="w">                              </span><span class="c1"># configured stacks (no SSH)</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>scripthut<span class="w"> </span>stack<span class="w"> </span>check<span class="w"> </span><span class="o">[</span>&lt;name&gt;<span class="o">]</span><span class="w"> </span><span class="o">[</span>--backend<span class="w"> </span>X<span class="o">]</span><span class="w">      </span><span class="c1"># per-backend state table</span>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>scripthut<span class="w"> </span>stack<span class="w"> </span>install<span class="w"> </span>&lt;name&gt;<span class="w"> </span><span class="o">[</span>--backend<span class="w"> </span>X<span class="o">]</span><span class="w"> </span><span class="o">[</span>--rebuild<span class="o">]</span>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>scripthut<span class="w"> </span>stack<span class="w"> </span>delete<span class="w"> </span>&lt;name&gt;<span class="w"> </span><span class="o">[</span>--backend<span class="w"> </span>X<span class="o">]</span>
 </code></pre></div>
 <h3 id="list"><code>list</code><a class="headerlink" href="#list" title="Permanent link">&para;</a></h3>
 <p>Prints the configured stacks and their declared backends. Doesn't touch any backend — pure config view.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>NAME                 BACKENDS                       INPUTS
-<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>julia-1.11           mercury-nb,pythia-nb           julia_version=1.11.3
-<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>python-ml            (all SSH)                      python_version=3.12
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>NAME                 BACKENDS                       INPUTS
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>julia-1.11           mercury-nb,pythia-nb           julia_version=1.11.3
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>python-ml            (all SSH)                      python_version=3.12
 </code></pre></div>
 <h3 id="check"><code>check</code><a class="headerlink" href="#check" title="Permanent link">&para;</a></h3>
 <p>For each (stack × backend) pair, opens an SSH connection and probes for the cache directory and sentinel. Reports:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>STACK                BACKEND              STATE        HASH           BUILT        SIZE     NOTE
-<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>julia-1.11           mercury-nb           ready        e6a08f3b15c2   2d ago       1.4G
-<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>julia-1.11           pythia-nb            missing      e6a08f3b15c2   -            -
-<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>python-ml            mercury-nb           installing   1ad3f7c92e58   -            -        prep exit 1: ...
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>STACK                BACKEND              STATE        HASH           BUILT        SIZE     NOTE
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>julia-1.11           mercury-nb           ready        e6a08f3b15c2   2d ago       1.4G
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>julia-1.11           pythia-nb            missing      e6a08f3b15c2   -            -
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>python-ml            mercury-nb           installing   1ad3f7c92e58   -            -        prep exit 1: ...
 </code></pre></div>
 <p><code>check</code> exits non-zero if any stack is missing or installing — handy as a CI gate before submitting work.</p>
 <h3 id="install"><code>install</code><a class="headerlink" href="#install" title="Permanent link">&para;</a></h3>
@@ -1512,15 +1549,15 @@
 <p>Failed installs leave the directory in <code>installing</code> state so <code>check</code> reports it; recover with <code>install --rebuild</code>.</p>
 <h3 id="delete"><code>delete</code><a class="headerlink" href="#delete" title="Permanent link">&para;</a></h3>
 <p>Removes the <strong>whole <code>&lt;cache_dir&gt;/&lt;name&gt;/</code> directory</strong>, not just the current hash. Use this to free disk on a backend or to force a clean reinstall.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>scripthut<span class="w"> </span>stack<span class="w"> </span>delete<span class="w"> </span>julia-1.11<span class="w"> </span>--backend<span class="w"> </span>mercury-nb
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>scripthut<span class="w"> </span>stack<span class="w"> </span>delete<span class="w"> </span>julia-1.11<span class="w"> </span>--backend<span class="w"> </span>mercury-nb
 </code></pre></div>
 <hr />
 <h2 id="hashing-in-detail">Hashing in detail<a class="headerlink" href="#hashing-in-detail" title="Permanent link">&para;</a></h2>
 <p>The hash is computed from:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>name=&lt;stack name&gt;
-<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>prep=&lt;full prep script text&gt;
-<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>inputs=&lt;sorted key=value pairs&gt;
-<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>files=&lt;for each input_file: path + contents&gt;
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>name=&lt;stack name&gt;
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>prep=&lt;full prep script text&gt;
+<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>inputs=&lt;sorted key=value pairs&gt;
+<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a>files=&lt;for each input_file: path + contents&gt;
 </code></pre></div>
 <p>A few corollaries that matter in practice:</p>
 <ul>
