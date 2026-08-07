@@ -16,7 +16,11 @@ import time
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Coroutine, Sequence
 
-from scripthut.disk.classify import build_run_references, classify_entries
+from scripthut.disk.classify import (
+    annotate_stack_envs,
+    build_run_references,
+    classify_entries,
+)
 from scripthut.disk.cleanup import (
     CleanupOutcome,
     CleanupPlan,
@@ -134,6 +138,7 @@ class DiskScanService:
         ssh: SSHClient,
         runs: list[Run],
         current_stack_hashes: dict[str, set[str]] | None = None,
+        stack_texts: dict[str, str] | None = None,
         extra_errors: list[str] | None = None,
         timeout: int = SCAN_TIMEOUT,
     ) -> DiskScanResult:
@@ -172,6 +177,7 @@ class DiskScanService:
         entries = raw_to_entries(raw)
         refs = build_run_references(runs, spec.backend, spec.clone_dirs, home)
         classify_entries(entries, refs, current_stack_hashes=current_stack_hashes)
+        annotate_stack_envs(entries, stack_texts or {}, home)
         entries.sort(key=lambda e: e.size_bytes or 0, reverse=True)
 
         return DiskScanResult(
@@ -223,6 +229,7 @@ class DiskScanService:
         hashes = compute_current_stack_hashes(config, project_stacks)
         return await self.scan_backend(
             spec=spec, ssh=ssh, runs=runs, current_stack_hashes=hashes,
+            stack_texts=collect_stack_texts(config, project_stacks),
             extra_errors=gather_errors,
         )
 
@@ -345,6 +352,22 @@ def compute_current_stack_hashes(
     return hashes
 
 
+def collect_stack_texts(
+    config: ScriptHutConfig, extra_stacks: Sequence[Stack] = (),
+) -> dict[str, str]:
+    """Stack name -> its ``prep`` + ``init`` text, for env attribution.
+
+    Concatenated per name because the same name can be declared by the
+    server config and by several sources; any of those scripts naming a
+    path is enough to say the stack is behind it. See
+    :func:`scripthut.disk.classify.annotate_stack_envs`.
+    """
+    texts: dict[str, str] = {}
+    for s in list(config.stacks) + list(extra_stacks):
+        texts[s.name] = f"{texts.get(s.name, '')}\n{s.prep}\n{s.init}"
+    return texts
+
+
 async def gather_project_stacks(
     config: ScriptHutConfig, backend_name: str, *, ssh: SSHClient | None = None,
 ) -> tuple[list[Stack], list[str]]:
@@ -420,6 +443,7 @@ async def start_scan_for_backend(
         backend_name,
         service.scan_backend(
             spec=spec, ssh=ssh, runs=runs, current_stack_hashes=hashes,
+            stack_texts=collect_stack_texts(config, project_stacks),
             extra_errors=gather_errors,
         ),
     )

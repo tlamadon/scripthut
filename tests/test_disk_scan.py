@@ -90,7 +90,7 @@ class TestBuildScanScript:
         assert 'scan_stacks "$HOME/.cache/scripthut/stacks"' in script
         assert 'scan_dir logs "$HOME/.cache/scripthut/logs"' in script
         # per-entry du bound
-        assert "timeout 60 du -sk" in script
+        assert "timeout 180 du -sk" in script
         # df of the primary clone_dir
         assert 'df -Pk "$HOME/scripthut-repos"' in script
 
@@ -222,3 +222,71 @@ class TestRawToEntries:
         assert entries[0].detail == "julia/ab12cd34ef56"
         assert entries[1].detail == "julia/00000000ffff (half-built)"
         assert entries[2].detail == "paper-sim"
+
+
+class TestCacheSweep:
+    """The one-level sweep of the scripthut cache root.
+
+    Its whole reason for existing: a stack whose ``prep`` builds a venv
+    outside ``$STACK_DIR`` (``~/.cache/scripthut/<name>/venv``) puts the
+    real gigabytes somewhere no other section looks, while the stack's
+    own hash dir stays a few KiB of sentinel.
+    """
+
+    def test_default_cache_root(self):
+        spec = build_scan_spec(_config(), "hpc", "~/scripthut-repos")
+        assert spec.cache_roots == ["~/.cache/scripthut"]
+
+    def test_script_sweeps_cache_root_last(self):
+        spec = ScanSpec(
+            backend="hpc",
+            clone_dirs=["~/scripthut-repos"],
+            stack_dirs=["~/.cache/scripthut/stacks"],
+        )
+        script = build_scan_script(spec)
+        assert 'scan_cache "$HOME/.cache/scripthut"' in script
+        # cheap sections first; the cache du is the open-ended one
+        # (rindex: the function definitions come earlier in the prelude)
+        assert script.rindex("scan_dir logs") < script.rindex("scan_cache")
+
+    def test_covered_roots_exported_to_the_script(self):
+        script = build_scan_script(
+            ScanSpec(
+                backend="hpc",
+                clone_dirs=["/scratch/repos"],
+                stack_dirs=["~/.cache/scripthut/stacks"],
+            )
+        )
+        assert (
+            '_SH_COVERED=("/scratch/repos" "$HOME/.cache/scripthut/stacks" '
+            '"$HOME/.cache/scripthut/logs")' in script
+        )
+
+    def test_parses_cache_entries(self):
+        stdout = (
+            "HOME\t/home/alice\n"
+            "SECTION\tcache\t/home/alice/.cache/scripthut\n"
+            "ENTRY\tcache\t/home/alice/.cache/scripthut/mlye\t1718600000\t8800000\n"
+        )
+        _, raw, _, errors = parse_scan_output(stdout)
+        assert errors == []
+        assert raw[0].section == "cache"
+        assert raw[0].size_bytes == 8800000 * 1024
+        assert raw[0].ready is None
+
+    def test_cache_entries_are_other_kind_named_by_basename(self):
+        entries = raw_to_entries(
+            [
+                RawEntry(
+                    section="cache",
+                    path="/home/alice/.cache/scripthut/mlye",
+                    mtime=None,
+                    size_bytes=1024,
+                    ready=None,
+                )
+            ]
+        )
+        # OTHER keeps it report-only: cleanup never deletes an unrecognized
+        # entry, and an env a live stack depends on must not be deletable.
+        assert entries[0].kind == DiskEntryKind.OTHER
+        assert entries[0].detail == "mlye"

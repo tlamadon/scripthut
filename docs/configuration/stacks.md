@@ -70,6 +70,26 @@ A stack lives at `<cache_dir>/<name>/<hash>/` on the backend, where `<hash>` is 
 
 When you change any input (literal value, file contents, prep script, or stack name), the hash changes, the old directory becomes "stale", and the next install builds into a new directory next to it. Old hash directories don't auto-evict — you remove them with `scripthut stack delete <name>` (which clears every hash for that stack at once).
 
+### Build inside `$STACK_DIR`
+
+`prep` can write anywhere the backend user can write, but everything ScriptHut manages for you is keyed on the hash directory. A `prep` that installs elsewhere — say a venv at a fixed `~/.cache/scripthut/<name>/venv` — gets none of it:
+
+- **Rebuilds overwrite instead of versioning.** Two hashes share the one path, so the old environment is gone the moment the new one is built and there's no going back to it.
+- **`stack delete` doesn't reclaim the space.** It removes `<cache_dir>/<name>/`; a venv outside that tree survives and accumulates.
+- **Disk reporting can't attribute it.** The stack's own hash directory measures a few KiB of sentinel while the gigabytes sit somewhere else. The disk page (`/disk`, or `scripthut disk scan`) does sweep the cache root, so a stray env still shows up — under *Other files & environments*, annotated with the stack whose script names it — but it is report-only there and is never a cleanup candidate.
+
+So prefer:
+
+```yaml
+prep: |
+  python3 -m venv "${STACK_DIR}/venv"
+  "${STACK_DIR}/venv/bin/pip" install -r requirements.txt
+init: |
+  export PATH="${STACK_DIR}/venv/bin:$PATH"
+```
+
+Each hash then owns its own environment, `stack delete` frees the whole thing, and the disk page attributes the bytes to the stack.
+
 ### States
 
 | State | Meaning |

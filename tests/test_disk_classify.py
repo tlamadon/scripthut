@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from scripthut.disk.classify import (
+    annotate_stack_envs,
     build_run_references,
     classify_entries,
     normalize_remote_path,
@@ -259,3 +260,68 @@ class TestCloneSource:
         entries = [_entry(DiskEntryKind.STACK, "/s/julia/ab12cd34ef56", ready=True)]
         classify_entries(entries, self._refs([]), current_stack_hashes=None)
         assert entries[0].classification == DiskEntryClass.REFERENCED
+
+
+class TestAnnotateStackEnvs:
+    """Naming the stack behind a cache-root entry it built outside STACK_DIR."""
+
+    def _entry(self, path: str, kind: DiskEntryKind = DiskEntryKind.OTHER) -> DiskEntry:
+        return DiskEntry(path=path, kind=kind, detail=path.rsplit("/", 1)[-1])
+
+    def test_matches_home_relative_form_in_prep(self):
+        e = self._entry(f"{HOME}/.cache/scripthut/mlye")
+        annotate_stack_envs(
+            [e],
+            {"mlye": 'VENV="$HOME/.cache/scripthut/mlye/venv"\npython3 -m venv "$VENV"'},
+            HOME,
+        )
+        assert e.detail == "mlye (env of stack mlye)"
+
+    def test_matches_tilde_form_in_init(self):
+        e = self._entry(f"{HOME}/.cache/scripthut/pyopt")
+        annotate_stack_envs(
+            [e], {"pyopt": 'export PATH="~/.cache/scripthut/pyopt/venv/bin:$PATH"'}, HOME
+        )
+        assert e.detail == "pyopt (env of stack pyopt)"
+
+    def test_matches_absolute_path_without_known_home(self):
+        e = self._entry("/scratch/envs/julia")
+        annotate_stack_envs([e], {"julia": "depot=/scratch/envs/julia"}, None)
+        assert e.detail == "julia (env of stack julia)"
+
+    def test_unmatched_entry_keeps_its_detail(self):
+        e = self._entry(f"{HOME}/.cache/scripthut/leftovers")
+        annotate_stack_envs([e], {"mlye": "$HOME/.cache/scripthut/mlye/venv"}, HOME)
+        assert e.detail == "leftovers"
+
+    def test_several_stacks_share_one_dir(self):
+        e = self._entry(f"{HOME}/.cache/scripthut/shared")
+        annotate_stack_envs(
+            [e],
+            {
+                "b": "$HOME/.cache/scripthut/shared/b",
+                "a": "$HOME/.cache/scripthut/shared/a",
+                "other": "elsewhere",
+            },
+            HOME,
+        )
+        assert e.detail == "shared (env of stack a, b)"
+
+    def test_only_touches_unrecognized_entries(self):
+        # A stack's own hash dir already has a meaningful detail; the
+        # prep text naturally mentions its path, so guard against
+        # re-annotating the sections that classify properly.
+        e = DiskEntry(
+            path=f"{HOME}/.cache/scripthut/stacks/mlye/ab12cd34ef56",
+            kind=DiskEntryKind.STACK,
+            detail="mlye/ab12cd34ef56",
+        )
+        annotate_stack_envs([e], {"mlye": "$HOME/.cache/scripthut/stacks"}, HOME)
+        assert e.detail == "mlye/ab12cd34ef56"
+
+    def test_classification_is_untouched(self):
+        e = self._entry(f"{HOME}/.cache/scripthut/mlye")
+        e.classification = DiskEntryClass.UNKNOWN
+        annotate_stack_envs([e], {"mlye": "$HOME/.cache/scripthut/mlye"}, HOME)
+        # a hint, never a promotion — UNKNOWN keeps it out of cleanup
+        assert e.classification == DiskEntryClass.UNKNOWN

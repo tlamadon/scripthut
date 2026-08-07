@@ -12,7 +12,7 @@ Line protocol emitted by the script:
     DF\\t<total KiB>\\t<avail KiB>          (df of the primary clone_dir)
     SECTION\\t<section>\\t<abs root>        (root exists, entries follow)
     MISSING\\t<section>\\t<root>            (root doesn't exist — normal)
-    ENTRY\\t<section>\\t<path>\\t<mtime>\\t<KiB|->        (clones/logs)
+    ENTRY\\t<section>\\t<path>\\t<mtime>\\t<KiB|->        (clones/logs/cache)
     ENTRY\\tstacks\\t<path>\\t<mtime>\\t<KiB|->\\t<0|1>   (1 = .ready present)
 
 ``mtime`` is epoch seconds (0 = unknown); size ``-`` means du failed or
@@ -47,6 +47,10 @@ printf 'HOME\\t%s\\n' "$HOME"
   | awk 'END {{ if (NF >= 5) printf "DF\\t%s\\t%s\\n", $(NF-4), $(NF-2) }}'
 
 PAR={parallelism}
+
+# Roots that have their own section. scan_cache skips anything they
+# already account for, so the cache sweep can't double-count.
+_SH_COVERED=({covered})
 
 _sh_mtime() {{ stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0; }}
 _sh_fsize() {{ stat -c %s "$1" 2>/dev/null || stat -f %z "$1" 2>/dev/null || echo 0; }}
@@ -90,6 +94,39 @@ scan_dir() {{
   for e in "$d"/*; do
     [ -e "$e" ] || continue
     _emit_entry "$section" "$e" &
+    _throttle
+  done
+  wait
+}}
+
+# True when $1 is a root scanned by another section, lives inside one,
+# or contains one. Any of the three means du'ing it here would report
+# bytes a dedicated section already reports.
+_sh_covered() {{
+  local c="${{1%/}}" r
+  for r in ${{_SH_COVERED[@]+"${{_SH_COVERED[@]}}"}}; do
+    r="${{r%/}}"
+    [ -n "$r" ] || continue
+    case "$c" in "$r" | "$r"/*) return 0 ;; esac
+    case "$r" in "$c"/*) return 0 ;; esac
+  done
+  return 1
+}}
+
+# One level of a scripthut cache root, minus what other sections cover.
+# This is what catches environments a stack's `prep` builds *outside*
+# its own STACK_DIR (venvs, conda prefixes, julia depots) — no other
+# section looks there, and they are routinely the biggest thing on the
+# filesystem while the stack's own hash dir is a few KiB of sentinel.
+scan_cache() {{
+  local d="$1"
+  if [ ! -d "$d" ]; then printf 'MISSING\\tcache\\t%s\\n' "$d"; return; fi
+  printf 'SECTION\\tcache\\t%s\\n' "$d"
+  local e; _n=0
+  for e in "$d"/*; do
+    [ -e "$e" ] || continue
+    if _sh_covered "$e"; then continue; fi
+    _emit_entry cache "$e" &
     _throttle
   done
   wait
@@ -155,11 +192,16 @@ def build_scan_spec(
 def build_scan_script(spec: ScanSpec) -> str:
     """Produce the full remote command (heredoc-wrapped bash script)."""
     df_path = shell_quote_path(spec.clone_dirs[0]) if spec.clone_dirs else '"$HOME"'
+    covered = " ".join(
+        shell_quote_path(d)
+        for d in [*spec.clone_dirs, *spec.stack_dirs, *spec.log_roots]
+    )
     lines = [
         _SCRIPT_PRELUDE.format(
             df_path=df_path,
             du_timeout=spec.du_entry_timeout,
             parallelism=max(1, spec.parallelism),
+            covered=covered,
         )
     ]
     for d in spec.clone_dirs:
@@ -168,6 +210,10 @@ def build_scan_script(spec: ScanSpec) -> str:
         lines.append(f"scan_stacks {shell_quote_path(d)}")
     for d in spec.log_roots:
         lines.append(f"scan_dir logs {shell_quote_path(d)}")
+    # Last: the cache sweep is the open-ended one (a venv can be tens of
+    # GiB of small files), so the cheap sections land first.
+    for d in spec.cache_roots:
+        lines.append(f"scan_cache {shell_quote_path(d)}")
     body = "\n".join(lines)
     return f"bash -s <<'{_HEREDOC_TAG}'\n{body}\n{_HEREDOC_TAG}"
 
@@ -176,7 +222,7 @@ def build_scan_script(spec: ScanSpec) -> str:
 class RawEntry:
     """Parser output for one ENTRY line, pre-classification."""
 
-    section: str  # "clones" | "stacks" | "logs"
+    section: str  # "clones" | "stacks" | "logs" | "cache"
     path: str
     mtime: datetime | None
     size_bytes: int | None
@@ -228,7 +274,7 @@ def _parse_entry(fields: list[str]) -> RawEntry | None:
     if section == "stacks" and len(fields) == 6:
         path, mtime_s, size_s, ready_s = fields[2:6]
         ready: bool | None = ready_s == "1"
-    elif section in ("clones", "logs") and len(fields) == 5:
+    elif section in ("clones", "logs", "cache") and len(fields) == 5:
         path, mtime_s, size_s = fields[2:5]
         ready = None
     else:
@@ -271,6 +317,12 @@ def raw_to_entries(raw: list[RawEntry]) -> list[DiskEntry]:
         elif r.section == "logs":
             kind = DiskEntryKind.LOG
             detail = basename  # workflow name
+        elif r.section == "cache":
+            # Whatever else lives in the cache root — typically an env a
+            # stack's prep built outside STACK_DIR. Never a known shape,
+            # so it stays OTHER (report-only, never deletable).
+            kind = DiskEntryKind.OTHER
+            detail = basename
         elif CLONE_HASH_RE.match(basename):
             kind = DiskEntryKind.CLONE
         elif AGENT_DIR_RE.match(basename):

@@ -12,6 +12,7 @@ phase must keep that caveat in mind.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Iterable
 
@@ -165,6 +166,46 @@ def classify_entries(
             _classify_stack(e, current_stack_hashes)
         else:
             e.classification = DiskEntryClass.UNKNOWN
+
+
+def annotate_stack_envs(
+    entries: list[DiskEntry],
+    stack_texts: Mapping[str, str],
+    home: str | None,
+) -> None:
+    """Name the stack behind each cache-root entry, where one is evident.
+
+    A stack whose ``prep`` builds its env outside ``$STACK_DIR`` (a venv
+    under ``~/.cache/scripthut/<name>/``, say) leaves the bytes somewhere
+    the stack section never looks — the cache sweep finds them, but as an
+    anonymous directory. The one honest link back is the stack's own
+    script text: if it mentions this path, it very likely made it.
+
+    Deliberately a *hint*, not a classification: matching is a literal
+    substring test over ``prep``/``init``, and a match never makes the
+    entry deletable (OTHER is excluded from cleanup by kind).
+    """
+    for e in entries:
+        if e.kind != DiskEntryKind.OTHER or not e.path:
+            continue
+        keys = [e.path]
+        if home:
+            h = home.rstrip("/")
+            if e.path.startswith(h + "/"):
+                # Covers ~/x, $HOME/x, ${HOME}/x and the absolute form
+                # in one shot, since all four end with the same suffix.
+                keys.append(e.path[len(h) + 1 :])
+        names = sorted(
+            name
+            for name, text in stack_texts.items()
+            if text and any(k in text for k in keys)
+        )
+        if names:
+            label = ", ".join(names)
+            e.detail = (
+                f"{e.detail} (env of stack {label})" if e.detail
+                else f"env of stack {label}"
+            )
 
 
 def _join_sources(sources: set[str] | None) -> str | None:

@@ -19,6 +19,13 @@ from typing import Any
 # path is a remote-side convention, not derived from local data_dir.
 DEFAULT_LOG_ROOT = "~/.cache/scripthut/logs"
 
+# Remote directory scripthut treats as its cache on every backend: the
+# parent of DEFAULT_LOG_ROOT and of the default stack cache_dir. Scanned
+# one level deep so that anything else living there — most often an env
+# a stack's `prep` created outside its own STACK_DIR — shows up with a
+# real size instead of being invisible.
+DEFAULT_CACHE_ROOT = "~/.cache/scripthut"
+
 
 class DiskEntryKind(str, Enum):
     """What a scanned directory is, judged by location and naming."""
@@ -131,7 +138,16 @@ class ScanSpec:
     clone_dirs: list[str] = field(default_factory=list)
     stack_dirs: list[str] = field(default_factory=list)
     log_roots: list[str] = field(default_factory=lambda: [DEFAULT_LOG_ROOT])
-    du_entry_timeout: int = 60  # seconds; per-entry `timeout N du -sk`
+    # Swept one level deep, minus everything the roots above already
+    # cover. Catches stack-built envs and any other stray occupant of
+    # the cache dir; entries land as OTHER, i.e. report-only.
+    cache_roots: list[str] = field(default_factory=lambda: [DEFAULT_CACHE_ROOT])
+    # Seconds; per-entry `timeout N du -sk`. Generous because the entries
+    # worth knowing about are the expensive ones — a multi-GiB venv is
+    # hundreds of thousands of small files, and a du that gives up
+    # reports no size at all, i.e. exactly the invisibility the scan
+    # exists to remove. Bounded overall by SCAN_TIMEOUT.
+    du_entry_timeout: int = 180
     # Max concurrent `du` walks in the remote script. The per-entry `du -sk`
     # is the scan's cost; on a latency-bound cluster FS (NFS/Lustre) running
     # them serially dominates wall time, so fan them out. 1 = serial.

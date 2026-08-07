@@ -3007,6 +3007,7 @@ async def _disk_scan_local(args: argparse.Namespace) -> int:
     from scripthut.disk.scan import build_scan_spec
     from scripthut.disk.service import (
         DiskScanService,
+        collect_stack_texts,
         compute_current_stack_hashes,
         gather_project_stacks,
     )
@@ -3053,6 +3054,7 @@ async def _disk_scan_local(args: argparse.Namespace) -> int:
             result = await svc.scan_backend(
                 spec=spec, ssh=ssh, runs=runs,
                 current_stack_hashes=compute_current_stack_hashes(config, stacks),
+                stack_texts=collect_stack_texts(config, stacks),
                 extra_errors=gather_errors,
             )
             results[b.name] = result

@@ -2,6 +2,7 @@
 
 from scripthut.disk.classify import (
     RunReferences,
+    annotate_stack_envs,
     build_run_references,
     classify_entries,
     normalize_remote_path,
@@ -40,6 +41,7 @@ __all__ = [
     "DiskScanService",
     "RunReferences",
     "ScanSpec",
+    "annotate_stack_envs",
     "build_run_references",
     "build_scan_script",
     "build_scan_spec",

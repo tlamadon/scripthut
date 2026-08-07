@@ -113,7 +113,9 @@
         ("agent", "Agent workspaces"),
         ("stack", "Software stacks"),
         ("log", "Logs & outputs"),
-        ("other", "Unrecognized"),
+        {# Cache-root strays land here: most often an env a stack's prep
+           built outside its STACK_DIR, which no other section can see. #}
+        ("other", "Other files & environments"),
     ] %}
     {% set items = b.result.entries | selectattr("kind.value", "equalto", kind) | list %}
     {# clones/agents are created from a source checkout; show which one. #}
