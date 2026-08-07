@@ -108,13 +108,13 @@
         </button>
     </div>
 
+    {# "Other" collects cache-root strays: most often an env a stack's prep
+       built outside its STACK_DIR, which no other section can see. #}
     {% for kind, title in [
         ("clone", "Repository clones"),
         ("agent", "Agent workspaces"),
         ("stack", "Software stacks"),
         ("log", "Logs & outputs"),
-        {# Cache-root strays land here: most often an env a stack's prep
-           built outside its STACK_DIR, which no other section can see. #}
         ("other", "Other files & environments"),
     ] %}
     {% set items = b.result.entries | selectattr("kind.value", "equalto", kind) | list %}
