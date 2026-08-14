@@ -41,6 +41,7 @@ from scripthut.runs.manager import (
     SUBMIT_TO_FAIL_GRACE_SECONDS,
     SUBMITTED_NO_RECORD_TIMEOUT_SECONDS,
 )
+from scripthut.runs.activity import build_activity_grid
 from scripthut.runs.models import RunItemStatus, RunStatus
 from scripthut.runs.storage import RunStorageManager
 from scripthut.runtime import (
@@ -1396,6 +1397,7 @@ def _overview_context(request: Request) -> dict[str, Any]:
         "request": request,
         "active_runs": active,
         "recent_runs": recent[:OVERVIEW_RECENT_LIMIT],
+        "activity": build_activity_grid(runs),
         "backends": state.backends,
         "backend_usage": _backend_usage(),
     }
