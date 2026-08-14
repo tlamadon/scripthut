@@ -371,6 +371,7 @@ class TestCreateRunFromSourceBranch:
             tasks, workflow_name, backend_name, max_concurrent, ssh_client,
             *, git_repo=None, git_branch=None, commit_hash=None,
             doc_env=None, doc_env_groups=None, doc_stacks=None,
+            source_name=None,
         ):
             captured["git_branch"] = git_branch
             return _make_run(workflow_name)
@@ -415,6 +416,7 @@ class TestCreateRunFromSourceBranch:
             tasks, workflow_name, backend_name, max_concurrent, ssh_client,
             *, git_repo=None, git_branch=None, commit_hash=None,
             doc_env=None, doc_env_groups=None, doc_stacks=None,
+            source_name=None,
         ):
             captured["git_branch"] = git_branch
             return _make_run(workflow_name)

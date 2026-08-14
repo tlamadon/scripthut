@@ -10,6 +10,23 @@
     <script src="https://unpkg.com/htmx.org@1.9.10"></script>
     <script src="https://unpkg.com/htmx.org@1.9.10/dist/ext/sse.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Selection affordances are off until the user asks for them.
+           Driven entirely by .select-mode on #runs-panel rather than by
+           toggling Tailwind's `hidden`/`flex` together, whose winner would
+           depend on the order those utilities happen to be emitted in. */
+        #select-bar { display: none; }
+        #runs-panel.select-mode #select-bar { display: flex; }
+        #runs-panel.select-mode #select-btn { display: none; }
+        .run-select-cell { display: none; }
+        #runs-panel.select-mode .run-select-cell { display: table-cell; }
+        #runs-panel.select-mode span.run-select-cell { display: flex; align-items: center; }
+        /* In select mode the list is for picking, not navigating — otherwise
+           a click aimed at a row lands on a link and leaves the page. */
+        #runs-panel.select-mode #runs-list a { pointer-events: none; }
+        #runs-panel.select-mode .run-delete-btn { display: none; }
+        #runs-panel.select-mode [data-run-id] { cursor: pointer; }
+    </style>
 </head>
 
 <body class="bg-gray-100 min-h-screen">
@@ -25,9 +42,39 @@
 
         <!-- Runs List (SSE-connected) -->
         <div hx-ext="sse" sse-connect="/runs/stream">
-            <div class="bg-white rounded-lg shadow-md overflow-hidden">
-                <div class="px-6 py-4 bg-gray-50 border-b">
+            {# `runs-panel` carries the select-mode class: it sits OUTSIDE
+               #runs-list, which the SSE stream replaces wholesale, so the
+               mode survives a live refresh mid-selection. #}
+            <div id="runs-panel" class="bg-white rounded-lg shadow-md overflow-hidden">
+                <div class="px-6 py-4 bg-gray-50 border-b flex items-center justify-between gap-3">
                     <h2 class="text-xl font-semibold text-gray-800">Runs</h2>
+                    <div class="flex items-center gap-2">
+                        <button id="select-btn" type="button" onclick="setSelectMode(true)"
+                            class="text-sm px-3 py-1.5 rounded-md bg-white border border-gray-300 text-gray-700 hover:bg-gray-50">
+                            Select
+                        </button>
+                        <div id="select-bar" class="items-center gap-2">
+                            <span id="select-count" class="text-sm text-gray-600 tabular-nums">0 selected</span>
+                            <button type="button" onclick="selectAll()"
+                                class="text-sm px-2 py-1.5 rounded-md text-blue-600 hover:bg-blue-50">All</button>
+                            <button type="button" onclick="selectNone()"
+                                class="text-sm px-2 py-1.5 rounded-md text-blue-600 hover:bg-blue-50">None</button>
+                            <button id="delete-selected" type="button"
+                                hx-post="/runs/delete"
+                                hx-include="#runs-list"
+                                hx-target="#runs-list"
+                                hx-swap="innerHTML"
+                                hx-confirm="Delete the selected runs? This cannot be undone."
+                                class="text-sm px-3 py-1.5 rounded-md bg-red-600 text-white hover:bg-red-700 disabled:bg-gray-300 disabled:cursor-not-allowed"
+                                disabled>
+                                Delete
+                            </button>
+                            <button type="button" onclick="setSelectMode(false)"
+                                class="text-sm px-3 py-1.5 rounded-md bg-white border border-gray-300 text-gray-700 hover:bg-gray-50">
+                                Done
+                            </button>
+                        </div>
+                    </div>
                 </div>
                 <div id="runs-list" sse-swap="runs-update" hx-swap="innerHTML">
                     {% include "runs_list.html" %}
@@ -56,9 +103,85 @@
         }
         formatLocalTimes();
         document.body.addEventListener('htmx:afterSwap', function(e) { formatLocalTimes(e.detail.target); });
-        new MutationObserver(function() { formatLocalTimes(); }).observe(
+        new MutationObserver(function() { formatLocalTimes(); applySelection(); }).observe(
             document.getElementById('runs-list') || document.body, { childList: true, subtree: true }
         );
+
+        // --- Bulk selection -------------------------------------------------
+        // The selected ids live here rather than in the DOM: /runs/stream
+        // replaces the whole list on every poll, which would otherwise clear
+        // a selection the moment the page refreshed under the user.
+        var selectMode = false;
+        var selectedIds = new Set();
+
+        function setSelectMode(on) {
+            selectMode = on;
+            document.getElementById('runs-panel').classList.toggle('select-mode', on);
+            if (!on) selectedIds.clear();
+            applySelection();
+        }
+
+        function applySelection() {
+            var boxes = document.querySelectorAll('#runs-list .run-checkbox');
+            // Drop ids that are no longer listed (deleted, or aged out of a
+            // refresh) so the count never claims more than is selectable.
+            var present = new Set();
+            boxes.forEach(function (b) { present.add(b.value); });
+            selectedIds.forEach(function (id) { if (!present.has(id)) selectedIds.delete(id); });
+
+            boxes.forEach(function (b) {
+                var want = selectedIds.has(b.value);
+                if (b.checked !== want) b.checked = want;
+            });
+
+            var n = selectedIds.size;
+            document.getElementById('select-count').textContent = n + ' selected';
+            var del = document.getElementById('delete-selected');
+            del.disabled = n === 0;
+            del.setAttribute(
+                'hx-confirm',
+                'Delete ' + n + ' run' + (n === 1 ? '' : 's') + '? This cannot be undone.'
+            );
+        }
+
+        function selectAll() {
+            document.querySelectorAll('#runs-list .run-checkbox').forEach(function (b) {
+                selectedIds.add(b.value);
+            });
+            applySelection();
+        }
+
+        function selectNone() {
+            selectedIds.clear();
+            applySelection();
+        }
+
+        // Delegated so the handlers survive the list being swapped out.
+        var runsList = document.getElementById('runs-list');
+        runsList.addEventListener('change', function (e) {
+            var box = e.target.closest('.run-checkbox');
+            if (!box) return;
+            if (box.checked) selectedIds.add(box.value); else selectedIds.delete(box.value);
+            applySelection();
+        });
+
+        // Anywhere on a row toggles it — the checkbox is a small target and
+        // the point of this mode is clearing many runs quickly.
+        runsList.addEventListener('click', function (e) {
+            if (!selectMode || e.target.closest('.run-checkbox')) return;
+            var row = e.target.closest('[data-run-id]');
+            if (!row) return;
+            var box = row.querySelector('.run-checkbox');
+            if (!box) return;  // active run: nothing to select
+            e.preventDefault();
+            if (selectedIds.has(box.value)) selectedIds.delete(box.value);
+            else selectedIds.add(box.value);
+            applySelection();
+        });
+
+        document.getElementById('delete-selected').addEventListener('htmx:afterRequest', function (e) {
+            if (e.detail.successful) setSelectMode(false);
+        });
 
         function handleRunResponse(event) {
             if (event.detail.successful) {

@@ -12,11 +12,11 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 import asyncssh
 import uvicorn
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Form, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.templating import Jinja2Templates
 from sse_starlette.sse import EventSourceResponse
@@ -41,7 +41,7 @@ from scripthut.runs.manager import (
     SUBMIT_TO_FAIL_GRACE_SECONDS,
     SUBMITTED_NO_RECORD_TIMEOUT_SECONDS,
 )
-from scripthut.runs.models import RunItemStatus
+from scripthut.runs.models import RunItemStatus, RunStatus
 from scripthut.runs.storage import RunStorageManager
 from scripthut.runtime import (
     BackendState,
@@ -1085,9 +1085,19 @@ templates.env.filters["age"] = _format_age_filter
 def _backend_usage() -> dict[str, dict[str, int]]:
     """Per-backend usage computed from scripthut's own run items.
 
-    Returns ``{backend_name: {"jobs": <active>, "cpus": <running>}}`` where
-    ``jobs`` counts active items (pending/submitted/queued/running/settling)
-    and ``cpus`` sums the CPU request of items scripthut has RUNNING.
+    Returns ``{backend_name: {...}}`` with:
+
+    ``jobs``
+        Active items (pending/submitted/queued/running/settling).
+    ``cpus``
+        CPU request summed over items scripthut has RUNNING.
+    ``cpus_queued``
+        CPU request summed over items waiting in the scheduler
+        (submitted or queued) — what we're about to occupy.
+    ``running`` / ``queued`` / ``pending``
+        Item counts behind those CPU figures. PENDING is scripthut-side
+        (deps or the concurrency cap), not the scheduler's queue, so it is
+        counted separately and contributes to neither CPU total.
 
     We count from our own tracking rather than a live ``squeue`` query: the
     scheduler's per-user filter can disagree with what we actually submitted
@@ -1100,10 +1110,20 @@ def _backend_usage() -> dict[str, dict[str, int]]:
             for item in run.items:
                 if item.status in (RunItemStatus.COMPLETED, RunItemStatus.FAILED, RunItemStatus.DEP_FAILED):
                     continue
-                u = usage.setdefault(run.backend_name, {"jobs": 0, "cpus": 0})
+                u = usage.setdefault(
+                    run.backend_name,
+                    {"jobs": 0, "cpus": 0, "cpus_queued": 0,
+                     "running": 0, "queued": 0, "pending": 0},
+                )
                 u["jobs"] += 1
                 if item.status == RunItemStatus.RUNNING:
                     u["cpus"] += item.task.cpus or 0
+                    u["running"] += 1
+                elif item.status in (RunItemStatus.SUBMITTED, RunItemStatus.QUEUED):
+                    u["cpus_queued"] += item.task.cpus or 0
+                    u["queued"] += 1
+                elif item.status == RunItemStatus.PENDING:
+                    u["pending"] += 1
     return usage
 
 
@@ -1349,9 +1369,74 @@ def _apply_job_filters(job_views: list[JobView]) -> list[JobView]:
     return job_views
 
 
+# How many finished runs the landing page falls back to when nothing is
+# active. Small on purpose — the full history lives on /runs.
+OVERVIEW_RECENT_LIMIT = 6
+
+
+def _overview_context(request: Request) -> dict[str, Any]:
+    """Context for the landing page and its SSE partial.
+
+    Active runs are the whole point of the page, so they come first and are
+    never truncated. ``recent_runs`` only exists so the page isn't blank
+    when nothing is in flight — the template ignores it otherwise.
+
+    ``_default``-named runs are the weekly bins holding *external* cluster
+    jobs (not submitted by scripthut). They have no source and no workflow,
+    so they belong on the backends dashboard, not here.
+    """
+    runs = [
+        r for r in (state.run_manager.get_all_runs() if state.run_manager else [])
+        if not r.workflow_name.startswith("_default")
+    ]
+    active = [r for r in runs if r.status in (RunStatus.PENDING, RunStatus.RUNNING)]
+    recent = [r for r in runs if r.status not in (RunStatus.PENDING, RunStatus.RUNNING)]
+
+    return {
+        "request": request,
+        "active_runs": active,
+        "recent_runs": recent[:OVERVIEW_RECENT_LIMIT],
+        "backends": state.backends,
+        "backend_usage": _backend_usage(),
+    }
+
+
 @app.get("/", response_class=HTMLResponse)
-async def index(request: Request) -> HTMLResponse:
-    """Main page with unified job list."""
+async def overview(request: Request) -> HTMLResponse:
+    """Landing page: what is running right now, and what the backends look like."""
+    if state.config_error:
+        return templates.TemplateResponse(
+            "config_error.html",
+            {"request": request, "config_error": state.config_error},
+        )
+
+    return templates.TemplateResponse("overview.html", _overview_context(request))
+
+
+@app.get("/overview/stream")
+async def overview_stream(request: Request) -> EventSourceResponse:
+    """SSE endpoint keeping the landing page's cards live."""
+
+    async def event_generator() -> AsyncGenerator[dict[str, Any], None]:
+        while True:
+            changed = await state.wait_for_poll()
+            if state._shutdown_event.is_set() or await request.is_disconnected():
+                break
+
+            if changed:
+                html = templates.get_template("overview_cards.html").render(
+                    _overview_context(request)
+                )
+                yield {"event": "overview-update", "data": html}
+            else:
+                yield {"comment": "keepalive"}
+
+    return EventSourceResponse(event_generator())
+
+
+@app.get("/backends", response_class=HTMLResponse)
+async def backends_page(request: Request) -> HTMLResponse:
+    """Backends dashboard: connection status, cluster detail, unified job list."""
     if state.config_error:
         return templates.TemplateResponse(
             "config_error.html",
@@ -1363,7 +1448,7 @@ async def index(request: Request) -> HTMLResponse:
     poll_interval = state.config.settings.poll_interval if state.config else 60
 
     return templates.TemplateResponse(
-        "base.html",
+        "backends.html",
         {
             "request": request,
             "job_views": job_views,
@@ -1875,6 +1960,40 @@ async def runs_page(request: Request) -> HTMLResponse:
         {
             "request": request,
             "runs": runs,
+        },
+    )
+
+
+@app.post("/runs/delete", response_class=HTMLResponse)
+async def delete_runs(
+    request: Request, run_ids: Annotated[list[str], Form()] = [],
+) -> HTMLResponse:
+    """Delete the selected runs and return the refreshed list.
+
+    Deletion is per-run and best-effort: ``delete_run`` refuses runs that
+    are still PENDING/RUNNING, so a selection spanning active runs deletes
+    the finished ones and leaves the rest. The count of each is reported
+    back so the page can say what actually happened rather than implying
+    the whole selection went.
+    """
+    deleted, skipped = 0, 0
+    if state.run_manager:
+        for run_id in run_ids:
+            if state.run_manager.delete_run(run_id):
+                deleted += 1
+            else:
+                skipped += 1
+    if deleted:
+        logger.info(f"Bulk-deleted {deleted} run(s)")
+
+    runs = state.run_manager.get_all_runs() if state.run_manager else []
+    return templates.TemplateResponse(
+        "runs_list.html",
+        {
+            "request": request,
+            "runs": runs,
+            "deleted_count": deleted,
+            "skipped_count": skipped,
         },
     )
 

@@ -64,6 +64,7 @@ def _run_summary(run: Run) -> dict[str, Any]:
     return {
         "id": run.id,
         "workflow_name": run.workflow_name,
+        "source_name": run.source_name,
         "backend_name": run.backend_name,
         "created_at": run.created_at.isoformat(),
         "status": run.status.value,

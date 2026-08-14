@@ -1,10 +1,24 @@
 {% from '_status.html' import status_dot, status_bar %}
+{#
+  ``deleted_count`` / ``skipped_count`` are only set when this partial is
+  rendered as the response to a bulk delete; the SSE stream re-renders it
+  without them, which clears the notice on the next poll.
+#}
+{% if deleted_count or skipped_count %}
+<div class="px-6 py-2 bg-blue-50 border-b border-blue-100 text-sm text-blue-800">
+    Deleted {{ deleted_count }} run{{ '' if deleted_count == 1 else 's' }}.
+    {% if skipped_count %}
+    <span class="text-blue-600">{{ skipped_count }} skipped — still running or already gone.</span>
+    {% endif %}
+</div>
+{% endif %}
 {% if runs %}
 <!-- Runs Table (desktop) -->
 <div class="hidden md:block overflow-x-auto">
     <table class="min-w-full divide-y divide-gray-200">
         <thead class="bg-gray-50">
             <tr>
+                <th class="run-select-cell px-4 py-3 w-10"><span class="sr-only">Select</span></th>
                 <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">ID</th>
                 <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Workflow</th>
                 <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Backend</th>
@@ -17,7 +31,18 @@
         </thead>
         <tbody class="bg-white divide-y divide-gray-200">
             {% for run in runs %}
-            <tr class="hover:bg-gray-50">
+            {% set deletable = run.status.value in ('completed', 'failed', 'cancelled') %}
+            <tr class="hover:bg-gray-50" data-run-id="{{ run.id }}">
+                <td class="run-select-cell px-4 py-4">
+                    {% if deletable %}
+                    <input type="checkbox" name="run_ids" value="{{ run.id }}"
+                        class="run-checkbox h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                        aria-label="Select run {{ run.id }}">
+                    {% else %}
+                    {# Active runs can't be deleted — no box rather than a dead one. #}
+                    <span class="block w-4" title="Still running — cancel it first"></span>
+                    {% endif %}
+                </td>
                 <td class="px-6 py-4 whitespace-nowrap">
                     <a href="/runs/{{ run.id }}" class="text-blue-600 hover:text-blue-800 font-mono">
                         {{ run.id }}
@@ -61,12 +86,12 @@
                     <a href="/runs/{{ run.id }}" class="text-blue-600 hover:text-blue-800 text-sm">
                         View
                     </a>
-                    {% if run.status.value in ('completed', 'failed', 'cancelled') %}
+                    {% if deletable %}
                     <button hx-delete="/runs/{{ run.id }}"
                             hx-confirm="Delete run {{ run.id }}?"
                             hx-target="closest tr"
                             hx-swap="outerHTML swap:200ms"
-                            class="text-gray-400 hover:text-red-600 text-sm"
+                            class="run-delete-btn text-gray-400 hover:text-red-600 text-sm"
                             title="Delete run">
                         <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
                             <path stroke-linecap="round" stroke-linejoin="round"
@@ -84,7 +109,18 @@
 <!-- Runs Cards (mobile) -->
 <div class="md:hidden divide-y divide-gray-200">
     {% for run in runs %}
-    <a href="/runs/{{ run.id }}" class="block px-4 py-3 hover:bg-gray-50 active:bg-gray-100">
+    {% set deletable = run.status.value in ('completed', 'failed', 'cancelled') %}
+    <div class="flex items-center" data-run-id="{{ run.id }}">
+    <span class="run-select-cell pl-4 flex-shrink-0">
+        {% if deletable %}
+        <input type="checkbox" name="run_ids" value="{{ run.id }}"
+            class="run-checkbox h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+            aria-label="Select run {{ run.id }}">
+        {% else %}
+        <span class="block w-4" title="Still running — cancel it first"></span>
+        {% endif %}
+    </span>
+    <a href="/runs/{{ run.id }}" class="flex-1 min-w-0 block px-4 py-3 hover:bg-gray-50 active:bg-gray-100">
         <!-- Row 1: Workflow name + Status badge -->
         <div class="flex items-start justify-between gap-2">
             <span class="text-sm font-medium text-gray-900 truncate">{{ run.workflow_name }}</span>
@@ -120,6 +156,7 @@
             </span>
         </div>
     </a>
+    </div>
     {% endfor %}
 </div>
 {% else %}

@@ -347,4 +347,4 @@ After starting ScriptHut, you should see output similar to:
 INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
 ```
 
-Navigate to the URL in your browser. The dashboard should show your configured backends and workflows. If a backend connection fails, check the terminal output for SSH error messages and verify your SSH configuration.
+Navigate to the URL in your browser. The landing page shows a card per active run and a card per backend (CPUs running and queued, cluster load, disk); the **Backends** tab has the full per-backend detail and job table. If a backend connection fails, check the terminal output for SSH error messages and verify your SSH configuration.

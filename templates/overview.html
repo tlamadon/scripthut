@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en" style="scrollbar-gutter: stable">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ScriptHut</title>
+    <link rel="icon" type="image/svg+xml"
+        href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='25' cy='2' r='1.8' fill='%23ccc' opacity='.5'/%3E%3Ccircle cx='23' cy='5' r='2.2' fill='%23bbb' opacity='.45'/%3E%3Ccircle cx='25.5' cy='8' r='1.8' fill='%23aaa' opacity='.4'/%3E%3Crect x='22' y='7' width='2.5' height='8' fill='%23696969'/%3E%3Cpolygon points='16,3 0,22 32,22' fill='%23B8860B'/%3E%3Cline x1='16' y1='3' x2='3' y2='22' stroke='%23A07000' stroke-width='.7'/%3E%3Cline x1='16' y1='3' x2='9' y2='22' stroke='%23A07000' stroke-width='.7'/%3E%3Cline x1='16' y1='3' x2='16' y2='22' stroke='%23A07000' stroke-width='.7'/%3E%3Cline x1='16' y1='3' x2='23' y2='22' stroke='%23A07000' stroke-width='.7'/%3E%3Cline x1='16' y1='3' x2='29' y2='22' stroke='%23A07000' stroke-width='.7'/%3E%3Crect x='6' y='22' width='20' height='8' fill='%23D2B48C'/%3E%3Crect x='12' y='24' width='6' height='6' rx='3' ry='2' fill='%235C3317'/%3E%3Crect x='20' y='25' width='3' height='3' fill='%2387CEEB' stroke='%235C3317' stroke-width='.5'/%3E%3C/svg%3E">
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <script src="https://unpkg.com/htmx.org@1.9.10/dist/ext/sse.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+
+<body class="bg-gray-100 min-h-screen">
+    <div class="container mx-auto px-4 py-8" hx-ext="sse" sse-connect="/overview/stream">
+        <header class="mb-8">
+            {% include "nav.html" %}
+        </header>
+
+        <div id="overview-body" sse-swap="overview-update" hx-swap="innerHTML">
+            {% include "overview_cards.html" %}
+        </div>
+    </div>
+
+    <footer class="container mx-auto px-4 py-4 mt-8 text-center text-xs text-gray-400">
+        <a href="https://github.com/tlamadon/scripthut" target="_blank" class="hover:text-gray-600">ScriptHut v{{ scripthut_version }}</a>
+    </footer>
+
+    <script>
+        // Render <time class="local-elapsed"> as "2h 14m" since its datetime.
+        // Recomputed on a ticker so a card that sits on screen keeps counting
+        // up without waiting for the next SSE swap.
+        function formatElapsed(root) {
+            var now = Date.now();
+            (root || document).querySelectorAll('time.local-elapsed').forEach(function (el) {
+                var start = new Date(el.getAttribute('datetime'));
+                if (isNaN(start)) return;
+                var secs = Math.max(0, Math.floor((now - start.getTime()) / 1000));
+                var out;
+                if (secs < 60) {
+                    out = secs + 's';
+                } else if (secs < 3600) {
+                    out = Math.floor(secs / 60) + 'm';
+                } else if (secs < 86400) {
+                    out = Math.floor(secs / 3600) + 'h ' + Math.floor((secs % 3600) / 60) + 'm';
+                } else {
+                    out = Math.floor(secs / 86400) + 'd ' + Math.floor((secs % 86400) / 3600) + 'h';
+                }
+                // Only touch the DOM when the value actually changed. The
+                // MutationObserver below watches this subtree, and an
+                // unconditional write would retrigger it forever — unlike
+                // formatLocalTimes elsewhere, this render repeats by design
+                // so it can't stop after a one-shot "converted" flag.
+                if (el.textContent !== out) el.textContent = out;
+                if (el.title !== start.toLocaleString()) el.title = start.toLocaleString();
+            });
+        }
+        formatElapsed();
+        setInterval(function () { formatElapsed(); }, 30000);
+        // Re-render after SSE swaps replace the card grid.
+        new MutationObserver(function () { formatElapsed(); }).observe(
+            document.getElementById('overview-body') || document.body,
+            { childList: true, subtree: true }
+        );
+    </script>
+</body>
+
+</html>

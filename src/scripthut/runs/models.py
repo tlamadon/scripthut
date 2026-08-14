@@ -473,6 +473,32 @@ class RunStatus(str, Enum):
     CANCELLED = "cancelled"  # Run was cancelled
 
 
+def derive_source_name(workflow_name: str) -> str | None:
+    """Best-effort source for a run recorded before ``Run.source_name`` existed.
+
+    Only used when loading legacy ``run.json`` files — runs created from
+    here on carry the field explicitly. Mirrors the shapes the manager
+    composes ``workflow_name`` from::
+
+        "<source>/<stem>"          -> "<source>"
+        "_agent/<source>/<name>"   -> "<source>"
+        "_stack/<source>/<stack>"  -> "<source>"
+        "_stack/<stack>"           -> None   (no source was recorded)
+        "_adhoc/…", "_probe", "_default", bare names -> None
+
+    An ad-hoc run whose caller passed a ``run_name`` containing a slash is
+    indistinguishable from a source run here, and will be misattributed.
+    That ambiguity is exactly why the field now exists; it only affects
+    runs already on disk.
+    """
+    parts = workflow_name.split("/")
+    if parts[0] in ("_agent", "_stack"):
+        return parts[1] if len(parts) >= 3 else None
+    if parts[0].startswith("_"):
+        return None
+    return parts[0] if len(parts) >= 2 else None
+
+
 @dataclass
 class Run:
     """A single execution of tasks (formerly Queue)."""
@@ -489,6 +515,11 @@ class Run:
     commit_hash: str | None = None  # Git commit hash if run from a git workflow
     git_repo: str | None = None  # Git repo URL if run from a git workflow or git source
     git_branch: str | None = None  # Git branch if run from a git workflow or git source
+    # Source the run was triggered from, recorded explicitly rather than
+    # parsed back out of ``workflow_name`` (which encodes it differently per
+    # run kind — see ``derive_source_name``). None for ad-hoc runs, stack
+    # installs with no source, and external jobs.
+    source_name: str | None = None
     # Document-level env rules / groups parsed from the workflow JSON itself
     # (the generator's stdout, or a generates_source JSON). Slot between the
     # workflow-config env and the per-task env in the resolver chain.
@@ -563,6 +594,19 @@ class Run:
         if total == 0:
             return 100
         return int((completed / total) * 100)
+
+    @property
+    def display_name(self) -> str:
+        """Workflow name with a redundant ``<source>/`` prefix stripped.
+
+        Views that already show the source as its own label use this so the
+        source isn't repeated in the title. ``_agent/…`` / ``_stack/…`` names
+        are left intact — the prefix is what identifies the run kind.
+        """
+        prefix = f"{self.source_name}/"
+        if self.source_name and self.workflow_name.startswith(prefix):
+            return self.workflow_name[len(prefix):]
+        return self.workflow_name
 
     @property
     def status_counts(self) -> dict[str, int]:

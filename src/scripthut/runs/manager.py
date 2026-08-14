@@ -688,6 +688,7 @@ class RunManager:
         doc_env: list[EnvRule] | None = None,
         doc_env_groups: dict[str, list[EnvRule]] | None = None,
         doc_stacks: dict[str, Stack] | None = None,
+        source_name: str | None = None,
     ) -> Run:
         """Build a Run: resolve deps, validate, create, persist, and start processing.
 
@@ -736,6 +737,7 @@ class RunManager:
             doc_env=list(doc_env or []),
             doc_env_groups=dict(doc_env_groups or {}),
             doc_stacks=dict(doc_stacks or {}),
+            source_name=source_name,
         )
 
         self.runs[run_id] = run
@@ -877,7 +879,7 @@ class RunManager:
 
         return await self._build_run(
             [task], workflow_name, backend_name, max_concurrent=None,
-            ssh_client=ssh_client,
+            ssh_client=ssh_client, source_name=source_name,
         )
 
     async def create_adhoc_run(
@@ -1162,7 +1164,7 @@ class RunManager:
             tasks, workflow_name, backend_name, None, ssh_client,
             git_repo=git_repo, git_branch=git_branch, commit_hash=commit_hash,
             doc_env=doc_env, doc_env_groups=doc_env_groups,
-            doc_stacks=doc_stacks,
+            doc_stacks=doc_stacks, source_name=source_name,
         )
         return run
 
@@ -1295,7 +1297,7 @@ class RunManager:
         workflow_name = f"_agent/{source_name}/{name}"
         run = await self._build_run(
             [task], workflow_name, backend_name, max_concurrent=None,
-            ssh_client=ssh_client,
+            ssh_client=ssh_client, source_name=source_name,
             git_repo=source.url, git_branch=source.branch, commit_hash=commit_hash,
         )
         run.agent_session = True

@@ -28,16 +28,31 @@
     });
 })();
 </script>
+{#
+  Active-tab state. Computed once here (Jinja `set` at template scope is
+  visible to both the desktop and mobile menus below) and as an explicit
+  match per page — an earlier negative-match chain ("not /runs and not
+  /settings and …") silently gave the wrong tab its highlight every time a
+  new page was added.
+#}
+{% set path = request.url.path %}
+{% set is_detail = '/tasks/' in path %}
+{% set is_settings = path.startswith('/settings') %}
+{% set is_terminals = path == '/terminals' or path.startswith('/terminal/') %}
+{% set is_disk = path == '/disk' %}
+{% set is_sources = path == '/sources' or path.startswith('/sources/') %}
+{% set is_runs = (path.startswith('/runs') or path.startswith('/task-sources')) and not is_detail %}
+{% set is_backends = path == '/backends' or path.startswith('/backends/') %}
+{% set is_overview = path == '/' %}
 <div class="flex items-center justify-between">
     <div class="flex items-center gap-6">
         <a href="/" class="text-2xl font-bold text-gray-800 hover:text-gray-600 transition-colors">ScriptHut</a>
         <div class="hidden md:flex items-center gap-1 text-sm font-medium">
-            {% set is_detail = '/tasks/' in request.url.path %}
-            {% set is_settings = request.url.path.startswith('/settings') %}
-            {% set is_terminals = request.url.path == '/terminals' %}
-            {% set is_disk = request.url.path == '/disk' %}
-            {% set is_sources = request.url.path == '/sources' or request.url.path.startswith('/sources/') %}
-            <a href="/" class="px-3 py-1.5 rounded-md transition-colors {% if not request.url.path.startswith('/runs') and not request.url.path.startswith('/task-sources') and not is_settings and not is_terminals and not is_disk and not is_sources %}bg-blue-100 text-blue-700{% else %}text-gray-600 hover:bg-gray-100 hover:text-gray-800{% endif %}">
+            <a href="/" class="px-3 py-1.5 rounded-md transition-colors {% if is_overview %}bg-blue-100 text-blue-700{% else %}text-gray-600 hover:bg-gray-100 hover:text-gray-800{% endif %}">
+                <svg class="w-4 h-4 inline-block" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"></path></svg>
+                Overview
+            </a>
+            <a href="/backends" class="px-3 py-1.5 rounded-md transition-colors {% if is_backends %}bg-blue-100 text-blue-700{% else %}text-gray-600 hover:bg-gray-100 hover:text-gray-800{% endif %}">
                 <svg class="w-4 h-4 inline-block" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01"></path></svg>
                 Backends
             </a>
@@ -45,7 +60,7 @@
                 <svg class="w-4 h-4 inline-block" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4"></path></svg>
                 Sources
             </a>
-            <a href="/runs" class="px-3 py-1.5 rounded-md transition-colors {% if (request.url.path.startswith('/runs') or request.url.path.startswith('/task-sources')) and not is_detail %}bg-blue-100 text-blue-700{% else %}text-gray-600 hover:bg-gray-100 hover:text-gray-800{% endif %}">
+            <a href="/runs" class="px-3 py-1.5 rounded-md transition-colors {% if is_runs %}bg-blue-100 text-blue-700{% else %}text-gray-600 hover:bg-gray-100 hover:text-gray-800{% endif %}">
                 <svg class="w-4 h-4 inline-block" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
                 Runs
             </a>
@@ -79,13 +94,12 @@
 
 <!-- Mobile menu -->
 <div id="mobile-menu" class="hidden md:hidden mt-3 pb-2 border-t border-gray-200 pt-3">
-    {% set is_detail = '/tasks/' in request.url.path %}
-    {% set is_settings = request.url.path.startswith('/settings') %}
-    {% set is_terminals = request.url.path == '/terminals' %}
-    {% set is_disk = request.url.path == '/disk' %}
-    {% set is_sources = request.url.path == '/sources' or request.url.path.startswith('/sources/') %}
     <div class="flex flex-col gap-1 text-sm font-medium">
-        <a href="/" class="px-3 py-2 rounded-md transition-colors {% if not request.url.path.startswith('/runs') and not request.url.path.startswith('/task-sources') and not is_settings and not is_terminals and not is_disk and not is_sources %}bg-blue-100 text-blue-700{% else %}text-gray-600 hover:bg-gray-100 hover:text-gray-800{% endif %}">
+        <a href="/" class="px-3 py-2 rounded-md transition-colors {% if is_overview %}bg-blue-100 text-blue-700{% else %}text-gray-600 hover:bg-gray-100 hover:text-gray-800{% endif %}">
+            <svg class="w-4 h-4 inline-block mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"></path></svg>
+            Overview
+        </a>
+        <a href="/backends" class="px-3 py-2 rounded-md transition-colors {% if is_backends %}bg-blue-100 text-blue-700{% else %}text-gray-600 hover:bg-gray-100 hover:text-gray-800{% endif %}">
             <svg class="w-4 h-4 inline-block mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01"></path></svg>
             Backends
         </a>
@@ -93,7 +107,7 @@
             <svg class="w-4 h-4 inline-block mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4"></path></svg>
             Sources
         </a>
-        <a href="/runs" class="px-3 py-2 rounded-md transition-colors {% if (request.url.path.startswith('/runs') or request.url.path.startswith('/task-sources')) and not is_detail %}bg-blue-100 text-blue-700{% else %}text-gray-600 hover:bg-gray-100 hover:text-gray-800{% endif %}">
+        <a href="/runs" class="px-3 py-2 rounded-md transition-colors {% if is_runs %}bg-blue-100 text-blue-700{% else %}text-gray-600 hover:bg-gray-100 hover:text-gray-800{% endif %}">
             <svg class="w-4 h-4 inline-block mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
             Runs
         </a>

@@ -293,6 +293,7 @@ class TestRunEnvLayering:
             tasks, workflow_name, backend_name, max_concurrent, ssh_client,
             *, git_repo=None, git_branch=None, commit_hash=None,
             doc_env=None, doc_env_groups=None, doc_stacks=None,
+            source_name=None,
         ):
             captured["doc_env"] = doc_env
             captured["doc_env_groups"] = doc_env_groups

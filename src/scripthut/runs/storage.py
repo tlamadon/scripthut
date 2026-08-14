@@ -11,7 +11,13 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from scripthut.runs.models import Run, RunItem, RunItemStatus, TaskDefinition
+from scripthut.runs.models import (
+    Run,
+    RunItem,
+    RunItemStatus,
+    TaskDefinition,
+    derive_source_name,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +107,7 @@ class RunStorageManager:
             "commit_hash": run.commit_hash,
             "git_repo": run.git_repo,
             "git_branch": run.git_branch,
+            "source_name": run.source_name,
             "doc_env": [r.model_dump(by_alias=True, exclude_defaults=True) for r in run.doc_env],
             "doc_env_groups": {
                 name: [r.model_dump(by_alias=True, exclude_defaults=True) for r in rules]
@@ -161,6 +168,11 @@ class RunStorageManager:
                 commit_hash=data.get("commit_hash"),
                 git_repo=data.get("git_repo"),
                 git_branch=data.get("git_branch"),
+                # Runs written before source_name existed get it derived from
+                # the workflow name so the overview can still group them.
+                source_name=data.get("source_name") or derive_source_name(
+                    data["workflow_name"]
+                ),
                 doc_env=doc_env,
                 doc_env_groups=doc_env_groups,
                 doc_stacks=doc_stacks,
