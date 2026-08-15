@@ -10,7 +10,7 @@ deriving it from the workflow name.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -196,6 +196,39 @@ class TestOverviewRoutes:
         assert "/runs/done1" in resp.text
         assert "Current runs" in resp.text
         assert "Recent runs" in resp.text
+
+    def test_hourly_card_shows_its_empty_state(self, client):
+        """These fixtures have no started_at, so nothing lands in the window."""
+        resp = client.get("/")
+        assert "Last 24 hours" in resp.text
+        assert "Nothing ran in the last 24 hours" in resp.text
+
+    def test_hourly_card_renders_bars_and_a_labelled_legend(self):
+        """Three palette hues are under 3:1 on white, so each series must
+        carry a visible name — identity is never colour alone."""
+        original = main_module.state.run_manager
+        rm = MagicMock()
+        now = datetime.now(timezone.utc)
+        runs = []
+        for name, cpus in (("demo", 8), ("papers", 4)):
+            run = _run(f"{name}1", f"{name}/wf", name, [RunItemStatus.COMPLETED], cpus=cpus)
+            run.items[0].started_at = now - timedelta(hours=2)
+            run.items[0].finished_at = now - timedelta(hours=1)
+            runs.append(run)
+        rm.get_all_runs.return_value = runs
+        rm.runs = {r.id: r for r in runs}
+        main_module.state.run_manager = rm
+        try:
+            resp = TestClient(main_module.app).get("/")
+        finally:
+            main_module.state.run_manager = original
+
+        assert "Nothing ran in the last 24 hours" not in resp.text
+        assert "peak" in resp.text
+        # Legend: swatch colour plus the source's name and its total.
+        assert "#2a78d6" in resp.text  # busiest source takes palette slot 1
+        assert ">demo</span>" in resp.text
+        assert ">papers</span>" in resp.text
 
     def test_section_order_is_activity_backends_current_recent(self, client):
         resp = client.get("/")

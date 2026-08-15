@@ -17,7 +17,8 @@
     'bg-indigo-600',
     'bg-indigo-800',
 ] %}
-<section class="mb-8">
+<section class="mb-8 grid grid-cols-1 lg:grid-cols-5 gap-4">
+<div class="lg:col-span-3 flex flex-col">
     <div class="flex items-baseline justify-between mb-3">
         <h2 class="text-sm font-semibold text-gray-500 uppercase tracking-wider">
             Activity · last {{ activity.window_label }}
@@ -27,7 +28,7 @@
         </span>
     </div>
 
-    <div class="bg-white rounded-lg shadow-md p-4 flex flex-col lg:flex-row lg:items-center gap-6">
+    <div class="bg-white rounded-lg shadow-md p-4 flex flex-col gap-4 flex-1">
         <!-- Grid -->
         <div class="overflow-x-auto">
             <div class="inline-flex flex-col gap-1">
@@ -74,9 +75,9 @@
             </div>
         </div>
 
-        <!-- Headline figures, pushed flush right so the strip uses its width
-             deliberately rather than trailing off into blank card. -->
-        <div class="flex flex-row lg:flex-col gap-6 lg:gap-3 lg:ml-auto lg:border-l lg:border-gray-100 lg:pl-6 lg:pr-2">
+        <!-- Headline figures. Below the grid now that the card shares its
+             row: side by side they would squeeze the year out of view. -->
+        <div class="flex flex-row flex-wrap gap-6 pt-3 mt-auto border-t border-gray-100">
             <div>
                 <div class="text-2xl font-semibold text-indigo-600 font-mono">
                     {{ '%.0f'|format(activity.total_cpu_hours) }}
@@ -91,7 +92,7 @@
             </div>
             {% if activity.busiest %}
             <div>
-                <div class="text-sm font-medium text-gray-700">
+                <div class="text-sm font-medium text-gray-700 mt-1">
                     {{ activity.busiest.day.strftime('%d %b') }}
                 </div>
                 <div class="text-xs text-gray-500">
@@ -101,6 +102,81 @@
             {% endif %}
         </div>
     </div>
+</div>
+
+{#
+  Today's shape, beside the year. Stacked by source so a spike is
+  attributable; colours are slots 1-5 of the validated categorical palette
+  plus a neutral for the "Other" rollup, assigned busiest-source-first so a
+  source keeps its colour as the mix changes. Three of those hues sit under
+  3:1 on white, so the legend carries a name and a number per series —
+  identity is never colour alone.
+#}
+<div class="lg:col-span-2 flex flex-col">
+    <div class="flex items-baseline justify-between mb-3">
+        <h2 class="text-sm font-semibold text-gray-500 uppercase tracking-wider">
+            Last {{ hourly.window_hours }} hours
+        </h2>
+        <span class="text-xs text-gray-400" title="Hours are the server's local time">
+            CPU-hours by source · local time
+        </span>
+    </div>
+
+    <div class="bg-white rounded-lg shadow-md p-4 flex flex-col gap-4 flex-1">
+        {% if hourly.is_empty %}
+        <div class="h-32 flex items-center justify-center text-sm text-gray-400">
+            Nothing ran in the last {{ hourly.window_hours }} hours.
+        </div>
+        {% else %}
+        {# Without a scale the bars are only comparable to each other; the
+           peak names what full height is worth. #}
+        <div class="flex justify-end -mb-2">
+            <span class="text-[10px] text-gray-400 font-mono">
+                peak {{ '%.0f'|format(hourly.max_total) if hourly.max_total >= 1 else '%.1f'|format(hourly.max_total) }} CPU-h/h
+            </span>
+        </div>
+
+        <!-- Bars. Each column is one local hour; segments stack from the
+             baseline with a 2px surface gap, rounded only at the free end. -->
+        <div class="flex items-end gap-[2px] h-32" role="img"
+            aria-label="CPU-hours per hour over the last {{ hourly.window_hours }} hours, by source">
+            {% for hour in hourly.hours %}
+            <div class="flex-1 h-full flex flex-col-reverse gap-[2px] justify-start min-w-0"
+                title="{{ hour.label }} — {% if hour.segments %}{{ '%.1f'|format(hour.total_cpu_hours) }} CPU-h{% for seg in hour.segments %} · {{ seg.source }} {{ '%.1f'|format(seg.cpu_hours) }}{% endfor %}{% else %}idle{% endif %}">
+                {% for seg in hour.segments %}
+                <div class="w-full {% if seg.is_top %}rounded-t-[4px]{% endif %}"
+                    style="height: {{ '%.2f'|format(seg.height_pct) }}%; background: {{ seg.color }}"></div>
+                {% endfor %}
+            </div>
+            {% endfor %}
+        </div>
+
+        {# Clock times, not bare numbers — "16" alone reads as a count. Every
+           4h: 24 labels would collide, but at ~76px apart "16:00" has room.
+           The label overflows its one-hour column and centres on it, which
+           is why nothing here clips. #}
+        <div class="flex gap-[2px] -mt-2">
+            {% for hour in hourly.hours %}
+            <div class="flex-1 text-center text-[10px] text-gray-400 min-w-0 whitespace-nowrap">
+                {% if loop.index0 % 4 == 0 %}{{ hour.start.strftime('%H:%M') }}{% endif %}
+            </div>
+            {% endfor %}
+        </div>
+
+        <!-- Legend: swatch + name + total, so each series is labelled. -->
+        <div class="flex flex-wrap gap-x-4 gap-y-1 pt-3 mt-auto border-t border-gray-100">
+            {% for source in hourly.sources %}
+            <span class="inline-flex items-center gap-1.5 text-xs text-gray-600 min-w-0">
+                <span class="w-2.5 h-2.5 rounded-sm flex-shrink-0"
+                    style="background: {{ hourly.colors[source] }}"></span>
+                <span class="truncate">{{ source }}</span>
+                <span class="font-mono text-gray-500">{{ '%.1f'|format(hourly.totals[source]) }}</span>
+            </span>
+            {% endfor %}
+        </div>
+        {% endif %}
+    </div>
+</div>
 </section>
 
 {#

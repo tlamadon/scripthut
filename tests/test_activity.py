@@ -6,7 +6,10 @@ from datetime import date, datetime, timedelta, timezone
 
 from scripthut.runs.activity import (
     ACTIVITY_WINDOW_DAYS,
+    MAX_SOURCE_SERIES,
+    SOURCE_COLORS,
     build_activity_grid,
+    build_hourly_usage,
 )
 from scripthut.runs.models import Run, RunItem, RunItemStatus, TaskDefinition
 from scripthut.runs.usage import records_from_runs
@@ -226,3 +229,135 @@ class TestSummary:
         assert grid.busiest is None
         assert grid.active_days == 0
         assert grid.total_cpu_hours == 0
+
+
+class TestHourlyUsage:
+    """The 24h stacked bar beside the heatmap."""
+
+    def _rec(self, *, source, start, hours, cpus=1, run_id="r", task_id="t"):
+        from scripthut.runs.usage import UsageRecord
+
+        return UsageRecord(
+            run_id=run_id, task_id=task_id, cpus=cpus,
+            started_at=start, finished_at=start + timedelta(hours=hours),
+            source_name=source,
+        )
+
+    def test_covers_the_trailing_24_hours_ending_now(self):
+        usage = build_hourly_usage([], now=NOW)
+
+        assert len(usage.hours) == 24
+        assert usage.hours[-1].start == NOW.astimezone().replace(
+            minute=0, second=0, microsecond=0
+        )
+        assert usage.hours[0].start == usage.hours[-1].start - timedelta(hours=23)
+
+    def test_work_is_split_across_hour_boundaries(self):
+        """A long job belongs to every hour it occupied, not just its first."""
+        start = (NOW - timedelta(hours=4)).astimezone().replace(
+            minute=0, second=0, microsecond=0
+        )
+        usage = build_hourly_usage(
+            [self._rec(source="demo", start=start, hours=3, cpus=2)], now=NOW,
+        )
+
+        touched = [h for h in usage.hours if h.total_cpu_hours > 0]
+        assert len(touched) == 3
+        assert all(abs(h.total_cpu_hours - 2.0) < 1e-9 for h in touched)
+        assert abs(usage.total_cpu_hours - 6.0) < 1e-9
+
+    def test_stacks_by_source(self):
+        start = (NOW - timedelta(hours=2)).astimezone().replace(
+            minute=0, second=0, microsecond=0
+        )
+        usage = build_hourly_usage([
+            self._rec(source="demo", start=start, hours=1, cpus=4, run_id="a"),
+            self._rec(source="papers", start=start, hours=1, cpus=2, run_id="b"),
+        ], now=NOW)
+
+        hour = next(h for h in usage.hours if h.total_cpu_hours > 0)
+        assert {s.source: s.cpu_hours for s in hour.segments} == {"demo": 4.0, "papers": 2.0}
+
+    def test_busiest_source_takes_the_first_palette_slot(self):
+        """Colour follows the entity, assigned by total so it stays stable."""
+        start = (NOW - timedelta(hours=2)).astimezone().replace(
+            minute=0, second=0, microsecond=0
+        )
+        usage = build_hourly_usage([
+            self._rec(source="small", start=start, hours=1, cpus=1, run_id="a"),
+            self._rec(source="big", start=start, hours=1, cpus=9, run_id="b"),
+        ], now=NOW)
+
+        assert usage.sources == ["big", "small"]
+        assert usage.colors["big"] == SOURCE_COLORS[0]
+        assert usage.colors["small"] == SOURCE_COLORS[1]
+
+    def test_extra_sources_fold_into_other(self):
+        """A generated 9th hue is exactly what the palette rules forbid."""
+        start = (NOW - timedelta(hours=2)).astimezone().replace(
+            minute=0, second=0, microsecond=0
+        )
+        recs = [
+            self._rec(source=f"s{i}", start=start, hours=1, cpus=10 - i, run_id=f"r{i}")
+            for i in range(8)
+        ]
+        usage = build_hourly_usage(recs, now=NOW)
+
+        assert len(usage.sources) == MAX_SOURCE_SERIES + 1
+        assert usage.sources[-1] == "Other"
+        # Folding must not lose CPU-hours.
+        assert abs(usage.total_cpu_hours - sum(10 - i for i in range(8))) < 1e-9
+
+    def test_missing_source_is_labelled_not_dropped(self):
+        start = (NOW - timedelta(hours=2)).astimezone().replace(
+            minute=0, second=0, microsecond=0
+        )
+        usage = build_hourly_usage(
+            [self._rec(source=None, start=start, hours=1, cpus=3)], now=NOW,
+        )
+
+        assert usage.sources == ["(no source)"]
+        assert usage.total_cpu_hours == 3.0
+
+    def test_only_the_top_segment_is_capped(self):
+        start = (NOW - timedelta(hours=2)).astimezone().replace(
+            minute=0, second=0, microsecond=0
+        )
+        usage = build_hourly_usage([
+            self._rec(source="a", start=start, hours=1, cpus=4, run_id="x"),
+            self._rec(source="b", start=start, hours=1, cpus=2, run_id="y"),
+        ], now=NOW)
+
+        hour = next(h for h in usage.hours if h.segments)
+        assert [s.is_top for s in hour.segments] == [False, True]
+
+    def test_heights_are_relative_to_the_busiest_hour(self):
+        base = NOW.astimezone().replace(minute=0, second=0, microsecond=0)
+        usage = build_hourly_usage([
+            self._rec(source="a", start=base - timedelta(hours=3), hours=1, cpus=10, run_id="x"),
+            self._rec(source="a", start=base - timedelta(hours=2), hours=1, cpus=5, run_id="y"),
+        ], now=NOW)
+
+        heights = [s.height_pct for h in usage.hours for s in h.segments]
+        assert max(heights) == 100.0
+        assert abs(min(heights) - 50.0) < 1e-9
+
+    def test_running_work_counts_up_to_now(self):
+        from scripthut.runs.usage import UsageRecord
+
+        start = NOW - timedelta(minutes=30)
+        usage = build_hourly_usage([
+            UsageRecord(run_id="r", task_id="t", cpus=4,
+                        started_at=start, finished_at=None, source_name="demo")
+        ], now=NOW)
+
+        assert abs(usage.total_cpu_hours - 2.0) < 1e-9
+
+    def test_older_work_is_outside_the_window(self):
+        old = NOW - timedelta(hours=48)
+        usage = build_hourly_usage(
+            [self._rec(source="demo", start=old, hours=1, cpus=8)], now=NOW,
+        )
+
+        assert usage.is_empty
+        assert usage.total_cpu_hours == 0

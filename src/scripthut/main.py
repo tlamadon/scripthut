@@ -41,7 +41,11 @@ from scripthut.runs.manager import (
     SUBMIT_TO_FAIL_GRACE_SECONDS,
     SUBMITTED_NO_RECORD_TIMEOUT_SECONDS,
 )
-from scripthut.runs.activity import ACTIVITY_WINDOW_DAYS, build_activity_grid
+from scripthut.runs.activity import (
+    ACTIVITY_WINDOW_DAYS,
+    build_activity_grid,
+    build_hourly_usage,
+)
 from scripthut.runs.models import RunItemStatus, RunStatus
 from scripthut.runs.storage import RunStorageManager
 from scripthut.runs.usage import UsageLog, merged_records, window_start
@@ -1406,18 +1410,19 @@ def _overview_context(request: Request) -> dict[str, Any]:
     ]
     active = [r for r in runs if r.status in (RunStatus.PENDING, RunStatus.RUNNING)]
     recent = [r for r in runs if r.status not in (RunStatus.PENDING, RunStatus.RUNNING)]
+    records = merged_records(
+        state.usage_log, runs, since=window_start(ACTIVITY_WINDOW_DAYS),
+    )
 
     return {
         "request": request,
         "active_runs": active,
         "recent_runs": recent[:OVERVIEW_RECENT_LIMIT],
         # History from the ledger (which outlives run retention), overlaid
-        # with live runs so in-flight work shows on today's cell.
-        "activity": build_activity_grid(
-            merged_records(
-                state.usage_log, runs, since=window_start(ACTIVITY_WINDOW_DAYS),
-            )
-        ),
+        # with live runs so in-flight work shows on today's cell. Both
+        # charts read the same merged list — one pass, two summaries.
+        "activity": build_activity_grid(records),
+        "hourly": build_hourly_usage(records),
         "backends": state.backends,
         "backend_usage": _backend_usage(),
     }

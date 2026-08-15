@@ -99,6 +99,24 @@ def _iter_day_slices(start: datetime, end: datetime) -> Iterator[tuple[date, flo
         cursor = slice_end
 
 
+def _iter_hour_slices(start: datetime, end: datetime) -> Iterator[tuple[datetime, float]]:
+    """Yield ``(local hour start, seconds)`` for each hour the interval covers.
+
+    The hourly twin of :func:`_iter_day_slices`, and for the same reason: a
+    six-hour job belongs to the six hours it occupied, not to the one it
+    was submitted in.
+    """
+    cursor = start.astimezone()
+    end = end.astimezone()
+    while cursor < end:
+        hour_start = cursor.replace(minute=0, second=0, microsecond=0)
+        slice_end = min(hour_start + timedelta(hours=1), end)
+        if slice_end <= cursor:
+            break  # same DST guard as the day slicer
+        yield hour_start, (slice_end - cursor).total_seconds()
+        cursor = slice_end
+
+
 def _assign_levels(days: list[ActivityDay]) -> None:
     """Bucket days into shades by quartile of the *active* days.
 
@@ -187,4 +205,151 @@ def build_activity_grid(
         active_days=len(active),
         busiest=max(active, key=lambda d: d.cpu_hours) if active else None,
         window_days=window_days,
+    )
+
+
+# --- Hourly breakdown ---------------------------------------------------
+#
+# The heatmap answers "how much, over a year". This answers "what was the
+# cluster doing today", split by source so a spike is attributable.
+
+# Slots 1-5 of the validated categorical palette (blue, orange, aqua,
+# yellow, magenta) plus a neutral for the "Other" rollup. Validated with
+# the data-viz palette checker against a white card surface: lightness
+# band, chroma floor, adjacent-pair CVD separation (worst ΔE 9.1) and the
+# normal-vision floor (worst ΔE 19.6) all pass. Three of the five sit
+# under 3:1 contrast on white, which obliges visible labels rather than
+# colour alone — hence the legend carries a name and a number per series.
+SOURCE_COLORS = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4"]
+OTHER_COLOR = "#9ca3af"
+
+# Past this many sources the chart stops being readable, so the tail folds
+# into "Other" rather than inventing hues — a generated 9th colour is the
+# thing the palette rules exist to prevent.
+MAX_SOURCE_SERIES = len(SOURCE_COLORS)
+
+HOURLY_WINDOW_HOURS = 24
+
+_NO_SOURCE = "(no source)"
+
+
+@dataclass
+class HourSegment:
+    """One source's slice of one hour's CPU-time."""
+
+    source: str
+    cpu_hours: float
+    color: str
+    height_pct: float = 0.0
+    is_top: bool = False  # only the stack's free end gets a rounded cap
+
+
+@dataclass
+class HourBucket:
+    start: datetime
+    total_cpu_hours: float = 0.0
+    segments: list[HourSegment] = field(default_factory=list)
+
+    @property
+    def label(self) -> str:
+        return self.start.strftime("%H:%M")
+
+
+@dataclass
+class HourlyUsage:
+    """CPU-hours per hour over a trailing window, stacked by source."""
+
+    hours: list[HourBucket] = field(default_factory=list)
+    sources: list[str] = field(default_factory=list)  # busiest first
+    colors: dict[str, str] = field(default_factory=dict)
+    totals: dict[str, float] = field(default_factory=dict)
+    max_total: float = 0.0
+    total_cpu_hours: float = 0.0
+    window_hours: int = HOURLY_WINDOW_HOURS
+
+    @property
+    def is_empty(self) -> bool:
+        return self.total_cpu_hours <= 0
+
+
+def build_hourly_usage(
+    records: Iterable[UsageRecord],
+    *,
+    now: datetime | None = None,
+    window_hours: int = HOURLY_WINDOW_HOURS,
+) -> HourlyUsage:
+    """CPU-hours per local hour over the trailing ``window_hours``, by source.
+
+    The final bucket is the current, partial hour. Running tasks count up
+    to ``now``, so the last bar grows through the hour rather than
+    appearing all at once when a job ends.
+    """
+    now = (now or datetime.now(timezone.utc)).astimezone()
+    current_hour = now.replace(minute=0, second=0, microsecond=0)
+    starts = [current_hour - timedelta(hours=window_hours - 1 - i) for i in range(window_hours)]
+    index = {s: i for i, s in enumerate(starts)}
+
+    per_hour: list[dict[str, float]] = [{} for _ in starts]
+    totals: dict[str, float] = {}
+
+    for rec in records:
+        source = rec.source_name or _NO_SOURCE
+        end = rec.finished_at or now
+        for hour_start, seconds in _iter_hour_slices(rec.started_at, end):
+            i = index.get(hour_start)
+            if i is None:
+                continue  # outside the window
+            hours = seconds * (rec.cpus or 1) / 3600.0
+            per_hour[i][source] = per_hour[i].get(source, 0.0) + hours
+            totals[source] = totals.get(source, 0.0) + hours
+
+    # Busiest source first, so colour follows the entity consistently and
+    # the legend reads top-down in the order the stack is drawn.
+    ranked = sorted(totals, key=lambda s: totals[s], reverse=True)
+    shown, folded = ranked[:MAX_SOURCE_SERIES], ranked[MAX_SOURCE_SERIES:]
+
+    colors = {name: SOURCE_COLORS[i] for i, name in enumerate(shown)}
+    if folded:
+        colors["Other"] = OTHER_COLOR
+        totals["Other"] = sum(totals[s] for s in folded)
+        for bucket in per_hour:
+            rolled = sum(bucket.pop(s, 0.0) for s in folded)
+            if rolled:
+                bucket["Other"] = rolled
+        shown = [*shown, "Other"]
+    for s in folded:
+        totals.pop(s, None)
+
+    max_total = max((sum(b.values()) for b in per_hour), default=0.0)
+
+    hours: list[HourBucket] = []
+    for start, bucket in zip(starts, per_hour, strict=True):
+        segments = [
+            HourSegment(
+                source=name,
+                cpu_hours=bucket[name],
+                color=colors[name],
+                height_pct=(bucket[name] / max_total * 100) if max_total else 0.0,
+            )
+            for name in shown
+            if bucket.get(name, 0.0) > 0
+        ]
+        if segments:
+            segments[-1].is_top = True
+        hours.append(
+            HourBucket(
+                start=start,
+                total_cpu_hours=sum(bucket.values()),
+                segments=segments,
+            )
+        )
+
+    return HourlyUsage(
+        hours=hours,
+        sources=shown,
+        colors=colors,
+        totals={name: totals[name] for name in shown},
+        max_total=max_total,
+        total_cpu_hours=sum(totals[name] for name in shown),
+        window_hours=window_hours,
     )
