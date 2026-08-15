@@ -38,6 +38,7 @@ from scripthut.config_schema import (
 from scripthut.models import ConnectionStatus, HPCJob
 from scripthut.runs.manager import RunManager
 from scripthut.runs.storage import RunStorageManager
+from scripthut.runs.usage import UsageLog
 from scripthut.ssh.client import SSHClient
 from scripthut.ssh.command_log import CommandLog
 
@@ -82,6 +83,7 @@ class Runtime:
     backends: dict[str, BackendState]
     run_storage: RunStorageManager
     run_manager: RunManager
+    usage_log: UsageLog
 
 
 async def init_ec2_backend(
@@ -329,6 +331,7 @@ async def init_runtime(
         backends[ec2_config.name] = await init_ec2_backend(ec2_config, ec2_archive_root)
 
     run_storage = RunStorageManager(config.settings.data_dir_resolved / "workflows")
+    usage_log = UsageLog(config.settings.data_dir_resolved / "usage.jsonl")
 
     ssh_clients: dict[str, SSHClient] = {
         name: bs.ssh_client for name, bs in backends.items() if bs.ssh_client is not None
@@ -355,6 +358,7 @@ async def init_runtime(
         backends=backends,
         run_storage=run_storage,
         run_manager=run_manager,
+        usage_log=usage_log,
     )
 
 

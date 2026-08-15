@@ -189,11 +189,56 @@ class TestOverviewRoutes:
         assert "Source: demo" in resp.text
         assert ">\n                train\n" in resp.text
 
-    def test_active_runs_shown_and_finished_ones_are_not(self, client):
+    def test_active_and_finished_runs_get_their_own_sections(self, client):
+        """Finished work stays visible while something is running."""
         resp = client.get("/")
         assert "/runs/act1" in resp.text
-        # recent_runs is only a fallback for an empty page.
-        assert "/runs/done1" not in resp.text
+        assert "/runs/done1" in resp.text
+        assert "Current runs" in resp.text
+        assert "Recent runs" in resp.text
+
+    def test_section_order_is_activity_backends_current_recent(self, client):
+        resp = client.get("/")
+        positions = [
+            resp.text.index("Activity ·"),
+            resp.text.index(">Backends<"),
+            resp.text.index("Current runs"),
+            resp.text.index("Recent runs"),
+        ]
+        assert positions == sorted(positions)
+
+    def test_idle_page_still_shows_the_current_runs_section(self):
+        """The section stays put when nothing is running, rather than vanishing."""
+        original = main_module.state.run_manager
+        rm = MagicMock()
+        runs = [_run("done1", "demo/train", "demo", [RunItemStatus.COMPLETED])]
+        rm.get_all_runs.return_value = runs
+        rm.runs = {r.id: r for r in runs}
+        main_module.state.run_manager = rm
+        try:
+            resp = TestClient(main_module.app).get("/")
+        finally:
+            main_module.state.run_manager = original
+
+        assert "Current runs" in resp.text
+        assert "Nothing running right now" in resp.text
+        assert "/runs/done1" in resp.text  # history still listed below
+
+    def test_fresh_install_gets_the_onboarding_state_once(self):
+        """No runs at all: one empty state, not two stacked headers."""
+        original = main_module.state.run_manager
+        rm = MagicMock()
+        rm.get_all_runs.return_value = []
+        rm.runs = {}
+        main_module.state.run_manager = rm
+        try:
+            resp = TestClient(main_module.app).get("/")
+        finally:
+            main_module.state.run_manager = original
+
+        assert "Nothing has run yet" in resp.text
+        assert "Nothing running right now" not in resp.text
+        assert "Recent runs" not in resp.text
 
     def test_backends_dashboard_moved_off_the_root(self, client):
         resp = client.get("/backends")

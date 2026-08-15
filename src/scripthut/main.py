@@ -41,9 +41,10 @@ from scripthut.runs.manager import (
     SUBMIT_TO_FAIL_GRACE_SECONDS,
     SUBMITTED_NO_RECORD_TIMEOUT_SECONDS,
 )
-from scripthut.runs.activity import build_activity_grid
+from scripthut.runs.activity import ACTIVITY_WINDOW_DAYS, build_activity_grid
 from scripthut.runs.models import RunItemStatus, RunStatus
 from scripthut.runs.storage import RunStorageManager
+from scripthut.runs.usage import UsageLog, merged_records, window_start
 from scripthut.runtime import (
     BackendState,
     Runtime,
@@ -73,6 +74,7 @@ class AppState:
     source_workflows: dict[str, list[SourceWorkflow]] = field(default_factory=dict)
     run_manager: RunManager | None = None
     run_storage: RunStorageManager | None = None
+    usage_log: UsageLog | None = None
     terminal_manager: TerminalManager = field(default_factory=TerminalManager)
     disk_service: DiskScanService = field(default_factory=DiskScanService)
     pricing_service: Any = None  # Optional PricingService instance
@@ -621,6 +623,10 @@ async def poll_jobs() -> None:
         # Cleanup old runs once per hour
         poll_count += 1
         if poll_count >= 60 and state.run_storage:
+            # Flush to the usage ledger *first*: cleanup is about to delete
+            # the very runs the activity graph's history comes from.
+            if state.usage_log:
+                state.usage_log.record(state.run_manager.runs.values() if state.run_manager else [])
             state.run_storage.cleanup_old_runs()
             poll_count = 0
 
@@ -736,6 +742,13 @@ async def _finish_startup(config: ScriptHutConfig) -> None:
         state.backends.update(runtime.backends)
         state.run_storage = runtime.run_storage
         state.run_manager = runtime.run_manager
+        state.usage_log = runtime.usage_log
+
+        # Backfill the usage ledger from whatever runs survived retention.
+        # On first upgrade this seeds the activity graph with the last 30
+        # days; afterwards it just catches anything the final hourly flush
+        # missed before the process last exited.
+        state.usage_log.record(state.run_manager.runs.values())
 
         # Record existing runs/failures so we don't announce them as "new" —
         # only transitions from here on generate notifications.
@@ -1370,17 +1383,18 @@ def _apply_job_filters(job_views: list[JobView]) -> list[JobView]:
     return job_views
 
 
-# How many finished runs the landing page falls back to when nothing is
-# active. Small on purpose — the full history lives on /runs.
+# How many finished runs the landing page's "Recent runs" section shows.
+# Small on purpose — the full history lives on /runs.
 OVERVIEW_RECENT_LIMIT = 6
 
 
 def _overview_context(request: Request) -> dict[str, Any]:
     """Context for the landing page and its SSE partial.
 
-    Active runs are the whole point of the page, so they come first and are
-    never truncated. ``recent_runs`` only exists so the page isn't blank
-    when nothing is in flight — the template ignores it otherwise.
+    ``active_runs`` is never truncated — everything in flight is worth
+    seeing. ``recent_runs`` is its own section rather than a fallback, so
+    finished work stays visible while something is running; it is capped
+    because the full history lives on /runs.
 
     ``_default``-named runs are the weekly bins holding *external* cluster
     jobs (not submitted by scripthut). They have no source and no workflow,
@@ -1397,7 +1411,13 @@ def _overview_context(request: Request) -> dict[str, Any]:
         "request": request,
         "active_runs": active,
         "recent_runs": recent[:OVERVIEW_RECENT_LIMIT],
-        "activity": build_activity_grid(runs),
+        # History from the ledger (which outlives run retention), overlaid
+        # with live runs so in-flight work shows on today's cell.
+        "activity": build_activity_grid(
+            merged_records(
+                state.usage_log, runs, since=window_start(ACTIVITY_WINDOW_DAYS),
+            )
+        ),
         "backends": state.backends,
         "backend_usage": _backend_usage(),
     }

@@ -1,8 +1,8 @@
 {% from '_status.html' import status_dot, status_bar %}
 {#
-  Landing-page body: active runs first (that is what the page is for),
-  backends underneath. Rendered standalone by /overview/stream, so it must
-  not depend on anything overview.html sets up beyond the context keys.
+  Landing-page body, in order: activity, backends, current runs, recent
+  runs. Rendered standalone by /overview/stream, so it must not depend on
+  anything overview.html sets up beyond the context keys.
 #}
 
 {#
@@ -20,9 +20,9 @@
 <section class="mb-8">
     <div class="flex items-baseline justify-between mb-3">
         <h2 class="text-sm font-semibold text-gray-500 uppercase tracking-wider">
-            Activity · last {{ activity.window_days }} days
+            Activity · last {{ activity.window_label }}
         </h2>
-        <span class="text-xs text-gray-400" title="Runs are deleted after {{ activity.window_days }} days, so this is the full retained history">
+        <span class="text-xs text-gray-400" title="Kept in the usage ledger, which outlives run retention">
             CPU-hours per day
         </span>
     </div>
@@ -33,30 +33,30 @@
             <div class="inline-flex flex-col gap-1">
                 <!-- Month labels. Absolutely positioned: a margin-based flow
                      would drift, since each label's own width shifts the next. -->
-                <div class="relative h-4 ml-8" style="width: {{ activity.weeks|length * 20 }}px">
+                <div class="relative h-4 ml-8" style="width: {{ activity.weeks|length * 13 }}px">
                     {% for col, label in activity.month_labels %}
                     <span class="absolute top-0 text-xs text-gray-400 leading-4"
-                        style="left: {{ col * 20 }}px">{{ label }}</span>
+                        style="left: {{ col * 13 }}px">{{ label }}</span>
                     {% endfor %}
                 </div>
-                <div class="flex gap-1">
+                <div class="flex gap-[3px]">
                     <!-- Weekday labels (Mon/Wed/Fri, like GitHub) -->
-                    <div class="flex flex-col gap-1 w-7 flex-shrink-0">
+                    <div class="flex flex-col gap-[3px] w-7 flex-shrink-0">
                         {% for label in ['Mon', '', 'Wed', '', 'Fri', '', ''] %}
-                        <span class="h-4 text-xs text-gray-400 leading-4">{{ label }}</span>
+                        <span class="h-2.5 text-[10px] text-gray-400 leading-[10px]">{{ label }}</span>
                         {% endfor %}
                     </div>
                     <!-- One column per week, one row per weekday -->
-                    <div class="flex gap-1">
+                    <div class="flex gap-[3px]">
                         {% for week in activity.weeks %}
-                        <div class="flex flex-col gap-1">
+                        <div class="flex flex-col gap-[3px]">
                             {% for day in week %}
                             {% if day %}
-                            <div class="w-4 h-4 rounded-sm {{ LEVELS[day.level] }}"
+                            <div class="w-2.5 h-2.5 rounded-sm {{ LEVELS[day.level] }}"
                                 title="{{ day.day.strftime('%a %d %b') }} — {% if day.runs %}{{ '%.1f'|format(day.cpu_hours) }} CPU-hours, {{ day.runs }} run{{ '' if day.runs == 1 else 's' }}{% else %}idle{% endif %}"></div>
                             {% else %}
                             {# Before the window starts, or later this week. #}
-                            <div class="w-4 h-4 rounded-sm bg-transparent"></div>
+                            <div class="w-2.5 h-2.5 rounded-sm bg-transparent"></div>
                             {% endif %}
                             {% endfor %}
                         </div>
@@ -64,10 +64,10 @@
                     </div>
                 </div>
                 <!-- Legend -->
-                <div class="flex items-center gap-1 ml-8 mt-1 text-xs text-gray-400">
+                <div class="flex items-center gap-[3px] ml-8 mt-2 text-xs text-gray-400">
                     <span class="mr-1">Less</span>
                     {% for cls in LEVELS %}
-                    <span class="w-4 h-4 rounded-sm {{ cls }}"></span>
+                    <span class="w-2.5 h-2.5 rounded-sm {{ cls }}"></span>
                     {% endfor %}
                     <span class="ml-1">More</span>
                 </div>
@@ -103,19 +103,12 @@
     </div>
 </section>
 
-<!-- Active runs -->
-<section class="mb-8">
-    <div class="flex items-baseline justify-between mb-3">
-        <h2 class="text-sm font-semibold text-gray-500 uppercase tracking-wider">
-            {% if active_runs %}Active runs{% else %}Recent runs{% endif %}
-        </h2>
-        <a href="/runs" class="text-xs text-blue-600 hover:text-blue-800">All runs →</a>
-    </div>
-
-    {% set cards = active_runs if active_runs else recent_runs %}
-    {% if cards %}
-    <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-        {% for run in cards %}
+{#
+  One run card, shared by the "Current runs" and "Recent runs" sections
+  below. Finished runs render dimmed so a glance separates them from live
+  work without needing to read the status pill.
+#}
+{% macro run_card(run) %}
         {% set is_active = run.status.value in ('running', 'pending') %}
         <a href="/runs/{{ run.id }}"
             class="block bg-white rounded-lg shadow-md hover:shadow-lg transition-shadow p-4 border-l-4
@@ -183,7 +176,12 @@
             <div class="mt-3 pt-2 border-t border-gray-100 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-gray-500">
                 <span class="font-mono">{{ run.backend_name }}</span>
                 <span class="text-gray-300">·</span>
-                <time class="local-elapsed" datetime="{{ run.created_at.isoformat() }}"></time>
+                {# Same slot, two meanings now that finished cards sit beside
+                   live ones: "running for 13s" vs "started 8d ago". Without
+                   the suffix a finished run looks like it took 8 days. #}
+                <span title="{% if is_active %}Running for{% else %}Started{% endif %} this long">
+                    <time class="local-elapsed" datetime="{{ run.created_at.isoformat() }}"></time>{% if not is_active %} ago{% endif %}
+                </span>
                 {% if run.total_cpu_hours > 0 %}
                 <span class="text-gray-300">·</span>
                 <span class="font-mono" title="CPU hours consumed">
@@ -193,22 +191,7 @@
                 {% endif %}
             </div>
         </a>
-        {% endfor %}
-    </div>
-    {% else %}
-    <div class="bg-white rounded-lg shadow-md px-6 py-10 text-center">
-        <svg class="mx-auto h-10 w-10 text-gray-300" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
-            <path stroke-linecap="round" stroke-linejoin="round"
-                d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
-            <path stroke-linecap="round" stroke-linejoin="round" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-        </svg>
-        <h3 class="mt-2 text-sm font-medium text-gray-900">Nothing has run yet</h3>
-        <p class="mt-1 text-sm text-gray-500">
-            Pick a workflow on the <a href="/sources" class="text-blue-600 hover:text-blue-800">Sources</a> page to start one.
-        </p>
-    </div>
-    {% endif %}
-</section>
+{% endmacro %}
 
 <!-- Backends -->
 <section>
@@ -322,3 +305,50 @@
     </div>
     {% endif %}
 </section>
+
+<!-- Current runs -->
+<section class="mt-8">
+    <div class="flex items-baseline justify-between mb-3">
+        <h2 class="text-sm font-semibold text-gray-500 uppercase tracking-wider">Current runs</h2>
+        <a href="/runs" class="text-xs text-blue-600 hover:text-blue-800">All runs →</a>
+    </div>
+
+    {% if active_runs %}
+    <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+        {% for run in active_runs %}{{ run_card(run) }}{% endfor %}
+    </div>
+    {% elif recent_runs %}
+    {# Something has run before, so keep this short — the history is right
+       below rather than repeating the onboarding pitch. #}
+    <div class="bg-white rounded-lg shadow-md px-6 py-6 text-center text-sm text-gray-500">
+        Nothing running right now.
+    </div>
+    {% else %}
+    <div class="bg-white rounded-lg shadow-md px-6 py-10 text-center">
+        <svg class="mx-auto h-10 w-10 text-gray-300" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+            <path stroke-linecap="round" stroke-linejoin="round"
+                d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
+            <path stroke-linecap="round" stroke-linejoin="round" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+        </svg>
+        <h3 class="mt-2 text-sm font-medium text-gray-900">Nothing has run yet</h3>
+        <p class="mt-1 text-sm text-gray-500">
+            Pick a workflow on the <a href="/sources" class="text-blue-600 hover:text-blue-800">Sources</a> page to start one.
+        </p>
+    </div>
+    {% endif %}
+</section>
+
+{# Only rendered once there is history; on a fresh install the "Current
+   runs" empty state above already covers the page. #}
+{% if recent_runs %}
+<!-- Recent runs -->
+<section class="mt-8">
+    <div class="flex items-baseline justify-between mb-3">
+        <h2 class="text-sm font-semibold text-gray-500 uppercase tracking-wider">Recent runs</h2>
+        <a href="/runs" class="text-xs text-blue-600 hover:text-blue-800">All runs →</a>
+    </div>
+    <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+        {% for run in recent_runs %}{{ run_card(run) }}{% endfor %}
+    </div>
+</section>
+{% endif %}

@@ -347,4 +347,6 @@ After starting ScriptHut, you should see output similar to:
 INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
 ```
 
-Navigate to the URL in your browser. The landing page shows a card per active run and a card per backend (CPUs running and queued, cluster load, disk); the **Backends** tab has the full per-backend detail and job table. If a backend connection fails, check the terminal output for SSH error messages and verify your SSH configuration.
+Navigate to the URL in your browser. The landing page shows a year-long activity heatmap of CPU-hours per day, a card per backend (CPUs running and queued, cluster load, disk), then current and recent runs; the **Backends** tab has the full per-backend detail and job table. If a backend connection fails, check the terminal output for SSH error messages and verify your SSH configuration.
+
+Run records are deleted after 30 days, but each finished task is also appended to `<data_dir>/usage.jsonl` — a compact append-only ledger that outlives them, which is what lets the heatmap span a year. It is roughly 200 bytes per task and is never pruned; delete it if you want to reset the graph.

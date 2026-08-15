@@ -9,6 +9,11 @@ Work is attributed to the day it actually ran, split across midnight
 rather than dumped on the day a task started — HPC jobs routinely span
 days, and a two-day job crediting its whole cost to day one leaves a
 false hole next to a false spike.
+
+Input is :class:`UsageRecord`, not :class:`Run`, so the graph can outlive
+the runs behind it: history comes from the usage ledger, which survives
+run retention, merged with in-memory runs for work that is still going or
+not yet flushed. See :mod:`scripthut.runs.usage`.
 """
 
 from __future__ import annotations
@@ -17,13 +22,12 @@ from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta, timezone
 
-from scripthut.runs.models import Run
-from scripthut.runs.storage import RunStorageManager
+from scripthut.runs.usage import UsageRecord
 
-# Matched to storage retention rather than chosen: terminal runs older than
-# this are deleted on an hourly sweep, so a longer window could only ever
-# render as empty columns.
-ACTIVITY_WINDOW_DAYS = RunStorageManager.RETENTION_DAYS
+# A year, GitHub-style. The ledger is what makes this possible — run
+# records themselves are still deleted after 30 days. On a fresh upgrade
+# only the surviving month is backfilled and the rest fills in over time.
+ACTIVITY_WINDOW_DAYS = 365
 
 
 @dataclass
@@ -47,6 +51,17 @@ class ActivityGrid:
     active_days: int = 0
     busiest: ActivityDay | None = None
     window_days: int = ACTIVITY_WINDOW_DAYS
+
+    @property
+    def window_label(self) -> str:
+        """Human phrasing for the window — "365 days" reads worse than a year."""
+        if self.window_days % 365 == 0:
+            years = self.window_days // 365
+            return "12 months" if years == 1 else f"{years} years"
+        if self.window_days % 30 == 0:
+            months = self.window_days // 30
+            return "30 days" if months == 1 else f"{months} months"
+        return f"{self.window_days} days"
 
     @property
     def month_labels(self) -> list[tuple[int, str]]:
@@ -117,7 +132,7 @@ def _assign_levels(days: list[ActivityDay]) -> None:
 
 
 def build_activity_grid(
-    runs: Iterable[Run],
+    records: Iterable[UsageRecord],
     *,
     today: date | None = None,
     now: datetime | None = None,
@@ -126,8 +141,8 @@ def build_activity_grid(
     """Summarize CPU-hours per day over the trailing ``window_days``.
 
     ``today`` and ``now`` are injectable so the grid is testable without
-    freezing the clock. Still-running tasks count up to ``now``, matching
-    ``Run.total_cpu_hours``.
+    freezing the clock. Still-running tasks (no ``finished_at``) count up
+    to ``now``, matching ``Run.total_cpu_hours``.
     """
     now = now or datetime.now(timezone.utc)
     today = today or now.astimezone().date()
@@ -139,18 +154,15 @@ def build_activity_grid(
     }
     run_ids: dict[date, set[str]] = {}
 
-    for run in runs:
-        for item in run.items:
-            if item.started_at is None:
-                continue
-            end = item.finished_at or now
-            for day, seconds in _iter_day_slices(item.started_at, end):
-                bucket = buckets.get(day)
-                if bucket is None:
-                    continue  # outside the window
-                bucket.cpu_hours += seconds * (item.task.cpus or 1) / 3600.0
-                bucket.tasks += 1
-                run_ids.setdefault(day, set()).add(run.id)
+    for rec in records:
+        end = rec.finished_at or now
+        for day, seconds in _iter_day_slices(rec.started_at, end):
+            bucket = buckets.get(day)
+            if bucket is None:
+                continue  # outside the window
+            bucket.cpu_hours += seconds * (rec.cpus or 1) / 3600.0
+            bucket.tasks += 1
+            run_ids.setdefault(day, set()).add(rec.run_id)
 
     for day, ids in run_ids.items():
         buckets[day].runs = len(ids)

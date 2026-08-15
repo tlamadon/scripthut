@@ -89,7 +89,7 @@ settings:
 | `poll_interval` | integer | `60` | Interval in seconds between job status polls. Minimum: 5. |
 | `server_host` | string | `"127.0.0.1"` | Host to bind the web server to. Use `0.0.0.0` to listen on all interfaces. |
 | `server_port` | integer | `8000` | Port to bind the web server to. |
-| `data_dir` | path | `~/.cache/scripthut` | Base directory for all stored data (run history, logs). |
+| `data_dir` | path | `~/.cache/scripthut` | Base directory for all stored data (run history, logs, `usage.jsonl`). |
 | `sources_cache_dir` | path | `<data_dir>/sources` | Directory to cache cloned repositories. |
 | `filter_user` | string | `null` | Default username for the "My Jobs" filter in the UI. If `null`, all users' jobs are shown. |
 | `cli_server` | string | `null` | Default URL of a running scripthut server for the CLI. Overridden by `--server` and `SCRIPTHUT_SERVER`. See [CLI](../cli.md). |
