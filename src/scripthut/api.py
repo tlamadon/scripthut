@@ -907,7 +907,28 @@ def make_api_router(state: AppState) -> APIRouter:
             names = [backend]
         else:
             names = _disk_backend_names()
-        return {"backends": {n: _disk_status(n) for n in names}}
+
+        # The object-store cache is shared, not per-backend, so it rides
+        # alongside the map rather than inside it. None until first scanned.
+        cache_status = state.disk_service.get_cache_status()
+        cache: dict[str, Any] | None = None
+        if cache_status is not None:
+            cache = {
+                "store": cache_status.store,
+                "tool": cache_status.tool,
+                "scanned_at": (
+                    cache_status.scanned_at.isoformat()
+                    if cache_status.scanned_at else None
+                ),
+                "via_backend": cache_status.backend,
+                "reachable": cache_status.reachable,
+                "actions": cache_status.actions,
+                "blobs": cache_status.blobs,
+                "blob_bytes": cache_status.blob_bytes,
+                "total_bytes": cache_status.total_bytes,
+                "error": cache_status.error,
+            }
+        return {"backends": {n: _disk_status(n) for n in names}, "cache": cache}
 
     @router.post("/disk/scan")
     async def scan_disk_v1(backend: str) -> dict[str, Any]:

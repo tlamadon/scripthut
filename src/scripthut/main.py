@@ -2041,12 +2041,75 @@ def _disk_card_context(name: str) -> dict[str, Any] | None:
     }
 
 
+def _cache_card_context() -> dict[str, Any]:
+    """Template context for the object-store cache panel.
+
+    Page-level, not per-backend: the store is shared global config, so the
+    only per-backend choice is which SSH host to list it from. Offers the
+    connected SSH backends as vantage points — caching is SSH-only, so an
+    API-only backend can never reach the store.
+    """
+    cache = state.config.cache if state.config else None
+    vantage = [
+        name for name, bs in state.backends.items()
+        if bs.backend_type in ("slurm", "pbs") and bs.enabled and bs.status.connected
+    ]
+    return {
+        "cache": cache,
+        "configured": bool(cache and cache.enabled and cache.store),
+        "vantage_backends": vantage,
+        "scanning": state.disk_service.is_cache_scanning(),
+        "status": state.disk_service.get_cache_status(),
+    }
+
+
 @app.get("/disk", response_class=HTMLResponse)
 async def disk_page(request: Request) -> HTMLResponse:
     """Per-backend inventory of scripthut's remote disk footprint."""
     cards = [_disk_card_context(name) for name in state.backends]
     return templates.TemplateResponse(
-        "disk.html", {"request": request, "disk_backends": cards},
+        "disk.html",
+        {"request": request, "disk_backends": cards, "c": _cache_card_context()},
+    )
+
+
+@app.get("/disk/cache/partial", response_class=HTMLResponse)
+async def disk_cache_partial(request: Request) -> HTMLResponse:
+    """The cache panel — polled by itself while a scan runs."""
+    return templates.TemplateResponse(
+        "disk_cache.html", {"request": request, "c": _cache_card_context()},
+    )
+
+
+@app.post("/disk/cache/scan", response_class=HTMLResponse)
+async def disk_cache_scan(request: Request, backend: str = "") -> HTMLResponse:
+    """Summarize the object store from ``backend`` and return the panel."""
+    from scripthut.disk.cache_store import scan_cache_store
+
+    ctx = _cache_card_context()
+    error: str | None = None
+
+    if not ctx["configured"]:
+        error = "No cache store configured"
+    elif state.run_manager is None:
+        error = "Server is not fully initialized yet"
+    else:
+        name = backend or (ctx["vantage_backends"][0] if ctx["vantage_backends"] else "")
+        ssh = state.run_manager.get_ssh_client(name) if name else None
+        if ssh is None:
+            error = (
+                "No connected SSH backend to reach the store from — the cache "
+                "is only reachable cluster-side"
+            )
+        elif not state.disk_service.start_cache_scan(
+            scan_cache_store(state.config.cache, backend_name=name, ssh=ssh)
+        ):
+            error = "A cache scan is already running"
+
+    ctx = _cache_card_context()
+    ctx["error"] = error
+    return templates.TemplateResponse(
+        "disk_cache.html", {"request": request, "c": ctx},
     )
 
 

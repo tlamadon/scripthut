@@ -1,0 +1,137 @@
+{#
+  Object-store cache panel. Page-level rather than per-backend: the store
+  is shared global config, and a backend is only the SSH vantage point the
+  listing runs from (the store is reachable cluster-side by design).
+
+  Polls itself while a scan is in flight, same as the per-backend cards.
+#}
+<div id="disk-cache" class="mb-6 bg-white rounded-lg shadow-md p-6"
+    {% if c.scanning %}hx-get="/disk/cache/partial" hx-trigger="load delay:1s" hx-target="#disk-cache" hx-swap="outerHTML"{% endif %}>
+
+    <div class="flex flex-wrap items-center justify-between gap-3">
+        <div class="flex items-center gap-3 min-w-0">
+            <h2 class="text-lg font-semibold text-gray-800">Result cache</h2>
+            {% if c.configured %}
+            <span class="text-xs px-2 py-0.5 rounded bg-gray-100 text-gray-500">{{ c.cache.tool }}</span>
+            {% else %}
+            <span class="text-xs px-2 py-0.5 rounded bg-gray-100 text-gray-500">disabled</span>
+            {% endif %}
+        </div>
+
+        {% if c.configured %}
+        <div class="flex items-center gap-2">
+            {% if c.vantage_backends %}
+            <form hx-post="/disk/cache/scan" hx-target="#disk-cache" hx-swap="outerHTML"
+                class="flex items-center gap-2">
+                {% if c.vantage_backends|length > 1 %}
+                {# Any backend gives the same answer; it is only the vantage point. #}
+                <select name="backend"
+                    class="text-xs border border-gray-300 rounded px-2 py-1 text-gray-600">
+                    {% for b in c.vantage_backends %}<option value="{{ b }}">via {{ b }}</option>{% endfor %}
+                </select>
+                {% else %}
+                <input type="hidden" name="backend" value="{{ c.vantage_backends[0] }}">
+                {% endif %}
+                <button type="submit"
+                    class="text-sm px-3 py-1.5 rounded-md bg-blue-600 text-white hover:bg-blue-700 disabled:bg-gray-300"
+                    {% if c.scanning %}disabled{% endif %}>
+                    {% if c.scanning %}Scanning…{% elif c.status %}Rescan{% else %}Scan store{% endif %}
+                </button>
+            </form>
+            {% endif %}
+        </div>
+        {% endif %}
+    </div>
+
+    {% if c.configured %}
+    <p class="text-sm text-gray-500 mt-1 font-mono truncate" title="{{ c.cache.store }}">{{ c.cache.store }}</p>
+    {% endif %}
+
+    {% if c.error %}
+    <div class="mt-3 p-2 bg-red-50 border border-red-200 rounded text-sm text-red-700">{{ c.error }}</div>
+    {% endif %}
+
+    {% if not c.configured %}
+    <p class="text-sm text-gray-500 mt-3">
+        No result cache configured. Tasks that declare <code class="font-mono text-gray-600">inputs</code>
+        and <code class="font-mono text-gray-600">outputs</code> can reuse a previous run's artifacts
+        instead of recomputing them — set <code class="font-mono text-gray-600">cache.enabled</code> and
+        <code class="font-mono text-gray-600">cache.store</code> in
+        <a href="/settings" class="text-blue-600 hover:text-blue-800">Settings</a>.
+    </p>
+
+    {% elif not c.vantage_backends %}
+    <p class="text-sm text-gray-500 mt-3">
+        No connected SSH backend to list the store from. Hashing and artifact transfer run
+        cluster-side, so the store is read through a Slurm or PBS backend — never from this host.
+    </p>
+
+    {% elif not c.status %}
+    <p class="text-sm text-gray-500 mt-3">
+        Not scanned yet. A scan runs two listings against the store and reports back in seconds.
+    </p>
+
+    {% elif c.status.error %}
+    <div class="mt-3 p-3 bg-red-50 border border-red-200 rounded">
+        <p class="text-sm text-red-700">Could not read the store.</p>
+        <p class="text-xs font-mono text-red-600 mt-1 break-all">{{ c.status.error }}</p>
+        <p class="text-xs text-gray-500 mt-2">
+            The backend needs <code class="font-mono">{{ c.status.tool }}</code> on its PATH and
+            credentials for the store.
+        </p>
+    </div>
+
+    {% else %}
+    <div class="mt-4 grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div>
+            <div class="text-2xl font-semibold text-gray-800">{{ c.status.blob_bytes | disk_bytes }}</div>
+            <div class="text-xs text-gray-500">Artifacts stored</div>
+        </div>
+        <div>
+            <div class="text-2xl font-semibold text-gray-800">{{ c.status.actions if c.status.actions is not none else '—' }}</div>
+            <div class="text-xs text-gray-500" title="One manifest per cached action — how many task results can be reused">
+                Cached actions
+            </div>
+        </div>
+        <div>
+            <div class="text-2xl font-semibold text-gray-800">{{ c.status.blobs if c.status.blobs is not none else '—' }}</div>
+            <div class="text-xs text-gray-500" title="Distinct output tarballs; identical artifacts are stored once and shared">
+                Distinct blobs
+            </div>
+        </div>
+        <div>
+            <div class="text-2xl font-semibold text-gray-800">
+                {% if c.status.mean_blob_bytes %}{{ c.status.mean_blob_bytes | disk_bytes }}{% else %}—{% endif %}
+            </div>
+            <div class="text-xs text-gray-500">Mean blob size</div>
+        </div>
+    </div>
+
+    {# Fewer blobs than actions is the normal, healthy case: several actions
+       resolving to identical outputs share one blob. Worth naming, since
+       the two numbers looking "wrong" otherwise invites a bug report. #}
+    {% if c.status.actions and c.status.blobs and c.status.blobs < c.status.actions %}
+    <p class="text-xs text-gray-500 mt-3">
+        {{ c.status.actions - c.status.blobs }} action{{ '' if c.status.actions - c.status.blobs == 1 else 's' }}
+        resolved to artifacts that were already stored — deduplication the content-addressed layer gets for free.
+    </p>
+    {% endif %}
+
+    <div class="mt-4 pt-3 border-t border-gray-100 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-gray-400">
+        <span>scanned {{ c.status.scanned_at | age }}</span>
+        {% if c.status.backend %}<span>via {{ c.status.backend }}</span>{% endif %}
+        <span class="font-mono">{{ c.status.duration_ms }}ms</span>
+        {% for p in c.status.prefixes %}
+        <span class="font-mono" title="{{ p.uri }}">
+            {{ p.name }}/ {% if p.error %}<span class="text-red-500">error</span>{% else %}{{ p.objects }} obj · {{ p.size_bytes | disk_bytes }}{% endif %}
+        </span>
+        {% endfor %}
+    </div>
+
+    {# Nothing here reclaims space: identifying blobs no manifest points at
+       needs a read of every ac/ entry, which this deliberately does not do. #}
+    <p class="text-xs text-gray-400 mt-2">
+        Sizes only — this does not identify reclaimable space, which would need reading every action manifest.
+    </p>
+    {% endif %}
+</div>

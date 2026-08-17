@@ -102,6 +102,16 @@
                         {{ status_dot(item.status.value) }}
                         {% if item.status.value == 'dep_failed' %}dep failed{% else %}{{ item.status.value }}{% endif %}
                     </span>
+                    {# A cache hit completed without running: the status pill
+                       alone would claim work that never happened, and the
+                       zero runtime beside it reads as a bug otherwise. #}
+                    {% if item.cache_hit %}
+                    <span class="ml-1 inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-full bg-purple-100 text-purple-700 cursor-help"
+                        title="Restored from the result cache — not recomputed{% if item.cache_key %} · key {{ item.cache_key[:12] }}{% endif %}">
+                        <svg class="w-3 h-3 flex-shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4"></path></svg>
+                        cached
+                    </span>
+                    {% endif %}
                 </td>
                 <td class="px-4 py-3 whitespace-nowrap text-sm font-mono text-gray-600">
                     {{ item.job_id or '-' }}

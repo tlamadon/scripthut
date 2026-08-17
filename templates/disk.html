@@ -18,9 +18,10 @@
         </header>
 
         <div class="mb-6">
-            <h1 class="text-xl font-semibold text-gray-800">Disk usage</h1>
+            <h1 class="text-xl font-semibold text-gray-800">Storage</h1>
             <p class="text-sm text-gray-500 mt-1">
-                What scripthut has left on each backend's filesystem — source clones,
+                The shared result cache in object storage, then what scripthut has left on
+                each backend's filesystem — source clones,
                 agent workspaces, software stacks, and logs. Scans run on demand;
                 cleanup deletes only entries scripthut itself created, never active
                 or unrecognized ones.
@@ -28,6 +29,8 @@
                 remembers references it (run records are pruned after 30 days).</span>
             </p>
         </div>
+
+        {% include "disk_cache.html" %}
 
         {% for b in disk_backends %}
         {% if b.ssh %}

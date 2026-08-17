@@ -16,6 +16,7 @@ import time
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Coroutine, Sequence
 
+from scripthut.disk.cache_store import CacheStoreStatus
 from scripthut.disk.classify import (
     annotate_stack_envs,
     build_run_references,
@@ -59,6 +60,50 @@ class DiskScanService:
         self._tasks: dict[str, asyncio.Task[DiskScanResult]] = {}
         self._kinds: dict[str, str] = {}  # backend -> "scan" | "clean"
         self._cleanups: dict[str, CleanupReport] = {}
+        # The object-store cache is shared config, not per-backend, so it
+        # gets one slot rather than a per-backend entry. A backend is only
+        # the vantage point the listing ran from.
+        self._cache_status: CacheStoreStatus | None = None
+        self._cache_task: asyncio.Task[CacheStoreStatus] | None = None
+
+    # --- Object-store cache ------------------------------------------------
+
+    def get_cache_status(self) -> CacheStoreStatus | None:
+        return self._cache_status
+
+    def is_cache_scanning(self) -> bool:
+        return self._cache_task is not None and not self._cache_task.done()
+
+    def start_cache_scan(
+        self, coro: Coroutine[None, None, CacheStoreStatus]
+    ) -> bool:
+        """Launch ``coro`` as the store scan; False if one is already running."""
+        if self.is_cache_scanning():
+            coro.close()  # avoid "coroutine never awaited"
+            return False
+        self._cache_task = asyncio.create_task(self._run_cache_scan(coro))
+        return True
+
+    async def _run_cache_scan(
+        self, coro: Coroutine[None, None, CacheStoreStatus]
+    ) -> CacheStoreStatus:
+        """Await the scan and cache it before the task reports done.
+
+        Same ordering guarantee as ``_run_and_store``: a poller must never
+        see "not scanning" alongside the previous result.
+        """
+        try:
+            status = await coro
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("cache store scan died")
+            status = CacheStoreStatus(
+                scanned_at=datetime.now(timezone.utc),
+                error=f"scan crashed: {exc}",
+            )
+        self._cache_status = status
+        return status
 
     def get_cached(self, backend: str) -> DiskScanResult | None:
         return self._results.get(backend)

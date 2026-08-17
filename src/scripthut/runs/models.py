@@ -654,6 +654,11 @@ class Run:
         return sum(1 for item in self.items if item.status == RunItemStatus.FAILED)
 
     @property
+    def cache_hit_count(self) -> int:
+        """Items restored from the result cache instead of being run."""
+        return sum(1 for item in self.items if item.cache_hit)
+
+    @property
     def dep_failed_count(self) -> int:
         """Count of items that failed due to dependency failure."""
         return sum(1 for item in self.items if item.status == RunItemStatus.DEP_FAILED)

@@ -18,6 +18,17 @@
         <p class="text-sm text-gray-500">Progress</p>
         <p class="text-lg font-semibold text-gray-800">{{ run.progress[0] }} / {{ run.progress[1] }}</p>
     </div>
+    {# Only when the cache actually did something — a permanent "0 cached"
+       on every run would be noise for the majority who don't use it. #}
+    {% if run.cache_hit_count %}
+    <div>
+        <p class="text-sm text-gray-500">From cache</p>
+        <p class="text-lg font-semibold text-purple-700"
+            title="Restored from the result cache instead of being recomputed">
+            {{ run.cache_hit_count }} / {{ run.items|length }}
+        </p>
+    </div>
+    {% endif %}
     <div>
         <p class="text-sm text-gray-500">CPU Hours</p>
         <p class="text-lg font-semibold text-gray-800 font-mono">
