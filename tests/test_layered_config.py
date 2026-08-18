@@ -24,6 +24,7 @@ from scripthut.config import (
     _validate_project_local_yaml,
     discover_global_config,
     discover_project_config,
+    find_config_file,
     load_layered_config,
     load_yaml_config,
 )
@@ -96,6 +97,45 @@ class TestDiscovery:
             [tmp_path / "missing-a.yaml", tmp_path / "missing-b.yaml"],
         ):
             assert discover_global_config() is None
+
+
+class TestFindConfigFile:
+    def test_falls_back_to_global_when_cwd_has_no_yaml(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ):
+        monkeypatch.chdir(tmp_path)
+        xdg = _write_yaml(tmp_path / "xdg.yaml", "backends: []\n")
+        with patch("scripthut.config.GLOBAL_CONFIG_PATHS", [xdg]):
+            assert find_config_file() == xdg
+
+    def test_cwd_yaml_wins_over_global(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ):
+        monkeypatch.chdir(tmp_path)
+        local = _write_yaml(tmp_path / "scripthut.yaml", "stacks: []\n")
+        xdg = _write_yaml(tmp_path / "xdg.yaml", "backends: []\n")
+        with patch("scripthut.config.GLOBAL_CONFIG_PATHS", [xdg]):
+            assert find_config_file().resolve() == local.resolve()
+
+    def test_explicit_path_wins(self, tmp_path: Path):
+        explicit = _write_yaml(tmp_path / "explicit.yaml", "stacks: []\n")
+        xdg = _write_yaml(tmp_path / "xdg.yaml", "backends: []\n")
+        with patch("scripthut.config.GLOBAL_CONFIG_PATHS", [xdg]):
+            assert find_config_file(explicit) == explicit
+
+    def test_returns_none_when_nothing_exists(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ):
+        monkeypatch.chdir(tmp_path)
+        with patch(
+            "scripthut.config.GLOBAL_CONFIG_PATHS",
+            [tmp_path / "missing.yaml"],
+        ):
+            assert find_config_file() is None
+
+    def test_explicit_missing_path_raises(self, tmp_path: Path):
+        with pytest.raises(FileNotFoundError, match="missing.yaml"):
+            find_config_file(tmp_path / "missing.yaml")
 
 
 # ---------- project-local validation -------------------------------------

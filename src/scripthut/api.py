@@ -249,7 +249,7 @@ def make_api_router(state: AppState) -> APIRouter:
         ``workflow_name`` matches the env-resolution context of a
         specific workflow's submission.
         """
-        from scripthut.runs.models import TaskDefinition
+        from scripthut.runs.models import TaskDefinition, parse_data_deps
 
         rm = _require_manager()
         backend = payload.get("backend")
@@ -272,12 +272,14 @@ def make_api_router(state: AppState) -> APIRouter:
                 tasks = [TaskDefinition.from_dict(task_dict)]
                 doc_env: list = []
                 doc_env_groups: dict = {}
+                data_deps: list[str] = []
             else:
                 if not isinstance(tasks_doc, (dict, list)):
                     raise ValueError("'tasks' must be a list or dict")
                 tasks, doc_env, doc_env_groups = TaskDefinition.parse_document(
                     tasks_doc
                 )
+                data_deps = parse_data_deps(tasks_doc)
         except (KeyError, ValueError) as e:
             raise HTTPException(status_code=422, detail=f"invalid task(s): {e}")
         try:
@@ -287,6 +289,7 @@ def make_api_router(state: AppState) -> APIRouter:
                 commit_hash=payload.get("commit_hash"),
                 doc_env=doc_env,
                 doc_env_groups=doc_env_groups,
+                data_deps=data_deps,
             )
         except ValueError as e:
             raise HTTPException(status_code=422, detail=str(e))

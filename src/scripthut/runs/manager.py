@@ -26,17 +26,20 @@ from scripthut.models import JobState
 from scripthut.runs.cache import CacheManager
 from scripthut.runs.env import resolve_for_task
 from scripthut.runs.models import (
+    DataDep,
     Run,
     RunItem,
     RunItemStatus,
     RunStatus,
     TaskDefinition,
     TaskOutput,
+    parse_data_deps,
 )
 from scripthut.sources.git import is_safe_branch_name
 from scripthut.ssh.client import SSHClient
 
 if TYPE_CHECKING:
+    from scripthut.runs.datasets import DatasetPlan
     from scripthut.runs.storage import RunStorageManager
 
 logger = logging.getLogger(__name__)
@@ -151,6 +154,13 @@ class RunManager:
         # SSE event bus: version counter + Event per run
         self._run_versions: dict[str, int] = {}
         self._run_events: dict[str, asyncio.Event] = {}
+        # In-flight dataset transfers, keyed "<run_id>:<task_id>", so a
+        # cancelled run stops copying instead of finishing in the background.
+        self._staging_tasks: dict[str, asyncio.Task] = {}
+        # One lock per (backend, destination): two runs needing the same
+        # missing dataset would otherwise both copy it. The loser re-checks
+        # presence on acquire and becomes a no-op.
+        self._staging_locks: dict[tuple[str, str], asyncio.Lock] = {}
 
     def _resolve_environment(
         self, run: Run, task: TaskDefinition
@@ -278,6 +288,15 @@ class RunManager:
             return
 
         try:
+            # A generated document is parsed while its parent run's jobs are
+            # already on the cluster, so honoring a new dataset here would
+            # mean starting an hours-long upload mid-run. Reject it rather
+            # than dropping the key and running against absent data.
+            if parse_data_deps(data):
+                raise ValueError(
+                    "generated workflows cannot declare 'data'; datasets must "
+                    "be requested by the workflow that starts the run"
+                )
             new_tasks, child_doc_env, child_doc_groups = (
                 TaskDefinition.parse_document(data)
             )
@@ -706,7 +725,13 @@ class RunManager:
         account = self.get_backend_account(backend_name)
         login_shell = self.get_backend_login_shell(backend_name)
 
-        first_working_dir = tasks[0].working_dir
+        # Skip staging items: they carry no meaningful working_dir, and
+        # letting one answer here would move the whole run's logs the moment
+        # a workflow declared a dataset.
+        first_working_dir = next(
+            (t.working_dir for t in tasks if t.data_dep is None),
+            tasks[0].working_dir,
+        )
         if ssh_client is not None:
             try:
                 git_root = await self._get_git_root(ssh_client, first_working_dir)
@@ -939,12 +964,13 @@ class RunManager:
 
     def _parse_tasks_json(
         self, tasks_json: str, label: str,
-    ) -> tuple[list[TaskDefinition], list, dict]:
+    ) -> tuple[list[TaskDefinition], list, dict, list[str]]:
         """Parse a JSON workflow document string.
 
-        Returns ``(tasks, doc_env, doc_env_groups)``. ``doc_env`` /
+        Returns ``(tasks, doc_env, doc_env_groups, data_deps)``. ``doc_env`` /
         ``doc_env_groups`` are populated from the top-level ``env:`` and
-        ``env_groups:`` fields when the document uses the wrapped form.
+        ``env_groups:`` fields when the document uses the wrapped form;
+        ``data_deps`` holds the dataset names from the top-level ``data:``.
         """
         try:
             data = json.loads(tasks_json)
@@ -952,11 +978,195 @@ class RunManager:
             raise ValueError(f"Invalid JSON in {label}: {e}")
 
         try:
-            return TaskDefinition.parse_document(data)
+            tasks, doc_env, doc_env_groups = TaskDefinition.parse_document(data)
+            return tasks, doc_env, doc_env_groups, parse_data_deps(data)
         except ValueError as e:
             raise ValueError(f"Invalid workflow JSON in {label}: {e}")
 
-        return [TaskDefinition.from_dict(t) for t in tasks_data]
+    def _clone_dirs_for(self, backend_cfg: Any) -> list[str]:
+        """Every directory holding checked-out code on this backend.
+
+        Both layers matter: sources may name their own ``clone_dir``, and the
+        backend carries the default. Now that a dataset root may legitimately
+        live under home — where ``~/scripthut-repos`` also lives — this guard
+        is what keeps data from being staged on top of code.
+        """
+        dirs = [
+            s.clone_dir for s in self.config.sources if getattr(s, "clone_dir", None)
+        ]
+        backend_clone = getattr(backend_cfg, "clone_dir", None)
+        if backend_clone:
+            dirs.append(backend_clone)
+        return dirs
+
+    async def _plan_data_deps(
+        self,
+        names: list[str],
+        *,
+        backend_name: str,
+        ssh_client: SSHClient | None,
+        label: str,
+    ) -> tuple[list["DatasetPlan"], list[str]]:
+        """Resolve each requested dataset to a destination. Returns (plans, warnings).
+
+        Everything here is sub-second — a local metadata walk plus two short
+        SSH round trips — so it fits inside the HTTP request that creates the
+        run. The transfer itself does not; that becomes a staging item.
+        """
+        from scripthut.runs.datasets import (
+            DatasetPlan,
+            build_manifest,
+            dataset_path,
+            probe_backend_paths,
+            probe_presence,
+            resolve_root,
+        )
+
+        if not names:
+            return [], []
+
+        if ssh_client is None:
+            raise ValueError(
+                f"{label} requests dataset(s) {', '.join(names)}, but backend "
+                f"'{backend_name}' has no filesystem to stage them onto."
+            )
+
+        datasets = []
+        for name in names:
+            dataset = self.config.get_dataset(name)
+            if dataset is None:
+                known = ", ".join(d.name for d in self.config.datasets) or "none"
+                raise ValueError(
+                    f"{label} requests unknown dataset '{name}'. "
+                    f"Datasets are declared in your user-global scripthut.yaml "
+                    f"(configured: {known})."
+                )
+            datasets.append(dataset)
+
+        # Local validation and hashing first: no reason to touch the cluster
+        # if the data isn't on this host.
+        manifests = {d.name: build_manifest(d.path) for d in datasets}
+
+        backend_cfg = self.config.get_backend(backend_name)
+        clone_dirs = self._clone_dirs_for(backend_cfg)
+        paths = await probe_backend_paths(ssh_client)
+
+        plans: list["DatasetPlan"] = []
+        warnings: list[str] = []
+        for dataset in datasets:
+            manifest = manifests[dataset.name]
+            root = resolve_root(
+                dataset,
+                backend_name=backend_name,
+                backend_cfg=backend_cfg,
+                paths=paths,
+                clone_dirs=clone_dirs,
+            )
+            dest = dataset_path(root, dataset.name, manifest.short)
+            present, siblings = await probe_presence(
+                ssh_client, dest, hash12=manifest.short
+            )
+            plans.append(
+                DatasetPlan(
+                    name=dataset.name,
+                    local_path=dataset.path,
+                    manifest=manifest,
+                    dest=dest,
+                    reused=present,
+                    siblings=siblings,
+                    timeout=dataset.timeout,
+                )
+            )
+            if siblings:
+                warning = (
+                    f"Dataset '{dataset.name}' has {len(siblings)} superseded "
+                    f"cop{'y' if len(siblings) == 1 else 'ies'} on "
+                    f"{backend_name} ({', '.join(siblings)}). Reclaim the space "
+                    f"with 'scripthut disk'."
+                )
+                warnings.append(warning)
+                logger.warning(warning)
+
+        return plans, warnings
+
+    @staticmethod
+    def _data_env_rules(
+        plans: list["DatasetPlan"], doc_env: list[EnvRule],
+    ) -> list[EnvRule]:
+        """``doc_env`` with each dataset's destination folded in.
+
+        Every dataset gets ``DATA_<NAME>`` appended, so it wins over a user
+        rule of the same name. ``DATA_DIR`` is only set when the workflow
+        uses exactly one dataset, and is *prepended* so a workflow that
+        already defines it keeps its own value.
+
+        Because the destination carries the content hash, changing the data
+        changes the env, which changes the cache key of every downstream
+        task. Correct invalidation falls out of content addressing — which is
+        also why the cache probe has to apply these same rules. Note this
+        only holds for names the cache actually hashes: it strips
+        ``SCRIPTHUT_*`` as volatile, which is why these variables must not
+        carry that prefix.
+        """
+        from scripthut.runs.datasets import DATA_DIR_VAR, data_env_var
+
+        if not plans:
+            return doc_env
+
+        env = list(doc_env)
+        if len(plans) == 1:
+            env.insert(0, EnvRule(set={DATA_DIR_VAR: plans[0].dest}))
+        env.append(EnvRule(set={data_env_var(p.name): p.dest for p in plans}))
+        return env
+
+    @classmethod
+    def _apply_data_deps(
+        cls,
+        plans: list["DatasetPlan"],
+        tasks: list[TaskDefinition],
+        doc_env: list[EnvRule],
+    ) -> tuple[list[TaskDefinition], list[EnvRule]]:
+        """Inject dataset env vars and prepend a staging item per missing copy."""
+        if not plans:
+            return tasks, doc_env
+
+        env = cls._data_env_rules(plans, doc_env)
+        staging = [p for p in plans if p.must_stage]
+        if not staging:
+            return tasks, env
+
+        staging_tasks = [
+            TaskDefinition(
+                id=f"_data.{p.name}",
+                name=f"Stage dataset '{p.name}'",
+                # Never executed: staging branches out of submit_task before
+                # a script is generated. Kept truthy so nothing downstream
+                # trips over an empty command.
+                command=f": stage {p.name}",
+                data_dep=DataDep(
+                    name=p.name,
+                    local_path=str(p.local_path),
+                    dest=p.dest,
+                    hash=p.hash,
+                    timeout=p.timeout,
+                ),
+            )
+            for p in staging
+        ]
+        staging_ids = [t.id for t in staging_tasks]
+        clashes = sorted({t.id for t in tasks} & set(staging_ids))
+        if clashes:
+            raise ValueError(
+                f"Task id(s) {', '.join(clashes)} collide with scripthut's "
+                "dataset staging items; the '_data.' prefix is reserved."
+            )
+
+        # Root tasks wait on the data; the rest inherit it transitively.
+        for task in tasks:
+            if not task.dependencies:
+                task.dependencies = list(staging_ids)
+
+        return staging_tasks + tasks, env
 
     async def _clone_source_repo(
         self, ssh_client: SSHClient, source: GitSourceConfig,
@@ -1106,7 +1316,16 @@ class RunManager:
         workflow_name = f"{source_name}/{stem}"
         label = f"source '{source_name}' workflow '{workflow_filename}'"
 
-        tasks, doc_env, doc_env_groups = self._parse_tasks_json(tasks_json, label)
+        tasks, doc_env, doc_env_groups, data_deps = self._parse_tasks_json(
+            tasks_json, label
+        )
+
+        # Resolve datasets before the clone: a bad dataset name or an
+        # unusable root should fail the submission outright rather than after
+        # the repo has been cloned onto the backend.
+        data_plans, _ = await self._plan_data_deps(
+            data_deps, backend_name=backend_name, ssh_client=ssh_client, label=label,
+        )
 
         clone_dir: str | None = None
         commit_hash: str | None = None
@@ -1157,6 +1376,11 @@ class RunManager:
             # (collect_stacks: server | doc_stacks), so a repo can override
             # a server-defined stack — same convention as env_groups.
             doc_stacks = {s.name: s for s in project_cfg.stacks}
+
+        # After the project overlay so the dataset vars sit closest to the
+        # tasks, and after working-dir resolution so staging items (which have
+        # no working dir of their own) are never rewritten.
+        tasks, doc_env = self._apply_data_deps(data_plans, tasks, doc_env)
 
         git_repo = source.url if isinstance(source, GitSourceConfig) else None
         git_branch = source.branch if isinstance(source, GitSourceConfig) else None
@@ -1320,10 +1544,39 @@ class RunManager:
         workflow_name = f"{source_name}/{stem}"
         label = f"source '{source_name}' workflow '{workflow_filename}'"
 
-        tasks, doc_env, doc_env_groups = self._parse_tasks_json(tasks_json, label)
+        tasks, doc_env, doc_env_groups, data_deps = self._parse_tasks_json(
+            tasks_json, label
+        )
 
         # Resolve working dirs for preview
         warnings: list[str] = []
+
+        # Datasets: report what would be staged, transfer nothing. Like the
+        # clone preview, an unresolvable destination is a warning here rather
+        # than an error — a dry run should still show the tasks.
+        data_preview: list[dict] = []
+        try:
+            data_plans, data_warnings = await self._plan_data_deps(
+                data_deps,
+                backend_name=backend_name,
+                ssh_client=self.get_ssh_client(backend_name),
+                label=label,
+            )
+            warnings.extend(data_warnings)
+            data_preview = [
+                {
+                    "name": p.name,
+                    "local_path": str(p.local_path),
+                    "dest": p.dest,
+                    "hash": p.hash,
+                    "files": p.manifest.file_count,
+                    "bytes": p.manifest.total_bytes,
+                    "status": "present" if p.reused else "would stage",
+                }
+                for p in data_plans
+            ]
+        except (ValueError, OSError) as e:
+            warnings.append(f"Dataset staging would fail: {e}")
         commit_hash: str | None = None
         if isinstance(source, GitSourceConfig):
             # For dry run, clone so we can show correct paths
@@ -1368,6 +1621,11 @@ class RunManager:
                 **doc_env_groups,
             }
             doc_stacks = {s.name: s for s in project_cfg.stacks}
+
+        # Same position as the submission path applies them, so the preview
+        # script shows the DATA_* values a real run would see. Env only: the
+        # staging item itself is reported separately as ``data``.
+        doc_env = self._data_env_rules(data_plans, list(doc_env))
 
         self._resolve_wildcard_deps(tasks)
         self._validate_dependencies(tasks)
@@ -1436,6 +1694,7 @@ class RunManager:
             "account": account,
             "commit_hash": commit_hash,
             "tasks": task_details,
+            "data": data_preview,
             "raw_output": raw_output_formatted,
             "warnings": warnings,
         }
@@ -1599,6 +1858,7 @@ class RunManager:
         doc_env: list[EnvRule] | None = None,
         doc_env_groups: dict[str, list[EnvRule]] | None = None,
         doc_stacks: dict[str, Stack] | None = None,
+        data_deps: list[str] | None = None,
     ) -> list[dict]:
         """Answer hit/miss for a task list without executing or writing anything.
 
@@ -1614,6 +1874,12 @@ class RunManager:
         key. ``commit_hash`` feeds ``cache_scope="commit"`` tasks' keys and
         defaults to ``None`` — matching ad-hoc submissions, which carry no
         commit.
+
+        ``data_deps`` (the document's top-level ``data``) must be passed for
+        the same reason: a dataset's destination lands in the env, so leaving
+        it out would key the probe differently from the submission it is
+        meant to predict. Resolving it here is read-only — no transfer, and
+        the destination is known whether or not the data is there yet.
         """
         if self.config.get_backend(backend_name) is None:
             raise ValueError(f"Backend '{backend_name}' not found in config")
@@ -1621,6 +1887,14 @@ class RunManager:
         self._validate_dependencies(tasks)
 
         ssh_client = self.get_ssh_client(backend_name)
+        if data_deps:
+            plans, _ = await self._plan_data_deps(
+                data_deps,
+                backend_name=backend_name,
+                ssh_client=ssh_client,
+                label=f"workflow '{workflow_name}'",
+            )
+            doc_env = self._data_env_rules(plans, list(doc_env or []))
         created_at = datetime.now(timezone.utc)
         verdicts: list[dict] = []
         for task in tasks:
@@ -1756,8 +2030,129 @@ class RunManager:
                 f"cache: storing outputs for '{task.id}' failed: {e}"
             )
 
+    def _start_staging_item(self, run: Run, item: RunItem) -> bool:
+        """Begin a dataset transfer in the background. Returns False if it can't start.
+
+        The item goes RUNNING immediately and is completed (or failed) by
+        :meth:`_run_staging_item`, which re-drives ``process_run`` afterwards
+        — the same shape a cache hit uses to unblock its dependents.
+        """
+        dep = item.task.data_dep
+        assert dep is not None
+
+        ssh_client = self.get_ssh_client(run.backend_name)
+        if ssh_client is None:
+            item.status = RunItemStatus.FAILED
+            item.error = (
+                f"Backend '{run.backend_name}' has no filesystem, so dataset "
+                f"'{dep.name}' cannot be staged onto it"
+            )
+            item.finished_at = datetime.now(timezone.utc)
+            self._persist_run(run)
+            return False
+
+        key = f"{run.id}:{item.task.id}"
+        if key in self._staging_tasks:
+            return True
+
+        now = datetime.now(timezone.utc)
+        item.status = RunItemStatus.RUNNING
+        item.submitted_at = now
+        item.started_at = now
+        self._persist_run(run)
+
+        self._staging_tasks[key] = asyncio.create_task(
+            self._run_staging_item(run, item, ssh_client)
+        )
+        logger.info(
+            f"Run '{run.id}': staging dataset '{dep.name}' to {dep.dest}"
+        )
+        return True
+
+    async def _run_staging_item(
+        self, run: Run, item: RunItem, ssh_client: SSHClient
+    ) -> None:
+        """Copy one dataset to the backend, then let the run continue."""
+        from scripthut.runs.datasets import (
+            DatasetPlan,
+            build_manifest,
+            probe_presence,
+            stage_dataset,
+        )
+
+        dep = item.task.data_dep
+        assert dep is not None
+        key = f"{run.id}:{item.task.id}"
+        lock = self._staging_locks.setdefault(
+            (run.backend_name, dep.dest), asyncio.Lock()
+        )
+        cancelled = False
+
+        try:
+            async with lock:
+                # Whoever held the lock may have staged this very tree.
+                present, _ = await probe_presence(
+                    ssh_client, dep.dest, hash12=dep.hash
+                )
+                if present:
+                    item.submit_output = f"Reused existing copy at {dep.dest}"
+                else:
+                    # Re-hash rather than trusting the run record: the daemon
+                    # may have restarted, and if the local tree changed since
+                    # creation the destination no longer describes it.
+                    manifest = build_manifest(Path(dep.local_path))
+                    if manifest.short != dep.hash:
+                        raise ValueError(
+                            f"Local dataset '{dep.name}' changed since this run "
+                            f"was created ({dep.hash} -> {manifest.short}). "
+                            "Submit the workflow again to stage the new contents."
+                        )
+                    copied = await stage_dataset(
+                        ssh_client,
+                        DatasetPlan(
+                            name=dep.name,
+                            local_path=Path(dep.local_path),
+                            manifest=manifest,
+                            dest=dep.dest,
+                            reused=False,
+                            timeout=dep.timeout,
+                        ),
+                        run_id=run.id,
+                    )
+                    item.submit_output = (
+                        f"Staged {copied} bytes to {dep.dest}"
+                        if copied
+                        else f"Staged concurrently by another run at {dep.dest}"
+                    )
+            item.status = RunItemStatus.COMPLETED
+            item.exit_code = 0
+            logger.info(f"Run '{run.id}': dataset '{dep.name}' ready at {dep.dest}")
+        except asyncio.CancelledError:
+            cancelled = True
+            item.status = RunItemStatus.FAILED
+            item.error = "Cancelled"
+        except Exception as e:
+            item.status = RunItemStatus.FAILED
+            item.error = str(e)
+            logger.error(f"Run '{run.id}': staging '{dep.name}' failed: {e}")
+        finally:
+            item.finished_at = datetime.now(timezone.utc)
+            self._staging_tasks.pop(key, None)
+            self._persist_run(run)
+            self.notify_run(run.id)
+
+        if not cancelled:
+            # Submit whatever this unblocked — or cascade DEP_FAILED if the
+            # transfer failed, so the run ends FAILED rather than hanging.
+            await self.process_run(run)
+
     async def submit_task(self, run: Run, item: RunItem) -> bool:
         """Submit a single task to the scheduler."""
+        # Dataset staging is executed by the daemon over SFTP and never
+        # reaches a scheduler, so it branches before any backend work.
+        if item.task.data_dep is not None:
+            return self._start_staging_item(run, item)
+
         job_backend = self.get_job_backend(run.backend_name)
         if job_backend is None:
             item.status = RunItemStatus.FAILED
@@ -1862,13 +2257,25 @@ class RunManager:
                     self._persist_run(run)
                     changed = True
 
-        active_count = run.running_count
+        active_count = run.scheduler_running_count
 
         ready_items = [
             item for item in run.items
             if item.status == RunItemStatus.PENDING
             and run.are_deps_satisfied(item)
         ]
+
+        # Dataset transfers run on the scripthut host, so they are started
+        # outside the concurrency budget entirely. Metering them against
+        # cluster slots would stall a run whose only ready work is the
+        # transfer its tasks are waiting on.
+        staging_items = [i for i in ready_items if i.task.data_dep is not None]
+        ready_items = [i for i in ready_items if i.task.data_dep is None]
+
+        staging_failed = False
+        for item in staging_items:
+            if not await self.submit_task(run, item):
+                staging_failed = True
 
         # Per-run cap (if set)
         if run.max_concurrent is not None:
@@ -1920,14 +2327,16 @@ class RunManager:
         for item in cache_completed:
             await self._after_item_completed(run, item)
 
-        if to_submit:
+        if to_submit or staging_items:
             self.notify_run(run.id)
 
         # Cache hits finish items immediately, which can unblock dependents.
         # Re-drive so they're submitted now rather than waiting for the next
         # poll. Terminates: each hit moves an item out of PENDING, so the
-        # ready set strictly shrinks until no cache-completions remain.
-        if cache_completed:
+        # ready set strictly shrinks until no cache-completions remain. A
+        # staging item that could not start is terminal for the same reason,
+        # and the re-drive is what cascades DEP_FAILED to its dependents.
+        if cache_completed or staging_failed:
             await self.process_run(run, fair_share=fair_share)
 
     def _contending_runs(self, backend_name: str) -> list[Run]:
@@ -1962,11 +2371,15 @@ class RunManager:
         return max(1, backend_slots // len(contenders))
 
     def _backend_running_count(self, backend_name: str) -> int:
-        """Count all running/submitted tasks across all runs on a backend."""
+        """Count all running/submitted scheduler tasks across runs on a backend.
+
+        Dataset transfers are excluded — they run on the scripthut host and
+        consume none of the backend's concurrency.
+        """
         count = 0
         for run in self.runs.values():
             if run.backend_name == backend_name:
-                count += run.running_count
+                count += run.scheduler_running_count
         return count
 
     def _get_backend_max_concurrent(self, backend_name: str) -> int:
@@ -2222,6 +2635,16 @@ class RunManager:
 
         ssh_client = self.get_ssh_client(run.backend_name)
 
+        # Dataset transfers run in this process, so there is no job to
+        # scancel — the asyncio task itself has to be stopped or it keeps
+        # copying gigabytes for a run the user already gave up on.
+        for item in run.items:
+            if item.task.data_dep is None:
+                continue
+            transfer = self._staging_tasks.pop(f"{run.id}:{item.task.id}", None)
+            if transfer is not None and not transfer.done():
+                transfer.cancel()
+
         for item in run.items:
             if item.status == RunItemStatus.PENDING:
                 item.status = RunItemStatus.FAILED
@@ -2301,6 +2724,27 @@ class RunManager:
             if r.status in (RunStatus.PENDING, RunStatus.RUNNING)
         ]
 
+    @staticmethod
+    def _requeue_orphaned_staging(run: Run) -> None:
+        """Re-queue dataset transfers that died with the previous daemon.
+
+        A staging item is RUNNING only while an in-process task drives it, so
+        one found RUNNING on disk at startup has nothing behind it. Its
+        staging directory is discarded and the copy restarts from scratch —
+        the destination is content-addressed, so a fresh attempt is safe.
+        """
+        for item in run.items:
+            if item.task.data_dep is None or item.status != RunItemStatus.RUNNING:
+                continue
+            item.status = RunItemStatus.PENDING
+            item.submitted_at = None
+            item.started_at = None
+            item.error = None
+            logger.info(
+                f"Run '{run.id}': re-queueing dataset '{item.task.data_dep.name}' "
+                "(transfer was interrupted by a restart)"
+            )
+
     async def restore_from_storage(self) -> int:
         """Restore runs from folder storage on startup."""
         if self.storage is None:
@@ -2311,6 +2755,7 @@ class RunManager:
             if run.workflow_name == "_default":
                 continue  # Don't load default runs into active management
             if run_id not in self.runs:
+                self._requeue_orphaned_staging(run)
                 self.runs[run_id] = run
                 if run.status in (RunStatus.PENDING, RunStatus.RUNNING):
                     try:

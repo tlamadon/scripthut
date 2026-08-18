@@ -34,7 +34,9 @@ GLOBAL_CONFIG_PATHS = [
 # they describe the user's infrastructure (backends, secrets, settings),
 # not the project. A project-local config that uses any of these is
 # rejected with a clear error.
-PROJECT_FORBIDDEN_FIELDS = {"backends", "sources", "settings", "pricing", "cache"}
+PROJECT_FORBIDDEN_FIELDS = {
+    "backends", "sources", "settings", "pricing", "cache", "datasets",
+}
 
 
 class LegacySettings(BaseSettings):
@@ -77,6 +79,11 @@ class LegacySettings(BaseSettings):
 def find_config_file(config_path: Path | None = None) -> Path | None:
     """Find the configuration file.
 
+    Search order: explicit ``config_path``, then ``./scripthut.yaml``
+    (and ``.yml``) in the process CWD, then the user-global locations
+    used by ``discover_global_config`` (``~/.config/scripthut/scripthut.yaml``,
+    then ``~/.scripthut.yaml``).
+
     Args:
         config_path: Explicit path to config file. If provided, must exist.
 
@@ -91,12 +98,11 @@ def find_config_file(config_path: Path | None = None) -> Path | None:
             raise FileNotFoundError(f"Config file not found: {config_path}")
         return config_path
 
-    # Search default locations
     for path in DEFAULT_CONFIG_PATHS:
         if path.exists():
             return path
 
-    return None
+    return discover_global_config()
 
 
 def discover_global_config() -> Path | None:
@@ -202,28 +208,42 @@ def load_yaml_config(config_path: Path) -> ScriptHutConfig:
         friendly = _friendly_validation_error(raw_config, exc)
         raise ConfigError(friendly) from exc
 
-    _resolve_stack_input_files(cfg, config_path.resolve().parent)
+    base = config_path.resolve().parent
+    _resolve_stack_input_files(cfg, base)
+    _resolve_dataset_paths(cfg, base)
     return cfg
+
+
+def _resolve_config_relative(path: Path, base: Path) -> Path:
+    """Resolve a local path from a config file against that file's directory.
+
+    Relative paths in a config file are resolved against the *directory of
+    that config file*, not the process CWD — the daemon starts from ``$HOME``
+    and a PATH-installed CLI runs from anywhere, so a cwd-relative path would
+    mean different things to different callers. Absolute and ``~``-prefixed
+    paths are kept as-is.
+    """
+    expanded = Path(str(path)).expanduser()
+    return expanded if expanded.is_absolute() else (base / expanded).resolve()
 
 
 def _resolve_stack_input_files(cfg: ScriptHutConfig, base: Path) -> None:
     """Rewrite each stack's ``input_files`` to be absolute paths.
 
-    Relative paths in a config file are resolved against the *directory
-    of that config file*, not the process CWD. This is the only thing
-    that makes ``input_files: [requirements.txt]`` in a project-local
-    config behave intuitively when the CLI is invoked from anywhere.
-    Absolute paths and ``~``-prefixed paths are kept as-is.
+    This is the only thing that makes ``input_files: [requirements.txt]`` in
+    a project-local config behave intuitively when the CLI is invoked from
+    anywhere.
     """
     for stack in cfg.stacks:
-        resolved: list[Path] = []
-        for p in stack.input_files:
-            expanded = Path(str(p)).expanduser()
-            if expanded.is_absolute():
-                resolved.append(expanded)
-            else:
-                resolved.append((base / expanded).resolve())
-        stack.input_files = resolved
+        stack.input_files = [
+            _resolve_config_relative(p, base) for p in stack.input_files
+        ]
+
+
+def _resolve_dataset_paths(cfg: ScriptHutConfig, base: Path) -> None:
+    """Rewrite each dataset's ``path`` to an absolute path on this host."""
+    for dataset in cfg.datasets:
+        dataset.path = _resolve_config_relative(dataset.path, base)
 
 
 def _validate_project_local_yaml(raw: dict, path: Path) -> None:

@@ -18,6 +18,11 @@
             {% endif %}
             {% if not b.scanning and not b.cleaning %}
             {% if b.result %}
+            {# "data" is deliberately excluded from the bulk sweep. An orphaned
+               clone is re-clonable from git; an orphaned (unconfigured) dataset
+               copy may be the only one on this backend if the local directory
+               moved, so it must be deleted one row at a time with its own
+               warning. Superseded copies are REFERENCED and never in scope here. #}
             {% set bulk = b.result.entries | selectattr("classification.value", "equalto", "orphaned")
                           | selectattr("kind.value", "in", ["clone", "agent", "stack", "log"]) | list %}
             {% if bulk %}
@@ -114,6 +119,7 @@
         ("clone", "Repository clones"),
         ("agent", "Agent workspaces"),
         ("stack", "Software stacks"),
+        ("data", "Staged datasets"),
         ("log", "Logs & outputs"),
         ("other", "Other files & environments"),
     ] %}
@@ -150,7 +156,7 @@
                 <tbody>
                     {% for e in items %}
                     {% set row_label = e.detail or e.path.rsplit("/", 1)[-1] %}
-                    {% set deletable = e.kind.value in ["clone", "agent", "stack", "log"] and e.classification.value in ["orphaned", "referenced"] %}
+                    {% set deletable = e.kind.value in ["clone", "agent", "stack", "data", "log"] and e.classification.value in ["orphaned", "referenced"] %}
                     <tr class="border-b border-gray-50"
                         data-name="{{ (row_label) | lower }}"
                         data-source="{{ (e.source or '') | lower }}"
@@ -174,13 +180,27 @@
                         <td class="py-1.5 pr-4 text-xs text-gray-600">{{ e.source or "–" }}</td>
                         {% endif %}
                         <td class="py-1.5 pr-4">
+                            {# A superseded dataset copy is REFERENCED, because run
+                               references don't decide a dataset's fate. Showing it
+                               green as "referenced" would read as "in use" when it
+                               is precisely the thing worth deleting, so data says
+                               what it means instead. #}
+                            {% if e.kind.value == "data" and "(superseded)" in (e.detail or "") %}
+                            {% set badge, label = "bg-amber-100 text-amber-700", "superseded" %}
+                            {% elif e.kind.value == "data" and "(unconfigured)" in (e.detail or "") %}
+                            {% set badge, label = "bg-amber-100 text-amber-700", "unconfigured" %}
+                            {% elif e.kind.value == "data" %}
+                            {% set badge, label = "bg-green-100 text-green-700", "current" %}
+                            {% else %}
                             {% set badge = {
                                 "active": "bg-blue-100 text-blue-700",
                                 "referenced": "bg-green-100 text-green-700",
                                 "orphaned": "bg-amber-100 text-amber-700",
                                 "unknown": "bg-gray-100 text-gray-600",
                             }[e.classification.value] %}
-                            <span class="text-xs px-1.5 py-0.5 rounded {{ badge }}">{{ e.classification.value }}</span>
+                            {% set label = e.classification.value %}
+                            {% endif %}
+                            <span class="text-xs px-1.5 py-0.5 rounded {{ badge }}">{{ label }}</span>
                         </td>
                         <td class="py-1.5 pr-4 text-gray-700">{{ e.size_bytes | disk_bytes or "?" }}</td>
                         <td class="py-1.5 pr-4 text-gray-500 text-xs">{{ e.mtime | age }}</td>
@@ -193,8 +213,19 @@
                         </td>
                         <td class="py-1.5 pl-2 text-right">
                             {% if selectable and deletable %}
+                            {# A dataset copy has no run logs inside it, and no run
+                               reference either — what matters is whether the local
+                               tree still hashes to it, so it warns on its own terms. #}
                             <form hx-post="/disk/clean/{{ b.name }}" hx-target="#disk-{{ b.name }}" hx-swap="innerHTML"
-                                  {% if e.classification.value == "referenced" %}
+                                  {% if e.kind.value == "data" %}
+                                  {% if "(superseded)" in (e.detail or "") %}
+                                  hx-confirm="Delete {{ row_label }} ({{ e.size_bytes | disk_bytes or '?' }})? This copy no longer matches the local dataset — nothing will re-create it, and any run still pointing at this path would have to re-stage."
+                                  {% elif "(unconfigured)" in (e.detail or "") %}
+                                  hx-confirm="Delete {{ row_label }} ({{ e.size_bytes | disk_bytes or '?' }})? No dataset in the current config claims this copy. If the config simply lost the entry, the data here is the only copy on this backend."
+                                  {% else %}
+                                  hx-confirm="Delete {{ row_label }} ({{ e.size_bytes | disk_bytes or '?' }})? This is the CURRENT copy of a configured dataset — the next run that needs it will re-upload the whole directory from the scripthut host."
+                                  {% endif %}
+                                  {% elif e.classification.value == "referenced" %}
                                   hx-confirm="Delete {{ row_label }} ({{ e.size_bytes | disk_bytes or '?' }})? It is still referenced by run(s) {{ e.run_ids | join(', ') }} — any logs stored inside will be lost."
                                   {% else %}
                                   hx-confirm="Delete {{ row_label }} ({{ e.size_bytes | disk_bytes or '?' }})? It may contain logs of forgotten runs."

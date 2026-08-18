@@ -129,6 +129,53 @@ class LocalExecClient:
             error=error,
         ))
 
+    async def put_tree(
+        self,
+        local_path: Path,
+        remote_path: str,
+        *,
+        timeout: int = 86400,
+        progress: Callable[[int, int], None] | None = None,
+    ) -> int:
+        """Copy a directory tree on this machine; same contract as SSHClient.
+
+        Here "remote" is the same filesystem, so this is a plain recursive
+        copy. It still exists rather than short-circuiting to "the data is
+        already local": the caller's whole protocol — content-addressed
+        destination, staging dir, verify, atomic publish — assumes a real
+        copy at a real path, and ``DATA_DIR`` has to point somewhere stable
+        that later runs can reuse.
+
+        Same preconditions as the SSH version: ``remote_path`` must not
+        exist and its parent must. Symlinks are not followed, matching both
+        the SFTP behaviour and the manifest that named the tree.
+        """
+        start = time.perf_counter()
+        cmd = f"cp -R (local) {local_path} -> {remote_path}"
+
+        def _copy() -> int:
+            shutil.copytree(local_path, remote_path, symlinks=True)
+            total = 0
+            for root, _dirs, files in os.walk(remote_path):
+                for name in files:
+                    p = os.path.join(root, name)
+                    if not os.path.islink(p):
+                        total += os.path.getsize(p)
+            return total
+
+        try:
+            copied = await asyncio.wait_for(
+                asyncio.get_running_loop().run_in_executor(None, _copy),
+                timeout=timeout,
+            )
+        except Exception as e:
+            self._log(cmd, start, error=str(e))
+            raise
+        if progress is not None:
+            progress(copied, copied)
+        self._log(cmd, start, exit_code=0)
+        return copied
+
     async def run_command(
         self, command: str, timeout: int = 30,
     ) -> tuple[str, str, int]:

@@ -50,7 +50,14 @@ ScriptHut accepts two top-level formats:
     ]
     ```
 
-Both formats are equivalent. The object format with the `"tasks"` key is recommended as it leaves room for top-level metadata — including `"env"` and `"env_groups"` (covered in [Environment Variables](environments.md)).
+Both formats are equivalent. The object format with the `"tasks"` key is recommended as it leaves room for top-level metadata — including `"env"` and `"env_groups"` (covered in [Environment Variables](environments.md)) and `"data"` (covered in [Data dependencies](../configuration/data.md)).
+
+| Top-level field | Type | Description |
+|-----------------|------|-------------|
+| `tasks` | array | **Required.** The task objects, described below. |
+| `env` | array | Env rules applied to every task in the document. |
+| `env_groups` | object | Named, reusable env-rule lists visible to this document's tasks. |
+| `data` | array | Names of [datasets](../configuration/data.md) to stage on the backend before any task runs. Each becomes `DATA_<NAME>`, plus `DATA_DIR` when there is exactly one. |
 
 ---
 

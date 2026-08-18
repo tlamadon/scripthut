@@ -38,10 +38,15 @@ from scripthut.disk.models import (
     ScanSpec,
 )
 from scripthut.disk.scan import AGENT_DIR_RE, CLONE_HASH_RE
+from scripthut.runs.datasets import DATASET_HASH_RE
 
-DELETABLE_KINDS = frozenset(
-    {DiskEntryKind.CLONE, DiskEntryKind.AGENT, DiskEntryKind.STACK, DiskEntryKind.LOG}
-)
+DELETABLE_KINDS = frozenset({
+    DiskEntryKind.CLONE,
+    DiskEntryKind.AGENT,
+    DiskEntryKind.STACK,
+    DiskEntryKind.DATA,
+    DiskEntryKind.LOG,
+})
 
 
 @dataclass
@@ -176,6 +181,8 @@ def _base_detail(e: DiskEntry) -> str | None:
         if e.ready is False:
             detail += " (half-built)"
         return detail
+    if e.kind == DiskEntryKind.DATA:
+        return "/".join(parts[-2:])
     if e.kind == DiskEntryKind.LOG:
         return parts[-1]
     return None
@@ -185,6 +192,7 @@ def _fresh_copies(
     result: DiskScanResult,
     refs: RunReferences,
     current_stack_hashes: dict[str, set[str]] | None,
+    current_data_hashes: dict[str, set[str]] | None = None,
 ) -> list[DiskEntry]:
     copies = [
         replace(
@@ -195,7 +203,12 @@ def _fresh_copies(
         )
         for e in result.entries
     ]
-    classify_entries(copies, refs, current_stack_hashes=current_stack_hashes)
+    classify_entries(
+        copies,
+        refs,
+        current_stack_hashes=current_stack_hashes,
+        current_data_hashes=current_data_hashes,
+    )
     return copies
 
 
@@ -212,6 +225,9 @@ def _safety_reason(entry: DiskEntry, spec: ScanSpec, home: str | None) -> str | 
         roots, depth = spec.clone_dirs, 1
     elif entry.kind == DiskEntryKind.STACK:
         roots, depth = spec.stack_dirs, 2
+    elif entry.kind == DiskEntryKind.DATA:
+        # data_dirs are already <root>/<name>, so the hash is one level down.
+        roots, depth = spec.data_dirs, 1
     else:
         roots, depth = spec.log_roots, 1
 
@@ -235,6 +251,8 @@ def _safety_reason(entry: DiskEntry, spec: ScanSpec, home: str | None) -> str | 
         return "clone name no longer matches the commit-hash pattern"
     if entry.kind == DiskEntryKind.AGENT and not AGENT_DIR_RE.match(below[0]):
         return "agent workspace name no longer matches the expected pattern"
+    if entry.kind == DiskEntryKind.DATA and not DATASET_HASH_RE.match(below[0]):
+        return "dataset copy name no longer matches the manifest-hash pattern"
     return None
 
 
@@ -267,6 +285,7 @@ def plan_cleanup(
     planned_at: datetime,
     paths: list[str] | None = None,
     allow_referenced: frozenset[str] = frozenset(),
+    current_data_hashes: dict[str, set[str]] | None = None,
 ) -> CleanupPlan:
     """Decide, entry by entry, what a cleanup would delete and why not.
 
@@ -277,7 +296,9 @@ def plan_cleanup(
     path in ``allow_referenced``.
     """
     plan = CleanupPlan(backend=result.backend, planned_at=planned_at)
-    copies = _fresh_copies(result, refs, current_stack_hashes)
+    copies = _fresh_copies(
+        result, refs, current_stack_hashes, current_data_hashes,
+    )
     by_path = {e.path: e for e in copies}
     allow = {normalize_remote_path(p, result.home_dir) for p in allow_referenced}
 

@@ -31,6 +31,7 @@ backends:
     login_shell: false        # optional, default: false
     max_concurrent: 100       # optional, default: 100
     clone_dir: ~/scripthut-repos  # optional, disk usage reported in UI
+    dataset_dir: /scratch/your_username  # optional, default ~/scripthut-data
 ```
 
 | Field | Type | Default | Description |
@@ -42,6 +43,7 @@ backends:
 | `login_shell` | boolean | `false` | If `true`, job scripts use `#!/bin/bash -l` to source your login profile (`.bash_profile`, etc.). |
 | `max_concurrent` | integer | `100` | Maximum total concurrent jobs across all runs on this backend. Must be >= 1. |
 | `clone_dir` | string | `~/scripthut-repos` | Path on the backend whose disk usage is shown in the backend status panel. Typically the parent directory where source repos are cloned. |
+| `dataset_dir` | string | `~/scripthut-data` | Parent directory for staged [datasets](data.md), which land at `<dataset_dir>/<name>/<hash>`. Defaults to home like `clone_dir`; point it at scratch for large data, since home quotas are usually much smaller. |
 
 ## PBS/Torque Backend
 
@@ -58,6 +60,7 @@ backends:
     max_concurrent: 100       # optional
     queue: batch              # optional
     clone_dir: ~/scripthut-repos  # optional, disk usage reported in UI
+    dataset_dir: /scratch/your_username  # optional, default ~/scripthut-data
 ```
 
 | Field | Type | Default | Description |
@@ -70,6 +73,7 @@ backends:
 | `max_concurrent` | integer | `100` | Maximum concurrent jobs. |
 | `queue` | string | `null` | Default PBS queue. Overrides the `partition` field in task definitions. |
 | `clone_dir` | string | `~/scripthut-repos` | Path on the backend whose disk usage is shown in the backend status panel. Typically the parent directory where source repos are cloned. |
+| `dataset_dir` | string | `~/scripthut-data` | Parent directory for staged [datasets](data.md), which land at `<dataset_dir>/<name>/<hash>`. Defaults to home like `clone_dir`; point it at scratch for large data, since home quotas are usually much smaller. |
 
 ## Local Backend
 

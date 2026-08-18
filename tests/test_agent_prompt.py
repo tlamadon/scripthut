@@ -46,6 +46,8 @@ class TestPromptStructure:
             "## What's available here",
             "### Backends",
             "### Stacks (reusable software environments)",
+            "### Datasets (local directories staged to a backend)",
+            "## Data dependencies — stage a local directory to a backend",
             "## Submitting work — pick the smallest tool that fits",
             "### A) `--inline-script <local-file>`",
             "### B) Positional command (one-liner)",
@@ -237,14 +239,39 @@ class TestYamlEditingGuidance:
         # Both file paths are explicitly named so the agent picks the right one.
         assert "~/.config/scripthut/scripthut.yaml" in prompt
         assert "./scripthut.yaml" in prompt
-        # The four project-local-allowed sections are named.
+        # The project-local-allowed sections are named.
         for section in ("stacks", "workflows", "env", "env_groups"):
             assert section in prompt
-        # The four global-only sections are named, with the loader-rejects
-        # consequence explicit.
-        for section in ("backends", "sources", "settings", "pricing"):
-            assert section in prompt
+        # Every global-only section is named, with the loader-rejects
+        # consequence explicit. Read from the loader rather than hardcoded:
+        # a hardcoded list silently went stale when `datasets` was added, and
+        # the whole point of this test is that the brief cannot drift.
+        from scripthut.config import PROJECT_FORBIDDEN_FIELDS
+
+        for section in PROJECT_FORBIDDEN_FIELDS:
+            assert section in prompt, f"global-only section not documented: {section}"
         assert "ConfigError" in prompt or "rejects" in prompt or "rejected" in prompt
+
+    def test_data_dependencies_are_actionable(self):
+        """An agent must be able to wire up staging from the brief alone.
+
+        Each string below is a thing an agent gets wrong without it: the
+        variable names it tells the task to read, the reserved item id it
+        will see in ``run view``, the destination layout, and the fact that
+        placement is config rather than a probed ``$SCRATCH``.
+        """
+        prompt = _render_agent_prompt(ScriptHutConfig())
+        for token in (
+            "dataset_dir",
+            "~/scripthut-data",
+            "DATA_<NAME>",
+            "DATA_DIR",
+            "_data.",
+            "<root_or_dataset_dir>/<dataset-name>/<hash12>",
+        ):
+            assert token in prompt, f"data staging not documented: {token!r}"
+        # The removed resolution path must not come back as advice.
+        assert "login-shell $SCRATCH" not in prompt
 
     def test_env_rule_shape_taught_with_all_common_keys(self):
         prompt = _render_agent_prompt(ScriptHutConfig())

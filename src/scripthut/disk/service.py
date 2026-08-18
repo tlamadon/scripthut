@@ -138,6 +138,7 @@ class DiskScanService:
         ssh: SSHClient,
         runs: list[Run],
         current_stack_hashes: dict[str, set[str]] | None = None,
+        current_data_hashes: dict[str, set[str]] | None = None,
         stack_texts: dict[str, str] | None = None,
         extra_errors: list[str] | None = None,
         timeout: int = SCAN_TIMEOUT,
@@ -176,7 +177,12 @@ class DiskScanService:
 
         entries = raw_to_entries(raw)
         refs = build_run_references(runs, spec.backend, spec.clone_dirs, home)
-        classify_entries(entries, refs, current_stack_hashes=current_stack_hashes)
+        classify_entries(
+            entries,
+            refs,
+            current_stack_hashes=current_stack_hashes,
+            current_data_hashes=current_data_hashes,
+        )
         annotate_stack_envs(entries, stack_texts or {}, home)
         entries.sort(key=lambda e: e.size_bytes or 0, reverse=True)
 
@@ -229,6 +235,7 @@ class DiskScanService:
         hashes = compute_current_stack_hashes(config, project_stacks)
         return await self.scan_backend(
             spec=spec, ssh=ssh, runs=runs, current_stack_hashes=hashes,
+            current_data_hashes=compute_current_data_hashes(config),
             stack_texts=collect_stack_texts(config, project_stacks),
             extra_errors=gather_errors,
         )
@@ -352,6 +359,76 @@ def compute_current_stack_hashes(
     return hashes
 
 
+def compute_current_data_hashes(config: ScriptHutConfig) -> dict[str, set[str]]:
+    """Manifest hash per configured dataset (for superseded detection).
+
+    A metadata walk of each local tree — milliseconds, no file contents. A
+    dataset whose local directory has gone missing contributes an empty set,
+    so every copy on the cluster reads as superseded rather than current;
+    that is the honest answer, and it never deletes anything by itself.
+    """
+    from scripthut.runs.datasets import DatasetError, build_manifest
+
+    hashes: dict[str, set[str]] = {}
+    for dataset in getattr(config, "datasets", []):
+        try:
+            hashes.setdefault(dataset.name, set()).add(
+                build_manifest(dataset.path).short
+            )
+        except (DatasetError, OSError) as e:
+            logger.warning(f"Cannot hash dataset '{dataset.name}': {e}")
+            hashes.setdefault(dataset.name, set())
+    return hashes
+
+
+async def gather_data_dirs(
+    config: ScriptHutConfig, backend_name: str, *, ssh: SSHClient | None = None,
+) -> tuple[list[str], list[str]]:
+    """``<root>/<name>`` for each configured dataset on this backend.
+
+    Async because a ``~/``-relative root has to be expanded against the
+    backend's probed ``$HOME`` before it can be scanned — that SSH round trip
+    is why this lives beside :func:`gather_project_stacks` rather than inside
+    ``build_scan_spec``. A root that is unsafe (the home directory itself, or
+    inside a clone dir) is reported as an error and simply not scanned.
+    """
+    from scripthut.runs.datasets import (
+        DatasetError,
+        probe_backend_paths,
+        resolve_root,
+    )
+
+    datasets = list(getattr(config, "datasets", []))
+    if not datasets or ssh is None:
+        return [], []
+
+    backend_cfg = config.get_backend(backend_name)
+    clone_dirs = [
+        s.clone_dir for s in config.sources if getattr(s, "clone_dir", None)
+    ]
+    backend_clone = getattr(backend_cfg, "clone_dir", None)
+    if backend_clone:
+        clone_dirs.append(backend_clone)
+
+    paths = await probe_backend_paths(ssh)
+    dirs: list[str] = []
+    errors: list[str] = []
+    for dataset in datasets:
+        try:
+            root = resolve_root(
+                dataset,
+                backend_name=backend_name,
+                backend_cfg=backend_cfg,
+                paths=paths,
+                clone_dirs=clone_dirs,
+            )
+        except DatasetError as e:
+            errors.append(f"dataset '{dataset.name}': {e}")
+            continue
+        dirs.append(f"{root}/{dataset.name}")
+    return dirs, errors
+
+
 def collect_stack_texts(
     config: ScriptHutConfig, extra_stacks: Sequence[Stack] = (),
 ) -> dict[str, str]:
@@ -434,8 +511,10 @@ async def start_scan_for_backend(
     project_stacks, gather_errors = await gather_project_stacks(
         config, backend_name, ssh=ssh,
     )
+    data_dirs, data_errors = await gather_data_dirs(config, backend_name, ssh=ssh)
     spec = build_scan_spec(
-        config, backend_name, clone_dir, extra_stacks=project_stacks,
+        config, backend_name, clone_dir,
+        extra_stacks=project_stacks, data_dirs=data_dirs,
     )
     runs = await gather_all_runs(run_manager, run_storage)
     hashes = compute_current_stack_hashes(config, project_stacks)
@@ -443,8 +522,9 @@ async def start_scan_for_backend(
         backend_name,
         service.scan_backend(
             spec=spec, ssh=ssh, runs=runs, current_stack_hashes=hashes,
+            current_data_hashes=compute_current_data_hashes(config),
             stack_texts=collect_stack_texts(config, project_stacks),
-            extra_errors=gather_errors,
+            extra_errors=gather_errors + data_errors,
         ),
     )
 
@@ -477,8 +557,10 @@ async def plan_cleanup_for_backend(
     project_stacks, _ = await gather_project_stacks(
         config, backend_name, ssh=ssh,
     )
+    data_dirs, _ = await gather_data_dirs(config, backend_name, ssh=ssh)
     spec = build_scan_spec(
-        config, backend_name, clone_dir, extra_stacks=project_stacks,
+        config, backend_name, clone_dir,
+        extra_stacks=project_stacks, data_dirs=data_dirs,
     )
     runs = await gather_all_runs(run_manager, run_storage)
     refs = build_run_references(
@@ -489,6 +571,7 @@ async def plan_cleanup_for_backend(
         refs,
         spec=spec,
         current_stack_hashes=compute_current_stack_hashes(config, project_stacks),
+        current_data_hashes=compute_current_data_hashes(config),
         planned_at=datetime.now(timezone.utc),
         paths=paths,
         allow_referenced=allow_referenced,
@@ -538,8 +621,10 @@ async def start_clean_for_backend(
     project_stacks, _ = await gather_project_stacks(
         config, backend_name, ssh=ssh,
     )
+    data_dirs, _ = await gather_data_dirs(config, backend_name, ssh=ssh)
     spec = build_scan_spec(
-        config, backend_name, clone_dir, extra_stacks=project_stacks,
+        config, backend_name, clone_dir,
+        extra_stacks=project_stacks, data_dirs=data_dirs,
     )
     started = service.start_clean(
         backend_name,

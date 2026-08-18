@@ -72,6 +72,79 @@ class RunItemStatus(str, Enum):
 
 
 @dataclass
+class DataDep:
+    """A resolved dataset dependency carried by a staging item.
+
+    Built by the run manager once the destination is known — never parsed
+    from user JSON, because ``dest`` is derived from the content hash and a
+    forged value would point a transfer at an arbitrary remote path.
+    """
+
+    name: str
+    local_path: str  # Absolute path on the scripthut host
+    dest: str        # Absolute <root>/<name>/<hash12> on the backend
+    hash: str        # 12-char manifest hash naming ``dest``
+    timeout: int = 86400
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "local_path": self.local_path,
+            "dest": self.dest,
+            "hash": self.hash,
+            "timeout": self.timeout,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "DataDep":
+        return cls(
+            name=data["name"],
+            local_path=data["local_path"],
+            dest=data["dest"],
+            hash=data["hash"],
+            timeout=int(data.get("timeout", 86400)),
+        )
+
+
+def parse_data_deps(data: dict[str, Any] | list[Any]) -> list[str]:
+    """Dataset names requested by a workflow document's top-level ``data``.
+
+    Returns names only: the destination is derived from the local content
+    hash at run creation, so there is nothing else for a workflow to declare.
+    The bare list form of a document carries no ``data``.
+    """
+    if not isinstance(data, dict):
+        return []
+    raw = data.get("data") or []
+    if not isinstance(raw, list):
+        raise ValueError("Workflow 'data' must be a list of {\"name\": ...} objects")
+
+    names: list[str] = []
+    for entry in raw:
+        if isinstance(entry, str):
+            name = entry
+        elif isinstance(entry, dict):
+            name = entry.get("name", "")
+            unknown = sorted(set(entry) - {"name"})
+            if unknown:
+                raise ValueError(
+                    f"Workflow data entry '{name or '?'}' has unsupported "
+                    f"field(s) {', '.join(unknown)}. The destination is derived "
+                    "from the dataset's content hash and cannot be set here."
+                )
+        else:
+            raise ValueError(
+                "Each workflow 'data' entry must be an object with a 'name'"
+            )
+        if not name or not isinstance(name, str):
+            raise ValueError("Each workflow 'data' entry needs a non-empty 'name'")
+        if name in names:
+            raise ValueError(f"Workflow 'data' lists dataset '{name}' twice")
+        names.append(name)
+    return names
+
+
+@dataclass
 class TaskDefinition:
     """Definition of a task from JSON input."""
 
@@ -111,6 +184,12 @@ class TaskDefinition:
     # task's ``inputs`` cover everything it reads (declare the code files
     # too, not just the data).
     cache_scope: Literal["commit", "inputs"] = "commit"
+    # --- Dataset staging (see scripthut.runs.datasets) ---
+    # Set only on synthetic staging items the manager builds. Such an item is
+    # executed by the daemon over SFTP rather than submitted to the scheduler.
+    # Deliberately absent from ``from_dict``: it round-trips through storage
+    # via ``RunItem.from_dict`` so a workflow document cannot forge one.
+    data_dep: "DataDep | None" = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "TaskDefinition":
@@ -173,6 +252,7 @@ class TaskDefinition:
             "outputs": self.outputs,
             "cache": self.cache,
             "cache_scope": self.cache_scope,
+            "data_dep": self.data_dep.to_dict() if self.data_dep else None,
         }
 
     @property
@@ -416,8 +496,16 @@ class RunItem:
                 dt = dt.replace(tzinfo=timezone.utc)
             return dt
 
+        # ``data_dep`` is reattached here rather than in
+        # ``TaskDefinition.from_dict`` so that restoring a persisted run keeps
+        # its staging items while a workflow document still cannot declare one.
+        task = TaskDefinition.from_dict(data["task"])
+        raw_dep = data["task"].get("data_dep")
+        if raw_dep:
+            task.data_dep = DataDep.from_dict(raw_dep)
+
         return cls(
-            task=TaskDefinition.from_dict(data["task"]),
+            task=task,
             status=RunItemStatus(data["status"]),
             job_id=data.get("job_id") or data.get("slurm_job_id"),
             user=data.get("user"),
@@ -461,6 +549,17 @@ class RunItem:
             RunItemStatus.DEP_FAILED: "text-orange-600",
         }
         return status_classes.get(self.status, "text-gray-500")
+
+
+# Statuses that occupy a concurrency slot: anything submitted counts, since
+# the cap exists to avoid drowning the scheduler, and SETTLING may still hold
+# cluster-side resources.
+SLOT_STATUSES = (
+    RunItemStatus.RUNNING,
+    RunItemStatus.QUEUED,
+    RunItemStatus.SUBMITTED,
+    RunItemStatus.SETTLING,
+)
 
 
 class RunStatus(str, Enum):
@@ -628,14 +727,20 @@ class Run:
         submissions, so anything we've already submitted counts — even
         if the scheduler hasn't picked it up yet.
         """
+        return sum(1 for item in self.items if item.status in SLOT_STATUSES)
+
+    @property
+    def scheduler_running_count(self) -> int:
+        """``running_count`` excluding daemon-executed staging items.
+
+        A dataset transfer runs on the scripthut host over SFTP, so it
+        occupies no scheduler resource and must not consume a concurrency
+        slot. Counting it would also deadlock a run whose only in-flight work
+        is the transfer its tasks are waiting on.
+        """
         return sum(
             1 for item in self.items
-            if item.status in (
-                RunItemStatus.RUNNING,
-                RunItemStatus.QUEUED,
-                RunItemStatus.SUBMITTED,
-                RunItemStatus.SETTLING,
-            )
+            if item.status in SLOT_STATUSES and item.task.data_dep is None
         )
 
     @property

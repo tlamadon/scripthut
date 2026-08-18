@@ -156,6 +156,7 @@ def build_scan_spec(
     backend_name: str,
     clone_dir: str,
     extra_stacks: Sequence[Stack] = (),
+    data_dirs: Sequence[str] = (),
 ) -> ScanSpec:
     """Assemble the roots to scan for one backend.
 
@@ -186,7 +187,14 @@ def build_scan_spec(
         if d and d not in stack_dirs:
             stack_dirs.append(d)
 
-    return ScanSpec(backend=backend_name, clone_dirs=clone_dirs, stack_dirs=stack_dirs)
+    return ScanSpec(
+        backend=backend_name,
+        clone_dirs=clone_dirs,
+        stack_dirs=stack_dirs,
+        # Resolved by the caller: a '~/'-relative root needs the backend's
+        # $HOME, which only an SSH probe can answer.
+        data_dirs=list(dict.fromkeys(d.rstrip("/") for d in data_dirs if d.strip())),
+    )
 
 
 def build_scan_script(spec: ScanSpec) -> str:
@@ -194,7 +202,9 @@ def build_scan_script(spec: ScanSpec) -> str:
     df_path = shell_quote_path(spec.clone_dirs[0]) if spec.clone_dirs else '"$HOME"'
     covered = " ".join(
         shell_quote_path(d)
-        for d in [*spec.clone_dirs, *spec.stack_dirs, *spec.log_roots]
+        for d in [
+            *spec.clone_dirs, *spec.stack_dirs, *spec.data_dirs, *spec.log_roots,
+        ]
     )
     lines = [
         _SCRIPT_PRELUDE.format(
@@ -208,6 +218,10 @@ def build_scan_script(spec: ScanSpec) -> str:
         lines.append(f"scan_dir clones {shell_quote_path(d)}")
     for d in spec.stack_dirs:
         lines.append(f"scan_stacks {shell_quote_path(d)}")
+    # One level below <root>/<name> is the hash directories themselves, so
+    # the plain one-level walk is exactly right — no .ready probe needed.
+    for d in spec.data_dirs:
+        lines.append(f"scan_dir data {shell_quote_path(d)}")
     for d in spec.log_roots:
         lines.append(f"scan_dir logs {shell_quote_path(d)}")
     # Last: the cache sweep is the open-ended one (a venv can be tens of
@@ -274,7 +288,7 @@ def _parse_entry(fields: list[str]) -> RawEntry | None:
     if section == "stacks" and len(fields) == 6:
         path, mtime_s, size_s, ready_s = fields[2:6]
         ready: bool | None = ready_s == "1"
-    elif section in ("clones", "logs", "cache") and len(fields) == 5:
+    elif section in ("clones", "logs", "cache", "data") and len(fields) == 5:
         path, mtime_s, size_s = fields[2:5]
         ready = None
     else:
@@ -314,6 +328,10 @@ def raw_to_entries(raw: list[RawEntry]) -> list[DiskEntry]:
             detail = "/".join(parts[-2:])
             if r.ready is False:
                 detail += " (half-built)"
+        elif r.section == "data":
+            kind = DiskEntryKind.DATA
+            # <data_root>/<name>/<hash> — same two-segment identity as stacks
+            detail = "/".join(parts[-2:])
         elif r.section == "logs":
             kind = DiskEntryKind.LOG
             detail = basename  # workflow name

@@ -33,6 +33,7 @@ class DiskEntryKind(str, Enum):
     CLONE = "clone"  # <clone_dir>/<12-hex commit hash>
     AGENT = "agent"  # <clone_dir>/agent-<8-hex uid>
     STACK = "stack"  # <cache_dir>/<name>/<hash>
+    DATA = "data"    # <data_root>/<name>/<12-hex manifest hash>
     LOG = "log"      # <log_root>/<workflow>
     OTHER = "other"  # unrecognized item inside a scanned root
 
@@ -137,6 +138,11 @@ class ScanSpec:
     backend: str
     clone_dirs: list[str] = field(default_factory=list)
     stack_dirs: list[str] = field(default_factory=list)
+    # ``<root>/<name>`` per configured dataset — the parent holding that
+    # dataset's hash directories. Named per dataset rather than scanning the
+    # whole data root, because a root is often a shared place like the user's
+    # scratch, and enumerating it would inventory everything they own.
+    data_dirs: list[str] = field(default_factory=list)
     log_roots: list[str] = field(default_factory=lambda: [DEFAULT_LOG_ROOT])
     # Swept one level deep, minus everything the roots above already
     # cover. Catches stack-built envs and any other stray occupant of

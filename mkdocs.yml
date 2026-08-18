@@ -64,6 +64,7 @@ nav:
       - Workflows: configuration/workflows.md
       - Environments: configuration/environments.md
       - Stacks: configuration/stacks.md
+      - Data dependencies: configuration/data.md
   - Task JSON:
       - Overview: task-json/index.md
       - Environment Variables: task-json/environments.md

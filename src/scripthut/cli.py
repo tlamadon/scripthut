@@ -368,7 +368,7 @@ class LocalClient:
     async def probe_tasks(self, payload: dict) -> dict[str, Any]:
         """Local-mode mirror of ``POST /api/v1/tasks/probe``."""
         from scripthut.runs.manager import probe_summary
-        from scripthut.runs.models import TaskDefinition
+        from scripthut.runs.models import TaskDefinition, parse_data_deps
 
         rm = self.runtime.run_manager
         backend = payload.get("backend")
@@ -378,6 +378,7 @@ class LocalClient:
             tasks = [TaskDefinition.from_dict(payload["task"])]
             doc_env: list = []
             doc_env_groups: dict = {}
+            data_deps: list[str] = []
         else:
             tasks_doc = payload.get("tasks")
             if not isinstance(tasks_doc, (dict, list)):
@@ -388,12 +389,14 @@ class LocalClient:
             tasks, doc_env, doc_env_groups = TaskDefinition.parse_document(
                 tasks_doc
             )
+            data_deps = parse_data_deps(tasks_doc)
         results = await rm.probe_tasks(
             tasks, backend,
             workflow_name=payload.get("workflow_name") or "_probe",
             commit_hash=payload.get("commit_hash"),
             doc_env=doc_env,
             doc_env_groups=doc_env_groups,
+            data_deps=data_deps,
         )
         return {
             "backend": backend,
@@ -1187,6 +1190,9 @@ def _render_agent_prompt(config: ScriptHutConfig | None) -> str:
                     bits.append(f"ssh `{b.ssh.user}@{b.ssh.host}`")
                     if b.account:
                         bits.append(f"account `{b.account}`")
+                    # Where `data:` datasets land on this cluster. Worth
+                    # surfacing: the default is home, which has a quota.
+                    bits.append(f"dataset_dir `{b.dataset_dir}`")
                 if isinstance(b, _Local):
                     bits.append(
                         "runs tasks as subprocesses on the scripthut host "
@@ -1236,6 +1242,31 @@ def _render_agent_prompt(config: ScriptHutConfig | None) -> str:
                 "\nRun `scripthut stack check <name> --json` before "
                 "submitting a task that needs one — install with "
                 "`scripthut stack install <name>` if it's not `ready`."
+            )
+            out.append("")
+
+        # ---- Datasets -----------------------------------------------------
+        out.append("### Datasets (local directories staged to a backend)")
+        datasets = list(getattr(config, "datasets", []) or [])
+        if not datasets:
+            out.append(
+                "_None configured. A workflow can only use `data: [name]` "
+                "for a name listed here; see \"Data dependencies\" below "
+                "for how to add one._\n"
+            )
+        else:
+            for d in datasets:
+                bits = [f"`{d.name}` — local `{d.path}`"]
+                if d.root:
+                    bits.append(f"lands under `{d.root}` (dataset override)")
+                else:
+                    bits.append("lands under the backend's `dataset_dir`")
+                out.append(f"- {' · '.join(bits)}")
+            out.append(
+                "\nA workflow uses one by declaring `data: [<name>]`; the "
+                "task then reads the path from `DATA_<NAME>` (and "
+                "`DATA_DIR` when the workflow uses exactly one). Names not "
+                "listed above will fail at submit."
             )
             out.append("")
 
@@ -1493,12 +1524,15 @@ def _render_agent_prompt(config: ScriptHutConfig | None) -> str:
         "\n"
         "- **User-global** at `~/.config/scripthut/scripthut.yaml`. "
         "Carries infrastructure: `backends`, `sources`, `settings`, "
-        "`pricing`. Edit this when the user adds a cluster, a git/path "
-        "source, or changes CLI defaults (`cli_server`, `cli_auth`).\n"
+        "`pricing`, `cache`, `datasets`. Edit this when the user adds a "
+        "cluster, a git/path source, a dataset, or changes CLI defaults "
+        "(`cli_server`, `cli_auth`).\n"
         "- **Project-local** at `./scripthut.yaml` (or any ancestor of "
         "the CWD). Carries per-project knobs: `stacks`, `workflows`, "
         "`env`, `env_groups`. Trying to put `backends`/`sources`/"
-        "`settings`/`pricing` here raises a `ConfigError` at load time.\n"
+        "`settings`/`pricing`/`cache`/`datasets` here raises a "
+        "`ConfigError` at load time — a dataset path is a fact about the "
+        "user's machine, not about the project.\n"
         "\n"
         "**Merge semantics** (project-local overlays global):\n"
         "- `env` — concatenated, global first, then project. Project "
@@ -1705,6 +1739,109 @@ def _render_agent_prompt(config: ScriptHutConfig | None) -> str:
         "[…]}]` (per-task, per-workflow, or via an env_group). This is "
         "intentional: same composition rules as the rest of the env "
         "system, no separate code path.\n"
+    )
+
+    out.append("## Data dependencies — stage a local directory to a backend\n")
+    out.append(
+        "A workflow that needs a directory living on the **scripthut "
+        "host** (the machine running the daemon, usually the user's "
+        "laptop) declares it by name. ScriptHut copies it to the backend "
+        "on first use and reuses that copy forever after. Use this "
+        "instead of telling the user to `scp` — and never scp yourself.\n"
+    )
+    out.append(
+        "Two pieces of config, both **user-global** "
+        "(`~/.config/scripthut/scripthut.yaml`; `datasets:` in a "
+        "project-local file raises `ConfigError`):\n"
+        "```yaml\n"
+        "datasets:\n"
+        "  - name: acq-raw\n"
+        "    path: ~/data/acquisition   # local dir; relative paths resolve\n"
+        "                               # against the config file\n"
+        "    # root: /scratch/wiemann   # optional per-dataset override\n"
+        "\n"
+        "backends:\n"
+        "  - name: mercury\n"
+        "    dataset_dir: /scratch/wiemann # where datasets land on THIS\n"
+        "                               # cluster; default ~/scripthut-data\n"
+        "```\n"
+        "The workflow document then declares, at top level alongside "
+        "`tasks`:\n"
+        "```json\n"
+        '{"data": ["acq-raw"], "tasks": [...]}\n'
+        "```\n"
+    )
+    out.append(
+        "**Where it lands.** Config decides, in exactly two layers: the "
+        "dataset's own `root` if set, otherwise the backend's `dataset_dir`. "
+        "Nothing is read from the cluster environment — no `$SCRATCH` "
+        "probing — so the destination is predictable from the YAML "
+        "alone. Paths must be literal (`$USER` is never expanded), "
+        "though a leading `~/` is expanded against the backend's home. "
+        "ScriptHut hashes the local file list (relative paths and sizes, "
+        "not contents) and the copy lands at "
+        "`<root_or_dataset_dir>/<dataset-name>/<hash12>`.\n"
+    )
+    out.append(
+        "**How a task reads it.** Every dataset is injected as "
+        "`DATA_<NAME>` (uppercased, non-alphanumerics become `_`, so "
+        "`acq-raw` → `DATA_ACQ_RAW`). When the workflow uses exactly one "
+        "dataset, `DATA_DIR` is set too. These are deliberately not "
+        "`SCRIPTHUT_`-prefixed: that namespace can't be set by env rules "
+        "and is stripped from cache keys, so a dataset path there would "
+        "vanish silently and stop invalidating stale results.\n"
+    )
+    out.append(
+        "**What you must know before promising anything:**\n"
+        "- **Staging is asynchronous.** `workflow run` returns "
+        "immediately; the transfer is a run item with id "
+        "`_data.<name>` that every root task depends on. Track it like "
+        "any other item (`run watch`), don't block on submit.\n"
+        "- **Already present means free.** If the hash directory exists, "
+        "the run reuses it and no transfer happens — that is the whole "
+        "point. Re-running a workflow does not re-copy.\n"
+        "- **Editing the local directory changes the hash**, so the next "
+        "run stages a *fresh copy beside* the old one rather than "
+        "mutating it. Old copies show up as superseded in `scripthut "
+        "disk scan`; offer `disk clean`.\n"
+        "- **Never write into `$DATA_DIR`** from a task. The copy is "
+        "shared by every run whose data hashes the same, and its path "
+        "asserts what it contains. Write results to the working dir.\n"
+        "- **The default is the home directory** (`~/scripthut-data`), "
+        "matching `clone_dir`. Fine for small data; HPC home quotas are "
+        "usually far below real dataset sizes, and filling one breaks "
+        "everything else the user is running. Before staging anything "
+        "large, set the backend's `dataset_dir` to scratch — ask the user "
+        "for the path, do not guess it.\n"
+        "- Staging into the home directory *itself*, or into a clone "
+        "dir, is refused: data must not scatter across the user's top "
+        "level or land on checked-out code.\n"
+        "- **Symlinks and empty directories are rejected.** A directory "
+        "symlink anywhere in the tree, a broken file symlink, or a file "
+        "symlink leaving the dataset each fail the run; so does an empty "
+        "directory. Real data directories often contain links — check "
+        "before promising staging will work.\n"
+        "- A failed transfer leaves its partial copy at "
+        "`<dest>.staging-<run-id>` on purpose, for inspection. It is "
+        "never published, but it occupies space until the next attempt "
+        "or `disk clean`.\n"
+        "- A dataset may not be named `dir` (its variable would collide "
+        "with `DATA_DIR`), and the `_data.` task-id prefix is reserved.\n"
+        "- **`data:` belongs to the workflow that starts the run.** A "
+        "document produced by `generates_source` may not declare it.\n"
+        "- Datasets need a filesystem, so a `data:` workflow cannot run "
+        "on an API-only backend (AWS Batch, AWS EC2).\n"
+        "- **Not just data:** a locally-built container image stages the "
+        "same way. Point `path` at the *directory* holding the `.sif` "
+        "(a file path is rejected), then `apptainer exec "
+        "$DATA_DIR/img.sif …`.\n"
+    )
+    out.append(
+        "**When staging fails**, the failed item is `_data.<name>` and "
+        "its `error` carries the reason — unreachable local path, an "
+        "unusable root, or a staged copy that didn't match the local "
+        "file list. Everything downstream is `dep_failed`; fix the cause "
+        "and submit a new run rather than chasing the dependents.\n"
     )
 
     out.append("## Emitting structured outputs (plots, summaries, tables)\n")
@@ -3008,7 +3145,9 @@ async def _disk_scan_local(args: argparse.Namespace) -> int:
     from scripthut.disk.service import (
         DiskScanService,
         collect_stack_texts,
+        compute_current_data_hashes,
         compute_current_stack_hashes,
+        gather_data_dirs,
         gather_project_stacks,
     )
     from scripthut.runs.storage import RunStorageManager
@@ -3050,12 +3189,17 @@ async def _disk_scan_local(args: argparse.Namespace) -> int:
             stacks, gather_errors = await gather_project_stacks(
                 config, b.name, ssh=ssh,
             )
-            spec = build_scan_spec(config, b.name, b.clone_dir, extra_stacks=stacks)
+            data_dirs, data_errors = await gather_data_dirs(config, b.name, ssh=ssh)
+            spec = build_scan_spec(
+                config, b.name, b.clone_dir,
+                extra_stacks=stacks, data_dirs=data_dirs,
+            )
             result = await svc.scan_backend(
                 spec=spec, ssh=ssh, runs=runs,
                 current_stack_hashes=compute_current_stack_hashes(config, stacks),
+                current_data_hashes=compute_current_data_hashes(config),
                 stack_texts=collect_stack_texts(config, stacks),
-                extra_errors=gather_errors,
+                extra_errors=gather_errors + data_errors,
             )
             results[b.name] = result
         finally:
@@ -3215,8 +3359,10 @@ async def _disk_clean_local(args: argparse.Namespace) -> int:
     from scripthut.disk.scan import build_scan_spec
     from scripthut.disk.service import (
         DiskScanService,
+        compute_current_data_hashes,
         compute_current_stack_hashes,
         execute_cleanup,
+        gather_data_dirs,
         gather_project_stacks,
     )
     from scripthut.runs.storage import RunStorageManager
@@ -3264,16 +3410,25 @@ async def _disk_clean_local(args: argparse.Namespace) -> int:
             for err in gather_errors:
                 print(f"{b.name}: {err}", file=sys.stderr)
             hashes = compute_current_stack_hashes(config, stacks)
-            spec = build_scan_spec(config, b.name, b.clone_dir, extra_stacks=stacks)
+            data_hashes = compute_current_data_hashes(config)
+            data_dirs, data_errors = await gather_data_dirs(config, b.name, ssh=ssh)
+            for err in data_errors:
+                print(f"{b.name}: {err}", file=sys.stderr)
+            spec = build_scan_spec(
+                config, b.name, b.clone_dir,
+                extra_stacks=stacks, data_dirs=data_dirs,
+            )
             result = await svc.scan_backend(
                 spec=spec, ssh=ssh, runs=runs, current_stack_hashes=hashes,
-                extra_errors=gather_errors,
+                current_data_hashes=data_hashes,
+                extra_errors=gather_errors + data_errors,
             )
             refs = build_run_references(
                 runs, b.name, spec.clone_dirs, result.home_dir,
             )
             plan = plan_cleanup(
                 result, refs, spec=spec, current_stack_hashes=hashes,
+                current_data_hashes=data_hashes,
                 planned_at=datetime.now(timezone.utc),
                 paths=paths,
                 allow_referenced=frozenset(paths or []),
@@ -3298,6 +3453,7 @@ async def _disk_clean_local(args: argparse.Namespace) -> int:
             report = await execute_cleanup(plan, ssh)
             fresh = await svc.scan_backend(
                 spec=spec, ssh=ssh, runs=runs, current_stack_hashes=hashes,
+                current_data_hashes=data_hashes,
             )
             if not args.json:
                 _print_cleanup_report(b.name, report.to_dict())

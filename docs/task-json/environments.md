@@ -18,6 +18,8 @@ Every task starts with these variables already set (any task-level rule's `if:` 
 
 These keys are protected: any rule attempting to `set:` or `append:` to a `SCRIPTHUT_` key is ignored with a warning.
 
+A workflow that declares [data dependencies](../configuration/data.md) also gets `DATA_<NAME>` per dataset, plus `DATA_DIR` when it uses exactly one. Those are *not* protected — `DATA_DIR` is injected first so your own rule can override it, while `DATA_<NAME>` is injected last and wins — but treat the `DATA_` prefix as reserved and pick another name for unrelated variables, or a later dataset will silently shadow yours.
+
 ## Document-level `env:` and `env_groups:`
 
 The workflow JSON itself can carry an `env:` rule list and an `env_groups:` dictionary at the top level — alongside `tasks:`. These apply to every task the document produces. This is the natural home for env config that lives **in the project's repo** (the generator script that emits the JSON ships in your repo, so anything it writes is repo-versioned).
@@ -87,24 +89,24 @@ This is what a generator's complete stdout looks like — the same top-level `{"
     {
       "id": "prep",
       "name": "Prepare data",
-      "command": "python prep.py --out ${DATA_DIR}/run.parquet",
+      "command": "python prep.py --out ${WORK_DIR}/run.parquet",
       "cpus": 2,
       "memory": "8G",
       "env": [
-        {"set": {"DATA_DIR": "/scratch/${USER}/${SCRIPTHUT_RUN_ID}"}}
+        {"set": {"WORK_DIR": "/scratch/${USER}/${SCRIPTHUT_RUN_ID}"}}
       ]
     },
     {
       "id": "train.gpu",
       "name": "Train (GPU)",
-      "command": "python train.py --data ${DATA_DIR}/run.parquet --seed ${SEED}",
+      "command": "python train.py --data ${WORK_DIR}/run.parquet --seed ${SEED}",
       "deps": ["prep"],
       "cpus": 4,
       "memory": "32G",
       "gres": "gpu:1",
       "env": [
         {"set": {
-          "DATA_DIR": "/scratch/${USER}/${SCRIPTHUT_RUN_ID}",
+          "WORK_DIR": "/scratch/${USER}/${SCRIPTHUT_RUN_ID}",
           "SEED": "42"
         }},
         {"if": {"SCRIPTHUT_BACKEND": "mercury"},
@@ -118,10 +120,10 @@ This is what a generator's complete stdout looks like — the same top-level `{"
     {
       "id": "report",
       "name": "Render report",
-      "command": "python report.py --data ${DATA_DIR}/run.parquet",
+      "command": "python report.py --data ${WORK_DIR}/run.parquet",
       "deps": ["train.gpu"],
       "env": [
-        {"set": {"DATA_DIR": "/scratch/${USER}/${SCRIPTHUT_RUN_ID}"}}
+        {"set": {"WORK_DIR": "/scratch/${USER}/${SCRIPTHUT_RUN_ID}"}}
       ]
     }
   ]
@@ -130,14 +132,14 @@ This is what a generator's complete stdout looks like — the same top-level `{"
 
 Points worth noting:
 
-- **`set:` cascades within a single task's `env:`** — `DATA_DIR` is written in the first rule, then referenced via `${DATA_DIR}` in the task's `command`. The `command` itself is *not* expanded by the resolver; rather, the generated submission script exports `DATA_DIR=...` before running the command so the shell does the substitution.
+- **`set:` cascades within a single task's `env:`** — `WORK_DIR` is written in the first rule, then referenced via `${WORK_DIR}` in the task's `command`. The `command` itself is *not* expanded by the resolver; rather, the generated submission script exports `WORK_DIR=...` before running the command so the shell does the substitution.
 - **`include:` resolves against env_groups defined upstream** — `wandb` here would be defined at the workflow level (in `scripthut.yaml`) or at the server level. The task doesn't define groups itself; it only references them.
 - **`if:` rules guard their entire block** — when neither `mercury` nor `anvil` matches `SCRIPTHUT_BACKEND` (e.g. running on a laptop), neither `module load` line is added. The `append: { PATH: /opt/cuda/bin }` after them is unconditional; if you only want it on GPU clusters, wrap it in an `if:` as well or move it inside an `env_group` whose include is guarded.
-- **Repeating values across tasks** — if many tasks share `DATA_DIR: /scratch/${USER}/${SCRIPTHUT_RUN_ID}`, lift it to the workflow's `env:` in `scripthut.yaml` (or to the document-level `"env"` above) instead of repeating it in every task. Anything not specific to a single task belongs upstream.
+- **Repeating values across tasks** — if many tasks share `WORK_DIR: /scratch/${USER}/${SCRIPTHUT_RUN_ID}`, lift it to the workflow's `env:` in `scripthut.yaml` (or to the document-level `"env"` above) instead of repeating it in every task. Anything not specific to a single task belongs upstream.
 
 ## Resolution order — later rules win
 
-Rules from each layer are concatenated and evaluated top to bottom: backend rules, then server, then workflow, then task. `set:` overwrites; `append:` extends. So if the workflow sets `DATA_DIR=/shared` and the task sets `DATA_DIR=/scratch/local`, the task wins. The Env tab on the task detail page in the UI shows the resolved env with per-key provenance (which layer / which group wrote each value) — use it to debug surprising values. The same data is exposed at `GET /runs/{run_id}/tasks/{task_id}/env`.
+Rules from each layer are concatenated and evaluated top to bottom: backend rules, then server, then workflow, then task. `set:` overwrites; `append:` extends. So if the workflow sets `WORK_DIR=/shared` and the task sets `WORK_DIR=/scratch/local`, the task wins. The Env tab on the task detail page in the UI shows the resolved env with per-key provenance (which layer / which group wrote each value) — use it to debug surprising values. The same data is exposed at `GET /runs/{run_id}/tasks/{task_id}/env`.
 
 ## Legacy fields (removed)
 

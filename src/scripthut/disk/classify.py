@@ -140,6 +140,7 @@ def classify_entries(
     refs: RunReferences,
     *,
     current_stack_hashes: dict[str, set[str]] | None = None,
+    current_data_hashes: dict[str, set[str]] | None = None,
 ) -> None:
     """Set classification/run_ids on each entry in place.
 
@@ -148,6 +149,10 @@ def classify_entries(
     several sources' project files may each declare the name with
     different inputs); when provided, stack entries get
     "(superseded)"/"(unconfigured)" annotations.
+
+    ``current_data_hashes`` is the same idea for datasets: dataset name ->
+    the manifest hash its local tree currently produces. It is how a user
+    learns that scratch is holding copies of data they have since changed.
     """
     for e in entries:
         if e.kind == DiskEntryKind.CLONE:
@@ -164,6 +169,8 @@ def classify_entries(
             _apply_refs(e, refs, ids or None)
         elif e.kind == DiskEntryKind.STACK:
             _classify_stack(e, current_stack_hashes)
+        elif e.kind == DiskEntryKind.DATA:
+            _classify_data(e, current_data_hashes)
         else:
             e.classification = DiskEntryClass.UNKNOWN
 
@@ -223,6 +230,30 @@ def _apply_refs(e: DiskEntry, refs: RunReferences, ids: set[str] | None) -> None
         )
     else:
         e.classification = DiskEntryClass.ORPHANED
+
+
+def _classify_data(
+    e: DiskEntry, current_data_hashes: dict[str, set[str]] | None
+) -> None:
+    """Mark a staged dataset copy current, superseded, or unconfigured.
+
+    Deliberately never ACTIVE/ORPHANED-by-run: a dataset copy outlives the
+    run that staged it — that is the entire point of content addressing —
+    so run references say nothing about whether it is still wanted. What
+    matters is whether it still matches the local tree.
+    """
+    parts = e.path.rsplit("/", 2)
+    name, hash_ = (parts[-2], parts[-1]) if len(parts) >= 2 else ("", "")
+    if current_data_hashes is None:
+        e.classification = DiskEntryClass.REFERENCED
+    elif name not in current_data_hashes:
+        e.classification = DiskEntryClass.ORPHANED
+        e.detail = (e.detail or "") + " (unconfigured)"
+    elif hash_ not in current_data_hashes[name]:
+        e.classification = DiskEntryClass.REFERENCED
+        e.detail = (e.detail or "") + " (superseded)"
+    else:
+        e.classification = DiskEntryClass.REFERENCED
 
 
 def _classify_stack(

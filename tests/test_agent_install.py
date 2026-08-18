@@ -120,6 +120,26 @@ class TestInstallAssets:
         # The other file is still installed.
         assert results[1].action == "created"
 
+    def test_symlinked_skill_is_never_written_through(self, tmp_path: Path):
+        """--force must not reach outside the directory it was pointed at.
+
+        ~/.claude/skills/scripthut/SKILL.md is commonly a symlink into a
+        dotfiles repo holding a hand-written skill. Following it would edit
+        that repo silently -- the one place the user's own tooling owns.
+        """
+        claude = tmp_path / ".claude"
+        elsewhere = tmp_path / "dotfiles" / "SKILL.md"
+        elsewhere.parent.mkdir(parents=True)
+        elsewhere.write_text("hand-written house skill\n")
+        skill_path = claude / SKILL_RELPATH
+        skill_path.parent.mkdir(parents=True)
+        skill_path.symlink_to(elsewhere)
+
+        for force in (False, True):
+            results = install_assets(claude, force=force)
+            assert results[0].action == "skipped"
+            assert elsewhere.read_text(encoding="utf-8") == "hand-written house skill\n"
+
     def test_force_overwrites_foreign_file(self, tmp_path: Path):
         claude = tmp_path / ".claude"
         skill_path = claude / SKILL_RELPATH

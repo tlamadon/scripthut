@@ -37,6 +37,8 @@ workflows:
 | `env` | list | `[]` | Workflow-level env rules applied to every task in the workflow. See [Environments](environments.md). |
 | `env_groups` | object | `{}` | Named, reusable env-rule lists local to this workflow (also visible to its tasks). |
 
+The workflow *document* the command prints may also carry a top-level `data` list naming [datasets](data.md) to stage before any task runs.
+
 ### Git Workflows
 
 Git workflows clone a repository on the remote backend before executing the command. The command runs inside the cloned directory. This is useful when your task generator script lives in a repository.

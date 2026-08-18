@@ -16,6 +16,10 @@ backends:
     account: pi-faculty  # Slurm account for job submission (e.g., phd, pi-faculty)
     # login_shell: true  # Use #!/bin/bash -l to source .bash_profile in jobs
     # clone_dir: ~/scripthut-repos  # Path whose disk usage is shown in the UI (default)
+    # dataset_dir: /scratch/your_username  # Where `datasets:` (see below) are staged
+    #                                   # on THIS cluster. Default ~/scripthut-data;
+    #                                   # point it at scratch for anything large,
+    #                                   # since home quotas are usually much smaller.
 
   # Multiple backends can be defined
   # - name: secondary-cluster
@@ -244,7 +248,7 @@ workflows:
 #       "time_limit": "4:00:00",
 #       "output_file": "/path/to/custom/output.log",  # Optional: custom stdout path
 #       "error_file": "/path/to/custom/error.log",    # Optional: custom stderr path
-#       "env_vars": {"MY_PARAM": "42", "DATA_DIR": "/scratch/data"}  # Optional: per-task env vars
+#       "env_vars": {"MY_PARAM": "42", "WORK_DIR": "/scratch/work"}  # Optional: per-task env vars
 #     }
 #   ]
 # }
@@ -252,6 +256,30 @@ workflows:
 # If output_file/error_file are not specified, logs will be written to:
 #   /tmp/scripthut/{queue_id}/{task_id}.out
 #   /tmp/scripthut/{queue_id}/{task_id}.err
+
+# Data dependencies (user-global config ONLY — putting `datasets:` in a
+# project-local scripthut.yaml raises ConfigError, because a local path is a
+# fact about this machine, not about the project).
+#
+# A workflow asks for one by name with a top-level `data: [sales-raw]` beside
+# `tasks`. ScriptHut hashes the local file list (paths and sizes, not
+# contents) and copies the directory to <dataset_dir>/<name>/<hash12> on the
+# backend; if that already exists, the run reuses it and copies nothing.
+# The task reads the location from DATA_SALES_RAW, plus DATA_DIR when the
+# workflow uses exactly one dataset. Never write into it from a task — the
+# copy is shared by every run whose data hashes the same.
+#
+# datasets:
+#   - name: sales-raw           # -> DATA_SALES_RAW; the name 'dir' is reserved
+#     path: ~/data/sales        # on the scripthut host; relative paths resolve
+#                               # against THIS file's directory, not the cwd
+#     # root: /scratch/you/data # optional: override this backend's dataset_dir.
+#                               # Absolute or ~/-relative; $USER is NOT expanded
+#     # timeout: 86400          # seconds for one transfer (default 24h)
+#
+#   - name: my-container        # containers stage the same way: point at the
+#     path: ~/containers/build  # DIRECTORY holding the .sif, not the file, then
+#                               # run `apptainer exec $DATA_MY_CONTAINER/x.sif`
 
 # Global settings
 settings:

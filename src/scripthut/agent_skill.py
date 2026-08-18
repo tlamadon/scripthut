@@ -50,10 +50,12 @@ description: >-
   clusters (Slurm, PBS/Torque) over SSH, AWS Batch, AWS EC2, or the
   local machine (local backend). Use when the user wants to run or
   submit a workflow, job, or compute task; check run, job, or cluster
-  status; tail or inspect job logs; debug a failed run; manage software
-  stacks (venv, Conda, Julia); probe the result cache (would this task
-  be a cache hit?); fetch a task's provenance manifest (input/output
-  hashes); or estimate compute costs.
+  status; tail or inspect job logs; debug a failed run; get a local data
+  directory, dataset, or locally-built container onto a cluster (stage,
+  copy, or scp a folder to scratch) or declare a workflow's data
+  dependency; manage software stacks (venv, Conda, Julia); probe the
+  result cache (would this task be a cache hit?); fetch a task's
+  provenance manifest (input/output hashes); or estimate compute costs.
 ---
 
 {_marker_line()}
@@ -127,12 +129,35 @@ Submit and track:
     content hashes, executor, timing — for anything downstream that
     needs to verify or adopt the results.
 
+## Data the job needs
+
+Never tell the user to `scp`, and never scp yourself. A directory on the
+scripthut host is declared once in the **user-global** config
+(`datasets:` with a `name` and local `path`; it is rejected in a
+project-local `scripthut.yaml`), and a workflow asks for it by name with
+a top-level `data: [<name>]` beside `tasks`.
+
+ScriptHut then copies it to `<dataset_dir>/<name>/<hash12>` on the backend,
+where `dataset_dir` is a per-backend setting next to `clone_dir` defaulting
+to `~/scripthut-data`, and the hash covers the local file list. If that
+directory already exists the run reuses it and nothing is transferred.
+The task reads the path from `DATA_<NAME>` (and `DATA_DIR` when the
+workflow uses exactly one dataset) — never hardcode the destination.
+
+Staging is asynchronous: `workflow run` returns immediately and the copy
+appears as a run item named `_data.<name>` that the real tasks depend on.
+Tasks must never write into `$DATA_DIR`; the copy is shared by every run
+whose data hashes the same. See `scripthut agent prompt` for the full
+rules, including the home-directory quota hazard.
+
 ## Failure diagnosis
 
 Use the `/scripthut:debug [run-id]` command, or manually: read stderr,
 then check stack readiness (`stack check`), resource limits (OOM/TIMEOUT
-in stderr or scheduler state), and only then the workflow content. Fix
-and resubmit a **new** run rather than rerunning the failed one.
+in stderr or scheduler state), and only then the workflow content. A
+failed `_data.<name>` item is a staging problem — its `error` names the
+cause, and everything downstream is `dep_failed`. Fix and resubmit a
+**new** run rather than rerunning the failed one.
 
 ## Gotchas
 
@@ -202,6 +227,13 @@ class InstallResult:
 
 
 def _install_one(path: Path, content: str, force: bool) -> InstallResult:
+    # A symlink here means the target is managed by something else — commonly
+    # a dotfiles repo linking its own hand-written skill into ~/.claude. Writing
+    # through it would silently edit that repo, which --force must not be able
+    # to do: the flag means "overwrite an unmanaged file", not "follow a link
+    # out of the directory the user pointed at".
+    if path.is_symlink():
+        return InstallResult(path, "skipped")
     if path.exists():
         existing = path.read_text(encoding="utf-8")
         if existing == content:

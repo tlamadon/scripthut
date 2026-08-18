@@ -1433,11 +1433,11 @@ async def overview(request: Request) -> HTMLResponse:
     """Landing page: what is running right now, and what the backends look like."""
     if state.config_error:
         return templates.TemplateResponse(
-            "config_error.html",
+            request, "config_error.html",
             {"request": request, "config_error": state.config_error},
         )
 
-    return templates.TemplateResponse("overview.html", _overview_context(request))
+    return templates.TemplateResponse(request, "overview.html", _overview_context(request))
 
 
 @app.get("/overview/stream")
@@ -1466,7 +1466,7 @@ async def backends_page(request: Request) -> HTMLResponse:
     """Backends dashboard: connection status, cluster detail, unified job list."""
     if state.config_error:
         return templates.TemplateResponse(
-            "config_error.html",
+            request, "config_error.html",
             {"request": request, "config_error": state.config_error},
         )
 
@@ -1475,7 +1475,7 @@ async def backends_page(request: Request) -> HTMLResponse:
     poll_interval = state.config.settings.poll_interval if state.config else 60
 
     return templates.TemplateResponse(
-        "backends.html",
+        request, "backends.html",
         {
             "request": request,
             "job_views": job_views,
@@ -1504,7 +1504,7 @@ async def jobs_partial(request: Request) -> HTMLResponse:
     job_views = _apply_job_filters(_collect_all_job_views())
 
     return templates.TemplateResponse(
-        "jobs.html",
+        request, "jobs.html",
         {
             "request": request,
             "job_views": job_views,
@@ -1740,33 +1740,33 @@ async def dry_run_source_workflow(request: Request, name: str, filename: str, ba
     """Preview tasks from a source workflow."""
     if state.run_manager is None:
         return templates.TemplateResponse(
-            "dry_run.html",
+            request, "dry_run.html",
             {"request": request, "error": "Run manager not initialized"},
         )
 
     if not backend:
         return templates.TemplateResponse(
-            "dry_run.html",
+            request, "dry_run.html",
             {"request": request, "error": "No backend selected. Please select a backend on the Sources page."},
         )
 
     wf = await _refresh_source_workflow(name, filename)
     if wf is None:
         return templates.TemplateResponse(
-            "dry_run.html",
+            request, "dry_run.html",
             {"request": request, "error": f"Workflow '{filename}' not found in source '{name}'"},
         )
 
     try:
         result = await state.run_manager.dry_run_source(name, filename, wf.tasks_json, backend=backend)
         return templates.TemplateResponse(
-            "dry_run.html",
+            request, "dry_run.html",
             {"request": request, "result": result, "error": None},
         )
     except Exception as e:
         logger.error(f"Dry run failed for source workflow {name}/{filename}: {e}")
         return templates.TemplateResponse(
-            "dry_run.html",
+            request, "dry_run.html",
             {"request": request, "error": str(e)},
         )
 
@@ -1887,7 +1887,7 @@ async def backend_log_page(request: Request, name: str) -> HTMLResponse:
     backend_state = state.backends.get(name)
     if not backend_state:
         return HTMLResponse("Backend not found", status_code=404)
-    return templates.TemplateResponse("backend_log.html", {
+    return templates.TemplateResponse(request, "backend_log.html", {
         "request": request,
         "backend_name": name,
         "backend_type": backend_state.backend_type,
@@ -1965,7 +1965,7 @@ async def delete_external_job(request: Request, job_id: str) -> HTMLResponse:
 async def sources_page(request: Request) -> HTMLResponse:
     """Page listing configured sources and the workflows available to trigger."""
     return templates.TemplateResponse(
-        "sources.html",
+        request, "sources.html",
         {
             "request": request,
             "source_workflows": state.source_workflows,
@@ -1983,7 +1983,7 @@ async def runs_page(request: Request) -> HTMLResponse:
     runs = state.run_manager.get_all_runs() if state.run_manager else []
 
     return templates.TemplateResponse(
-        "runs.html",
+        request, "runs.html",
         {
             "request": request,
             "runs": runs,
@@ -2015,7 +2015,7 @@ async def delete_runs(
 
     runs = state.run_manager.get_all_runs() if state.run_manager else []
     return templates.TemplateResponse(
-        "runs_list.html",
+        request, "runs_list.html",
         {
             "request": request,
             "runs": runs,
@@ -2046,7 +2046,7 @@ async def disk_page(request: Request) -> HTMLResponse:
     """Per-backend inventory of scripthut's remote disk footprint."""
     cards = [_disk_card_context(name) for name in state.backends]
     return templates.TemplateResponse(
-        "disk.html", {"request": request, "disk_backends": cards},
+        request, "disk.html", {"request": request, "disk_backends": cards},
     )
 
 
@@ -2057,7 +2057,7 @@ async def disk_partial(request: Request, backend: str) -> HTMLResponse:
     if card is None:
         return HTMLResponse(f"Unknown backend '{backend}'", status_code=404)
     return templates.TemplateResponse(
-        "disk_backend.html", {"request": request, "b": card},
+        request, "disk_backend.html", {"request": request, "b": card},
     )
 
 
@@ -2091,7 +2091,7 @@ async def disk_scan_start(request: Request, backend: str) -> HTMLResponse:
     card = _disk_card_context(backend) or card
     card["start_error"] = error
     return templates.TemplateResponse(
-        "disk_backend.html", {"request": request, "b": card},
+        request, "disk_backend.html", {"request": request, "b": card},
     )
 
 
@@ -2149,7 +2149,7 @@ async def disk_clean_start(request: Request, backend: str) -> HTMLResponse:
     if error:
         card["start_error"] = error
     return templates.TemplateResponse(
-        "disk_backend.html", {"request": request, "b": card},
+        request, "disk_backend.html", {"request": request, "b": card},
     )
 
 
@@ -2190,7 +2190,7 @@ async def terminals_page(request: Request) -> HTMLResponse:
     ]
 
     return templates.TemplateResponse(
-        "terminals.html",
+        request, "terminals.html",
         {
             "request": request,
             "sessions": sessions,
@@ -2221,7 +2221,7 @@ async def settings_page(request: Request, message: str = "", message_type: str =
     sections = _section_summary()
 
     return templates.TemplateResponse(
-        "settings.html",
+        request, "settings.html",
         {
             "request": request,
             "config_content": config_content,
@@ -2516,14 +2516,14 @@ async def run_detail_page(request: Request, run_id: str) -> HTMLResponse:
 
     if run is None:
         return templates.TemplateResponse(
-            "run_detail.html",
+            request, "run_detail.html",
             {"request": request, "run": None, "error": "Run not found", "gantt_items": [], "markers": []},
         )
 
     gantt_items, markers = _compute_gantt_data(run)
 
     return templates.TemplateResponse(
-        "run_detail.html",
+        request, "run_detail.html",
         {
             "request": request,
             "run": run,
@@ -2568,7 +2568,7 @@ async def run_info_partial(request: Request, run_id: str) -> HTMLResponse:
     run = state.run_manager.get_run(run_id) if state.run_manager else None
 
     return templates.TemplateResponse(
-        "run_info.html",
+        request, "run_info.html",
         {"request": request, "run": run, "cost_summary": _get_run_cost(run)},
     )
 
@@ -2579,7 +2579,7 @@ async def run_items_partial(request: Request, run_id: str) -> HTMLResponse:
     run = state.run_manager.get_run(run_id) if state.run_manager else None
 
     return templates.TemplateResponse(
-        "run_items.html",
+        request, "run_items.html",
         {"request": request, "run": run},
     )
 
@@ -2595,7 +2595,7 @@ async def run_gantt_partial(request: Request, run_id: str) -> HTMLResponse:
         gantt_items, markers = _compute_gantt_data(run)
 
     return templates.TemplateResponse(
-        "run_gantt.html",
+        request, "run_gantt.html",
         {"request": request, "run": run, "gantt_items": gantt_items, "markers": markers},
     )
 
@@ -2704,21 +2704,21 @@ async def view_task_script(request: Request, run_id: str, task_id: str) -> HTMLR
     """View the sbatch script used to submit a task."""
     if state.run_manager is None:
         return templates.TemplateResponse(
-            "log_viewer.html",
+            request, "log_viewer.html",
             {"request": request, "title": "Script", "content": None, "error": "Run manager not initialized"},
         )
 
     run = state.run_manager.get_run(run_id)
     if run is None:
         return templates.TemplateResponse(
-            "log_viewer.html",
+            request, "log_viewer.html",
             {"request": request, "title": "Script", "content": None, "error": f"Run '{run_id}' not found"},
         )
 
     item = run.get_item_by_task_id(task_id)
     if item is None:
         return templates.TemplateResponse(
-            "log_viewer.html",
+            request, "log_viewer.html",
             {"request": request, "title": "Script", "content": None, "error": f"Task '{task_id}' not found"},
         )
 
@@ -2746,7 +2746,7 @@ async def view_task_script(request: Request, run_id: str, task_id: str) -> HTMLR
             )
 
     return templates.TemplateResponse(
-        "log_viewer.html",
+        request, "log_viewer.html",
         {
             "request": request,
             "title": f"Script: {item.task.name}",
@@ -3224,21 +3224,21 @@ async def view_task_json(request: Request, run_id: str, task_id: str) -> HTMLRes
     """View the JSON definition of a task."""
     if state.run_manager is None:
         return templates.TemplateResponse(
-            "log_viewer.html",
+            request, "log_viewer.html",
             {"request": request, "title": "JSON", "content": None, "error": "Run manager not initialized"},
         )
 
     run = state.run_manager.get_run(run_id)
     if run is None:
         return templates.TemplateResponse(
-            "log_viewer.html",
+            request, "log_viewer.html",
             {"request": request, "title": "JSON", "content": None, "error": f"Run '{run_id}' not found"},
         )
 
     item = run.get_item_by_task_id(task_id)
     if item is None:
         return templates.TemplateResponse(
-            "log_viewer.html",
+            request, "log_viewer.html",
             {"request": request, "title": "JSON", "content": None, "error": f"Task '{task_id}' not found"},
         )
 
@@ -3271,7 +3271,7 @@ async def view_task_json(request: Request, run_id: str, task_id: str) -> HTMLRes
     content = json.dumps(item_data, indent=2)
 
     return templates.TemplateResponse(
-        "log_viewer.html",
+        request, "log_viewer.html",
         {
             "request": request,
             "title": f"JSON: {item.task.name}",
@@ -3297,7 +3297,7 @@ async def view_task_log(
     """View a log file for a task (fetched over SSH)."""
     if state.run_manager is None:
         return templates.TemplateResponse(
-            "log_viewer.html",
+            request, "log_viewer.html",
             {"request": request, "title": "Log", "content": None, "error": "Run manager not initialized"},
         )
 
@@ -3320,7 +3320,7 @@ async def view_task_log(
     title = f"{'Output' if log_type == 'output' else 'Error'} Log: {task_name}"
 
     return templates.TemplateResponse(
-        "log_viewer.html",
+        request, "log_viewer.html",
         {
             "request": request,
             "title": title,
@@ -3349,7 +3349,7 @@ async def terminal_page(request: Request, backend_name: str) -> HTMLResponse:
         return HTMLResponse("Backend not found", status_code=404)
 
     return templates.TemplateResponse(
-        "terminal.html",
+        request, "terminal.html",
         {
             "request": request,
             "backend_name": backend_name,

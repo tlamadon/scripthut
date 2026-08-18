@@ -37,7 +37,7 @@ Resolution order:
 1. **Explicit path** via `--config <path>` — loads exactly that file with no merging.
 2. **User-global config** at `~/.config/scripthut/scripthut.yaml` (or the legacy `~/.scripthut.yaml`).
 3. **Project-local config** found by walking up from the current working directory until a `scripthut.yaml` (or `.yml`) is hit.
-4. **Merge** when both 2 and 3 exist: project-local overrides global by name in `stacks` / `workflows`, env lists concatenate (global first), and `env_groups` dict-merge. Infrastructure fields (`backends`, `sources`, `settings`, `pricing`) come strictly from the global file and are **rejected** in a project-local file.
+4. **Merge** when both 2 and 3 exist: project-local overrides global by name in `stacks` / `workflows`, env lists concatenate (global first), and `env_groups` dict-merge. Infrastructure fields (`backends`, `sources`, `settings`, `pricing`, `cache`, `datasets`) come strictly from the global file and are **rejected** in a project-local file.
 5. **Legacy `.env`** fallback if no YAML is found anywhere (deprecated).
 
 All path fields (e.g., `key_path`, `data_dir`, `deploy_key`, `input_files`) support `~` expansion. Relative paths inside a YAML are resolved against **that file's directory**, not the process CWD — so a project-local `input_files: [requirements.txt]` always refers to the project's `requirements.txt`, regardless of where the CLI was invoked from.

@@ -29,15 +29,24 @@ That prints a Markdown briefing — a static reference for the CLI surface, exit
 
 ### 1. Project file the agent auto-loads
 
-Most coding agents read a file at the project root on startup. Pipe the briefing there once per project:
+Most coding agents read `AGENTS.md` at the project root on startup. Write the briefing to its **own** file and point at it from there, so regenerating never clobbers instructions you wrote yourself:
 
 ```bash
 cd /path/to/your/project
-scripthut agent prompt > AGENTS.md      # Codex reads AGENTS.md
-scripthut agent prompt > .cursorrules   # Cursor reads .cursorrules
+mkdir -p .scripthut
+scripthut agent prompt > .scripthut/briefing.md
 ```
 
-(Careful: `>` replaces the file. If you already keep instructions in `AGENTS.md`, append with `>>` or reference a separate file instead.)
+Then add one line to `AGENTS.md`:
+
+```markdown
+For anything involving compute jobs, read @.scripthut/briefing.md first.
+```
+
+Re-run the command after you change `scripthut.yaml` (new backend, source, stack, or dataset) so the inventory stays accurate — the pointer never changes, only the generated file.
+
+!!! warning "Don't redirect straight onto `AGENTS.md`"
+    `>` replaces the file. `AGENTS.md` is usually hand-written and shared with the rest of your team, and the briefing is regenerated often; keeping them separate means neither can destroy the other.
 
 Re-run after you change `scripthut.yaml` (new backend, new source, new stack) so the inventory section stays accurate.
 

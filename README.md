@@ -134,6 +134,7 @@ settings:
 | `login_shell` | Use `#!/bin/bash -l` in submission scripts (default: false) |
 | `max_concurrent` | Max concurrent jobs across all runs (default: 100) |
 | `clone_dir` | Path on the backend whose disk usage is shown in the UI (default: `~/scripthut-repos`) |
+| `dataset_dir` | Where `datasets:` are staged on this backend (default: `~/scripthut-data`) |
 
 **PBS-specific:**
 
@@ -456,6 +457,46 @@ cache:
 | `cache.enabled` | Master switch for the result cache | `false` |
 | `cache.store` | Object-store base URI (S3 for `aws`, remote for `rclone`); required when enabled | `None` |
 | `cache.tool` | Backend CLI used to talk to the store: `aws` or `rclone` | `aws` |
+
+### Data dependencies
+
+A workflow can depend on a directory living on the **scripthut host** rather than in the git repo. ScriptHut copies it to the backend on first use and reuses that copy afterwards — clone-if-absent applied to data, so nothing is `scp`'d by hand. Datasets are user-global config; `datasets:` in a project-local file raises `ConfigError`.
+
+```yaml
+# ~/.config/scripthut/scripthut.yaml
+datasets:
+  - name: sales-raw          # -> DATA_SALES_RAW
+    path: ~/data/sales       # relative paths resolve against this file's directory
+
+backends:
+  - name: mercury
+    type: slurm
+    dataset_dir: /scratch/you   # where datasets land on THIS cluster
+```
+
+```jsonc
+// the workflow document names it beside "tasks"
+{
+  "data": ["sales-raw"],
+  "tasks": [ { "id": "fit", "command": "python fit.py --data $DATA_DIR" } ]
+}
+```
+
+ScriptHut hashes the local file list (relative paths and sizes, **not** contents) and stages to `<root_or_dataset_dir>/<name>/<hash12>`; if that exists the run reuses it. Editing the local directory changes the hash, so the next run stages a fresh copy beside the old one rather than mutating data another run may be reading — `scripthut disk scan` marks the leftovers *superseded*. Staging is asynchronous: `workflow run` returns immediately and the transfer appears as a run item `_data.<name>` that every root task depends on.
+
+Tasks read the location from `DATA_<NAME>`, plus `DATA_DIR` when the workflow uses exactly one dataset, and must never write into it — the copy is shared by every run whose data hashes the same.
+
+| Field | Description | Default |
+|-------|-------------|---------|
+| `datasets[].name` | Identifier used by `data:` and in `DATA_<NAME>`; unique, and `dir` is reserved | *required* |
+| `datasets[].path` | Directory on the scripthut host | *required* |
+| `datasets[].root` | Parent directory on the backend, overriding its `dataset_dir` | backend `dataset_dir` |
+| `datasets[].timeout` | Wall-clock limit for one transfer, in seconds | `86400` |
+| `<backend>.dataset_dir` | Where datasets land on that backend; distinct from `settings.data_dir`, the daemon's local cache | `~/scripthut-data` |
+
+> The home default suits small data. HPC home quotas are usually far below real dataset sizes — set `dataset_dir` to scratch before staging anything large.
+
+See [Data dependencies](docs/configuration/data.md) for resolution rules, failure modes, and staging containers.
 
 ## Usage
 

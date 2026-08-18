@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class EnvRule(BaseModel):
@@ -165,6 +165,15 @@ class SlurmBackendConfig(BaseModel):
         default="~/scripthut-repos",
         description="Path on the backend whose disk usage is reported in the backend status panel (typically the parent directory where source repos are cloned)",
     )
+    dataset_dir: str = Field(
+        default="~/scripthut-data",
+        description=(
+            "Parent directory on this backend for staged datasets, which land "
+            "at <dataset_dir>/<dataset-name>/<hash>. Defaults to home like "
+            "clone_dir; point it at scratch for anything large, since HPC "
+            "home quotas are usually far below real dataset sizes."
+        ),
+    )
     env: list[EnvRule] = Field(
         default_factory=list,
         description="Backend-level env rules — cluster facts like SCRATCH and module init",
@@ -201,6 +210,15 @@ class PBSBackendConfig(BaseModel):
     clone_dir: str = Field(
         default="~/scripthut-repos",
         description="Path on the backend whose disk usage is reported in the backend status panel (typically the parent directory where source repos are cloned)",
+    )
+    dataset_dir: str = Field(
+        default="~/scripthut-data",
+        description=(
+            "Parent directory on this backend for staged datasets, which land "
+            "at <dataset_dir>/<dataset-name>/<hash>. Defaults to home like "
+            "clone_dir; point it at scratch for anything large, since HPC "
+            "home quotas are usually far below real dataset sizes."
+        ),
     )
     env: list[EnvRule] = Field(
         default_factory=list,
@@ -239,6 +257,15 @@ class LocalBackendConfig(BaseModel):
     clone_dir: str = Field(
         default="~/scripthut-repos",
         description="Directory where source repos are cloned; its disk usage is reported in the backend status panel",
+    )
+    dataset_dir: str = Field(
+        default="~/scripthut-data",
+        description=(
+            "Parent directory for staged datasets, which land at "
+            "<dataset_dir>/<dataset-name>/<hash>. For a local backend this host "
+            "is the backend, so staging is a local copy — the destination is "
+            "still a real, reusable path, not the dataset's original one."
+        ),
     )
     env: list[EnvRule] = Field(
         default_factory=list,
@@ -822,6 +849,68 @@ class Stack(BaseModel):
     )
 
 
+class DatasetConfig(BaseModel):
+    """A directory on the scripthut host that workflows need on a backend.
+
+    User-global only (see ``PROJECT_FORBIDDEN_FIELDS``): ``path`` is a fact
+    about this machine, like ``key_path``, so it must not travel in a repo's
+    project config. A workflow refers to the dataset by ``name`` and stays
+    portable.
+
+    The remote location is *derived*, never declared — always
+    ``<root>/<name>/<hash12>`` where the hash covers the local file list
+    (see ``scripthut.runs.datasets``). Only the root is configurable, so
+    content addressing cannot be bypassed.
+    """
+
+    name: str = Field(
+        pattern=r"^[A-Za-z][A-Za-z0-9_-]*$",
+        description="Workflow-facing identifier, referenced by the task JSON 'data' field",
+    )
+    path: Path = Field(
+        description=(
+            "Directory on the scripthut host holding the data. Relative paths "
+            "resolve against the config file's directory, never the cwd."
+        ),
+    )
+    root: str | None = Field(
+        default=None,
+        description=(
+            "Parent directory on the backend to stage into, overriding that "
+            "backend's dataset_dir. Absolute, or '~/'-relative and expanded "
+            "against the backend's $HOME; shell variables like $USER are "
+            "never expanded. When unset, the backend's dataset_dir is used "
+            "(default ~/scripthut-data)."
+        ),
+    )
+    timeout: int = Field(
+        default=86400,
+        ge=1,
+        description=(
+            "Wall-clock limit in seconds for one transfer. Generous by "
+            "default because staging runs as a background run item, so a long "
+            "upload blocks no HTTP call."
+        ),
+    )
+
+    @field_validator("name")
+    @classmethod
+    def _name_does_not_shadow_data_dir(cls, v: str) -> str:
+        """Reject the one name whose variable would collide with DATA_DIR.
+
+        ``data_env_var('dir')`` is ``DATA_DIR``, the same variable scripthut
+        sets as a convenience for single-dataset workflows. Two different
+        meanings for one name is a debugging trap, so refuse it up front.
+        """
+        if v.lower() == "dir":
+            raise ValueError(
+                "Dataset name 'dir' is reserved: its environment variable "
+                "would be DATA_DIR, which scripthut already sets for "
+                "single-dataset workflows. Pick another name."
+            )
+        return v
+
+
 class ScriptHutConfig(BaseModel):
     """Root configuration model for scripthut.yaml."""
 
@@ -889,6 +978,22 @@ class ScriptHutConfig(BaseModel):
         default_factory=CacheConfig,
         description="Task-level result cache backed by an object store (S3/rclone)",
     )
+    datasets: list[DatasetConfig] = Field(
+        default_factory=list,
+        description=(
+            "Local directories staged onto a backend on demand, referenced by "
+            "name from a workflow's 'data' field"
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _unique_dataset_names(self) -> "ScriptHutConfig":
+        seen: set[str] = set()
+        for dataset in self.datasets:
+            if dataset.name in seen:
+                raise ValueError(f"Duplicate dataset name: {dataset.name!r}")
+            seen.add(dataset.name)
+        return self
 
     def get_backend(self, name: str) -> BackendConfig | None:
         """Get a backend by name."""
@@ -902,6 +1007,13 @@ class ScriptHutConfig(BaseModel):
         for source in self.sources:
             if source.name == name:
                 return source
+        return None
+
+    def get_dataset(self, name: str) -> DatasetConfig | None:
+        """Get a dataset by name."""
+        for dataset in self.datasets:
+            if dataset.name == name:
+                return dataset
         return None
 
     def get_stack(self, name: str) -> Stack | None:
