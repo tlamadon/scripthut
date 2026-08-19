@@ -5,13 +5,14 @@ from __future__ import annotations
 import argparse
 import json
 from datetime import UTC, datetime
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
 
 from scripthut import cli
-from scripthut.config_schema import GitSourceConfig, PathSourceConfig
+from scripthut.config_schema import GitSourceConfig, PathSourceConfig, SyncSourceConfig
 from scripthut.runs.models import Run, RunItem, RunItemStatus, TaskDefinition
 
 # -- helpers -----------------------------------------------------------------
@@ -324,6 +325,7 @@ async def test_local_client_list_sources_returns_summaries():
     runtime.config.sources = [
         PathSourceConfig(name="local-src", backend="cluster", path="/r/src"),
         GitSourceConfig(name="git-src", url="git@host:o/r.git", branch="main"),
+        SyncSourceConfig(name="wl", path=Path("/Users/me/wl"), backend="mercury"),
     ]
     client = cli.LocalClient.__new__(cli.LocalClient)
     client._runtime = runtime
@@ -335,6 +337,9 @@ async def test_local_client_list_sources_returns_summaries():
     assert by_name["local-src"]["backend"] == "cluster"
     assert by_name["git-src"]["type"] == "git"
     assert by_name["git-src"]["url"] == "git@host:o/r.git"
+    assert by_name["wl"]["type"] == "sync"
+    assert by_name["wl"]["path"] == "/Users/me/wl"
+    assert by_name["wl"]["backend"] == "mercury"
 
 
 @pytest.mark.asyncio
@@ -1216,6 +1221,84 @@ async def test_run_logs_follow_streams_until_task_terminal(capsys):
     assert "line2" in out
     assert "final" in out
     assert rc == 0
+
+
+@pytest.mark.asyncio
+async def test_run_outputs_lists_files(capsys):
+    fake = _async_ctx(MagicMock())
+    fake.list_task_outputs = AsyncMock(return_value={
+        "run_id": "r", "task_id": "t",
+        "output_dir": "/logs/outputs/r/t",
+        "has_run_summary": False,
+        "files": [{"path": "a.log", "size": 12, "kind": "other"}],
+    })
+    args = _ns(id="r", task="t", path=None, tail=None, out_file=None)
+    with patch.object(cli, "_make_client", return_value=fake):
+        rc = await cli._cmd_run_outputs(args)
+    fake.list_task_outputs.assert_awaited_once_with("r", "t")
+    out = capsys.readouterr().out
+    assert "a.log" in out
+    assert rc == 0
+
+
+@pytest.mark.asyncio
+async def test_run_outputs_prints_text_file(capsys):
+    fake = _async_ctx(MagicMock())
+    fake.fetch_task_output = AsyncMock(return_value={
+        "run_id": "r", "task_id": "t", "path": "a.log",
+        "binary": False, "encoding": "utf-8", "content": "r(3301);\n",
+        "size": 9,
+    })
+    args = _ns(id="r", task="t", path="a.log", tail=200, out_file=None)
+    with patch.object(cli, "_make_client", return_value=fake):
+        rc = await cli._cmd_run_outputs(args)
+    fake.fetch_task_output.assert_awaited_once_with(
+        "r", "t", "a.log", tail=200,
+    )
+    assert "r(3301);" in capsys.readouterr().out
+    assert rc == 0
+
+
+@pytest.mark.asyncio
+async def test_run_outputs_binary_without_out_fails(capsys):
+    fake = _async_ctx(MagicMock())
+    fake.fetch_task_output = AsyncMock(return_value={
+        "run_id": "r", "task_id": "t", "path": "x.png",
+        "binary": True, "encoding": "base64", "content": "AQID",
+        "size": 3,
+    })
+    args = _ns(id="r", task="t", path="x.png", tail=None, out_file=None)
+    with patch.object(cli, "_make_client", return_value=fake):
+        rc = await cli._cmd_run_outputs(args)
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "binary" in err
+
+
+@pytest.mark.asyncio
+async def test_run_outputs_tail_without_path_is_usage_error(capsys):
+    args = _ns(id="r", task="t", path=None, tail=10, out_file=None)
+    rc = await cli._cmd_run_outputs(args)
+    assert rc == 2
+
+
+@pytest.mark.asyncio
+async def test_remote_client_fetch_task_output_encodes_path():
+    received: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        received["url"] = str(request.url)
+        return httpx.Response(200, json={
+            "path": "sub/a.log", "binary": False, "encoding": "utf-8",
+            "content": "ok", "size": 2,
+        })
+
+    client = _mock_remote(handler)
+    data = await client.fetch_task_output("r", "t", "sub/a.log", tail=20)
+    await client._client.aclose()
+    assert "/outputs/file/sub/a.log" in received["url"]
+    assert "tail=20" in received["url"]
+    assert data["content"] == "ok"
 
 
 # -- --json output shapes ----------------------------------------------------

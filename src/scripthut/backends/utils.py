@@ -184,7 +184,8 @@ def generate_script_body(
         2. ``export`` lines from ``env_vars``
         3. (v0.11.0) ``SCRIPTHUT_OUTPUT_DIR`` / ``SCRIPTHUT_TASK_SUMMARY`` /
            ``SCRIPTHUT_RUN_SUMMARY`` exports + ``mkdir -p`` of the dirs
-        4. ``cd`` into the working dir
+        4. ``cd`` into the working dir (quoted via ``shell_quote_path`` so
+           spaces in paths like ``Data/Raw Data`` stay one token)
         5. The task command
 
     Init runs first so any env vars the user sets via ``set:`` rules override
@@ -279,7 +280,7 @@ echo "Working dir: {working_dir}"
 echo "=================================="
 echo ""
 
-{extra_init_lines}{env_lines}{output_dir_block}cd {working_dir}
+{extra_init_lines}{env_lines}{output_dir_block}cd {shell_quote_path(working_dir)}
 {tmux_block}{command}
 EXIT_CODE=$?
 

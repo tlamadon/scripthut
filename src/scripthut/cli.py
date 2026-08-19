@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -293,7 +294,7 @@ class LocalClient:
         }
 
     async def list_sources(self) -> dict[str, Any]:
-        from scripthut.config_schema import GitSourceConfig, PathSourceConfig
+        from scripthut.config_schema import GitSourceConfig, PathSourceConfig, SyncSourceConfig
         config = self.runtime.config
         out: list[dict[str, Any]] = []
         for s in config.sources:
@@ -306,6 +307,8 @@ class LocalClient:
                 base.update({"url": s.url, "branch": s.branch})
             elif isinstance(s, PathSourceConfig):
                 base.update({"path": s.path, "backend": s.backend})
+            elif isinstance(s, SyncSourceConfig):
+                base.update({"path": str(s.path), "backend": s.backend})
             out.append(base)
         return {"sources": out}
 
@@ -317,7 +320,7 @@ class LocalClient:
         return ``workflows=[]`` with a clear ``discover_error`` and let
         callers fall back to ``--server <url>`` for the real view.
         """
-        from scripthut.config_schema import GitSourceConfig, PathSourceConfig
+        from scripthut.config_schema import GitSourceConfig, PathSourceConfig, SyncSourceConfig
         config = self.runtime.config
         source = config.get_source(name)
         if source is None:
@@ -331,6 +334,8 @@ class LocalClient:
             base.update({"url": source.url, "branch": source.branch})
         elif isinstance(source, PathSourceConfig):
             base.update({"path": source.path, "backend": source.backend})
+        elif isinstance(source, SyncSourceConfig):
+            base.update({"path": str(source.path), "backend": source.backend})
         return {
             **base,
             "workflows": [],
@@ -506,6 +511,47 @@ class LocalClient:
             "content": content or "",
         }
 
+    def _load_run(self, run_id: str) -> Any:
+        """Bring a stored run into the in-memory map the manager methods use."""
+        rm = self.runtime.run_manager
+        if run_id not in rm.runs and rm.storage is not None:
+            all_runs = rm.storage.load_all_runs()
+            if run_id in all_runs:
+                rm.runs[run_id] = all_runs[run_id]
+        return rm
+
+    async def list_task_outputs(
+        self, run_id: str, task_id: str,
+    ) -> dict[str, Any]:
+        rm = self._load_run(run_id)
+        payload, error = rm.list_task_outputs(run_id, task_id)
+        if error:
+            raise RuntimeError(error)
+        return payload
+
+    async def fetch_task_output(
+        self,
+        run_id: str,
+        task_id: str,
+        rel_path: str,
+        *,
+        tail: int | None = None,
+    ) -> dict[str, Any]:
+        from scripthut.runs.manager import encode_task_output_payload
+
+        rm = self._load_run(run_id)
+        content, error = await rm.fetch_task_output_file(
+            run_id, task_id, rel_path,
+        )
+        if error:
+            raise RuntimeError(error)
+        payload = encode_task_output_payload(
+            rel_path, content or b"", tail_lines=tail,
+        )
+        payload["run_id"] = run_id
+        payload["task_id"] = task_id
+        return payload
+
 
 class RemoteAuth:
     """Auth headers to send with every ``RemoteClient`` request.
@@ -659,6 +705,27 @@ class RemoteClient:
     ) -> dict[str, Any]:
         return await self._get(
             f"/runs/{run_id}/tasks/{task_id}/logs", type=log_type, tail=tail,
+        )
+
+    async def list_task_outputs(
+        self, run_id: str, task_id: str,
+    ) -> dict[str, Any]:
+        return await self._get(f"/runs/{run_id}/tasks/{task_id}/outputs")
+
+    async def fetch_task_output(
+        self,
+        run_id: str,
+        task_id: str,
+        rel_path: str,
+        *,
+        tail: int | None = None,
+    ) -> dict[str, Any]:
+        from urllib.parse import quote
+
+        encoded = quote(rel_path, safe="/")
+        return await self._get(
+            f"/runs/{run_id}/tasks/{task_id}/outputs/file/{encoded}",
+            tail=tail,
         )
 
 
@@ -1157,10 +1224,9 @@ def _render_agent_prompt(config: ScriptHutConfig | None) -> str:
     out.append("# ScriptHut Agent Brief\n")
     out.append(
         "ScriptHut submits compute jobs to remote backends (Slurm, PBS, "
-        "AWS Batch, AWS EC2) or to the scripthut host itself via a "
-        "`local` backend. Interact with it via the `scripthut` CLI. "
-        "This briefing tells you what's available in the current project "
-        "context and the minimum set of commands you need to be useful.\n"
+        "AWS Batch, AWS EC2) or to the scripthut host via a `local` "
+        "backend. Drive it with the `scripthut` CLI. Inventory below is "
+        "this machine's config; commands are the contract.\n"
     )
 
     out.append("## What's available here\n")
@@ -1275,13 +1341,15 @@ def _render_agent_prompt(config: ScriptHutConfig | None) -> str:
         if not config.sources:
             out.append(
                 "_No sources configured. Source workflows live in a git "
-                "repo or backend path; ask the user to add one or use the "
-                "ad-hoc `task run` modes below._\n"
+                "repo, a backend path, or a laptop `type: sync` tree; ask "
+                "the user to add one or use the ad-hoc `task run` modes "
+                "below._\n"
             )
         else:
             from scripthut.config_schema import (
                 GitSourceConfig as _Git,
                 PathSourceConfig as _Path,
+                SyncSourceConfig as _Sync,
             )
             for src in config.sources:
                 bits = [f"`{src.name}` ({src.type})"]
@@ -1292,6 +1360,8 @@ def _render_agent_prompt(config: ScriptHutConfig | None) -> str:
                         bits.append(f"default backend `{default_be}`")
                 elif isinstance(src, _Path):
                     bits.append(f"path `{src.path}` on `{src.backend}`")
+                elif isinstance(src, _Sync):
+                    bits.append(f"laptop `{src.path}` on `{src.backend}`")
                 if getattr(src, "description", None):
                     bits.append(src.description)
                 out.append(f"- {' · '.join(bits)}")
@@ -1304,6 +1374,14 @@ def _render_agent_prompt(config: ScriptHutConfig | None) -> str:
                 "Pass `--branch <name>` to run from a different branch "
                 "instead (workflow file and repo config are read at that "
                 "branch's tip). "
+                "A `type: sync` source copies git-tracked files from the "
+                "laptop path onto the backend on submit (excluding "
+                "`output/`), runs jobs there, then pulls `output/` back "
+                "when the run finishes — including on failure. `run watch` "
+                "waits for that pull. A second submit to the same dest is "
+                "refused while a run is still active. Dest directories "
+                "show up in `scripthut disk scan` as live working copies; "
+                "`disk clean` will not delete them. "
                 "If the user just pushed a *new* workflow file (not just "
                 "edits to existing ones), run `scripthut source sync "
                 "<name>` first so the workflow list picks it up."
@@ -1447,6 +1525,9 @@ def _render_agent_prompt(config: ScriptHutConfig | None) -> str:
         "scripthut run logs <id> <task_id> --tail 100         # stdout (task output)\n"
         "scripthut run logs <id> <task_id> --error --tail 100 # stderr (task errors)\n"
         "scripthut run logs <id> <task_id> -f                 # tail a task live until terminal\n"
+        "scripthut run outputs <id> <task_id> --json          # files under $SCRIPTHUT_OUTPUT_DIR\n"
+        "scripthut run outputs <id> <task_id> <rel-path>      # print one of those files\n"
+        "scripthut run outputs <id> <task_id> <rel-path> --tail 200\n"
         "```\n"
     )
 
@@ -1792,7 +1873,7 @@ def _render_agent_prompt(config: ScriptHutConfig | None) -> str:
         "vanish silently and stop invalidating stale results.\n"
     )
     out.append(
-        "**What you must know before promising anything:**\n"
+        "**Before promising staging:**\n"
         "- **Staging is asynchronous.** `workflow run` returns "
         "immediately; the transfer is a run item with id "
         "`_data.<name>` that every root task depends on. Track it like "
@@ -1846,30 +1927,20 @@ def _render_agent_prompt(config: ScriptHutConfig | None) -> str:
 
     out.append("## Emitting structured outputs (plots, summaries, tables)\n")
     out.append(
-        "Tasks can emit files that scripthut renders in the run-detail "
-        "UI — much more useful than scraping logs for results. Three "
-        "env vars are exported by the script wrapper *before* the "
-        "user's command runs; the agent can use them when constructing "
-        "tasks that produce results worth showing.\n"
+        "The wrapper exports three paths before the command runs. Write "
+        "here instead of scraping scheduler stdout.\n"
         "\n"
-        "- **`$SCRIPTHUT_OUTPUT_DIR`** — directory the task writes any "
-        "file to. Markdown (`.md`), images (`.png` / `.jpg` / `.svg` / "
-        "`.gif` / `.webp`), and \"other\" files surface in a per-task "
-        "**Outputs** subtab under the Details panel. Markdown is "
-        "rendered (server-side sanitized) with `tables` / "
-        "`fenced_code` extensions; images embed inline; other files "
-        "appear as download links.\n"
-        "- **`$SCRIPTHUT_TASK_SUMMARY`** — convenience path "
-        "(`$SCRIPTHUT_OUTPUT_DIR/task-summary.md`) that renders "
-        "prominently at the top of the per-task Outputs panel. Use it "
-        "for the task's headline markdown.\n"
-        "- **`$SCRIPTHUT_RUN_SUMMARY`** — a *separate* markdown file "
-        "the task writes for the run-wide **Summary** panel. Each "
-        "task's contribution becomes one section, concatenated in "
-        "submission order with task-name headings at the top of the "
-        "run-detail page.\n"
+        "- **`$SCRIPTHUT_OUTPUT_DIR`** — any file. Per-task **Outputs** "
+        "subtab: Markdown (`.md`) rendered (server-side sanitized) with "
+        "`tables` / `fenced_code`; images (`.png` / `.jpg` / `.svg` / "
+        "`.gif` / `.webp`) inlined; other files as download links.\n"
+        "- **`$SCRIPTHUT_TASK_SUMMARY`** — `$SCRIPTHUT_OUTPUT_DIR/task-summary.md`, "
+        "headline of that panel.\n"
+        "- **`$SCRIPTHUT_RUN_SUMMARY`** — a *separate* markdown file for "
+        "the run-wide **Run Summary** panel. Each task's contribution "
+        "is one section, concatenated in submission order with "
+        "task-name headings.\n"
         "\n"
-        "**Example task command** the agent can synthesize:\n"
         "```bash\n"
         "python train.py --output-plot=\"$SCRIPTHUT_OUTPUT_DIR/loss.png\"\n"
         "cat > \"$SCRIPTHUT_TASK_SUMMARY\" <<'MD'\n"
@@ -1885,62 +1956,69 @@ def _render_agent_prompt(config: ScriptHutConfig | None) -> str:
         "> \"$SCRIPTHUT_RUN_SUMMARY\"\n"
         "```\n"
         "\n"
-        "**Behaviors worth knowing before suggesting `$SCRIPTHUT_OUTPUT_DIR`:**\n"
-        "- **SSH-only (v0.11.0):** Slurm + PBS backends only. AWS "
-        "Batch and EC2 (API-only mode) silently ignore the exports — "
-        "tasks still run, they just don't produce a panel. Don't "
-        "tell the user \"this will show up in the UI\" when the run "
-        "is on Batch / EC2.\n"
-        "- **Collected post-completion**, not streamed. The Outputs "
-        "subtab and Run Summary panel populate when the item leaves "
-        "SETTLING → COMPLETED. During the run the user sees the live "
-        "stdout/stderr in the existing Output tab; structured "
-        "renderings only appear after.\n"
-        "- **Relative `<img src=\"rel.png\">` in markdown is "
-        "rewritten** to point at the per-task file endpoint, so "
-        "authoring `![](plot.png)` next to where you wrote "
-        "`plot.png` Just Works. Absolute URLs (`http(s)://`, `/`) "
-        "pass through unchanged.\n"
-        "- **Markdown is sanitized** with bleach (script tags + event "
-        "handlers stripped) — safe for any markdown the user (or the "
-        "agent) authors. Allowed tags: headings, paragraphs, lists, "
-        "tables, code blocks, blockquotes, `<img>`, links.\n"
-        "- **Size limits**: 5 MB per file, 200 files per task. "
-        "Oversize files are dropped from the listing (the file still "
-        "exists on the backend; it just doesn't surface). Markdown "
-        "files over 1 MB show as a download link rather than being "
-        "rendered inline. If your run will produce a plot per "
-        "iteration of a 10k-step training loop, write one summary "
-        "image, not 10k.\n"
-        "- **The directories are `mkdir -p`'d for you** before the "
-        "command runs, so `python -c \"...; plt.savefig('$SCRIPTHUT_OUTPUT_DIR/foo.png')\"` "
-        "works without any preflight.\n"
-        "- **Empty tasks are first-class** — a task that writes "
-        "nothing to either path simply doesn't get an Outputs subtab "
-        "or contribute to the Run Summary card. Don't add no-op "
-        "`touch` calls.\n"
+        "| Surface | Write |\n"
+        "|---|---|\n"
+        "| Per-task plots, tables, error analyses, tool logs | "
+        "`$SCRIPTHUT_TASK_SUMMARY` + files in `$SCRIPTHUT_OUTPUT_DIR` |\n"
+        "| Run-wide one-liner (best-of-sweep, final loss) | "
+        "`$SCRIPTHUT_RUN_SUMMARY` |\n"
         "\n"
-        "**When to use which surface:**\n"
-        "- Per-task results that someone reviewing *that specific "
-        "task* would want — diagnostic plots, hyperparameter tables, "
-        "convergence curves, error analyses → "
-        "`$SCRIPTHUT_TASK_SUMMARY` + files in `$SCRIPTHUT_OUTPUT_DIR`.\n"
-        "- Run-wide TL;DR for someone scanning the run-list "
-        "page — best-of-sweep, final test loss, total epochs run, "
-        "one-line per task → `$SCRIPTHUT_RUN_SUMMARY`.\n"
-        "- Don't duplicate. If a single sentence belongs in both, "
-        "write it in `$SCRIPTHUT_RUN_SUMMARY` and link from "
-        "`$SCRIPTHUT_TASK_SUMMARY`.\n"
+        "Do not duplicate. A sentence that belongs on both surfaces "
+        "goes in `$SCRIPTHUT_RUN_SUMMARY`; link it from "
+        "`$SCRIPTHUT_TASK_SUMMARY`. Dirs are `mkdir -p`'d before the "
+        "command; `plt.savefig('$SCRIPTHUT_OUTPUT_DIR/foo.png')` needs "
+        "no preflight. Skip no-op `touch` — a task that writes nothing "
+        "gets no Outputs subtab and no Run Summary section.\n"
+        "\n"
+        "**Collection caveats:**\n"
+        "- **SSH-only (v0.11.0):** Slurm, PBS, and `local`. AWS Batch "
+        "and EC2 (API-only) silently ignore the exports — the task "
+        "still runs, with no panel. Do not promise a UI panel on "
+        "Batch/EC2.\n"
+        "- **Post-completion, not streamed.** The Outputs subtab and "
+        "Run Summary populate when the item leaves SETTLING → "
+        "COMPLETED. During the run, live stdout/stderr is the Output "
+        "tab; structured files appear after.\n"
+        "- **Relative `![](plot.png)`** is rewritten to the per-task "
+        "file endpoint. Absolute URLs (`http(s)://`, `/`) pass through.\n"
+        "- **Markdown is bleach-sanitized** (script tags and event "
+        "handlers stripped). Allowed: headings, paragraphs, lists, "
+        "tables, code blocks, blockquotes, `<img>`, links.\n"
+        "- **Caps:** 5 MB per file, 200 files per task. Oversize files "
+        "are dropped from the listing (still on the backend). Markdown "
+        "over 1 MB is a download link, not inline. A plot per step of "
+        "a 10k-iteration loop: write one summary image, not 10k files.\n"
+        "\n"
+        "`run logs` is scheduler stdout/stderr. `$SCRIPTHUT_OUTPUT_DIR` "
+        "is a different stream (Stata `-b` / R `sink` often exit 0 after "
+        "logging `r(...)`). After COMPLETED:\n"
+        "\n"
+        "```bash\n"
+        "scripthut run outputs $RUN_ID <task_id> --json\n"
+        "scripthut run outputs $RUN_ID <task_id> analysis.log --tail 200\n"
+        "```\n"
+        "\n"
+        "| Bad | Good |\n"
+        "|---|---|\n"
+        "| `curl …/outputs/file/…` | `scripthut run outputs $RUN_ID "
+        "<task_id> <rel-path>` |\n"
+        "| Treat empty `run logs` as success | List `run outputs` for "
+        "`.log` / `task-summary.md` |\n"
+        "\n"
+        "`--json` file fetch: `{path, binary, encoding, content, size}` "
+        "(UTF-8 or base64). Listing: `{files: [{path, size, kind}], "
+        "has_run_summary, output_dir}`. Empty `files`: nothing written, "
+        "still SETTLING, or Batch/EC2. HTTP: "
+        "`GET /api/v1/runs/{id}/tasks/{tid}/outputs` and "
+        "`.../outputs/file/{rel_path}`.\n"
     )
 
     out.append("## Gotchas\n")
     out.append(
-        "- **`working_dir` is a path on the backend**, not your local "
-        "filesystem (for a `local`-type backend the backend *is* the "
-        "scripthut host, so local paths are correct there). If you need "
-        "files on a remote backend, either use a stack, use a workflow "
-        "that clones a git repo, or use `--inline-script` for "
-        "self-contained code.\n"
+        "- **`working_dir` is a path on the backend**, not the laptop "
+        "(a `local` backend *is* the scripthut host). For files on a "
+        "remote backend: a stack, a git or `type: sync` source, or "
+        "`--inline-script` for self-contained code.\n"
         "- **The local backend never second-guesses freshness.** There "
         "is no mtime logic anywhere: a task runs unconditionally unless "
         "the result cache answered *hit* at submit time. Don't add "
@@ -1952,7 +2030,7 @@ def _render_agent_prompt(config: ScriptHutConfig | None) -> str:
         "- **Stacks need to be `ready` before tasks that use them can run.** "
         "Always `stack check` first; install if needed; only then submit.\n"
         "- **Paths in YAML are resolved relative to that YAML file**, not "
-        "your CWD. Use absolute paths in TaskDefinition fields you build.\n"
+        "CWD. Use absolute paths in TaskDefinition fields built by the CLI.\n"
         "- **The `--json` shape from `task run` matches `workflow run`** — "
         "capture `id` and pipe it to `run view` / `run watch`.\n"
         "- **In local mode, status doesn't refresh on its own.** Re-run "
@@ -1962,61 +2040,56 @@ def _render_agent_prompt(config: ScriptHutConfig | None) -> str:
 
     out.append("## Typical agent loop — verify, then submit\n")
     out.append(
-        "Always do the verify phase first; submitting blind to a backend "
-        "the user thought was down or to a partition that doesn't exist on "
-        "this cluster is a bad time.\n"
+        "Verify before submit. A down backend or a missing partition "
+        "fails after the work is already queued.\n"
         "\n"
-        "**Verify** (cheap, read-only):\n"
-        "1. `scripthut status` — confirm the server is reachable and your "
-        "auth is working. If this fails, nothing below will work either; "
-        "stop and report the diagnostic to the user.\n"
-        "2. `scripthut agent prompt` — re-read whenever the user's project "
-        "context changes (new source, new backend, branch swap).\n"
-        "3. `scripthut backend list --json` — confirm targets are connected.\n"
-        "4. `scripthut source list --json` and "
-        "`scripthut source view <name> --json` if you might trigger an "
-        "existing source workflow instead of ad-hoc — almost always better, "
-        "because the workflow carries the resolved env, partition map, and "
-        "stack assumptions.\n"
-        "5. If the user just pushed a *new* workflow file (one not yet in "
-        "`source view`'s output), run `scripthut source sync <name>` so "
-        "the file list picks it up. Edits to *existing* files are picked "
-        "up automatically on `workflow run`.\n"
-        "6. If using a stack: `scripthut stack check <name> --json`; install "
-        "with `scripthut stack install <name>` if not `ready`.\n"
-        "7. `scripthut task run ... --dry-run` to print the assembled "
-        "TaskDefinition. Show it to the user for anything non-trivial.\n"
+        "**Verify** (read-only):\n"
+        "1. `scripthut status` — server reachable, auth is working. "
+        "Stop and report the diagnostic on failure.\n"
+        "2. `scripthut agent prompt` — re-read on config/source/backend "
+        "or branch change.\n"
+        "3. `scripthut backend list --json`.\n"
+        "4. Prefer a source workflow over ad-hoc: "
+        "`scripthut source list --json`, "
+        "`scripthut source view <name> --json`. The workflow already "
+        "carries resolved env, `partition_map`, and stack assumptions.\n"
+        "5. New workflow file not yet in `source view`: "
+        "`scripthut source sync <name>`. Edits to existing files are "
+        "picked up on `workflow run`.\n"
+        "6. Stack in use: `scripthut stack check <name> --json`; "
+        "`scripthut stack install <name>` if not `ready`.\n"
+        "7. Non-trivial ad-hoc: `scripthut task run ... --dry-run` and "
+        "show the assembled TaskDefinition before submit.\n"
         "\n"
         "**Submit + track**:\n"
-        "8. Submit with `--json` and capture `id`. For a source workflow:\n"
+        "8. Submit with `--json`; capture `id`:\n"
         "   ```bash\n"
         "   RUN_ID=$(scripthut workflow run train.json \\\n"
         "     --source <name> --backend <backend> --json | jq -r .id)\n"
         "   ```\n"
-        "   For an ad-hoc task: same shape, `task run` instead.\n"
-        "9. **Get notified instead of polling.** Against a running server "
-        "(the daemon counts), `scripthut run watch $RUN_ID --exit-status` "
-        "blocks until the run is terminal, prints a one-line verdict "
-        "(`Run … COMPLETED/FAILED …` with the failed task ids), and exits "
-        "non-zero on failure. **Launch it as a background task** so you keep "
-        "working and are handed that summary the moment the run finishes — "
-        "this is how you avoid missing completions. You can submit and watch "
-        "in one shot: `scripthut workflow run train.json --source <name> "
-        "--backend <b> --watch` (run in the background). Only fall back to "
-        "manual `scripthut run view $RUN_ID --json` re-polling when you "
-        "can't background a task.\n"
-        "10. **Output / logs** while running or after:\n"
-        "    - `scripthut run logs $RUN_ID <task_id> -f` — tail stdout "
-        "live until the task is terminal (best while running).\n"
-        "    - `scripthut run logs $RUN_ID <task_id> --tail 200` — last "
-        "200 lines of stdout (after the fact).\n"
+        "   Ad-hoc: `task run`, same JSON shape.\n"
+        "9. Background `scripthut run watch $RUN_ID --exit-status` "
+        "(the local daemon counts as a server) so the session is "
+        "notified on completion instead of polling. Prints "
+        "`Run … COMPLETED/FAILED …` with failed task ids, and exits "
+        "non-zero on failure. One-shot: "
+        "`scripthut workflow run train.json --source <name> "
+        "--backend <b> --watch` (also background). "
+        "Re-poll `scripthut run view $RUN_ID --json` only when a "
+        "background watch is unavailable.\n"
+        "10. Logs vs collected files:\n"
+        "    - `scripthut run logs $RUN_ID <task_id> -f` — live stdout "
+        "until the task is terminal.\n"
+        "    - `scripthut run logs $RUN_ID <task_id> --tail 200` — stdout.\n"
         "    - `scripthut run logs $RUN_ID <task_id> --error --tail 200` "
-        "— stderr; use this first when a task ends in `FAILED`.\n"
-        "11. On failure: read stderr (step 10), then check whether the "
-        "issue is a stack (`stack check`), a resource limit (OOM/TIMEOUT "
-        "shows up in stderr or `run view`), or the workflow content "
-        "itself. Bump the relevant field and resubmit a *new* run rather "
-        "than rerunning the same one.\n"
+        "— stderr; first look on `FAILED`.\n"
+        "    - `scripthut run outputs $RUN_ID <task_id> --json` then "
+        "`scripthut run outputs $RUN_ID <task_id> <rel-path>` — "
+        "`$SCRIPTHUT_OUTPUT_DIR` (Stata/R logs, `task-summary.md`, "
+        "plots). Use when stdout is only the wrapper.\n"
+        "11. On failure: stderr / `run outputs`, then `stack check`, "
+        "then OOM/TIMEOUT in stderr or `run view`. Bump the field; "
+        "submit a *new* run rather than rerunning the same one.\n"
     )
 
     return "\n".join(out)
@@ -2154,7 +2227,7 @@ def _gather_status(args: argparse.Namespace) -> dict[str, Any]:
 
 def _local_source_summaries(config: ScriptHutConfig) -> list[dict[str, Any]]:
     """Compact dicts for the status renderer's local-mode source listing."""
-    from scripthut.config_schema import GitSourceConfig, PathSourceConfig
+    from scripthut.config_schema import GitSourceConfig, PathSourceConfig, SyncSourceConfig
     out: list[dict[str, Any]] = []
     for s in config.sources:
         base: dict[str, Any] = {
@@ -2165,6 +2238,8 @@ def _local_source_summaries(config: ScriptHutConfig) -> list[dict[str, Any]]:
             base.update({"url": s.url, "branch": s.branch})
         elif isinstance(s, PathSourceConfig):
             base.update({"path": s.path, "backend": s.backend})
+        elif isinstance(s, SyncSourceConfig):
+            base.update({"path": str(s.path), "backend": s.backend})
         out.append(base)
     return out
 
@@ -3141,14 +3216,12 @@ def _render_disk_response(data: dict[str, Any], *, as_json: bool) -> int:
 
 async def _disk_scan_local(args: argparse.Namespace) -> int:
     """Scan over direct SSH without a server (mirrors stack local mode)."""
-    from scripthut.disk.scan import build_scan_spec
     from scripthut.disk.service import (
         DiskScanService,
+        assemble_scan_spec,
         collect_stack_texts,
         compute_current_data_hashes,
         compute_current_stack_hashes,
-        gather_data_dirs,
-        gather_project_stacks,
     )
     from scripthut.runs.storage import RunStorageManager
 
@@ -3183,23 +3256,16 @@ async def _disk_scan_local(args: argparse.Namespace) -> int:
             failures += 1
             continue
         try:
-            # Project-declared stacks (per-source scripthut.yaml env dirs);
-            # git sources only resolve where the server's sources cache
-            # exists locally, path sources over this backend's SSH.
-            stacks, gather_errors = await gather_project_stacks(
-                config, b.name, ssh=ssh,
-            )
-            data_dirs, data_errors = await gather_data_dirs(config, b.name, ssh=ssh)
-            spec = build_scan_spec(
-                config, b.name, b.clone_dir,
-                extra_stacks=stacks, data_dirs=data_dirs,
+            spec, dest_map, extra_errors, stacks = await assemble_scan_spec(
+                config, b.name, b.clone_dir, ssh=ssh,
             )
             result = await svc.scan_backend(
                 spec=spec, ssh=ssh, runs=runs,
                 current_stack_hashes=compute_current_stack_hashes(config, stacks),
                 current_data_hashes=compute_current_data_hashes(config),
+                current_sync_dests=dest_map,
                 stack_texts=collect_stack_texts(config, stacks),
-                extra_errors=gather_errors + data_errors,
+                extra_errors=extra_errors,
             )
             results[b.name] = result
         finally:
@@ -3356,14 +3422,12 @@ async def _disk_clean_local(args: argparse.Namespace) -> int:
 
     from scripthut.disk.classify import build_run_references
     from scripthut.disk.cleanup import plan_cleanup
-    from scripthut.disk.scan import build_scan_spec
     from scripthut.disk.service import (
         DiskScanService,
+        assemble_scan_spec,
         compute_current_data_hashes,
         compute_current_stack_hashes,
         execute_cleanup,
-        gather_data_dirs,
-        gather_project_stacks,
     )
     from scripthut.runs.storage import RunStorageManager
 
@@ -3404,24 +3468,18 @@ async def _disk_clean_local(args: argparse.Namespace) -> int:
             rc = 1
             continue
         try:
-            stacks, gather_errors = await gather_project_stacks(
-                config, b.name, ssh=ssh,
+            spec, dest_map, extra_errors, stacks = await assemble_scan_spec(
+                config, b.name, b.clone_dir, ssh=ssh,
             )
-            for err in gather_errors:
+            for err in extra_errors:
                 print(f"{b.name}: {err}", file=sys.stderr)
             hashes = compute_current_stack_hashes(config, stacks)
             data_hashes = compute_current_data_hashes(config)
-            data_dirs, data_errors = await gather_data_dirs(config, b.name, ssh=ssh)
-            for err in data_errors:
-                print(f"{b.name}: {err}", file=sys.stderr)
-            spec = build_scan_spec(
-                config, b.name, b.clone_dir,
-                extra_stacks=stacks, data_dirs=data_dirs,
-            )
             result = await svc.scan_backend(
                 spec=spec, ssh=ssh, runs=runs, current_stack_hashes=hashes,
                 current_data_hashes=data_hashes,
-                extra_errors=gather_errors + data_errors,
+                current_sync_dests=dest_map,
+                extra_errors=extra_errors,
             )
             refs = build_run_references(
                 runs, b.name, spec.clone_dirs, result.home_dir,
@@ -3429,6 +3487,7 @@ async def _disk_clean_local(args: argparse.Namespace) -> int:
             plan = plan_cleanup(
                 result, refs, spec=spec, current_stack_hashes=hashes,
                 current_data_hashes=data_hashes,
+                current_sync_dests=dest_map,
                 planned_at=datetime.now(timezone.utc),
                 paths=paths,
                 allow_referenced=frozenset(paths or []),
@@ -3994,6 +4053,74 @@ async def _cmd_run_logs(args: argparse.Namespace) -> int:
     return 0
 
 
+def _format_outputs_table(data: dict[str, Any]) -> str:
+    files = data.get("files") or []
+    if not files:
+        return (
+            "No collected outputs. The task wrote nothing under "
+            "$SCRIPTHUT_OUTPUT_DIR, collection has not run yet, or this "
+            "backend does not collect outputs (Batch / EC2)."
+        )
+    lines = [f"{'KIND':<10} {'SIZE':>10}  PATH"]
+    for f in files:
+        lines.append(
+            f"{str(f.get('kind', '')):<10} {int(f.get('size', 0)):>10}  "
+            f"{f.get('path', '')}"
+        )
+    return "\n".join(lines)
+
+
+async def _cmd_run_outputs(args: argparse.Namespace) -> int:
+    """List or fetch files a task wrote under ``$SCRIPTHUT_OUTPUT_DIR``."""
+    if args.out_file and not args.path:
+        print("Error: -o/--out requires a file path argument.", file=sys.stderr)
+        return 2
+    if args.tail is not None and not args.path:
+        print("Error: --tail requires a file path argument.", file=sys.stderr)
+        return 2
+
+    async with _make_client(args) as client:
+        if not args.path:
+            data = await client.list_task_outputs(args.id, args.task)
+            if args.json:
+                return _emit_json(data)
+            print(_format_outputs_table(data))
+            return 0
+
+        data = await client.fetch_task_output(
+            args.id, args.task, args.path, tail=args.tail,
+        )
+
+    if args.out_file:
+        raw: bytes
+        if data.get("binary"):
+            raw = base64.b64decode(data["content"])
+        else:
+            raw = data["content"].encode("utf-8")
+        Path(args.out_file).write_bytes(raw)
+
+    if args.json:
+        return _emit_json(data)
+
+    if data.get("binary"):
+        if args.out_file:
+            print(f"Wrote {data.get('size', 0)} bytes to {args.out_file}")
+            return 0
+        print(
+            f"Error: '{args.path}' is binary ({data.get('size', 0)} bytes). "
+            "Pass -o PATH to save it, or --json for base64.",
+            file=sys.stderr,
+        )
+        return 1
+
+    if args.out_file:
+        return 0
+    sys.stdout.write(data["content"])
+    if data["content"] and not data["content"].endswith("\n"):
+        sys.stdout.write("\n")
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # Argparse wiring
 # ---------------------------------------------------------------------------
@@ -4177,6 +4304,27 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_common(p_run_logs)
     p_run_logs.set_defaults(handler=_cmd_run_logs)
+
+    p_run_outputs = run_sub.add_parser(
+        "outputs",
+        help="List or fetch files a task wrote under $SCRIPTHUT_OUTPUT_DIR",
+    )
+    p_run_outputs.add_argument("id", help="Run id")
+    p_run_outputs.add_argument("task", help="Task id within the run")
+    p_run_outputs.add_argument(
+        "path", nargs="?", default=None,
+        help="Relative path under $SCRIPTHUT_OUTPUT_DIR. Omit to list files.",
+    )
+    p_run_outputs.add_argument(
+        "--tail", type=int,
+        help="Show only the last N lines (text files only)",
+    )
+    p_run_outputs.add_argument(
+        "-o", "--out", dest="out_file", default=None,
+        help="Write the file to this path instead of stdout",
+    )
+    _add_common(p_run_outputs)
+    p_run_outputs.set_defaults(handler=_cmd_run_outputs)
 
     # ----- backend ----------------------------------------------------------
     p_be = sub.add_parser("backend", help="Inspect configured backends")

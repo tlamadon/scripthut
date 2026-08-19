@@ -176,6 +176,127 @@ class LocalExecClient:
         self._log(cmd, start, exit_code=0)
         return copied
 
+    async def put_files(
+        self,
+        local_root: Path,
+        remote_root: str,
+        relpaths: list[str],
+        *,
+        timeout: int = 86400,
+        progress: Callable[[int, int], None] | None = None,
+    ) -> int:
+        """Copy listed files on this machine; same contract as SSHClient."""
+        from scripthut.ssh.client import _safe_relpath
+
+        start = time.perf_counter()
+        cmd = f"cp files (local) {local_root} -> {remote_root}"
+        paths = [_safe_relpath(p) for p in relpaths]
+        dest_root = Path(remote_root)
+
+        def _copy() -> int:
+            total = 0
+            for rel in paths:
+                src = local_root / rel
+                if src.is_symlink() or not src.is_file():
+                    raise FileNotFoundError(f"{rel} is not a regular file")
+                dst = dest_root / rel
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(src, dst, follow_symlinks=False)
+                total += dst.stat().st_size
+            return total
+
+        if not paths:
+            return 0
+        try:
+            copied = await asyncio.wait_for(
+                asyncio.get_running_loop().run_in_executor(None, _copy),
+                timeout=timeout,
+            )
+        except Exception as e:
+            self._log(cmd, start, error=str(e))
+            raise
+        if progress is not None:
+            progress(copied, copied)
+        self._log(cmd, start, exit_code=0)
+        return copied
+
+    async def get_files(
+        self,
+        remote_root: str,
+        local_root: Path,
+        relpaths: list[str],
+        *,
+        timeout: int = 86400,
+        progress: Callable[[int, int], None] | None = None,
+    ) -> int:
+        """Copy listed files remote→local on this machine; overwrite, no delete."""
+        from scripthut.ssh.client import _safe_relpath
+
+        start = time.perf_counter()
+        cmd = f"cp files (local) {remote_root} -> {local_root}"
+        paths = [_safe_relpath(p) for p in relpaths]
+        src_root = Path(remote_root)
+
+        def _copy() -> int:
+            total = 0
+            for rel in paths:
+                src = src_root / rel
+                if src.is_symlink() or not src.is_file():
+                    raise FileNotFoundError(f"{rel} is not a regular file")
+                dst = local_root / rel
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(src, dst, follow_symlinks=False)
+                total += dst.stat().st_size
+            return total
+
+        if not paths:
+            return 0
+        try:
+            copied = await asyncio.wait_for(
+                asyncio.get_running_loop().run_in_executor(None, _copy),
+                timeout=timeout,
+            )
+        except Exception as e:
+            self._log(cmd, start, error=str(e))
+            raise
+        if progress is not None:
+            progress(copied, copied)
+        self._log(cmd, start, exit_code=0)
+        return copied
+
+    async def list_files(
+        self,
+        remote_root: str,
+        *,
+        timeout: int = 60,
+    ) -> list[str]:
+        """Relative paths of regular files; missing dir is ``[]``."""
+        root = Path(remote_root)
+        if not root.is_dir():
+            return []
+
+        def _list() -> list[str]:
+            found: list[str] = []
+            for p in root.rglob("*"):
+                if p.is_symlink() or not p.is_file():
+                    continue
+                found.append(p.relative_to(root).as_posix())
+            found.sort()
+            return found
+
+        start = time.perf_counter()
+        cmd = f"ls files (local) {remote_root}"
+        try:
+            result = await asyncio.wait_for(
+                asyncio.get_running_loop().run_in_executor(None, _list),
+                timeout=timeout,
+            )
+        except Exception as e:
+            self._log(cmd, start, error=str(e))
+            raise
+        self._log(cmd, start, stdout=f"{len(result)} files", exit_code=0)
+        return result
+
     async def run_command(
         self, command: str, timeout: int = 30,
     ) -> tuple[str, str, int]:

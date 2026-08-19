@@ -147,12 +147,12 @@ def make_api_router(state: AppState) -> APIRouter:
         return {"backends": result}
 
     def _source_summary(src: Any) -> dict[str, Any]:
-        """Compact dict for a GitSourceConfig or PathSourceConfig.
+        """Compact dict for a GitSourceConfig, PathSourceConfig, or SyncSourceConfig.
 
         Hides type-specific fields under a discriminator so callers can
-        format both variants without sniffing the class.
+        format all variants without sniffing the class.
         """
-        from scripthut.config_schema import GitSourceConfig, PathSourceConfig
+        from scripthut.config_schema import GitSourceConfig, PathSourceConfig, SyncSourceConfig
         common: dict[str, Any] = {
             "name": src.name,
             "type": src.type,
@@ -163,6 +163,8 @@ def make_api_router(state: AppState) -> APIRouter:
             common.update({"url": src.url, "branch": src.branch})
         elif isinstance(src, PathSourceConfig):
             common.update({"path": src.path, "backend": src.backend})
+        elif isinstance(src, SyncSourceConfig):
+            common.update({"path": str(src.path), "backend": src.backend})
         return common
 
     @router.get("/sources")
@@ -317,7 +319,7 @@ def make_api_router(state: AppState) -> APIRouter:
         into the server's clone on demand and both the workflow JSON and
         the ``scripthut.yaml`` overlay are read at its tip.
         """
-        from scripthut.config_schema import GitSourceConfig
+        from scripthut.config_schema import GitSourceConfig, SyncSourceConfig
         from scripthut.sources.git import is_safe_branch_name
 
         if state.config is None:
@@ -390,6 +392,13 @@ def make_api_router(state: AppState) -> APIRouter:
                     state.source_workflows[name] = workflows
                 except Exception as e:
                     logger.warning(f"Failed to refresh source '{name}' before run: {e}")
+            elif isinstance(source, SyncSourceConfig):
+                try:
+                    from scripthut.main import _discover_sync_source_workflows
+                    workflows = _discover_sync_source_workflows(source)
+                    state.source_workflows[name] = workflows
+                except Exception as e:
+                    logger.warning(f"Failed to refresh sync source '{name}' before run: {e}")
             wf = next(
                 (w for w in state.source_workflows.get(name, []) if w.filename == workflow),
                 None,
@@ -498,10 +507,10 @@ def make_api_router(state: AppState) -> APIRouter:
         """Re-sync a single source and refresh its workflow cache.
 
         Git sources re-clone via ``source_manager``; path sources re-glob
-        over SSH using ``main._discover_path_source_workflows`` (lazy
-        imported to avoid a circular dep at module load).
+        over SSH using ``main._discover_path_source_workflows``; sync
+        sources re-glob the laptop working tree (no SSH).
         """
-        from scripthut.config_schema import GitSourceConfig, PathSourceConfig
+        from scripthut.config_schema import GitSourceConfig, PathSourceConfig, SyncSourceConfig
         if state.config is None:
             raise HTTPException(status_code=503, detail="Config not loaded")
         source = state.config.get_source(name)
@@ -542,6 +551,18 @@ def make_api_router(state: AppState) -> APIRouter:
                 result["workflows"] = [wf.filename for wf in workflows]
             except Exception as e:
                 logger.exception(f"Discovery failed for path source '{name}'")
+                result["error"] = str(e)
+                result["workflows"] = [
+                    wf.filename for wf in state.source_workflows.get(name, [])
+                ]
+        elif isinstance(source, SyncSourceConfig):
+            try:
+                from scripthut.main import _discover_sync_source_workflows
+                workflows = _discover_sync_source_workflows(source)
+                state.source_workflows[name] = workflows
+                result["workflows"] = [wf.filename for wf in workflows]
+            except Exception as e:
+                logger.exception(f"Discovery failed for sync source '{name}'")
                 result["error"] = str(e)
                 result["workflows"] = [
                     wf.filename for wf in state.source_workflows.get(name, [])
@@ -682,6 +703,56 @@ def make_api_router(state: AppState) -> APIRouter:
             "type": type,
             "content": content or "",
         }
+
+    @router.get("/runs/{run_id}/tasks/{task_id}/outputs")
+    async def list_task_outputs_v1(run_id: str, task_id: str) -> dict[str, Any]:
+        """Files collected from ``$SCRIPTHUT_OUTPUT_DIR`` after the task completed.
+
+        Empty ``files`` is normal: the task wrote nothing, collection
+        has not run yet, or the backend has no SSH (Batch / EC2).
+        """
+        from scripthut.runs.manager import _output_fetch_http_status
+
+        rm = _require_manager()
+        payload, error = rm.list_task_outputs(run_id, task_id)
+        if error:
+            raise HTTPException(
+                status_code=_output_fetch_http_status(error), detail=error,
+            )
+        return payload
+
+    @router.get("/runs/{run_id}/tasks/{task_id}/outputs/file/{rel_path:path}")
+    async def get_task_output_file_v1(
+        run_id: str,
+        task_id: str,
+        rel_path: str,
+        tail: int | None = None,
+    ) -> dict[str, Any]:
+        """Fetch one ``$SCRIPTHUT_OUTPUT_DIR`` file as JSON.
+
+        Text is UTF-8 in ``content``; binary is base64 with
+        ``encoding: base64``. ``tail`` keeps the last N lines of text
+        files (ignored for binary).
+        """
+        from scripthut.runs.manager import (
+            _output_fetch_http_status,
+            encode_task_output_payload,
+        )
+
+        rm = _require_manager()
+        content, error = await rm.fetch_task_output_file(
+            run_id, task_id, rel_path,
+        )
+        if error:
+            raise HTTPException(
+                status_code=_output_fetch_http_status(error), detail=error,
+            )
+        payload = encode_task_output_payload(
+            rel_path, content or b"", tail_lines=tail,
+        )
+        payload["run_id"] = run_id
+        payload["task_id"] = task_id
+        return payload
 
     # ----- stacks -----------------------------------------------------------
     #

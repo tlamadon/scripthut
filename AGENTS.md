@@ -27,6 +27,7 @@ Where to edit when changing a behavior, and what else has to move with it.
 | Changing | Edit | Also update |
 |---|---|---|
 | Dataset destination layout, manifest hash width, `DATA_*` variable names | `src/scripthut/runs/datasets.py` (the module docstring marks it as the one place) | Every doc layer below |
+| Sync dest layout, `output/` return dir, `DATA_*`-unrelated `sync_dir` | `src/scripthut/runs/sync.py` (the module docstring marks it as the one place) | Every doc layer below |
 | A config field | `src/scripthut/config_schema.py` — the `description=` is user-visible via JSON schema and the Settings page, so it must be true | `scripthut.example.yaml`, README table, `docs/configuration/` |
 | Backend behavior | `src/scripthut/backends/` | `docs/configuration/backends.md` |
 | Anything an agent needs to know | `_render_agent_prompt()` in `src/scripthut/cli.py` | `tests/test_agent_prompt.py` pins its headings and key strings |
@@ -48,4 +49,5 @@ The house skill at `dotfiles/skills/scripthut/` is maintained separately and is 
 ## Gotchas
 
 - A backend's `dataset_dir` is the remote parent for staged datasets; the unrelated `settings.data_dir` is the daemon's local cache base. The names were split deliberately so the two cannot be confused — do not reintroduce `data_dir` on a backend.
+- A backend's `sync_dir` is the remote parent for `type: sync` working copies. It must not sit under `clone_dir` or `dataset_dir`. Disk scan inventories dests as live; disk clean never deletes them.
 - `SCRIPTHUT_`-prefixed variables cannot be set by env rules and are stripped from cache keys. Anything that must survive both — like a dataset destination — must not use that prefix.

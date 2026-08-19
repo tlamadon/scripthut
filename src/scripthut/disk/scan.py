@@ -12,7 +12,7 @@ Line protocol emitted by the script:
     DF\\t<total KiB>\\t<avail KiB>          (df of the primary clone_dir)
     SECTION\\t<section>\\t<abs root>        (root exists, entries follow)
     MISSING\\t<section>\\t<root>            (root doesn't exist — normal)
-    ENTRY\\t<section>\\t<path>\\t<mtime>\\t<KiB|->        (clones/logs/cache)
+    ENTRY\\t<section>\\t<path>\\t<mtime>\\t<KiB|->        (clones/logs/cache/data/sync)
     ENTRY\\tstacks\\t<path>\\t<mtime>\\t<KiB|->\\t<0|1>   (1 = .ready present)
 
 ``mtime`` is epoch seconds (0 = unknown); size ``-`` means du failed or
@@ -99,6 +99,16 @@ scan_dir() {{
   wait
 }}
 
+# Inventory ``d`` itself as one entry (a type: sync dest is a working
+# copy, not a parent of hashed clones). Missing is normal — not yet
+# submitted.
+scan_self() {{
+  local section="$1" d="$2"
+  if [ ! -d "$d" ]; then printf 'MISSING\\t%s\\t%s\\n' "$section" "$d"; return; fi
+  printf 'SECTION\\t%s\\t%s\\n' "$section" "$d"
+  _emit_entry "$section" "$d"
+}}
+
 # True when $1 is a root scanned by another section, lives inside one,
 # or contains one. Any of the three means du'ing it here would report
 # bytes a dedicated section already reports.
@@ -157,6 +167,8 @@ def build_scan_spec(
     clone_dir: str,
     extra_stacks: Sequence[Stack] = (),
     data_dirs: Sequence[str] = (),
+    sync_parents: Sequence[str] = (),
+    sync_dirs: Sequence[str] = (),
 ) -> ScanSpec:
     """Assemble the roots to scan for one backend.
 
@@ -167,7 +179,9 @@ def build_scan_spec(
     available on this backend (empty ``backends`` = every SSH backend).
     ``extra_stacks`` are stacks declared outside the server config —
     typically by sources' project scripthut.yaml files — whose
-    ``cache_dir``s must be scanned too.
+    ``cache_dir``s must be scanned too. ``sync_parents`` / ``sync_dirs``
+    are resolved by the caller the same way as ``data_dirs`` (a ``~/``
+    root needs the backend's ``$HOME``).
     """
     from scripthut.config_schema import GitSourceConfig
 
@@ -187,13 +201,18 @@ def build_scan_spec(
         if d and d not in stack_dirs:
             stack_dirs.append(d)
 
+    def _dedupe(paths: Sequence[str]) -> list[str]:
+        return list(dict.fromkeys(d.rstrip("/") for d in paths if d.strip()))
+
     return ScanSpec(
         backend=backend_name,
         clone_dirs=clone_dirs,
         stack_dirs=stack_dirs,
         # Resolved by the caller: a '~/'-relative root needs the backend's
         # $HOME, which only an SSH probe can answer.
-        data_dirs=list(dict.fromkeys(d.rstrip("/") for d in data_dirs if d.strip())),
+        data_dirs=_dedupe(data_dirs),
+        sync_parents=_dedupe(sync_parents),
+        sync_dirs=_dedupe(sync_dirs),
     )
 
 
@@ -203,7 +222,8 @@ def build_scan_script(spec: ScanSpec) -> str:
     covered = " ".join(
         shell_quote_path(d)
         for d in [
-            *spec.clone_dirs, *spec.stack_dirs, *spec.data_dirs, *spec.log_roots,
+            *spec.clone_dirs, *spec.stack_dirs, *spec.data_dirs,
+            *spec.sync_parents, *spec.sync_dirs, *spec.log_roots,
         ]
     )
     lines = [
@@ -222,6 +242,10 @@ def build_scan_script(spec: ScanSpec) -> str:
     # the plain one-level walk is exactly right — no .ready probe needed.
     for d in spec.data_dirs:
         lines.append(f"scan_dir data {shell_quote_path(d)}")
+    for d in spec.sync_parents:
+        lines.append(f"scan_dir sync {shell_quote_path(d)}")
+    for d in spec.sync_dirs:
+        lines.append(f"scan_self sync {shell_quote_path(d)}")
     for d in spec.log_roots:
         lines.append(f"scan_dir logs {shell_quote_path(d)}")
     # Last: the cache sweep is the open-ended one (a venv can be tens of
@@ -236,7 +260,7 @@ def build_scan_script(spec: ScanSpec) -> str:
 class RawEntry:
     """Parser output for one ENTRY line, pre-classification."""
 
-    section: str  # "clones" | "stacks" | "logs" | "cache"
+    section: str  # "clones" | "stacks" | "logs" | "cache" | "data" | "sync"
     path: str
     mtime: datetime | None
     size_bytes: int | None
@@ -288,7 +312,7 @@ def _parse_entry(fields: list[str]) -> RawEntry | None:
     if section == "stacks" and len(fields) == 6:
         path, mtime_s, size_s, ready_s = fields[2:6]
         ready: bool | None = ready_s == "1"
-    elif section in ("clones", "logs", "cache", "data") and len(fields) == 5:
+    elif section in ("clones", "logs", "cache", "data", "sync") and len(fields) == 5:
         path, mtime_s, size_s = fields[2:5]
         ready = None
     else:
@@ -332,6 +356,9 @@ def raw_to_entries(raw: list[RawEntry]) -> list[DiskEntry]:
             kind = DiskEntryKind.DATA
             # <data_root>/<name>/<hash> — same two-segment identity as stacks
             detail = "/".join(parts[-2:])
+        elif r.section == "sync":
+            kind = DiskEntryKind.SYNC
+            detail = basename  # source name when dest is <sync_dir>/<name>
         elif r.section == "logs":
             kind = DiskEntryKind.LOG
             detail = basename  # workflow name

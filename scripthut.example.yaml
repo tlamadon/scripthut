@@ -20,6 +20,10 @@ backends:
     #                                   # on THIS cluster. Default ~/scripthut-data;
     #                                   # point it at scratch for anything large,
     #                                   # since home quotas are usually much smaller.
+    # sync_dir: /scratch/your_username/scripthut-sync  # type: sync working copies
+    #                                   # Default ~/scripthut-sync; point at scratch.
+    #                                   # Disk scan lists these dests as live;
+    #                                   # disk clean will not delete them.
 
   # Multiple backends can be defined
   # - name: secondary-cluster
@@ -127,7 +131,7 @@ backends:
   #   - Logs are read from CloudWatch Logs; stdout and stderr are merged into
   #     the same stream (view the "output" tab).
 
-# Sources: git repos or backend paths containing workflow JSON files
+# Sources: git repos, backend paths, or laptop trees containing workflow JSON files
 # Files matching the workflows_glob pattern (default: .hut/workflows/*.json) are discovered as workflows.
 sources:
   # Git source — repo is cloned on the backend, workflows discovered via glob pattern
@@ -148,6 +152,16 @@ sources:
   #   path: /shared/project-workflows
   #   backend: hpc-cluster
   #   # workflows_glob: "**/*.hut.json"  # default: .hut/workflows/*.json
+
+  # Sync source — laptop git working tree copied to the backend on submit.
+  # Uncommitted tracked files go; untracked/gitignored do not. `output/`
+  # is excluded from the upload and pulled back when the run finishes.
+  # - name: wl-hcpu
+  #   type: sync
+  #   path: ~/Documents/GitHub/wl_hcpu
+  #   backend: hpc-cluster
+  #   # dest: /scratch/you/wl_hcpu     # default: <sync_dir>/<name>/
+  #   # return: output                 # cluster → laptop after the run
 
 # Coding agents — the "Start coding agent" button on each git source launches a
 # Claude Code session as a job, in a fresh writable clone of the repo. Two modes:

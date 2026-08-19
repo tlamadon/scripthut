@@ -38,7 +38,7 @@ class TestRenderSkill:
     def test_description_carries_trigger_keywords(self):
         skill = render_skill()
         head = skill.split("---")[1]  # frontmatter block
-        for kw in ("Slurm", "PBS", "AWS Batch", "logs", "stacks"):
+        for kw in ("Slurm", "PBS", "AWS Batch", "logs", "outputs", "stacks"):
             assert kw in head, f"trigger keyword missing from description: {kw}"
 
     def test_body_defers_to_live_briefing(self):
@@ -53,6 +53,7 @@ class TestRenderSkill:
             "scripthut backend list --json",
             "scripthut run view",
             "scripthut run logs",
+            "scripthut run outputs",
             "--dry-run",
         ):
             assert cmd in skill, f"core-loop command missing: {cmd}"
@@ -76,6 +77,7 @@ class TestRenderDebugCommand:
         for step in (
             "scripthut run view",
             "--error --tail 200",
+            "scripthut run outputs",
             "scripthut stack check",
         ):
             assert step in cmd, f"diagnosis step missing: {step}"

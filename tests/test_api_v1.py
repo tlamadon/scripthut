@@ -10,7 +10,11 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from scripthut.api import make_api_router
-from scripthut.config_schema import GitSourceConfig, PathSourceConfig
+from scripthut.config_schema import (
+    GitSourceConfig,
+    PathSourceConfig,
+    SyncSourceConfig,
+)
 from scripthut.runs.models import Run, RunItem, RunItemStatus, TaskDefinition
 
 # -- fixtures ----------------------------------------------------------------
@@ -81,6 +85,7 @@ def test_list_sources_returns_configured_sources():
     sources = [
         PathSourceConfig(name="local", backend="cluster", path="/r/s", description="d"),
         GitSourceConfig(name="git", url="git@h:o/r.git", branch="main"),
+        SyncSourceConfig(name="wl", path=Path("/Users/me/wl"), backend="mercury"),
     ]
     state = _make_state(run_manager=MagicMock(), sources=sources)
 
@@ -88,13 +93,16 @@ def test_list_sources_returns_configured_sources():
 
     assert resp.status_code == 200
     data = resp.json()
-    assert len(data["sources"]) == 2
+    assert len(data["sources"]) == 3
     by_name = {s["name"]: s for s in data["sources"]}
     assert by_name["local"]["type"] == "path"
     assert by_name["local"]["path"] == "/r/s"
     assert by_name["local"]["description"] == "d"
     assert by_name["git"]["type"] == "git"
     assert by_name["git"]["url"] == "git@h:o/r.git"
+    assert by_name["wl"]["type"] == "sync"
+    assert by_name["wl"]["path"] == "/Users/me/wl"
+    assert by_name["wl"]["backend"] == "mercury"
 
 
 def test_view_source_returns_metadata_and_workflows():
@@ -372,6 +380,24 @@ def test_sync_unknown_source_returns_404():
     assert resp.status_code == 404
 
 
+def test_sync_sync_source_discovers_local_workflows(tmp_path: Path):
+    wf = tmp_path / ".hut" / "workflows"
+    wf.mkdir(parents=True)
+    (wf / "train.json").write_text('{"tasks": []}')
+    sources = [SyncSourceConfig(name="wl", path=tmp_path, backend="local")]
+    state = _make_state(run_manager=MagicMock(), sources=sources)
+
+    resp = _client(state).post("/api/v1/sources/wl/sync")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["name"] == "wl"
+    assert body["type"] == "sync"
+    assert body["error"] is None
+    assert body["workflows"] == ["train.json"]
+
+
+
 def test_sync_git_source_failure_returns_200_with_error_field():
     """Per-source failures are reported in-band, not as a 5xx.
 
@@ -553,6 +579,60 @@ def test_get_task_logs_task_not_submitted_returns_422():
     assert resp.status_code == 422
 
 
+# -- /runs/{run_id}/tasks/{task_id}/outputs -----------------------------------
+
+
+def test_list_task_outputs_returns_files():
+    rm = MagicMock()
+    rm.list_task_outputs = MagicMock(return_value=(
+        {
+            "run_id": "r1",
+            "task_id": "t1",
+            "output_dir": "/logs/outputs/r1/t1",
+            "has_run_summary": False,
+            "files": [{"path": "a.log", "size": 12, "kind": "other"}],
+        },
+        None,
+    ))
+    state = _make_state(run_manager=rm)
+
+    resp = _client(state).get("/api/v1/runs/r1/tasks/t1/outputs")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["files"][0]["path"] == "a.log"
+    rm.list_task_outputs.assert_called_once_with("r1", "t1")
+
+
+def test_get_task_output_file_returns_utf8_json():
+    rm = MagicMock()
+    rm.fetch_task_output_file = AsyncMock(return_value=(b"hello\n", None))
+    state = _make_state(run_manager=rm)
+
+    resp = _client(state).get(
+        "/api/v1/runs/r1/tasks/t1/outputs/file/a.log?tail=20"
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["content"] == "hello\n"
+    assert body["encoding"] == "utf-8"
+    assert body["binary"] is False
+    rm.fetch_task_output_file.assert_awaited_once_with("r1", "t1", "a.log")
+
+
+def test_list_task_outputs_run_not_found_returns_404():
+    rm = MagicMock()
+    rm.list_task_outputs = MagicMock(
+        return_value=(None, "Run 'missing' not found"),
+    )
+    state = _make_state(run_manager=rm)
+
+    resp = _client(state).get("/api/v1/runs/missing/tasks/t1/outputs")
+
+    assert resp.status_code == 404
+
+
 # -- /stacks/{name}/check ----------------------------------------------------
 
 
@@ -690,6 +770,7 @@ def test_check_stack_source_overlay_wins_collision():
 def _stack_install_run(run_id: str = "abc12345"):
     """A run-shaped object the synthesized install path returns."""
     from datetime import UTC, datetime
+
     from scripthut.runs.models import Run, RunItem, RunItemStatus, TaskDefinition
     return Run(
         id=run_id, workflow_name="_stack/foo", backend_name="cluster",

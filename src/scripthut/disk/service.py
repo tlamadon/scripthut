@@ -139,6 +139,7 @@ class DiskScanService:
         runs: list[Run],
         current_stack_hashes: dict[str, set[str]] | None = None,
         current_data_hashes: dict[str, set[str]] | None = None,
+        current_sync_dests: dict[str, str] | None = None,
         stack_texts: dict[str, str] | None = None,
         extra_errors: list[str] | None = None,
         timeout: int = SCAN_TIMEOUT,
@@ -182,6 +183,7 @@ class DiskScanService:
             refs,
             current_stack_hashes=current_stack_hashes,
             current_data_hashes=current_data_hashes,
+            current_sync_dests=current_sync_dests,
         )
         annotate_stack_envs(entries, stack_texts or {}, home)
         entries.sort(key=lambda e: e.size_bytes or 0, reverse=True)
@@ -206,6 +208,7 @@ class DiskScanService:
         run_manager: RunManager | None,
         run_storage: RunStorageManager | None,
         config: ScriptHutConfig,
+        current_sync_dests: dict[str, str] | None = None,
     ) -> DiskScanResult:
         """Execute a cleanup plan, cache its report, then rescan.
 
@@ -236,6 +239,7 @@ class DiskScanService:
         return await self.scan_backend(
             spec=spec, ssh=ssh, runs=runs, current_stack_hashes=hashes,
             current_data_hashes=compute_current_data_hashes(config),
+            current_sync_dests=current_sync_dests,
             stack_texts=collect_stack_texts(config, project_stacks),
             extra_errors=gather_errors,
         )
@@ -429,6 +433,111 @@ async def gather_data_dirs(
     return dirs, errors
 
 
+async def gather_sync_dirs(
+    config: ScriptHutConfig, backend_name: str, *, ssh: SSHClient | None = None,
+) -> tuple[list[str], list[str], dict[str, str] | None, list[str]]:
+    """Parents to walk, dests to inventory as trees, dest→source, errors.
+
+    Async because a ``~/``-relative dest has to be expanded against the
+    backend's probed ``$HOME``. A dest that fails the clone/dataset
+    guards is reported and not scanned. Without SSH the dest map is
+    ``None`` so classification does not treat configured dests as leftover.
+    """
+    from scripthut.config_schema import SyncSourceConfig
+    from scripthut.runs.datasets import (
+        DatasetError,
+        _expand_home,
+        _is_at_or_under,
+        probe_backend_paths,
+        validate_remote_root,
+    )
+    from scripthut.runs.sync import DEFAULT_SYNC_DIR, SyncError, resolve_dest
+
+    if ssh is None:
+        return [], [], None, []
+
+    backend_cfg = config.get_backend(backend_name)
+    paths = await probe_backend_paths(ssh)
+    home = paths.home
+
+    dest_to_source: dict[str, str] = {}
+    errors: list[str] = []
+    for source in config.sources:
+        if not isinstance(source, SyncSourceConfig):
+            continue
+        if source.backend != backend_name:
+            continue
+        try:
+            dest = resolve_dest(
+                source,
+                backend_name=backend_name,
+                backend_cfg=backend_cfg,
+                home=home,
+            )
+        except SyncError as e:
+            errors.append(f"sync source '{source.name}': {e}")
+            continue
+        dest_to_source[dest.rstrip("/")] = source.name
+
+    parents: list[str] = []
+    if backend_cfg is not None and hasattr(backend_cfg, "sync_dir"):
+        origin = f"backend '{backend_name}' sync_dir"
+        raw = (getattr(backend_cfg, "sync_dir", None) or DEFAULT_SYNC_DIR)
+        raw = raw.strip() or DEFAULT_SYNC_DIR
+        try:
+            parent = validate_remote_root(raw, origin=origin)
+            parent = _expand_home(parent, home, origin=origin).rstrip("/")
+        except DatasetError as e:
+            errors.append(str(e))
+        else:
+            # A dest equal to the parent is inventoried as a whole tree.
+            if parent not in dest_to_source:
+                parents.append(parent)
+
+    self_scan: list[str] = []
+    for dest in dest_to_source:
+        under_parent = any(
+            _is_at_or_under(dest, p) and dest != p for p in parents
+        )
+        if not under_parent:
+            self_scan.append(dest)
+
+    return parents, self_scan, dest_to_source, errors
+
+
+async def assemble_scan_spec(
+    config: ScriptHutConfig,
+    backend_name: str,
+    clone_dir: str,
+    *,
+    ssh: SSHClient | None = None,
+) -> tuple[ScanSpec, dict[str, str] | None, list[str], list[Stack]]:
+    """Stacks, data dirs, and sync dests for one backend's scan or cleanup.
+
+    Returns ``(spec, current_sync_dests, errors, project_stacks)``.
+    ``current_sync_dests`` is ``None`` when SSH was not available.
+    """
+    from scripthut.disk.scan import build_scan_spec
+
+    project_stacks, gather_errors = await gather_project_stacks(
+        config, backend_name, ssh=ssh,
+    )
+    data_dirs, data_errors = await gather_data_dirs(
+        config, backend_name, ssh=ssh,
+    )
+    sync_parents, sync_dirs, dest_map, sync_errors = await gather_sync_dirs(
+        config, backend_name, ssh=ssh,
+    )
+    spec = build_scan_spec(
+        config, backend_name, clone_dir,
+        extra_stacks=project_stacks,
+        data_dirs=data_dirs,
+        sync_parents=sync_parents,
+        sync_dirs=sync_dirs,
+    )
+    return spec, dest_map, gather_errors + data_errors + sync_errors, project_stacks
+
+
 def collect_stack_texts(
     config: ScriptHutConfig, extra_stacks: Sequence[Stack] = (),
 ) -> dict[str, str]:
@@ -504,17 +613,10 @@ async def start_scan_for_backend(
     Shared by the JSON API and the HTML routes. Returns False when the
     backend is already scanning or cleaning.
     """
-    from scripthut.disk.scan import build_scan_spec
-
     if service.is_busy(backend_name):
         return False
-    project_stacks, gather_errors = await gather_project_stacks(
-        config, backend_name, ssh=ssh,
-    )
-    data_dirs, data_errors = await gather_data_dirs(config, backend_name, ssh=ssh)
-    spec = build_scan_spec(
-        config, backend_name, clone_dir,
-        extra_stacks=project_stacks, data_dirs=data_dirs,
+    spec, dest_map, extra_errors, project_stacks = await assemble_scan_spec(
+        config, backend_name, clone_dir, ssh=ssh,
     )
     runs = await gather_all_runs(run_manager, run_storage)
     hashes = compute_current_stack_hashes(config, project_stacks)
@@ -523,8 +625,9 @@ async def start_scan_for_backend(
         service.scan_backend(
             spec=spec, ssh=ssh, runs=runs, current_stack_hashes=hashes,
             current_data_hashes=compute_current_data_hashes(config),
+            current_sync_dests=dest_map,
             stack_texts=collect_stack_texts(config, project_stacks),
-            extra_errors=gather_errors + data_errors,
+            extra_errors=extra_errors,
         ),
     )
 
@@ -549,18 +652,11 @@ async def plan_cleanup_for_backend(
     cache); without it those stacks are simply not part of the safety
     roots, which fails toward skipping — never toward deleting.
     """
-    from scripthut.disk.scan import build_scan_spec
-
     cached = service.get_cached(backend_name)
     if cached is None:
         return None
-    project_stacks, _ = await gather_project_stacks(
-        config, backend_name, ssh=ssh,
-    )
-    data_dirs, _ = await gather_data_dirs(config, backend_name, ssh=ssh)
-    spec = build_scan_spec(
-        config, backend_name, clone_dir,
-        extra_stacks=project_stacks, data_dirs=data_dirs,
+    spec, dest_map, _, project_stacks = await assemble_scan_spec(
+        config, backend_name, clone_dir, ssh=ssh,
     )
     runs = await gather_all_runs(run_manager, run_storage)
     refs = build_run_references(
@@ -572,6 +668,7 @@ async def plan_cleanup_for_backend(
         spec=spec,
         current_stack_hashes=compute_current_stack_hashes(config, project_stacks),
         current_data_hashes=compute_current_data_hashes(config),
+        current_sync_dests=dest_map,
         planned_at=datetime.now(timezone.utc),
         paths=paths,
         allow_referenced=allow_referenced,
@@ -597,8 +694,6 @@ async def start_clean_for_backend(
     ``already_running``, ``started``. The plan is computed here, at
     request time — which for the background task *is* execution time.
     """
-    from scripthut.disk.scan import build_scan_spec
-
     if service.is_busy(backend_name):
         return "already_running", None
     plan = await plan_cleanup_for_backend(
@@ -618,13 +713,8 @@ async def start_clean_for_backend(
         return "invalid", plan
     if not plan.to_delete:
         return "nothing_to_clean", plan
-    project_stacks, _ = await gather_project_stacks(
-        config, backend_name, ssh=ssh,
-    )
-    data_dirs, _ = await gather_data_dirs(config, backend_name, ssh=ssh)
-    spec = build_scan_spec(
-        config, backend_name, clone_dir,
-        extra_stacks=project_stacks, data_dirs=data_dirs,
+    spec, dest_map, _, _ = await assemble_scan_spec(
+        config, backend_name, clone_dir, ssh=ssh,
     )
     started = service.start_clean(
         backend_name,
@@ -635,6 +725,7 @@ async def start_clean_for_backend(
             run_manager=run_manager,
             run_storage=run_storage,
             config=config,
+            current_sync_dests=dest_map,
         ),
     )
     return ("started" if started else "already_running"), plan

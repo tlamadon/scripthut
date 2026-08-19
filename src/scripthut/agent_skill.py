@@ -50,129 +50,121 @@ description: >-
   clusters (Slurm, PBS/Torque) over SSH, AWS Batch, AWS EC2, or the
   local machine (local backend). Use when the user wants to run or
   submit a workflow, job, or compute task; check run, job, or cluster
-  status; tail or inspect job logs; debug a failed run; get a local data
+  status; tail or inspect job logs; fetch collected outputs under
+  `$SCRIPTHUT_OUTPUT_DIR`; debug a failed run; get a local data
   directory, dataset, or locally-built container onto a cluster (stage,
   copy, or scp a folder to scratch) or declare a workflow's data
   dependency; manage software stacks (venv, Conda, Julia); probe the
   result cache (would this task be a cache hit?); fetch a task's
-  provenance manifest (input/output hashes); or estimate compute costs.
+  provenance manifest (input/output hashes); or estimate compute
+  costs — not for LaTeX/Workshop build failures (latex-debug), not
+  for authoring skills/rules (agent-instructions), not for dotsync
+  wiring or credentials (dotsync).
 ---
 
 {_marker_line()}
 
 # ScriptHut
 
-ScriptHut runs declarative workflows (GitHub Actions-style, defined in a
-git repo) on the user's own infrastructure — remote clusters, AWS, or
-the scripthut host itself via a `local` backend. Everything is driven
-through the `scripthut` CLI; every command supports `--json`.
-
-## First step — always
-
-Run this before anything else, and re-read it whenever the project's
-`scripthut.yaml` changes (new backend, source, or stack):
+Drive jobs with the `scripthut` CLI. Flags, exit codes, and the live
+inventory live in `scripthut agent prompt` — run it first, and again
+when `scripthut.yaml` changes. Every parseable command takes `--json`.
 
 ```bash
 scripthut agent prompt
 ```
 
-It prints the full CLI reference **plus a live inventory** of the
-backends, sources, and stacks configured for this project. Everything
-below is a condensed reminder, not a substitute.
+## Verify, then submit
 
-## Core loop — verify, then submit
-
-Verify (cheap, read-only):
-
-1. `scripthut status` — server reachable, auth working. If this fails,
-   stop and report the diagnostic.
-2. `scripthut backend list --json` — confirm targets are connected.
-3. Prefer an existing source workflow over ad-hoc submission:
-   `scripthut source list --json`, then `scripthut source view <name> --json`.
-4. If a stack is involved: `scripthut stack check <name> --json`;
+1. `scripthut status` — server reachable, auth working. Stop and report
+   the diagnostic on failure.
+2. `scripthut backend list --json`.
+3. Prefer a source workflow over ad-hoc: `scripthut source list --json`,
+   `scripthut source view <name> --json`.
+4. Stack: `scripthut stack check <name> --json`;
    `scripthut stack install <name>` if not ready.
-5. `scripthut task run ... --dry-run` to preview the assembled
-   TaskDefinition before submitting anything non-trivial.
-6. For tasks that declare `inputs`/`outputs` (result caching):
+5. Non-trivial ad-hoc: `scripthut task run ... --dry-run`.
+6. Tasks that declare `inputs`/`outputs`:
    `scripthut task probe --from-file tasks.json --backend <b> --json`
-   answers hit/miss per task **without executing or writing anything**
-   — know what the cache will skip before submitting expensive work.
+   answers hit/miss **without executing or writing anything**.
 
-Submit and track:
+```bash
+RUN_ID=$(scripthut workflow run train.json \\
+  --source <name> --backend <backend> --json | jq -r .id)
+```
 
-7. Submit with `--json` and capture the run id:
+Runs execute against latest HEAD on the source's configured branch;
+`--branch <name>` selects a different branch of a git source. Ad-hoc:
+`scripthut task run`, same `--json` shape.
 
-   ```bash
-   RUN_ID=$(scripthut workflow run train.json \\
-     --source <name> --backend <backend> --json | jq -r .id)
-   ```
+A `type: sync` source copies git-tracked laptop files to the backend on
+submit (not `output/`), then pulls `output/` back when the run ends;
+`run watch` waits for that pull. Dest directories show up in
+`scripthut disk scan` as live working copies; `disk clean` will not
+delete them.
 
-   Runs execute against latest HEAD on the source's configured branch;
-   add `--branch <name>` to run from a different branch of a git source
-   (the workflow file and repo config are read at that branch's tip).
-   Ad-hoc tasks use `scripthut task run` with the same `--json` shape.
-8. **Get notified — don't poll.** Against a running server (the local
-   daemon counts), `scripthut run watch $RUN_ID --exit-status` blocks
-   until the run is terminal, prints a one-line verdict (`Run … COMPLETED`
-   / `Run … FAILED` with the failed task ids and a `run logs` hint), and
-   exits non-zero on failure. **Launch it as a background task** so you
-   keep working and are handed that summary the instant the run finishes —
-   this is how you stop missing completions. Submit and watch in one shot
-   with `scripthut workflow run <file> --source <name> --backend <b>
-   --watch` (also backgrounded). Fall back to re-polling
-   `scripthut run view $RUN_ID --json` only when you can't background a
-   task.
-9. Logs: `scripthut run logs $RUN_ID <task_id> -f` to tail live;
-   `--error --tail 200` first when a task ends in FAILED.
-10. Provenance: `scripthut run manifest $RUN_ID <task_id>` prints the
-    task's versioned manifest — input hashes as used, output paths +
-    content hashes, executor, timing — for anything downstream that
-    needs to verify or adopt the results.
+Background `scripthut run watch $RUN_ID --exit-status` (the local
+daemon counts). Prints `Run … COMPLETED` / `Run … FAILED` with failed
+task ids and a `run logs` hint; exits non-zero on failure. One-shot:
+`scripthut workflow run <file> --source <name> --backend <b> --watch`
+(also background). Re-poll `scripthut run view $RUN_ID --json` only
+when a background watch is unavailable.
 
-## Data the job needs
+## After submit
 
-Never tell the user to `scp`, and never scp yourself. A directory on the
-scripthut host is declared once in the **user-global** config
-(`datasets:` with a `name` and local `path`; it is rejected in a
-project-local `scripthut.yaml`), and a workflow asks for it by name with
-a top-level `data: [<name>]` beside `tasks`.
+- Status: `scripthut run view $RUN_ID --json`
+- Live stdout: `scripthut run logs $RUN_ID <task_id> -f`
+- FAILED stderr: `scripthut run logs $RUN_ID <task_id> --error --tail 200`
+- `$SCRIPTHUT_OUTPUT_DIR` (tool logs, `task-summary.md`, plots) is **not**
+  stdout: `scripthut run outputs $RUN_ID <task_id> --json`, then
+  `scripthut run outputs $RUN_ID <task_id> <rel-path>`
+- Manifest: `scripthut run manifest $RUN_ID <task_id>` — input hashes as
+  used, output paths + content hashes, executor, timing.
 
-ScriptHut then copies it to `<dataset_dir>/<name>/<hash12>` on the backend,
-where `dataset_dir` is a per-backend setting next to `clone_dir` defaulting
-to `~/scripthut-data`, and the hash covers the local file list. If that
-directory already exists the run reuses it and nothing is transferred.
-The task reads the path from `DATA_<NAME>` (and `DATA_DIR` when the
-workflow uses exactly one dataset) — never hardcode the destination.
+| Bad | Good |
+|---|---|
+| `ssh … 'cat job.err'` | `scripthut run logs $RUN_ID $TASK --error --tail 200` |
+| `curl …/outputs/file/…` | `scripthut run outputs $RUN_ID $TASK <path>` |
+| Poll `run view` | Background `scripthut run watch $RUN_ID --exit-status` |
 
-Staging is asynchronous: `workflow run` returns immediately and the copy
-appears as a run item named `_data.<name>` that the real tasks depend on.
-Tasks must never write into `$DATA_DIR`; the copy is shared by every run
-whose data hashes the same. See `scripthut agent prompt` for the full
-rules, including the home-directory quota hazard.
+## Data
 
-## Failure diagnosis
+Do not `scp`, and do not tell the user to. Declare `datasets:` in
+**user-global** config (`name` + local `path`; rejected in project-local
+`scripthut.yaml`). Workflow JSON: `data: [<name>]` beside `tasks`.
 
-Use the `/scripthut:debug [run-id]` command, or manually: read stderr,
-then check stack readiness (`stack check`), resource limits (OOM/TIMEOUT
-in stderr or scheduler state), and only then the workflow content. A
-failed `_data.<name>` item is a staging problem — its `error` names the
-cause, and everything downstream is `dep_failed`. Fix and resubmit a
-**new** run rather than rerunning the failed one.
+Copy lands at `<dataset_dir>/<name>/<hash12>` (`dataset_dir` default
+`~/scripthut-data`). An existing hash directory is reused. Tasks read
+`DATA_<NAME>` (and `DATA_DIR` when the workflow has exactly one
+dataset) — never hardcode the dest. Do not write into `$DATA_DIR`; the
+copy is shared by every run whose data hashes the same.
+
+Staging is async: `workflow run` returns immediately; the copy is item
+`_data.<name>` that real tasks depend on. Home has a quota far below
+most datasets — ask for scratch `dataset_dir` before large copies; do
+not guess the path. Full rules (symlinks, empty dirs, containers):
+`scripthut agent prompt`.
+
+## Failure
+
+`/scripthut:debug [run-id]`, or: stderr + `run outputs`, then
+`stack check`, then OOM/TIMEOUT in stderr or scheduler state, then
+workflow content. Failed `_data.<name>` is staging — `error` names the
+cause (missing/empty local dir, broken or escaping symlink, unusable
+`root`/`dataset_dir`, hash mismatch); downstream is `dep_failed`. Fix
+and submit a **new** run; do not rerun the failed one.
 
 ## Gotchas
 
-- `working_dir` and paths in TaskDefinitions are on the **backend**, not
-  the local filesystem (a `local`-type backend runs on the scripthut
-  host, so local paths are correct there).
-- Partition names are logical (per `partition_map`); use the names from
-  `scripthut agent prompt`, not raw cluster names.
-- Result caching needs declared `outputs` (and a server-side cache
-  store); `cache_scope: "inputs"` reuses across commits but is only
-  safe when `inputs` covers everything the command reads. Never add
-  make-style freshness checks inside task commands — declare
-  `inputs`/`outputs` and let the cache decide.
-- In local mode (no server), statuses only refresh when you re-run
-  `run view`.
+- `working_dir` and TaskDefinition paths are on the **backend**, not the
+  laptop (`local` runs on the scripthut host).
+- Logical partition names from `scripthut agent prompt` (`partition_map`),
+  not raw cluster names.
+- Result cache needs declared `outputs` and a server-side store;
+  `cache_scope: "inputs"` reuses across commits only when `inputs`
+  covers everything the command reads. Do not add make-style skip
+  logic inside task commands.
+- Local mode (no server): statuses refresh only on re-run of `run view`.
 """
 
 
@@ -181,40 +173,37 @@ def render_debug_command() -> str:
     return f"""\
 ---
 description: >-
-  Diagnose a failed ScriptHut run — fetch statuses and stderr, classify
-  the failure, propose a fix
+  Diagnose a failed ScriptHut run — fetch statuses, stderr, and
+  collected outputs; classify the failure; propose a fix
 argument-hint: [run-id]
 ---
 
 {_marker_line()}
 
-Diagnose ScriptHut run `$ARGUMENTS`. If no run id was given, find the most
-recent failed run with `scripthut run list --json`.
+Diagnose ScriptHut run `$ARGUMENTS`. If no run id was given, take the
+most recent failed run from `scripthut run list --json`.
 
-1. `scripthut run view <run-id> --json` — list the FAILED items and note
-   any scheduler state (OOM, TIMEOUT, NODE_FAIL, CANCELLED).
-2. For each failed task:
+1. `scripthut run view <run-id> --json` — FAILED / dep_failed items;
+   scheduler state (OOM, TIMEOUT, NODE_FAIL, CANCELLED).
+2. Each failed task:
    `scripthut run logs <run-id> <task-id> --error --tail 200`
-   (fall back to stdout via `--tail 200` if stderr is empty).
-3. Classify the root cause:
+   (stdout `--tail 200` if stderr is empty).
+   Then `scripthut run outputs <run-id> <task-id> --json` and fetch
+   `.log` / `task-summary.md`. `run logs` is not `$SCRIPTHUT_OUTPUT_DIR`.
+3. Classify:
    - **Stack not ready** — `scripthut stack check <name> --json`; offer
      `scripthut stack install <name>`.
-   - **Resource limit** — OOM/TIMEOUT in stderr or scheduler state; name
-     the TaskDefinition field to bump (memory, time, cpus).
-   - **Stale or unexpected cache hit** — the item shows `cache_hit: true`
-     / scheduler state `CACHED` but the results look wrong. Inspect
+   - **Resource limit** — OOM/TIMEOUT; name the field to bump
+     (`memory`, `time_limit`, `cpus`).
+   - **Stale cache hit** — `cache_hit: true` / `CACHED`. Inspect
      `scripthut run manifest <run-id> <task-id>`: if the task reads
-     files its declared `inputs` don't cover (a real risk with
-     `cache_scope: "inputs"`), fix the `inputs` list — or set
-     `cache: false` on the task — and resubmit.
-   - **Code/workflow bug** — quote the failing lines from stderr and
-     point at the source file if it's in this repo.
-4. Report the root cause and the concrete fix. Only resubmit (as a NEW
-   run — never rerun the failed one) if the user asks. If the fix lives
-   on an unmerged branch of the workflow's git source, test it with
-   `scripthut workflow run <file> --source <name> --branch <fix-branch>
-   --watch` (run in the background to be notified of the result) before
-   merging.
+     files its declared `inputs` don't cover (`cache_scope: "inputs"`
+     risk), fix `inputs` or set `cache: false` and resubmit.
+   - **Code/workflow** — quote the failing lines; name the source file
+     if it is in this repo.
+4. Report cause and fix. Resubmit only if asked, as a **new** run.
+   Unmerged git-source fix: `scripthut workflow run <file> --source
+   <name> --branch <fix-branch> --watch` (background) before merge.
 """
 
 

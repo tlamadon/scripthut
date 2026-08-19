@@ -6,7 +6,7 @@ The configuration file has the following top-level sections:
 
 ```yaml
 backends: [...]       # Remote compute backends (Slurm, PBS, AWS Batch, AWS EC2)
-sources: [...]        # Git or path sources carrying workflow JSON files
+sources: [...]        # Git, path, or sync sources carrying workflow JSON files
 workflows: [...]      # Task generators (SSH commands returning JSON)
 stacks: [...]         # Reusable software environments installed once per backend
 env: [...]            # Server-level env rules (see Environments)

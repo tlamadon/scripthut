@@ -498,7 +498,7 @@ def _listing_command(directory: str) -> str:
         "if find . -maxdepth 0 -printf '' 2>/dev/null; then "
         "  find . -type f -printf '%P\\t%s\\n'; "
         "else "
-        "  find . -type f -exec stat -f '%N\\t%z' {} +; "
+        "  find . -type f -exec stat -f '%N\t%z' {} +; "
         "fi | LC_ALL=C sort"
     )
 

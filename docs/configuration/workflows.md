@@ -78,11 +78,13 @@ When using a git workflow:
 
 ## Sources
 
-Sources are git repositories or backend filesystem paths containing workflow definitions. ScriptHut discovers workflow JSON files using the `workflows_glob` pattern (default: `.hut/workflows/*.json`). You can use glob wildcards like `**/*.hut.json` to match files recursively across any subdirectory. Each matched JSON file appears as a triggerable workflow on the Sources page.
+Sources are git repositories, backend filesystem paths, or a laptop working tree (`type: sync`) containing workflow definitions. ScriptHut discovers workflow JSON files using the `workflows_glob` pattern (default: `.hut/workflows/*.json`). You can use glob wildcards like `**/*.hut.json` to match files recursively across any subdirectory. Each matched JSON file appears as a triggerable workflow on the Sources page.
 
 For **git sources**, the repository is cloned locally for workflow discovery, and also cloned on the backend when a workflow is triggered (tasks run inside the cloned directory, just like git-based workflows).
 
 For **path sources**, workflows are discovered via SSH on the backend, and tasks run with `working_dir` resolved relative to the source path.
+
+For **sync sources**, workflows are discovered on the laptop working tree. On submit, git-tracked files are copied to the backend; when the run finishes, `output/` is pulled back. See [Sync Source](#sync-source).
 
 ### Git Source
 
@@ -129,4 +131,37 @@ sources:
 | `path` | string | **required** | Directory on the backend filesystem. |
 | `backend` | string | **required** | Backend where this path exists and where tasks are submitted. |
 | `workflows_glob` | string | `".hut/workflows/*.json"` | Glob pattern to find workflow JSON files (supports `**` for recursive matching). |
+
+### Sync Source
+
+A laptop git working tree copied to the backend on submit. Use this when you edit on a laptop and run on HPC: tracked dirty files go up, jobs run at `dest`, `output/` comes back when the run finishes (success, failure, or cancel). Not a git remote and not Unison — two one-way copies of disjoint paths. Datasets (`data:` / `$DATA_*`) are unchanged.
+
+```yaml
+sources:
+  - name: wl-hcpu
+    type: sync
+    path: ~/Documents/GitHub/wl_hcpu   # laptop
+    backend: hpc-cluster
+    # dest: /scratch/you/wl_hcpu       # default: <backend.sync_dir>/<name>/
+    # return: output                   # cluster → laptop; excluded from upload
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `name` | string | **required** | Unique identifier for this source. |
+| `type` | string | **required** | Must be `"sync"`. |
+| `path` | path | **required** | Git repository on the scripthut host. Relative paths resolve against the config file's directory. |
+| `backend` | string | **required** | Backend whose filesystem receives the copy and runs the jobs. SSH backends only. |
+| `dest` | string | `<sync_dir>/<name>/` | Directory on the backend to copy into. Must not sit under `clone_dir` or `dataset_dir`, or equal the laptop `path`. |
+| `return` | string | `"output"` | Relative directory pulled cluster → laptop after the run. Excluded from the upload even if git-tracked. |
+| `workflows_glob` | string | `".hut/workflows/*.json"` | Glob pattern to find workflow JSON files on the laptop working tree. |
+
+On submit ScriptHut copies `git ls-files` working-tree bytes (dirty tracked files yes; untracked and gitignored no; `.git` not copied). Tracked symlinks are refused. Root tasks wait on `_sync.upload`; `_sync.return` starts when every other current item is terminal, so a failed task still pulls. `run watch` waits for the pull. Overwrite and add; local leftover files in `output/` that the cluster did not write stay. A second submit to the same dest is refused while another run is still active.
+
+!!! warning "The default dest is home, which has a quota"
+    `~/scripthut-sync/<name>/` mirrors `clone_dir` and `dataset_dir`. Point the backend's `sync_dir` (or the source's `dest`) at scratch before copying anything large.
+
+`scripthut disk scan` lists each dest under **Sync working copies**. A dest still named in config is live even with no remembered run; a leftover directory under `sync_dir` from a source you deleted shows as orphaned. `disk clean` will not delete either — these are working copies, not hashed clones.
+
+Cache identity is **not** the upload tree. Leave `commit_hash` unset (like a path source). Skip vs rerun is per-task: `cache: false`, or `cache_scope: "inputs"` listing the script.
 

@@ -211,6 +211,7 @@ def load_yaml_config(config_path: Path) -> ScriptHutConfig:
     base = config_path.resolve().parent
     _resolve_stack_input_files(cfg, base)
     _resolve_dataset_paths(cfg, base)
+    _resolve_sync_source_paths(cfg, base)
     return cfg
 
 
@@ -244,6 +245,15 @@ def _resolve_dataset_paths(cfg: ScriptHutConfig, base: Path) -> None:
     """Rewrite each dataset's ``path`` to an absolute path on this host."""
     for dataset in cfg.datasets:
         dataset.path = _resolve_config_relative(dataset.path, base)
+
+
+def _resolve_sync_source_paths(cfg: ScriptHutConfig, base: Path) -> None:
+    """Rewrite each sync source's laptop ``path`` to an absolute path."""
+    from scripthut.config_schema import SyncSourceConfig
+
+    for source in cfg.sources:
+        if isinstance(source, SyncSourceConfig):
+            source.path = _resolve_config_relative(source.path, base)
 
 
 def _validate_project_local_yaml(raw: dict, path: Path) -> None:

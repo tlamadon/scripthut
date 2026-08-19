@@ -9,15 +9,18 @@ evolve without rewriting tests.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from scripthut.cli import _render_agent_prompt
 from scripthut.config_schema import (
     GitSourceConfig,
     PathSourceConfig,
     PBSBackendConfig,
-    SSHConfig,
     ScriptHutConfig,
     SlurmBackendConfig,
+    SSHConfig,
     Stack,
+    SyncSourceConfig,
 )
 
 
@@ -75,6 +78,7 @@ class TestPromptStructure:
             "--json",
             "scripthut run view",
             "scripthut run logs",
+            "scripthut run outputs",
             "scripthut stack check",
             "scripthut backend list",
             "scripthut workflow run",
@@ -189,6 +193,23 @@ class TestLiveInventory:
         prompt = _render_agent_prompt(cfg)
         assert "`sandbox` (path)" in prompt
         assert "path `/scratch/me/sandbox` on `mercury-nb`" in prompt
+
+    def test_sync_source_surfaces_laptop_path_and_backend(self):
+        cfg = ScriptHutConfig(
+            sources=[
+                SyncSourceConfig(
+                    name="wl-hcpu",
+                    path=Path("/Users/me/wl_hcpu"),
+                    backend="mercury",
+                ),
+            ],
+        )
+        prompt = _render_agent_prompt(cfg)
+        assert "`wl-hcpu` (sync)" in prompt
+        assert "laptop `/Users/me/wl_hcpu` on `mercury`" in prompt
+        assert "type: sync" in prompt
+        assert "output/" in prompt
+        assert "live working copies" in prompt
 
     def test_no_sources_still_shows_section_with_guidance(self):
         cfg = ScriptHutConfig(backends=[
@@ -444,6 +465,13 @@ class TestObservabilitySurfaces:
         assert "--error" in prompt   # stderr access
         assert "--tail" in prompt    # historical access
         assert "-f" in prompt        # live tailing
+
+    def test_task_outputs_cli_is_taught(self):
+        prompt = _render_agent_prompt(ScriptHutConfig())
+        assert "scripthut run outputs" in prompt
+        assert "$SCRIPTHUT_OUTPUT_DIR" in prompt
+        # Distinct from scheduler stdout — the Stata-class failure mode.
+        assert "run logs" in prompt
 
 
 # ---------- no-config fallback -------------------------------------------

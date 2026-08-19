@@ -28,6 +28,7 @@ from scripthut.config_schema import (
     GlobalSettings,
     PathSourceConfig,
     ScriptHutConfig,
+    SyncSourceConfig,
 )
 from scripthut.runs.manager import RunManager
 from scripthut.runs.storage import RunStorageManager
@@ -192,6 +193,39 @@ class TestLoadPathSource:
             await mgr._load_source_project_config(src, ssh_client=None)
 
 
+class TestLoadSyncSource:
+    """Sync sources: ``<local path>/scripthut.yaml`` on this host."""
+
+    @pytest.mark.asyncio
+    async def test_returns_parsed_config_when_file_present(self, tmp_path: Path):
+        repo = tmp_path / "wl"
+        repo.mkdir()
+        (repo / "scripthut.yaml").write_text(
+            "env_groups:\n"
+            "  stata:\n"
+            "    - init: 'module load stata'\n"
+        )
+        src = SyncSourceConfig(name="wl", path=repo, backend="local")
+        mgr = _manager(
+            _config_with_source(src, cache_dir=tmp_path / "cache"),
+            tmp_path=tmp_path,
+        )
+        cfg = await mgr._load_source_project_config(src)
+        assert cfg is not None
+        assert "stata" in cfg.env_groups
+
+    @pytest.mark.asyncio
+    async def test_missing_file_returns_none(self, tmp_path: Path):
+        repo = tmp_path / "wl"
+        repo.mkdir()
+        src = SyncSourceConfig(name="wl", path=repo, backend="local")
+        mgr = _manager(
+            _config_with_source(src, cache_dir=tmp_path / "cache"),
+            tmp_path=tmp_path,
+        )
+        assert await mgr._load_source_project_config(src) is None
+
+
 # ---------------------------------------------------------------------------
 # Validation: forbidden sections, malformed YAML
 # ---------------------------------------------------------------------------
@@ -299,13 +333,14 @@ class TestRunEnvLayering:
             captured["doc_env_groups"] = doc_env_groups
             captured["doc_stacks"] = doc_stacks
             # Return a minimal Run-shaped sentinel; the test never reads it.
+            from datetime import UTC, datetime
+
             from scripthut.runs.models import (
                 Run,
                 RunItem,
                 RunItemStatus,
                 TaskDefinition,
             )
-            from datetime import UTC, datetime
             return Run(
                 id="r", workflow_name=workflow_name, backend_name=backend_name,
                 created_at=datetime(2026, 1, 1, tzinfo=UTC),
@@ -448,10 +483,11 @@ class TestEndToEndStackReference:
 
     @pytest.mark.asyncio
     async def test_resolve_for_task_expands_stacks_init(self):
+        from datetime import UTC, datetime
+
         from scripthut.config_schema import ScriptHutConfig, Stack
         from scripthut.runs.env import resolve_for_task
         from scripthut.runs.models import TaskDefinition
-        from datetime import UTC, datetime
 
         cfg = ScriptHutConfig(
             stacks=[Stack(name="julia-1.12", prep="echo prep",
@@ -476,10 +512,11 @@ class TestEndToEndStackReference:
         """When both server and repo project YAML define a stack with the
         same name, the repo's init wins — same convention as env_groups.
         """
+        from datetime import UTC, datetime
+
         from scripthut.config_schema import ScriptHutConfig, Stack
         from scripthut.runs.env import resolve_for_task
         from scripthut.runs.models import TaskDefinition
-        from datetime import UTC, datetime
 
         cfg = ScriptHutConfig(
             stacks=[Stack(name="julia", prep="echo prep",
@@ -507,10 +544,11 @@ class TestEndToEndStackReference:
         """A workflow referencing a stack name that doesn't exist
         anywhere should fail loudly — no submitting a task missing its env.
         """
+        from datetime import UTC, datetime
+
         from scripthut.config_schema import EnvRule, ScriptHutConfig
         from scripthut.runs.env import resolve_for_task
         from scripthut.runs.models import TaskDefinition
-        from datetime import UTC, datetime
 
         cfg = ScriptHutConfig()
         task = TaskDefinition(

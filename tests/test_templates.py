@@ -64,6 +64,15 @@ def _scan_result() -> DiskScanResult:
                 detail="mlye (env of stack mlye)",
             ),
             DiskEntry(
+                path="/home/alice/scripthut-sync/wl-hcpu",
+                kind=DiskEntryKind.SYNC,
+                size_bytes=12_000_000,
+                mtime=now - timedelta(hours=2),
+                classification=DiskEntryClass.REFERENCED,
+                detail="wl-hcpu",
+                source="wl-hcpu",
+            ),
+            DiskEntry(
                 path="/home/alice/scripthut-repos/a1b2c3d4e5f6",
                 kind=DiskEntryKind.CLONE,
                 size_bytes=570_000_000,
@@ -111,6 +120,7 @@ class TestDiskBackendCard:
     def test_renders_every_kind_section(self):
         html = _render_card()
         assert "Repository clones" in html
+        assert "Sync working copies" in html
         assert "Software stacks" in html
         assert "Logs &amp; outputs" in html or "Logs & outputs" in html
         # The cache-sweep section: without it a stack-built venv is invisible

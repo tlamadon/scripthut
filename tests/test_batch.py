@@ -221,7 +221,8 @@ class TestGenerateScript:
         assert "#SBATCH" not in script
         assert "#PBS" not in script
         assert "python train.py" in script
-        assert "cd /work" in script
+        assert "cd /work" not in script
+        assert 'cd "/work"' in script
 
     def test_login_shell(self):
         backend = _make_backend()
@@ -269,7 +270,7 @@ class TestGenerateScript:
                 "SCRIPTHUT_GIT_REPO": "https://github.com/org/repo.git",
             },
         )
-        assert "cd /opt/job" in script
+        assert 'cd "/opt/job"' in script
         # Should not rewrite to clone dir.
         assert "$_SCRIPTHUT_CLONE_DIR/opt" not in script
 

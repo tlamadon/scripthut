@@ -64,7 +64,7 @@ Every subcommand accepts these:
 |------|-------------|
 | `--server <url>` | Server URL to target. Pass `local` to force local mode. |
 | `--config <path>`, `-c <path>` | Path to `scripthut.yaml`. Loads **exactly that file** and skips the layered discovery. Useful in tests and one-off scripts. |
-| `--json` | Print machine-readable JSON instead of a formatted table. Accepted by **every** subcommand; stdout then holds exactly one JSON document (`run watch --json` suppresses the live redraw and prints the final run detail; `run logs --json` wraps the log in `{"content": ...}`; `run manifest` is JSON either way). |
+| `--json` | Print machine-readable JSON instead of a formatted table. Accepted by **every** subcommand; stdout then holds exactly one JSON document (`run watch --json` suppresses the live redraw and prints the final run detail; `run logs --json` wraps the log in `{"content": ...}`; `run outputs --json` lists `{files: [...]}` or wraps a fetched file; `run manifest` is JSON either way). |
 
 ### Config discovery (without `--config`)
 
@@ -104,9 +104,15 @@ scripthut run logs <id> <task>                # stdout for one task
 scripthut run logs <id> <task> --error        # stderr
 scripthut run logs <id> <task> --tail 100     # only the last 100 lines
 scripthut run logs <id> <task> --follow       # tail until the task ends
+scripthut run outputs <id> <task>             # files under $SCRIPTHUT_OUTPUT_DIR
+scripthut run outputs <id> <task> <path>      # print one of those files
+scripthut run outputs <id> <task> <path> --tail 200
+scripthut run outputs <id> <task> <path> -o ./plot.png
 ```
 
 `watch --exit-status` is the CI-friendly form: it returns 0 only when every task in the run completes successfully.
+
+`run logs` is scheduler stdout/stderr. `run outputs` is whatever the task wrote to `$SCRIPTHUT_OUTPUT_DIR` (tool logs, `task-summary.md`, plots) after the item completes — SSH backends only. `--json` on a file fetch is `{path, binary, encoding, content, size}`.
 
 ### `run manifest` — a completed task's provenance record
 
@@ -324,6 +330,18 @@ scripthut run logs $RUN_ID train.shard-3 --error --follow
 ```
 
 `--follow` reads the file once it appears on the backend, then polls until the task moves to a terminal state.
+
+### Read a file the task wrote under `$SCRIPTHUT_OUTPUT_DIR`
+
+Scheduler stdout (`run logs`) is not the same as structured outputs. After the item completes:
+
+```bash
+scripthut run outputs $RUN_ID train --json
+scripthut run outputs $RUN_ID train task-summary.md
+scripthut run outputs $RUN_ID train loss.png -o ./loss.png
+```
+
+SSH backends only (Slurm, PBS, local). Empty `files` means nothing was collected.
 
 ### Inspect the resolved environment for a task
 

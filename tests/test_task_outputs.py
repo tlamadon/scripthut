@@ -115,6 +115,41 @@ class TestScriptWrapperExports:
             "command can write to it without checking existence first"
         )
 
+    def test_cd_quotes_working_dir_with_spaces(self):
+        from scripthut.backends.utils import generate_script_body, shell_quote_path
+
+        spaced = "/home/u/scripthut-sync/wl-hcpu/Data/Raw Data"
+        body = generate_script_body(
+            task_name="x", task_id="t", command="bash run.sh",
+            working_dir=spaced,
+        )
+        assert f"cd {shell_quote_path(spaced)}" in body
+        assert "cd /home/u/scripthut-sync/wl-hcpu/Data/Raw Data\n" not in body
+
+    def test_cd_rewrites_tilde_then_quotes(self):
+        from scripthut.backends.utils import generate_script_body, shell_quote_path
+
+        body = generate_script_body(
+            task_name="x", task_id="t", command="true",
+            working_dir="~/scripthut-sync/wl-hcpu",
+        )
+        assert f"cd {shell_quote_path('~/scripthut-sync/wl-hcpu')}" in body
+        assert 'cd "$HOME/scripthut-sync/wl-hcpu"' in body
+
+
+class TestSbatchScriptQuotesWorkingDir:
+    def test_to_sbatch_quotes_spaces(self):
+        from scripthut.backends.utils import shell_quote_path
+
+        t = TaskDefinition(
+            id="finassets", name="Data_FINASSETS_2022",
+            command="bash run.sh",
+            working_dir="/home/u/sync/Data/Raw Data",
+        )
+        script = t.to_sbatch_script("run1", "/logs")
+        assert f"cd {shell_quote_path('/home/u/sync/Data/Raw Data')}" in script
+        assert "cd /home/u/sync/Data/Raw Data\n" not in script
+
 
 # ---------------------------------------------------------------------------
 # _handle_task_outputs
@@ -456,23 +491,11 @@ class TestPersistence:
 class TestFileEndpointPathTraversal:
     """The file endpoint resolves user-supplied path components and
     must reject anything that escapes the per-task output dir.
-    Implemented in ``main.get_task_output_file`` via posixpath +
-    realpath containment; tested here at the helper level so we don't
-    need a full FastAPI stack just to exercise the guard.
     """
 
     def _is_inside(self, rel_path: str, output_dir: str = "/logs/outputs/r1/t1") -> bool:
-        """Reproduce the endpoint's containment check.
-
-        Kept in the test rather than calling the endpoint so the
-        property is testable without spinning up the server or
-        mocking httpx — and to pin the algorithm itself so a future
-        refactor doesn't quietly weaken it.
-        """
-        import posixpath
-        full = posixpath.normpath(posixpath.join(output_dir, rel_path))
-        norm = posixpath.normpath(output_dir) + "/"
-        return full.startswith(norm)
+        from scripthut.runs.manager import contained_output_path
+        return contained_output_path(output_dir, rel_path) is not None
 
     def test_normal_file_allowed(self):
         assert self._is_inside("plot.png") is True
@@ -500,3 +523,88 @@ class TestFileEndpointPathTraversal:
     def test_dotdot_alone_rejected(self):
         """The empty-target traversal still fails containment."""
         assert self._is_inside("..") is False
+
+    def test_nul_rejected(self):
+        assert self._is_inside("plot.png\x00") is False
+
+
+class TestEncodeTaskOutputPayload:
+    def test_utf8_text(self):
+        from scripthut.runs.manager import encode_task_output_payload
+
+        p = encode_task_output_payload("a.log", b"hello\n")
+        assert p["binary"] is False
+        assert p["encoding"] == "utf-8"
+        assert p["content"] == "hello\n"
+        assert p["size"] == 6
+
+    def test_tail_keeps_last_lines(self):
+        from scripthut.runs.manager import encode_task_output_payload
+
+        p = encode_task_output_payload(
+            "a.log", b"a\nb\nc\n", tail_lines=2,
+        )
+        assert p["content"] == "b\nc\n"
+
+    def test_binary_is_base64(self):
+        import base64
+
+        from scripthut.runs.manager import encode_task_output_payload
+
+        raw = b"\xff\xfe"
+        p = encode_task_output_payload("x.bin", raw)
+        assert p["binary"] is True
+        assert p["encoding"] == "base64"
+        assert base64.b64decode(p["content"]) == raw
+
+
+class TestFetchTaskOutputFile:
+    @pytest.mark.asyncio
+    async def test_reads_via_quoted_stat_and_base64(self):
+        import base64
+
+        ssh = MagicMock()
+
+        async def run(cmd: str):
+            if cmd.strip() == "echo $HOME":
+                return ("/home/u", "", 0)
+            if "stat -c %s" in cmd:
+                assert "'" in cmd or '"' in cmd  # path is quoted
+                return ("5\n", "", 0)
+            if "base64 -w0" in cmd:
+                return (base64.b64encode(b"hello").decode(), "", 0)
+            return ("", "", 1)
+
+        ssh.run_command = AsyncMock(side_effect=run)
+        mgr, run, _item = _make_manager_with_one_item(ssh)
+        mgr.runs[run.id] = run
+        content, err = await mgr.fetch_task_output_file("r1", "t1", "note.md")
+        assert err is None
+        assert content == b"hello"
+
+    @pytest.mark.asyncio
+    async def test_dotdot_does_not_stat(self):
+        ssh = MagicMock()
+        ssh.run_command = AsyncMock(return_value=("/home/u", "", 0))
+        mgr, run, _item = _make_manager_with_one_item(ssh)
+        mgr.runs[run.id] = run
+        content, err = await mgr.fetch_task_output_file(
+            "r1", "t1", "../../etc/passwd",
+        )
+        assert content is None
+        assert "not found" in err
+        cmds = [c.args[0] for c in ssh.run_command.call_args_list]
+        assert all("stat" not in c and "base64" not in c for c in cmds)
+
+    def test_list_returns_persisted_files(self):
+        ssh = MagicMock()
+        mgr, run, item = _make_manager_with_one_item(ssh)
+        item.outputs = [
+            TaskOutput(path="a.log", size=12, kind="other"),
+        ]
+        mgr.runs[run.id] = run
+        payload, err = mgr.list_task_outputs("r1", "t1")
+        assert err is None
+        assert payload["files"][0]["path"] == "a.log"
+        assert payload["has_run_summary"] is False
+

@@ -36,6 +36,8 @@ import logging
 import shlex
 from typing import TYPE_CHECKING, Any
 
+from scripthut.backends.utils import shell_quote_path
+
 if TYPE_CHECKING:
     from scripthut.config_schema import CacheConfig
     from scripthut.ssh.client import SSHClient
@@ -175,16 +177,15 @@ class CacheManager:
             return {}
 
         # Patterns are inserted unquoted so the remote shell expands globs.
-        # ``working_dir`` is likewise interpolated raw (not shlex-quoted) so
-        # a ``~`` working dir expands — matching ``generate_script_body``'s
-        # ``cd {working_dir}`` convention, which already assumes the path is
-        # shell-safe. HPC paths with spaces are vanishingly rare.
+        # ``working_dir`` is quoted via ``shell_quote_path`` so a leading
+        # ``~`` still expands to ``$HOME`` and spaces (``Data/Raw Data``)
+        # stay one token — same helper as ``generate_script_body``.
         patterns = " ".join(inputs)
         # `find` walks dirs and resolves the expanded patterns; missing
         # patterns make the shell pass the literal through and `find` warns
         # on stderr (captured) and exits nonzero — surfaced below.
         cmd = (
-            f"cd {working_dir} && "
+            f"cd {shell_quote_path(working_dir)} && "
             f"{_SHA256_RESOLVE} && "
             f"find {patterns} -type f -print0 2>/dev/null "
             f"| LC_ALL=C sort -z | xargs -0 -r $_scripthut_sha 2>/dev/null"
@@ -269,7 +270,7 @@ class CacheManager:
             return False
         cmd = (
             "set -e\n"
-            f"cd {working_dir}\n"
+            f"cd {shell_quote_path(working_dir)}\n"
             'TMP=$(mktemp /tmp/scripthut_cache_XXXXXX.tar.gz)\n'
             f"{self._cmd_cat(shlex.quote(blob))} > \"$TMP\"\n"
             'tar xzf "$TMP" -C .\n'
@@ -322,7 +323,7 @@ class CacheManager:
         put_blob = self._cmd_put_file('"$TMP"', '"$BLOB"')
         build = (
             "set -e\n"
-            f"cd {working_dir}\n"
+            f"cd {shell_quote_path(working_dir)}\n"
             f"{_SHA256_RESOLVE}\n"
             'TMP=$(mktemp /tmp/scripthut_cache_XXXXXX.tar.gz)\n'
             # Deterministic-ish tar: sort members so identical trees produce

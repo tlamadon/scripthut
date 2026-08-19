@@ -98,7 +98,7 @@ backends:
     login_shell: false
     max_concurrent: 100
 
-# Sources: git repos or backend paths with workflow JSON files (matched via workflows_glob)
+# Sources: git repos, backend paths, or laptop trees with workflow JSON files (matched via workflows_glob)
 sources:
   - name: ml-jobs
     type: git
@@ -135,6 +135,7 @@ settings:
 | `max_concurrent` | Max concurrent jobs across all runs (default: 100) |
 | `clone_dir` | Path on the backend whose disk usage is shown in the UI (default: `~/scripthut-repos`) |
 | `dataset_dir` | Where `datasets:` are staged on this backend (default: `~/scripthut-data`) |
+| `sync_dir` | Where `type: sync` working copies land (default: `~/scripthut-sync`). `disk scan` lists them as live; `disk clean` will not delete them. |
 
 **PBS-specific:**
 
@@ -388,14 +389,14 @@ If you configure `job_role_arn` / `execution_role_arn`, the principal also needs
 
 #### Sources
 
-Sources are git repositories or backend filesystem paths containing workflow definitions. ScriptHut discovers workflow JSON files using a configurable glob pattern (`workflows_glob`, default: `.hut/workflows/*.json`). Use patterns like `**/*.hut.json` to match files recursively across any subdirectory. Each matched JSON file appears as a triggerable workflow on the Sources page.
+Sources are git repositories, backend filesystem paths, or a laptop working tree (`type: sync`) containing workflow definitions. ScriptHut discovers workflow JSON files using a configurable glob pattern (`workflows_glob`, default: `.hut/workflows/*.json`). Use patterns like `**/*.hut.json` to match files recursively across any subdirectory. Each matched JSON file appears as a triggerable workflow on the Sources page.
 
 **Common fields:**
 
 | Field | Description |
 |-------|-------------|
 | `name` | Unique identifier for the source |
-| `type` | Source type: `git` or `path` |
+| `type` | Source type: `git`, `path`, or `sync` |
 | `backend` | Backend to submit discovered workflow tasks to |
 | `workflows_glob` | Glob pattern to find workflow JSON files (default: `.hut/workflows/*.json`, supports `**` for recursive) |
 
@@ -414,6 +415,14 @@ Sources are git repositories or backend filesystem paths containing workflow def
 | Field | Description |
 |-------|-------------|
 | `path` | Directory on the backend filesystem |
+
+**Sync source fields (`type: sync`):**
+
+| Field | Description |
+|-------|-------------|
+| `path` | Git repository on the scripthut host (laptop) |
+| `dest` | Directory on the backend to copy into (default: `<sync_dir>/<name>/`). Shown by `disk scan` as a live working copy; `disk clean` will not delete it. |
+| `return` | Relative directory pulled back after the run (default: `output`) |
 
 #### Settings
 
@@ -588,6 +597,7 @@ Then plain `scripthut run list` Just Works as long as your `cloudflared access l
 | `POST /runs/{id}/cancel` | Cancel all pending/running items |
 | `GET /runs/{id}/tasks/{task_id}/script` | View submission script |
 | `GET /runs/{id}/tasks/{task_id}/logs/{type}` | View task logs (output/error) |
+| `GET /runs/{id}/tasks/{task_id}/outputs/file/{path}` | Stream a `$SCRIPTHUT_OUTPUT_DIR` file |
 
 #### Workflows
 

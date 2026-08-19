@@ -47,6 +47,8 @@ DELETABLE_KINDS = frozenset({
     DiskEntryKind.DATA,
     DiskEntryKind.LOG,
 })
+# SYNC is deliberately absent: a type: sync dest is a live working copy,
+# like a path source. disk clean never rm -rf's it.
 
 
 @dataclass
@@ -185,6 +187,8 @@ def _base_detail(e: DiskEntry) -> str | None:
         return "/".join(parts[-2:])
     if e.kind == DiskEntryKind.LOG:
         return parts[-1]
+    if e.kind == DiskEntryKind.SYNC:
+        return parts[-1]
     return None
 
 
@@ -193,6 +197,7 @@ def _fresh_copies(
     refs: RunReferences,
     current_stack_hashes: dict[str, set[str]] | None,
     current_data_hashes: dict[str, set[str]] | None = None,
+    current_sync_dests: dict[str, str] | None = None,
 ) -> list[DiskEntry]:
     copies = [
         replace(
@@ -208,6 +213,7 @@ def _fresh_copies(
         refs,
         current_stack_hashes=current_stack_hashes,
         current_data_hashes=current_data_hashes,
+        current_sync_dests=current_sync_dests,
     )
     return copies
 
@@ -286,6 +292,7 @@ def plan_cleanup(
     paths: list[str] | None = None,
     allow_referenced: frozenset[str] = frozenset(),
     current_data_hashes: dict[str, set[str]] | None = None,
+    current_sync_dests: dict[str, str] | None = None,
 ) -> CleanupPlan:
     """Decide, entry by entry, what a cleanup would delete and why not.
 
@@ -298,6 +305,7 @@ def plan_cleanup(
     plan = CleanupPlan(backend=result.backend, planned_at=planned_at)
     copies = _fresh_copies(
         result, refs, current_stack_hashes, current_data_hashes,
+        current_sync_dests,
     )
     by_path = {e.path: e for e in copies}
     allow = {normalize_remote_path(p, result.home_dir) for p in allow_referenced}
@@ -325,7 +333,9 @@ def plan_cleanup(
 
     for entry in candidates:
         reason: str | None = None
-        if entry.kind not in DELETABLE_KINDS:
+        if entry.kind == DiskEntryKind.SYNC:
+            reason = "sync working copies are never deleted by disk clean"
+        elif entry.kind not in DELETABLE_KINDS:
             reason = "unrecognized entries are never deletable"
         elif entry.classification == DiskEntryClass.ACTIVE:
             reason = (

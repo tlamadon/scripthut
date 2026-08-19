@@ -375,3 +375,23 @@ class TestLegacyProjectsRejection:
         cfg = load_yaml_config(yaml)
         assert len(cfg.sources) == 1
         assert cfg.sources[0].name == "foo"
+
+
+class TestSyncSourcePathResolution:
+    def test_relative_path_resolved_to_config_dir(self, tmp_path: Path):
+        cfg_dir = tmp_path / "cfg"
+        repo = cfg_dir / "wl_hcpu"
+        repo.mkdir(parents=True)
+        yaml = _write_yaml(
+            cfg_dir / "scripthut.yaml",
+            "sources:\n"
+            "  - name: wl\n"
+            "    type: sync\n"
+            "    backend: mercury\n"
+            "    path: ./wl_hcpu\n",
+        )
+        cfg = load_yaml_config(yaml)
+        src = cfg.sources[0]
+        assert src.path.is_absolute()
+        assert src.path == repo.resolve()
+

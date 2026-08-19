@@ -188,6 +188,21 @@ class TestHashInputs:
         out = await _cm().hash_inputs(_ssh(side), "/wd", ["x"])
         assert out is None
 
+    @pytest.mark.asyncio
+    async def test_quotes_working_dir_with_spaces(self):
+        seen: list[str] = []
+
+        async def side(cmd, timeout=30):
+            seen.append(cmd)
+            return ("deadbeef  a.dta\n", "", 0)
+
+        out = await _cm().hash_inputs(
+            _ssh(side), "/sync/Data/Raw Data", ["a.dta"]
+        )
+        assert out == {"a.dta": "deadbeef"}
+        assert seen and 'cd "/sync/Data/Raw Data" && ' in seen[0]
+        assert "cd /sync/Data/Raw Data && " not in seen[0]
+
 
 # ---------------------------------------------------------------------------
 # lookup

@@ -359,7 +359,7 @@ class TestGetGitRoot:
 
         assert root == "/home/user/project"
         ssh_mock.run_command.assert_called_once_with(
-            "cd ~/project/sub && git rev-parse --show-toplevel"
+            'cd "$HOME/project/sub" && git rev-parse --show-toplevel'
         )
 
     @pytest.mark.asyncio

@@ -18,11 +18,13 @@
             {% endif %}
             {% if not b.scanning and not b.cleaning %}
             {% if b.result %}
-            {# "data" is deliberately excluded from the bulk sweep. An orphaned
+            {# "data" and "sync" are excluded from the bulk sweep. An orphaned
                clone is re-clonable from git; an orphaned (unconfigured) dataset
                copy may be the only one on this backend if the local directory
                moved, so it must be deleted one row at a time with its own
-               warning. Superseded copies are REFERENCED and never in scope here. #}
+               warning. A type: sync dest is a live working copy — disk clean
+               never deletes it. Superseded dataset copies are REFERENCED and
+               never in scope here. #}
             {% set bulk = b.result.entries | selectattr("classification.value", "equalto", "orphaned")
                           | selectattr("kind.value", "in", ["clone", "agent", "stack", "log"]) | list %}
             {% if bulk %}
@@ -118,14 +120,15 @@
     {% for kind, title in [
         ("clone", "Repository clones"),
         ("agent", "Agent workspaces"),
+        ("sync", "Sync working copies"),
         ("stack", "Software stacks"),
         ("data", "Staged datasets"),
         ("log", "Logs & outputs"),
         ("other", "Other files & environments"),
     ] %}
     {% set items = b.result.entries | selectattr("kind.value", "equalto", kind) | list %}
-    {# clones/agents are created from a source checkout; show which one. #}
-    {% set show_source = kind in ["clone", "agent"] %}
+    {# clones/agents/sync dests are created from a source; show which one. #}
+    {% set show_source = kind in ["clone", "agent", "sync"] %}
     {% set selectable = not b.scanning and not b.cleaning %}
     {% if items %}
     <div class="mt-5">

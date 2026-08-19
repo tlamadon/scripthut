@@ -174,6 +174,16 @@ class SlurmBackendConfig(BaseModel):
             "home quotas are usually far below real dataset sizes."
         ),
     )
+    sync_dir: str = Field(
+        default="~/scripthut-sync",
+        description=(
+            "Parent directory on this backend for type: sync working copies, "
+            "which land at <sync_dir>/<source-name>/. Defaults to home like "
+            "clone_dir; point it at scratch. Must not sit under clone_dir "
+            "or dataset_dir. The disk page inventories these dests as live "
+            "working copies; disk clean will not delete them."
+        ),
+    )
     env: list[EnvRule] = Field(
         default_factory=list,
         description="Backend-level env rules — cluster facts like SCRATCH and module init",
@@ -218,6 +228,16 @@ class PBSBackendConfig(BaseModel):
             "at <dataset_dir>/<dataset-name>/<hash>. Defaults to home like "
             "clone_dir; point it at scratch for anything large, since HPC "
             "home quotas are usually far below real dataset sizes."
+        ),
+    )
+    sync_dir: str = Field(
+        default="~/scripthut-sync",
+        description=(
+            "Parent directory on this backend for type: sync working copies, "
+            "which land at <sync_dir>/<source-name>/. Defaults to home like "
+            "clone_dir; point it at scratch. Must not sit under clone_dir "
+            "or dataset_dir. The disk page inventories these dests as live "
+            "working copies; disk clean will not delete them."
         ),
     )
     env: list[EnvRule] = Field(
@@ -265,6 +285,16 @@ class LocalBackendConfig(BaseModel):
             "<dataset_dir>/<dataset-name>/<hash>. For a local backend this host "
             "is the backend, so staging is a local copy — the destination is "
             "still a real, reusable path, not the dataset's original one."
+        ),
+    )
+    sync_dir: str = Field(
+        default="~/scripthut-sync",
+        description=(
+            "Parent directory for type: sync working copies, which land at "
+            "<sync_dir>/<source-name>/. For a local backend this host is the "
+            "backend, so the copy is local. Must not equal the source path, "
+            "or sit under clone_dir or dataset_dir. The disk page inventories "
+            "these dests as live working copies; disk clean will not delete them."
         ),
     )
     env: list[EnvRule] = Field(
@@ -558,8 +588,64 @@ class PathSourceConfig(BaseModel):
     )
 
 
+class SyncSourceConfig(BaseModel):
+    """Laptop working tree copied to a backend on submit (``type: sync``)."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    name: str = Field(description="Unique identifier for this source")
+    type: Literal["sync"] = "sync"
+    path: Path = Field(
+        description=(
+            "Git repository on the scripthut host. Relative paths resolve "
+            "against the config file's directory, never the cwd."
+        ),
+    )
+    backend: str = Field(
+        description="Backend whose filesystem receives the copy and runs the jobs",
+    )
+    dest: str | None = Field(
+        default=None,
+        description=(
+            "Directory on the backend to copy into. Absolute, or '~/'-relative. "
+            "When unset, <backend.sync_dir>/<name>/ is used (default "
+            "~/scripthut-sync/<name>/). Must not sit under clone_dir or dataset_dir."
+        ),
+    )
+    return_dir: str = Field(
+        default="output",
+        alias="return",
+        description=(
+            "Relative directory pulled cluster → laptop after the run "
+            "(default output/). Excluded from the upload even if git-tracked."
+        ),
+    )
+    workflows_glob: str = Field(
+        default=".hut/workflows/*.json",
+        description="Glob pattern to find workflow JSON files within the path (e.g. '**/*.hut.json')",
+    )
+    max_concurrent: int | None = Field(
+        default=None,
+        ge=1,
+        description="Default max concurrent tasks per run (None = backend limit only)",
+    )
+    timeout: int = Field(
+        default=86400,
+        ge=1,
+        description=(
+            "Wall-clock limit in seconds for both the upload and the return pull. "
+            "Generous by default; set lower when the repo is small and you want "
+            "fast failure on a stalled transfer."
+        ),
+    )
+    description: str = Field(
+        default="",
+        description="Human-readable description of this source",
+    )
+
+
 SourceConfig = Annotated[
-    GitSourceConfig | PathSourceConfig,
+    GitSourceConfig | PathSourceConfig | SyncSourceConfig,
     Field(discriminator="type"),
 ]
 
@@ -1002,7 +1088,7 @@ class ScriptHutConfig(BaseModel):
                 return backend
         return None
 
-    def get_source(self, name: str) -> GitSourceConfig | PathSourceConfig | None:
+    def get_source(self, name: str) -> GitSourceConfig | PathSourceConfig | SyncSourceConfig | None:
         """Get a source by name."""
         for source in self.sources:
             if source.name == name:

@@ -6,14 +6,16 @@ import asyncio
 import base64
 import json
 import logging
+import posixpath
 import shlex
 import uuid
 from datetime import datetime, timezone
 from fnmatch import fnmatch
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from scripthut.backends.base import JobBackend
+from scripthut.backends.utils import shell_quote_path
 from scripthut.config_schema import (
     AgentConfig,
     EnvRule,
@@ -21,6 +23,7 @@ from scripthut.config_schema import (
     PathSourceConfig,
     ScriptHutConfig,
     Stack,
+    SyncSourceConfig,
 )
 from scripthut.models import JobState
 from scripthut.runs.cache import CacheManager
@@ -43,6 +46,64 @@ if TYPE_CHECKING:
     from scripthut.runs.storage import RunStorageManager
 
 logger = logging.getLogger(__name__)
+
+# Cap for on-demand ``$SCRIPTHUT_OUTPUT_DIR`` file fetches (CLI / API /
+# UI file endpoint). The listing already drops files over 5 MB; this is
+# the belt-and-suspenders read limit if someone hits a path directly.
+_OUTPUTS_FETCH_MAX_BYTES = 10 * 1024 * 1024
+
+
+def contained_output_path(output_dir: str, rel_path: str) -> str | None:
+    """Join ``rel_path`` onto ``output_dir`` if it stays inside.
+
+    Returns the normalized POSIX path, or ``None`` for escapes (``..``,
+    absolute paths, NUL / newline). The file-fetch endpoints share this
+    so the containment check lives in one place.
+    """
+    if any(c in rel_path for c in ("\x00", "\n", "\r")):
+        return None
+    full_path = posixpath.normpath(posixpath.join(output_dir, rel_path))
+    norm_dir = posixpath.normpath(output_dir) + "/"
+    if not full_path.startswith(norm_dir):
+        return None
+    return full_path
+
+
+def encode_task_output_payload(
+    rel_path: str,
+    content: bytes,
+    *,
+    tail_lines: int | None = None,
+) -> dict[str, Any]:
+    """JSON body for a fetched ``$SCRIPTHUT_OUTPUT_DIR`` file.
+
+    Text decodes as UTF-8; anything else is base64. ``--tail`` applies
+    only to text.
+    """
+    size = len(content)
+    try:
+        text = content.decode("utf-8")
+    except UnicodeDecodeError:
+        return {
+            "path": rel_path,
+            "binary": True,
+            "encoding": "base64",
+            "content": base64.b64encode(content).decode("ascii"),
+            "size": size,
+        }
+    if tail_lines is not None and tail_lines > 0:
+        lines = text.splitlines()
+        text = "\n".join(lines[-tail_lines:])
+        if content.endswith(b"\n") and text:
+            text += "\n"
+    return {
+        "path": rel_path,
+        "binary": False,
+        "encoding": "utf-8",
+        "content": text,
+        "size": size,
+    }
+
 
 # Marker stored on ``item.error`` when a SUBMITTED job vanishes from the
 # scheduler queue without ever being observed RUNNING.  Used by the polling
@@ -519,7 +580,7 @@ class RunManager:
     async def _get_git_root(self, ssh_client: SSHClient, working_dir: str) -> str:
         """Detect the git repository root for a working directory on the backend."""
         stdout, stderr, exit_code = await ssh_client.run_command(
-            f"cd {working_dir} && git rev-parse --show-toplevel"
+            f"cd {shell_quote_path(working_dir)} && git rev-parse --show-toplevel"
         )
         if exit_code != 0:
             raise ValueError(
@@ -662,7 +723,7 @@ class RunManager:
                 # Run postclone command if configured
                 if postclone:
                     logger.info(f"Running postclone command in {clone_path}")
-                    cmd = f"cd {clone_path} && {postclone}"
+                    cmd = f"cd {shell_quote_path(clone_path)} && {postclone}"
                     _, stderr, exit_code = await ssh_client.run_command(
                         cmd, timeout=300
                     )
@@ -729,7 +790,7 @@ class RunManager:
         # letting one answer here would move the whole run's logs the moment
         # a workflow declared a dataset.
         first_working_dir = next(
-            (t.working_dir for t in tasks if t.data_dep is None),
+            (t.working_dir for t in tasks if not t.is_daemon_transfer),
             tasks[0].working_dir,
         )
         if ssh_client is not None:
@@ -1235,7 +1296,7 @@ class RunManager:
 
             if source.postclone:
                 logger.info(f"Running postclone command in {workspace}")
-                cmd = f"cd {workspace} && {source.postclone}"
+                cmd = f"cd {shell_quote_path(workspace)} && {source.postclone}"
                 _, stderr, exit_code = await ssh_client.run_command(cmd, timeout=600)
                 if exit_code != 0:
                     raise ValueError(f"Postclone command failed: {stderr}")
@@ -1255,9 +1316,53 @@ class RunManager:
             elif not task.working_dir.startswith(("/", "~")):
                 task.working_dir = f"{clone_dir}/{task.working_dir}"
 
+    async def _resolve_sync_dest(
+        self,
+        source: SyncSourceConfig,
+        backend_name: str,
+        ssh_client: SSHClient,
+    ) -> str:
+        """Expand and guard the backend dest for a type: sync source."""
+        from scripthut.runs.datasets import probe_backend_paths
+        from scripthut.runs.sync import SyncError, local_path_collides, resolve_dest
+
+        backend_cfg = self.config.get_backend(backend_name)
+        if backend_cfg is None:
+            raise ValueError(f"Backend '{backend_name}' not found")
+        paths = await probe_backend_paths(ssh_client)
+        try:
+            dest = resolve_dest(
+                source,
+                backend_name=backend_name,
+                backend_cfg=backend_cfg,
+                home=paths.home,
+            )
+        except SyncError as e:
+            raise ValueError(str(e)) from e
+        if getattr(backend_cfg, "type", None) == "local" and local_path_collides(
+            source.path, dest
+        ):
+            raise ValueError(
+                f"Sync dest {dest} overlaps the source path; "
+                "the copy must not write into or over the local repo."
+            )
+        return dest
+
+    def _active_sync_dest_run(self, dest: str) -> str | None:
+        """Id of a non-terminal run already using this dest, if any."""
+        terminal = (RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED)
+        for run in self.runs.values():
+            if run.status in terminal:
+                continue
+            for item in run.items:
+                dep = item.task.sync_dep
+                if dep is not None and dep.dest == dest:
+                    return run.id
+        return None
+
     async def _load_source_project_config(
         self,
-        source: GitSourceConfig | PathSourceConfig,
+        source: GitSourceConfig | PathSourceConfig | SyncSourceConfig,
         *,
         commit_hash: str | None = None,
         ssh_client: SSHClient | None = None,
@@ -1351,6 +1456,36 @@ class RunManager:
                 )
             # Path sources already exist on the backend.
             self._resolve_working_dirs(tasks, source.path)
+        elif isinstance(source, SyncSourceConfig):
+            if ssh_client is None:
+                raise ValueError(
+                    f"Sync source '{source_name}' requires an SSH backend; "
+                    f"'{backend_name}' has no filesystem."
+                )
+            dest = await self._resolve_sync_dest(source, backend_name, ssh_client)
+            busy = self._active_sync_dest_run(dest)
+            if busy is not None:
+                raise ValueError(
+                    f"Sync dest {dest} is in use by run '{busy}'. "
+                    "Cancel that run or wait for it to finish before submitting again."
+                )
+            self._resolve_working_dirs(tasks, dest)
+            from scripthut.runs.sync import apply_return, apply_upload
+
+            tasks = apply_upload(
+                tasks,
+                local_path=source.path,
+                dest=dest,
+                return_dir=source.return_dir,
+                timeout=source.timeout,
+            )
+            tasks = apply_return(
+                tasks,
+                local_path=source.path,
+                dest=dest,
+                return_dir=source.return_dir,
+                timeout=source.timeout,
+            )
 
         # Overlay the source repo's project-local scripthut.yaml on top of
         # what the workflow doc itself carries. Precedence in the final
@@ -1599,6 +1734,33 @@ class RunManager:
                 self._resolve_working_dirs(tasks, f"{source.clone_dir}/<commit>")
         elif isinstance(source, PathSourceConfig):
             self._resolve_working_dirs(tasks, source.path)
+        elif isinstance(source, SyncSourceConfig):
+            ssh_client = self.get_ssh_client(backend_name)
+            if ssh_client:
+                try:
+                    dest = await self._resolve_sync_dest(
+                        source, backend_name, ssh_client,
+                    )
+                    busy = self._active_sync_dest_run(dest)
+                    if busy is not None:
+                        warnings.append(
+                            f"Sync dest {dest} is in use by run '{busy}'. "
+                            "A real submit would be refused until that run finishes."
+                        )
+                    self._resolve_working_dirs(tasks, dest)
+                except Exception as e:
+                    warnings.append(f"Could not resolve sync dest: {e}")
+                    self._resolve_working_dirs(
+                        tasks, source.dest or f"~/scripthut-sync/{source.name}"
+                    )
+            else:
+                warnings.append(
+                    f"Backend '{backend_name}' is not connected. "
+                    "Cannot preview sync dest."
+                )
+                self._resolve_working_dirs(
+                    tasks, source.dest or f"~/scripthut-sync/{source.name}"
+                )
 
         # Same overlay as the real submission path so the preview reflects
         # what would actually happen: repo env / env_groups / stacks fold
@@ -2146,12 +2308,247 @@ class RunManager:
             # transfer failed, so the run ends FAILED rather than hanging.
             await self.process_run(run)
 
+    def _start_sync_item(self, run: Run, item: RunItem) -> bool:
+        """Begin a sync-source transfer in the background.
+
+        Same shape as :meth:`_start_staging_item`: RUNNING immediately, the
+        copy runs off the poll loop, then ``process_run`` is re-driven.
+        """
+        dep = item.task.sync_dep
+        assert dep is not None
+
+        if dep.kind == "return" and not self._sync_return_ready(run, item):
+            return True
+
+        ssh_client = self.get_ssh_client(run.backend_name)
+        if ssh_client is None:
+            item.status = RunItemStatus.FAILED
+            item.error = (
+                f"Backend '{run.backend_name}' has no filesystem, so the "
+                f"sync {dep.kind} cannot run"
+            )
+            item.finished_at = datetime.now(timezone.utc)
+            self._persist_run(run)
+            return False
+
+        key = f"{run.id}:{item.task.id}"
+        if key in self._staging_tasks:
+            return True
+
+        now = datetime.now(timezone.utc)
+        item.status = RunItemStatus.RUNNING
+        item.submitted_at = now
+        item.started_at = now
+        self._persist_run(run)
+
+        self._staging_tasks[key] = asyncio.create_task(
+            self._run_sync_item(run, item, ssh_client)
+        )
+        logger.info(
+            f"Run '{run.id}': sync {dep.kind} {dep.local_path} -> {dep.dest}"
+        )
+        return True
+
+    def _sync_return_ready(self, run: Run, item: RunItem) -> bool:
+        """True when every other current item is terminal so the pull may start."""
+        terminal = (
+            RunItemStatus.COMPLETED,
+            RunItemStatus.FAILED,
+            RunItemStatus.DEP_FAILED,
+        )
+        return all(
+            other.status in terminal
+            for other in run.items
+            if other is not item
+        )
+
+    @staticmethod
+    def _is_pending_sync_return(item: RunItem) -> bool:
+        dep = item.task.sync_dep
+        return (
+            dep is not None
+            and dep.kind == "return"
+            and item.status == RunItemStatus.PENDING
+        )
+
+    async def _run_sync_item(
+        self, run: Run, item: RunItem, ssh_client: SSHClient
+    ) -> None:
+        """Copy tracked files laptop → dest, or dest/output → laptop."""
+        from scripthut.runs.datasets import _listing_command, parse_remote_listing
+        from scripthut.runs.sync import (
+            SYNC_STAGING_INFIX,
+            list_upload_paths,
+            sync_staging_path,
+        )
+
+        dep = item.task.sync_dep
+        assert dep is not None
+        key = f"{run.id}:{item.task.id}"
+        lock = self._staging_locks.setdefault(
+            (run.backend_name, f"sync:{dep.dest}"), asyncio.Lock()
+        )
+        cancelled = False
+
+        try:
+            async with lock:
+                if dep.kind == "upload":
+                    relpaths = list_upload_paths(
+                        Path(dep.local_path), dep.return_dir
+                    )
+                    local_sizes = {
+                        rel: (Path(dep.local_path) / rel).stat().st_size
+                        for rel in relpaths
+                    }
+                    staging = sync_staging_path(dep.dest, run.id)
+
+                    # Clear leftovers from a prior interrupted attempt and
+                    # create the staging directory so SFTP puts files into
+                    # it even when relpaths is empty.
+                    prepare = (
+                        f"rm -rf {shell_quote_path(dep.dest)}{SYNC_STAGING_INFIX}* && "
+                        f"mkdir -p {shell_quote_path(staging)}"
+                    )
+                    _, stderr, code = await ssh_client.run_command(
+                        prepare, timeout=120
+                    )
+                    if code != 0:
+                        raise RuntimeError(
+                            f"Could not prepare staging path for sync: "
+                            f"{stderr.strip()}"
+                        )
+
+                    copied = await ssh_client.put_files(
+                        Path(dep.local_path),
+                        staging,
+                        relpaths,
+                        timeout=dep.timeout,
+                    )
+
+                    # Verify the staged tree before publishing — catches
+                    # quota-truncated files the SFTP layer silently accepts.
+                    stdout, stderr, code = await ssh_client.run_command(
+                        _listing_command(staging), timeout=120
+                    )
+                    if code != 0:
+                        raise RuntimeError(
+                            f"Could not verify staged tree at {staging}: "
+                            f"{stderr.strip()}"
+                        )
+                    remote_entries = {
+                        (p[2:] if p.startswith("./") else p): s
+                        for p, s in parse_remote_listing(stdout)
+                    }
+                    problems = [
+                        f"missing: {p}"
+                        for p in local_sizes
+                        if p not in remote_entries
+                    ] + [
+                        f"size mismatch: {p} "
+                        f"(expected {local_sizes[p]}, got {remote_entries[p]})"
+                        for p in local_sizes
+                        if p in remote_entries and remote_entries[p] != local_sizes[p]
+                    ]
+                    if problems:
+                        raise RuntimeError(
+                            f"Staged sync tree does not match local repo; "
+                            f"leaving it at {staging} for diagnosis. "
+                            + "; ".join(problems[:5])
+                        )
+
+                    # Atomic replace: wipe the old dest (removes stale files
+                    # from prior runs) then move the verified staging tree
+                    # onto it.
+                    finalize = (
+                        f"rm -rf {shell_quote_path(dep.dest)} && "
+                        f"mv {shell_quote_path(staging)} "
+                        f"{shell_quote_path(dep.dest)}"
+                    )
+                    _, stderr, code = await ssh_client.run_command(
+                        finalize, timeout=300
+                    )
+                    if code != 0:
+                        raise RuntimeError(
+                            f"Could not publish sync tree to {dep.dest}: "
+                            f"{stderr.strip()}"
+                        )
+                    item.submit_output = (
+                        f"Uploaded {len(relpaths)} files "
+                        f"({copied} bytes) to {dep.dest}"
+                    )
+
+                elif dep.kind == "return":
+                    remote = f"{dep.dest.rstrip('/')}/{dep.return_dir}"
+                    local = Path(dep.local_path) / dep.return_dir
+
+                    # One shell round trip replaces the O(N) SFTP lstat walk.
+                    # A non-zero exit means the output directory is absent —
+                    # the same no-op contract the old list_files had.
+                    stdout, stderr, code = await ssh_client.run_command(
+                        _listing_command(remote), timeout=60
+                    )
+                    if code != 0:
+                        relpaths = []
+                    else:
+                        relpaths = [
+                            p[2:] if p.startswith("./") else p
+                            for p, _ in parse_remote_listing(stdout)
+                        ]
+
+                    # Remove local files absent from the remote so the local
+                    # output directory mirrors what the cluster produced.
+                    if local.is_dir():
+                        remote_set = set(relpaths)
+                        for f in list(local.rglob("*")):
+                            if f.is_file() and not f.is_symlink():
+                                rel = f.relative_to(local).as_posix()
+                                if rel not in remote_set:
+                                    f.unlink(missing_ok=True)
+
+                    copied = await ssh_client.get_files(
+                        remote,
+                        local,
+                        relpaths,
+                        timeout=dep.timeout,
+                    )
+                    item.submit_output = (
+                        f"Pulled {len(relpaths)} files "
+                        f"({copied} bytes) from {remote}"
+                    )
+
+                else:
+                    raise ValueError(f"Unknown sync kind {dep.kind!r}")
+
+            item.status = RunItemStatus.COMPLETED
+            item.exit_code = 0
+            logger.info(
+                f"Run '{run.id}': sync {dep.kind} finished for {dep.dest}"
+            )
+        except asyncio.CancelledError:
+            cancelled = True
+            item.status = RunItemStatus.FAILED
+            item.error = "Cancelled"
+        except Exception as e:
+            item.status = RunItemStatus.FAILED
+            item.error = str(e)
+            logger.error(f"Run '{run.id}': sync {dep.kind} failed: {e}")
+        finally:
+            item.finished_at = datetime.now(timezone.utc)
+            self._staging_tasks.pop(key, None)
+            self._persist_run(run)
+            self.notify_run(run.id)
+
+        if not cancelled:
+            await self.process_run(run)
+
     async def submit_task(self, run: Run, item: RunItem) -> bool:
         """Submit a single task to the scheduler."""
         # Dataset staging is executed by the daemon over SFTP and never
         # reaches a scheduler, so it branches before any backend work.
         if item.task.data_dep is not None:
             return self._start_staging_item(run, item)
+        if item.task.sync_dep is not None:
+            return self._start_sync_item(run, item)
 
         job_backend = self.get_job_backend(run.backend_name)
         if job_backend is None:
@@ -2269,8 +2666,12 @@ class RunManager:
         # outside the concurrency budget entirely. Metering them against
         # cluster slots would stall a run whose only ready work is the
         # transfer its tasks are waiting on.
-        staging_items = [i for i in ready_items if i.task.data_dep is not None]
-        ready_items = [i for i in ready_items if i.task.data_dep is None]
+        staging_items = [
+            i for i in ready_items if i.task.is_daemon_transfer
+        ]
+        ready_items = [
+            i for i in ready_items if not i.task.is_daemon_transfer
+        ]
 
         staging_failed = False
         for item in staging_items:
@@ -2635,17 +3036,22 @@ class RunManager:
 
         ssh_client = self.get_ssh_client(run.backend_name)
 
-        # Dataset transfers run in this process, so there is no job to
+        # Dataset / sync transfers run in this process, so there is no job to
         # scancel — the asyncio task itself has to be stopped or it keeps
-        # copying gigabytes for a run the user already gave up on.
+        # copying. A pending ``_sync.return`` is left alone so the pull still
+        # runs after the rest of the run is cancelled.
         for item in run.items:
-            if item.task.data_dep is None:
+            if self._is_pending_sync_return(item):
+                continue
+            if not item.task.is_daemon_transfer:
                 continue
             transfer = self._staging_tasks.pop(f"{run.id}:{item.task.id}", None)
             if transfer is not None and not transfer.done():
                 transfer.cancel()
 
         for item in run.items:
+            if self._is_pending_sync_return(item):
+                continue
             if item.status == RunItemStatus.PENDING:
                 item.status = RunItemStatus.FAILED
                 item.error = "Cancelled"
@@ -2674,6 +3080,8 @@ class RunManager:
         self._persist_run(run)
         self.notify_run(run.id)
         logger.info(f"Cancelled run '{run_id}'")
+        if any(self._is_pending_sync_return(i) for i in run.items):
+            await self.process_run(run)
         return True
 
     def delete_run(self, run_id: str) -> bool:
@@ -2734,14 +3142,21 @@ class RunManager:
         the destination is content-addressed, so a fresh attempt is safe.
         """
         for item in run.items:
-            if item.task.data_dep is None or item.status != RunItemStatus.RUNNING:
+            if not item.task.is_daemon_transfer:
+                continue
+            if item.status != RunItemStatus.RUNNING:
                 continue
             item.status = RunItemStatus.PENDING
             item.submitted_at = None
             item.started_at = None
             item.error = None
+            what = (
+                f"dataset '{item.task.data_dep.name}'"
+                if item.task.data_dep is not None
+                else f"sync {item.task.sync_dep.kind}"
+            )
             logger.info(
-                f"Run '{run.id}': re-queueing dataset '{item.task.data_dep.name}' "
+                f"Run '{run.id}': re-queueing {what} "
                 "(transfer was interrupted by a restart)"
             )
 
@@ -2824,10 +3239,105 @@ class RunManager:
             tail_lines=tail_lines,
         )
 
+    def list_task_outputs(
+        self, run_id: str, task_id: str,
+    ) -> tuple[dict[str, Any] | None, str | None]:
+        """Listing of files collected from ``$SCRIPTHUT_OUTPUT_DIR``.
+
+        This is the persisted post-completion inventory (not a live
+        re-scan). Empty ``files`` means the task wrote nothing, the
+        item is not yet COMPLETED, or the backend has no SSH.
+        """
+        run = self.runs.get(run_id)
+        if run is None:
+            return None, f"Run '{run_id}' not found"
+        item = run.get_item_by_task_id(task_id)
+        if item is None:
+            return None, f"Task '{task_id}' not found in run '{run_id}'"
+        return {
+            "run_id": run_id,
+            "task_id": task_id,
+            "output_dir": item.task.get_output_dir(run.id, run.log_dir),
+            "has_run_summary": item.has_run_summary,
+            "files": [o.to_dict() for o in item.outputs],
+        }, None
+
+    async def fetch_task_output_file(
+        self,
+        run_id: str,
+        task_id: str,
+        rel_path: str,
+    ) -> tuple[bytes | None, str | None]:
+        """Read one file from a task's ``$SCRIPTHUT_OUTPUT_DIR`` over SSH.
+
+        Same containment rules as the UI file endpoint. Returns
+        ``(bytes, None)`` on success or ``(None, error)``.
+        """
+        run = self.runs.get(run_id)
+        if run is None:
+            return None, f"Run '{run_id}' not found"
+        item = run.get_item_by_task_id(task_id)
+        if item is None:
+            return None, f"Task '{task_id}' not found in run '{run_id}'"
+
+        ssh_client = self.get_ssh_client(run.backend_name)
+        if ssh_client is None:
+            return None, (
+                f"Task outputs are not available on backend "
+                f"'{run.backend_name}' (no SSH)"
+            )
+
+        output_dir = item.task.get_output_dir(run.id, run.log_dir)
+        if output_dir.startswith("~"):
+            stdout, _, _ = await ssh_client.run_command("echo $HOME")
+            home_dir = stdout.strip()
+            output_dir = output_dir.replace("~", home_dir, 1)
+
+        full_path = contained_output_path(output_dir, rel_path)
+        if full_path is None:
+            return None, f"Output file '{rel_path}' not found"
+
+        quoted = shell_quote_path(full_path)
+        size_out, _, size_rc = await ssh_client.run_command(
+            f"stat -c %s {quoted} 2>/dev/null"
+        )
+        if size_rc != 0 or not size_out.strip():
+            return None, f"Output file '{rel_path}' not found"
+        try:
+            size = int(size_out.strip())
+        except ValueError:
+            return None, f"Output file '{rel_path}' not found"
+        if size > _OUTPUTS_FETCH_MAX_BYTES:
+            return None, (
+                f"Output file '{rel_path}' is {size} bytes "
+                f"(max {_OUTPUTS_FETCH_MAX_BYTES})"
+            )
+
+        b64_out, _, b64_rc = await ssh_client.run_command(
+            f"base64 -w0 {quoted}"
+        )
+        if b64_rc != 0:
+            return None, f"Output file '{rel_path}' not found"
+        try:
+            return base64.b64decode(b64_out.strip()), None
+        except Exception:
+            return None, f"Failed to decode output file '{rel_path}'"
+
+
+def _output_fetch_http_status(error: str) -> int:
+    """Map ``list_task_outputs`` / ``fetch_task_output_file`` errors to HTTP."""
+    if "not found" in error:
+        return 404
+    if "max " in error and "bytes" in error:
+        return 413
+    if "no SSH" in error:
+        return 503
+    return 422
+
 
 async def load_source_project_config(
     config: ScriptHutConfig,
-    source: GitSourceConfig | PathSourceConfig,
+    source: GitSourceConfig | PathSourceConfig | SyncSourceConfig,
     *,
     commit_hash: str | None = None,
     ssh_client: SSHClient | None = None,
@@ -2861,6 +3371,8 @@ async def load_source_project_config(
     - **Path**: ``cat <source.path>/scripthut.yaml`` over the
       ``ssh_client`` passed in (the source's backend). The caller
       already has this connection in ``create_run_from_source``.
+    - **Sync**: ``<local path>/scripthut.yaml`` on this host. The
+      working tree is the source of truth — no clone, no SSH.
     """
     import subprocess
 
@@ -2917,6 +3429,15 @@ async def load_source_project_config(
             # cat exits 1 when the file is missing; same soft skip.
             return None
         raw_text = stdout
+    elif isinstance(source, SyncSourceConfig):
+        yaml_path = source.path.expanduser() / "scripthut.yaml"
+        try:
+            raw_text = yaml_path.read_text()
+        except FileNotFoundError:
+            return None
+        except OSError as e:
+            logger.warning(f"reading {identity} failed: {e}")
+            return None
     else:
         return None
 

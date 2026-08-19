@@ -28,6 +28,7 @@ from scripthut.config_schema import (
     GitSourceConfig,
     PathSourceConfig,
     ScriptHutConfig,
+    SyncSourceConfig,
 )
 from scripthut.disk.service import DiskScanService
 from scripthut.models import ConnectionStatus, HPCJob, JobState
@@ -820,6 +821,19 @@ async def sync_sources_background() -> None:
             except Exception as e:
                 logger.warning(f"Failed to discover workflows for path source {path_source.name}: {e}")
 
+        # Discover workflows from sync sources on this host (no clone, no SSH)
+        if state.config is not None:
+            for source in state.config.sources:
+                if not isinstance(source, SyncSourceConfig):
+                    continue
+                try:
+                    workflows = _discover_sync_source_workflows(source)
+                    state.source_workflows[source.name] = workflows
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to discover workflows for sync source {source.name}: {e}"
+                    )
+
     except Exception as e:
         logger.error(f"Failed to sync sources: {e}")
 
@@ -887,6 +901,19 @@ async def _discover_path_source_workflows(source: PathSourceConfig) -> list[Sour
         )
 
     logger.info(f"Discovered {len(workflows)} workflows in path source '{source.name}'")
+    return workflows
+
+
+def _discover_sync_source_workflows(source: SyncSourceConfig) -> list[SourceWorkflow]:
+    """Discover workflow JSON on the laptop working tree. No clone, no SSH."""
+    from scripthut.runs.sync import discover_workflows
+
+    workflows = discover_workflows(
+        source.path, source.workflows_glob, source_name=source.name,
+    )
+    logger.info(
+        f"Discovered {len(workflows)} workflows in sync source '{source.name}'"
+    )
     return workflows
 
 
@@ -1730,6 +1757,14 @@ async def _refresh_source_workflow(name: str, filename: str) -> SourceWorkflow |
             state.source_workflows[name] = workflows
         except Exception as e:
             logger.warning(f"Failed to refresh source '{name}' before run: {e}")
+    elif state.config is not None:
+        source = state.config.get_source(name)
+        if isinstance(source, SyncSourceConfig):
+            try:
+                workflows = _discover_sync_source_workflows(source)
+                state.source_workflows[name] = workflows
+            except Exception as e:
+                logger.warning(f"Failed to refresh sync source '{name}' before run: {e}")
 
     workflows = state.source_workflows.get(name, [])
     return next((w for w in workflows if w.filename == filename), None)
@@ -3111,8 +3146,6 @@ async def get_run_summary(run_id: str) -> JSONResponse:
 # rendered markdown (``<img>``), from the per-task Outputs subtab as
 # download links, and from copy-pasteable URLs.
 
-_OUTPUTS_FILE_MAX_BYTES = 10 * 1024 * 1024
-
 # Coarse content-type guesser by suffix. Browsers don't strictly need
 # these for images (they sniff), but explicit types make the cache
 # behave predictably and let curl users save with the right extension.
@@ -3139,75 +3172,24 @@ async def get_task_output_file(
 ) -> Response:
     """Stream a single file from a task's ``$SCRIPTHUT_OUTPUT_DIR``.
 
-    Security: the requested ``rel_path`` is joined onto the task's
-    output dir, both are passed through ``os.path.realpath``, and the
-    file must resolve under the directory. Symlink escapes, ``..``,
-    and absolute-path attempts all 404 (not 403 — same observable as
-    "this file doesn't exist", which leaks less information).
-
-    Reads via SSH from the backend (Slurm + PBS only in v0.11.0;
-    Batch / EC2 are v2). Capped at ``_OUTPUTS_FILE_MAX_BYTES``; the
-    listing already drops >5 MB files, so this is the belt-and-
-    suspenders limit if someone hits the endpoint directly.
+    Path containment, size cap, and the SSH read live in
+    ``RunManager.fetch_task_output_file``. This route only maps that
+    result onto a browser-friendly ``Response``.
     """
     import os
-    import posixpath
 
     if state.run_manager is None:
         return Response(status_code=503)
-    run = state.run_manager.get_run(run_id)
-    if run is None:
-        return Response(status_code=404)
-    item = run.get_item_by_task_id(task_id)
-    if item is None:
-        return Response(status_code=404)
-
-    output_dir = item.task.get_output_dir(run.id, run.log_dir)
-    # Containment check happens against the *normalized* joined path
-    # in POSIX form because the backend path will always be POSIX
-    # (Slurm/PBS run on Linux), even if scripthut itself is on macOS.
-    full_path = posixpath.normpath(posixpath.join(output_dir, rel_path))
-    norm_dir = posixpath.normpath(output_dir) + "/"
-    if not full_path.startswith(norm_dir):
-        return Response(status_code=404)
-    # Belt-and-suspenders against null bytes / control chars in the
-    # request path that could confuse the remote shell. These tokens
-    # never appear in legitimate filenames in this system.
-    if any(c in rel_path for c in ("\x00", "\n", "\r")):
-        return Response(status_code=404)
-
-    backend_state = state.backends.get(run.backend_name)
-    if backend_state is None or backend_state.ssh_client is None:
-        return Response(status_code=503)
-    ssh = backend_state.ssh_client
-
-    # Probe size before reading so an oversize file fails cleanly
-    # with 413 rather than hanging or OOM'ing on the read. ``stat -c %s``
-    # works on the Linux backends scripthut targets.
-    size_out, _, size_rc = await ssh.run_command(
-        f"stat -c %s {full_path} 2>/dev/null"
+    content, error = await state.run_manager.fetch_task_output_file(
+        run_id, task_id, rel_path,
     )
-    if size_rc != 0 or not size_out.strip():
-        return Response(status_code=404)
-    try:
-        size = int(size_out.strip())
-    except ValueError:
-        return Response(status_code=404)
-    if size > _OUTPUTS_FILE_MAX_BYTES:
-        return Response(status_code=413)
-
-    # Use base64 to survive binary content over the SSH stdout text
-    # channel. ``base64 -w0`` emits no line wrapping; the Python side
-    # decodes back to bytes.
-    import base64
-    b64_out, _, b64_rc = await ssh.run_command(
-        f"base64 -w0 {full_path}"
-    )
-    if b64_rc != 0:
-        return Response(status_code=404)
-    try:
-        content = base64.b64decode(b64_out.strip())
-    except Exception:
+    if error:
+        if "not found" in error:
+            return Response(status_code=404)
+        if "max " in error and "bytes" in error:
+            return Response(status_code=413)
+        if "no SSH" in error:
+            return Response(status_code=503)
         return Response(status_code=500)
 
     _, ext = os.path.splitext(rel_path.lower())

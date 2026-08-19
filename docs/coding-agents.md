@@ -81,7 +81,7 @@ A re-read shows you the current contents, but for orientation:
 - **Resource sizing defaults** — start small (1 CPU / 1 GB / 5 min), escalate only when an earlier run hit OOM or timed out.
 - **Editing `scripthut.yaml`** — the two-layer model (user-global vs. project-local), what each file is allowed to carry, merge semantics, env-rule schema (`set` / `if` / `include` / `stacks` / `append` / `init`), and edit discipline (read first, minimal diff, hot-reload not restart).
 - **Stacks** — full define → install → reference flow, including the v0.7.1 `stacks: [name]` env-rule reference syntax and the two failure modes that matter (unknown name → loud `ValueError`, no auto-install at submit time).
-- **Verify-then-submit loop** — the read-only steps the agent should run before any submission (`status`, `backend list`, `source view`, `stack check`, `--dry-run`) and how to track a run's status / output / logs after.
+- **Verify-then-submit loop** — the read-only steps the agent should run before any submission (`status`, `backend list`, `source view`, `stack check`, `--dry-run`) and how to track a run's status, scheduler logs (`run logs`), and `$SCRIPTHUT_OUTPUT_DIR` files (`run outputs`) after.
 - **Gotchas and exit codes** — `working_dir` is a path on the *backend*, partition names are remapped per backend, exit code `2` is reserved for `run watch --exit-status` failure, etc.
 
 ## Targeting a remote server

@@ -54,6 +54,9 @@ class RunReferences:
     # source is only knowable through the runs pointing at it.
     clone_sources: dict[str, set[str]] = field(default_factory=dict)
     agent_sources: dict[str, set[str]] = field(default_factory=dict)
+    # type: sync dest path -> run ids / source names of runs that used it
+    sync_dirs: dict[str, set[str]] = field(default_factory=dict)
+    sync_sources: dict[str, set[str]] = field(default_factory=dict)
 
 
 def run_source_label(run: Run) -> str | None:
@@ -127,6 +130,12 @@ def build_run_references(
             note_clone_child(
                 normalize_remote_path(item.task.working_dir, home), run.id, source
             )
+            dep = item.task.sync_dep
+            if dep is not None:
+                dest = normalize_remote_path(dep.dest, home)
+                refs.sync_dirs.setdefault(dest, set()).add(run.id)
+                if source:
+                    refs.sync_sources.setdefault(dest, set()).add(source)
         if run.log_dir and not run.log_dir.startswith("backend://"):
             ld = normalize_remote_path(run.log_dir, home)
             refs.log_dirs.setdefault(ld, set()).add(run.id)
@@ -141,6 +150,7 @@ def classify_entries(
     *,
     current_stack_hashes: dict[str, set[str]] | None = None,
     current_data_hashes: dict[str, set[str]] | None = None,
+    current_sync_dests: dict[str, str] | None = None,
 ) -> None:
     """Set classification/run_ids on each entry in place.
 
@@ -153,6 +163,12 @@ def classify_entries(
     ``current_data_hashes`` is the same idea for datasets: dataset name ->
     the manifest hash its local tree currently produces. It is how a user
     learns that scratch is holding copies of data they have since changed.
+
+    ``current_sync_dests`` maps a resolved dest path -> configured source
+    name. A dest still named in config is live (REFERENCED) even with no
+    remembered run; a leftover under ``sync_dir`` with no matching source
+    is ORPHANED. ``None`` means dests were not gathered (no SSH) — do not
+    treat unknowns as leftover.
     """
     for e in entries:
         if e.kind == DiskEntryKind.CLONE:
@@ -171,6 +187,8 @@ def classify_entries(
             _classify_stack(e, current_stack_hashes)
         elif e.kind == DiskEntryKind.DATA:
             _classify_data(e, current_data_hashes)
+        elif e.kind == DiskEntryKind.SYNC:
+            _classify_sync(e, refs, current_sync_dests)
         else:
             e.classification = DiskEntryClass.UNKNOWN
 
@@ -228,6 +246,33 @@ def _apply_refs(e: DiskEntry, refs: RunReferences, ids: set[str] | None) -> None
             if ids & refs.active_run_ids
             else DiskEntryClass.REFERENCED
         )
+    else:
+        e.classification = DiskEntryClass.ORPHANED
+
+
+def _classify_sync(
+    e: DiskEntry,
+    refs: RunReferences,
+    current_sync_dests: dict[str, str] | None,
+) -> None:
+    """Mark a type: sync dest active, live-configured, or leftover.
+
+    Unlike clones, dests are named by the source, so a configured dest
+    with no remembered run is still live — not an orphaned clone.
+    """
+    ids = refs.sync_dirs.get(e.path)
+    sources: set[str] = set(refs.sync_sources.get(e.path) or ())
+    configured = current_sync_dests.get(e.path) if current_sync_dests else None
+    if configured:
+        sources.add(configured)
+    e.source = _join_sources(sources or None)
+    if ids:
+        _apply_refs(e, refs, ids)
+    elif current_sync_dests is not None and e.path in current_sync_dests:
+        e.classification = DiskEntryClass.REFERENCED
+    elif current_sync_dests is None:
+        # Dest list was not gathered; don't flag a live copy as leftover.
+        e.classification = DiskEntryClass.REFERENCED
     else:
         e.classification = DiskEntryClass.ORPHANED
 

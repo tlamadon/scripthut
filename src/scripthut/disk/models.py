@@ -1,10 +1,10 @@
 """Data models for remote disk-usage scanning.
 
 A scan inventories the directories ScriptHut creates on a backend's
-filesystem (source clones, agent workspaces, stacks, logs) and
-classifies each entry against the runs the server knows about. Phase 1
-is report-only: classification marks what a future cleanup could act
-on, but nothing here deletes anything.
+filesystem (source clones, agent workspaces, sync working copies,
+stacks, logs) and classifies each entry against the runs the server
+knows about. Phase 1 is report-only: classification marks what a
+future cleanup could act on, but nothing here deletes anything.
 """
 
 from __future__ import annotations
@@ -32,6 +32,7 @@ class DiskEntryKind(str, Enum):
 
     CLONE = "clone"  # <clone_dir>/<12-hex commit hash>
     AGENT = "agent"  # <clone_dir>/agent-<8-hex uid>
+    SYNC = "sync"    # type: sync dest (live working copy; never disk-cleaned)
     STACK = "stack"  # <cache_dir>/<name>/<hash>
     DATA = "data"    # <data_root>/<name>/<12-hex manifest hash>
     LOG = "log"      # <log_root>/<workflow>
@@ -59,10 +60,10 @@ class DiskEntry:
     run_ids: list[str] = field(default_factory=list)
     detail: str | None = None  # e.g. "julia/ab12cd34ef56", workflow name
     ready: bool | None = None  # stacks only: .ready sentinel present
-    # clones/agents only: the configured source(s) whose runs reference this
-    # entry, derived from those runs (the on-disk path is keyed by commit
-    # hash, which doesn't name a source on its own). None when no known run
-    # points at it — e.g. an orphaned clone.
+    # clones/agents/sync: the configured source(s) that own this entry.
+    # Clones are keyed by commit hash on disk, so the source comes from
+    # runs; a sync dest is named by the source itself. None when no known
+    # run or configured source points at it — e.g. an orphaned clone.
     source: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -143,6 +144,12 @@ class ScanSpec:
     # whole data root, because a root is often a shared place like the user's
     # scratch, and enumerating it would inventory everything they own.
     data_dirs: list[str] = field(default_factory=list)
+    # Backend ``sync_dir`` parents, walked one level so leftover dests of
+    # deleted sources still show up. Children are the dest directories.
+    sync_parents: list[str] = field(default_factory=list)
+    # Explicit ``type: sync`` dests that do not sit under a walked parent —
+    # inventoried as whole trees (one row per dest), not their contents.
+    sync_dirs: list[str] = field(default_factory=list)
     log_roots: list[str] = field(default_factory=lambda: [DEFAULT_LOG_ROOT])
     # Swept one level deep, minus everything the roots above already
     # cover. Catches stack-built envs and any other stray occupant of

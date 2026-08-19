@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Literal
 
+from scripthut.backends.utils import shell_quote_path
 from scripthut.config_schema import EnvRule, Stack
 
 
@@ -106,6 +107,39 @@ class DataDep:
         )
 
 
+@dataclass
+class SyncDep:
+    """A resolved sync-source transfer carried by a daemon-side run item.
+
+    Built by the run manager — never parsed from user JSON.
+    """
+
+    kind: str  # "upload" | "return"
+    local_path: str
+    dest: str
+    return_dir: str = "output"
+    timeout: int = 86400
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "kind": self.kind,
+            "local_path": self.local_path,
+            "dest": self.dest,
+            "return_dir": self.return_dir,
+            "timeout": self.timeout,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "SyncDep":
+        return cls(
+            kind=data["kind"],
+            local_path=data["local_path"],
+            dest=data["dest"],
+            return_dir=data.get("return_dir", "output"),
+            timeout=int(data.get("timeout", 86400)),
+        )
+
+
 def parse_data_deps(data: dict[str, Any] | list[Any]) -> list[str]:
     """Dataset names requested by a workflow document's top-level ``data``.
 
@@ -190,6 +224,8 @@ class TaskDefinition:
     # Deliberately absent from ``from_dict``: it round-trips through storage
     # via ``RunItem.from_dict`` so a workflow document cannot forge one.
     data_dep: "DataDep | None" = None
+    # Same idea as data_dep for type: sync transfers. Absent from from_dict.
+    sync_dep: "SyncDep | None" = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "TaskDefinition":
@@ -253,7 +289,13 @@ class TaskDefinition:
             "cache": self.cache,
             "cache_scope": self.cache_scope,
             "data_dep": self.data_dep.to_dict() if self.data_dep else None,
+            "sync_dep": self.sync_dep.to_dict() if self.sync_dep else None,
         }
+
+    @property
+    def is_daemon_transfer(self) -> bool:
+        """True for items the daemon executes over SFTP, not the scheduler."""
+        return self.data_dep is not None or self.sync_dep is not None
 
     @property
     def gpu_label(self) -> str | None:
@@ -385,7 +427,7 @@ echo "Working dir: {self.working_dir}"
 echo "=================================="
 echo ""
 
-{extra_init_lines}{env_lines}cd {self.working_dir}
+{extra_init_lines}{env_lines}cd {shell_quote_path(self.working_dir)}
 {self.command}
 EXIT_CODE=$?
 
@@ -503,6 +545,9 @@ class RunItem:
         raw_dep = data["task"].get("data_dep")
         if raw_dep:
             task.data_dep = DataDep.from_dict(raw_dep)
+        raw_sync = data["task"].get("sync_dep")
+        if raw_sync:
+            task.sync_dep = SyncDep.from_dict(raw_sync)
 
         return cls(
             task=task,
@@ -740,7 +785,7 @@ class Run:
         """
         return sum(
             1 for item in self.items
-            if item.status in SLOT_STATUSES and item.task.data_dep is None
+            if item.status in SLOT_STATUSES and not item.task.is_daemon_transfer
         )
 
     @property

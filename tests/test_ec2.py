@@ -524,7 +524,7 @@ class TestGenerateScript:
         assert "#SBATCH" not in script
         assert "#PBS" not in script
         assert script.startswith("#!/bin/bash")
-        assert "cd /work" in script
+        assert 'cd "/work"' in script
         assert "echo hi" in script
 
     def test_env_vars_not_exported(self, tmp_path):

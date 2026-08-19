@@ -32,6 +32,7 @@ backends:
     max_concurrent: 100       # optional, default: 100
     clone_dir: ~/scripthut-repos  # optional, disk usage reported in UI
     dataset_dir: /scratch/your_username  # optional, default ~/scripthut-data
+    sync_dir: /scratch/your_username/scripthut-sync  # optional, default ~/scripthut-sync
 ```
 
 | Field | Type | Default | Description |
@@ -44,6 +45,7 @@ backends:
 | `max_concurrent` | integer | `100` | Maximum total concurrent jobs across all runs on this backend. Must be >= 1. |
 | `clone_dir` | string | `~/scripthut-repos` | Path on the backend whose disk usage is shown in the backend status panel. Typically the parent directory where source repos are cloned. |
 | `dataset_dir` | string | `~/scripthut-data` | Parent directory for staged [datasets](data.md), which land at `<dataset_dir>/<name>/<hash>`. Defaults to home like `clone_dir`; point it at scratch for large data, since home quotas are usually much smaller. |
+| `sync_dir` | string | `~/scripthut-sync` | Parent directory for [type: sync](workflows.md#sync-source) working copies, which land at `<sync_dir>/<source-name>/`. Must not sit under `clone_dir` or `dataset_dir`. Point it at scratch; home quotas are the same trap as `dataset_dir`. `scripthut disk scan` lists these dests as live working copies; `disk clean` will not delete them. |
 
 ## PBS/Torque Backend
 
@@ -61,6 +63,7 @@ backends:
     queue: batch              # optional
     clone_dir: ~/scripthut-repos  # optional, disk usage reported in UI
     dataset_dir: /scratch/your_username  # optional, default ~/scripthut-data
+    sync_dir: /scratch/your_username/scripthut-sync  # optional, default ~/scripthut-sync
 ```
 
 | Field | Type | Default | Description |
@@ -74,6 +77,7 @@ backends:
 | `queue` | string | `null` | Default PBS queue. Overrides the `partition` field in task definitions. |
 | `clone_dir` | string | `~/scripthut-repos` | Path on the backend whose disk usage is shown in the backend status panel. Typically the parent directory where source repos are cloned. |
 | `dataset_dir` | string | `~/scripthut-data` | Parent directory for staged [datasets](data.md), which land at `<dataset_dir>/<name>/<hash>`. Defaults to home like `clone_dir`; point it at scratch for large data, since home quotas are usually much smaller. |
+| `sync_dir` | string | `~/scripthut-sync` | Parent directory for [type: sync](workflows.md#sync-source) working copies, which land at `<sync_dir>/<source-name>/`. Must not sit under `clone_dir` or `dataset_dir`. Point it at scratch; home quotas are the same trap as `dataset_dir`. `scripthut disk scan` lists these dests as live working copies; `disk clean` will not delete them. |
 
 ## Local Backend
 
@@ -97,6 +101,8 @@ backends:
 | `max_concurrent` | integer | CPU count | Maximum concurrent local task processes across all runs. |
 | `login_shell` | bool | `false` | Use `#!/bin/bash -l` in task scripts to source the profile. |
 | `clone_dir` | string | `~/scripthut-repos` | Directory where source repos are cloned; its disk usage shows in the status panel. |
+| `dataset_dir` | string | `~/scripthut-data` | Parent directory for staged datasets. For a local backend this host is the backend. |
+| `sync_dir` | string | `~/scripthut-sync` | Parent directory for type: sync working copies. Must not equal the source path. Listed on the disk page as live; `disk clean` will not delete them. |
 
 Details worth knowing:
 
