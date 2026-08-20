@@ -348,7 +348,7 @@ def reject_unsafe_root(
         raise DatasetError(
             f"Dataset root from {origin} is the remote home directory itself "
             f"({root}). Use a subdirectory such as '~/scripthut-data', or "
-            "point the backend's 'dataset_dir' at scratch."
+            "point the backend's 'dataset_dir' at a larger filesystem."
         )
     for clone_dir in clone_dirs:
         normalized = _normalize_remote(clone_dir, home)
@@ -541,8 +541,14 @@ async def stage_dataset(
     # Clear leftovers from a daemon that died mid-transfer, and make sure the
     # parent exists so the SFTP put creates ``staging`` itself rather than
     # nesting inside something. The glob must stay outside the quotes.
+    #
+    # Sequenced with ``;``, not ``&&``: with no leftovers the glob matches
+    # nothing, and zsh and csh treat an unmatched glob as an error (bash
+    # leaves it literal and ``rm -f`` exits 0). Chaining on success would
+    # fail the first stage of every dataset under those login shells. The
+    # cleanup is best-effort; ``mkdir -p`` must succeed and gives the code.
     prepare = (
-        f"rm -rf {shell_quote_path(plan.dest)}{STAGING_INFIX}* && "
+        f"rm -rf {shell_quote_path(plan.dest)}{STAGING_INFIX}* ; "
         f"mkdir -p {shell_quote_path(parent)}"
     )
     _, stderr, code = await ssh.run_command(prepare, timeout=120)

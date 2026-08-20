@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
+import pytest
+
 from scripthut.config_schema import (
     EnvRule,
     ScriptHutConfig,
@@ -208,6 +210,29 @@ def test_env_groups_backend_defined_doc_referenced():
     env, init = mgr._resolve_environment(run, task)
     assert env["PATH"] == "/opt/cuda/bin"
     assert init == "module load cuda"
+
+
+def test_env_groups_unknown_include_raises():
+    config = _make_config()
+    mgr = RunManager(config=config, backends={})
+    task = TaskDefinition(
+        id="t1", name="x", command="true",
+        env=[EnvRule(include=["stata-195"])],
+    )
+    with pytest.raises(ValueError, match="env_group 'stata-195'"):
+        mgr._resolve_environment(_make_run(), task)
+
+
+def test_env_groups_empty_backend_mapping_is_noop():
+    config = _make_config()
+    config.backends[0].env_groups = {"stata-195": []}
+    mgr = RunManager(config=config, backends={})
+    task = TaskDefinition(
+        id="t1", name="x", command="true",
+        env=[EnvRule(include=["stata-195"])],
+    )
+    _, init = mgr._resolve_environment(_make_run(), task)
+    assert init == ""
 
 
 def test_env_groups_doc_shadows_server():

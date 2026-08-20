@@ -202,3 +202,71 @@ class TestApplyUpload:
             apply_upload(
                 tasks, local_path=Path("/tmp/wl"), dest="/d", return_dir="output",
             )
+
+
+class TestReturnDirValidation:
+    """``return`` is normalized at the schema boundary, not at each consumer."""
+
+    @pytest.mark.parametrize(
+        "raw,expected",
+        [("output", "output"), ("/output/", "output"), ("results/final", "results/final")],
+    )
+    def test_normalized(self, raw: str, expected: str):
+        src = SyncSourceConfig.model_validate({
+            "name": "wl", "type": "sync", "path": "/tmp/wl",
+            "backend": "local", "return": raw,
+        })
+        assert src.return_dir == expected
+
+    @pytest.mark.parametrize("raw", ["..", "../shared", "output/../..", "", "/", "."])
+    def test_escaping_or_empty_refused(self, raw: str):
+        with pytest.raises(ValidationError, match="return dir"):
+            SyncSourceConfig.model_validate({
+                "name": "wl", "type": "sync", "path": "/tmp/wl",
+                "backend": "local", "return": raw,
+            })
+
+
+class TestDataDepsLeaveSyncItemsAlone:
+    """``_apply_data_deps`` must not rewire the sync items' dependencies.
+
+    ``_sync.upload`` is independent of dataset staging, and ``_sync.return``
+    is gated by ``_sync_return_ready`` rather than ``dependencies`` so that it
+    still pulls after a failure. A dataset dependency on either would break
+    both properties — the return item would cascade to DEP_FAILED and the
+    output would never come back.
+    """
+
+    def _plan(self, tmp_path: Path):
+        from scripthut.runs.datasets import DatasetPlan, build_manifest
+
+        d = tmp_path / "ds"
+        d.mkdir()
+        (d / "a.txt").write_text("x")
+        return DatasetPlan(
+            name="raw",
+            local_path=d,
+            manifest=build_manifest(d),
+            dest="/scratch/data/raw/abc123abc123",
+            reused=False,
+        )
+
+    def test_sync_items_keep_empty_dependencies(self, tmp_path: Path):
+        from scripthut.runs.manager import RunManager
+
+        tasks = [TaskDefinition(id="a", name="a", command="true")]
+        tasks = apply_upload(
+            tasks, local_path=Path("/tmp/wl"), dest="/scratch/wl", return_dir="output",
+        )
+        tasks = apply_return(
+            tasks, local_path=Path("/tmp/wl"), dest="/scratch/wl", return_dir="output",
+        )
+        out, _env = RunManager._apply_data_deps([self._plan(tmp_path)], tasks, [])
+
+        by_id = {t.id: t for t in out}
+        assert by_id[SYNC_UPLOAD_ID].dependencies == []
+        assert by_id[SYNC_RETURN_ID].dependencies == []
+        # The real root task still waits on the upload, which waits on nothing.
+        assert by_id["a"].dependencies == [SYNC_UPLOAD_ID]
+        # And the staging item was still injected for the user task to inherit.
+        assert "_data.raw" in by_id

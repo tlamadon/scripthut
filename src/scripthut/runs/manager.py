@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from scripthut.backends.base import JobBackend
-from scripthut.backends.utils import shell_quote_path
+from scripthut.backends.utils import reap_process_tree, shell_quote_path
 from scripthut.config_schema import (
     AgentConfig,
     EnvRule,
@@ -26,7 +26,7 @@ from scripthut.config_schema import (
     SyncSourceConfig,
 )
 from scripthut.models import JobState
-from scripthut.runs.cache import CacheManager
+from scripthut.runs.cache import HASH_EMPTY, CacheManager
 from scripthut.runs.env import resolve_for_task
 from scripthut.runs.models import (
     DataDep,
@@ -174,13 +174,18 @@ async def _run_local_shell(command: str, timeout: float = 60.0) -> tuple[str, st
         command,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        start_new_session=True,
     )
     try:
         stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError:
-        proc.kill()
-        await proc.wait()
+        await reap_process_tree(proc)
         raise ValueError(f"Local command timed out after {timeout}s: {command}")
+    except asyncio.CancelledError:
+        # Same reasoning as LocalExecClient.run_command: the child survives
+        # cancellation of the awaiting task unless the tree is reaped here.
+        await reap_process_tree(proc)
+        raise
     return (
         stdout_b.decode("utf-8", errors="replace"),
         stderr_b.decode("utf-8", errors="replace"),
@@ -564,9 +569,44 @@ class RunManager:
         ):
             ssh_client = self.get_ssh_client(run.backend_name)
             if ssh_client is not None:
-                item.output_hashes = await self.cache_manager.hash_inputs(
+                hashes, reason = await self.cache_manager.hash_paths(
                     ssh_client, item.task.working_dir, item.task.outputs,
                 )
+                if reason == HASH_EMPTY:
+                    # The walk succeeded and matched nothing: the task
+                    # reported success without writing what it declared.
+                    # Treat the declaration as a postcondition, because the
+                    # alternative is what it replaces — a task whose command
+                    # swallowed a failure (a batch interpreter that always
+                    # exits 0, say) reporting COMPLETED while producing
+                    # nothing, and every downstream task then failing for
+                    # want of an input that was never made.
+                    #
+                    # Only ``HASH_EMPTY`` gets here. ``HASH_UNVERIFIABLE``
+                    # means the check could not be made, and inferring
+                    # absence from that would fail tasks over a dropped
+                    # connection.
+                    item.status = RunItemStatus.FAILED
+                    item.error = (
+                        "Task exited 0 but its declared outputs matched no "
+                        f"files in {item.task.working_dir}: "
+                        + ", ".join(item.task.outputs)
+                        + ". Either the command did not write them, or it "
+                        "exited 0 despite failing."
+                    )
+                    logger.error(
+                        f"Run '{run.id}': task '{item.task.id}' reported "
+                        f"success but declared outputs are absent: "
+                        f"{item.task.outputs}"
+                    )
+                    self._persist_run(run)
+                    self.notify_run(run.id)
+                    # Skip the cache store below: caching an empty output set
+                    # would let the next run "succeed" from the cache without
+                    # ever noticing. Dependents cascade to DEP_FAILED when the
+                    # caller re-drives ``process_run``.
+                    return
+                item.output_hashes = hashes
                 self._persist_run(run)
         # Persist the task's declared output artifacts to the result cache so
         # a future run with the same inputs can skip it. No-op for cache hits
@@ -1223,8 +1263,17 @@ class RunManager:
             )
 
         # Root tasks wait on the data; the rest inherit it transitively.
+        #
+        # Daemon transfers are skipped. A ``type: sync`` source has already
+        # injected ``_sync.upload`` and ``_sync.return``, both deliberately
+        # dependency-free: the upload is independent of dataset staging, and
+        # the return is gated by :meth:`_sync_return_ready` rather than by
+        # ``dependencies`` precisely so it still pulls when earlier items
+        # fail. Giving either a dataset dependency would serialize the upload
+        # behind the data and, worse, let a failed staging cascade
+        # ``_sync.return`` to DEP_FAILED so the output is never retrieved.
         for task in tasks:
-            if not task.dependencies:
+            if not task.dependencies and not task.is_daemon_transfer:
                 task.dependencies = list(staging_ids)
 
         return staging_tasks + tasks, env
@@ -2405,8 +2454,16 @@ class RunManager:
                     # Clear leftovers from a prior interrupted attempt and
                     # create the staging directory so SFTP puts files into
                     # it even when relpaths is empty.
+                    #
+                    # Sequenced with ``;``, not ``&&``: the glob matches
+                    # nothing on the first upload to a fresh dest, and zsh
+                    # and csh treat an unmatched glob as an error (bash
+                    # leaves it literal and ``rm -f`` exits 0). Chaining on
+                    # success would fail every first run under those login
+                    # shells. The cleanup is best-effort; ``mkdir -p`` is the
+                    # step that must succeed, and it supplies the exit code.
                     prepare = (
-                        f"rm -rf {shell_quote_path(dep.dest)}{SYNC_STAGING_INFIX}* && "
+                        f"rm -rf {shell_quote_path(dep.dest)}{SYNC_STAGING_INFIX}* ; "
                         f"mkdir -p {shell_quote_path(staging)}"
                     )
                     _, stderr, code = await ssh_client.run_command(
@@ -2495,16 +2552,15 @@ class RunManager:
                             for p, _ in parse_remote_listing(stdout)
                         ]
 
-                    # Remove local files absent from the remote so the local
-                    # output directory mirrors what the cluster produced.
-                    if local.is_dir():
-                        remote_set = set(relpaths)
-                        for f in list(local.rglob("*")):
-                            if f.is_file() and not f.is_symlink():
-                                rel = f.relative_to(local).as_posix()
-                                if rel not in remote_set:
-                                    f.unlink(missing_ok=True)
-
+                    # The pull overwrites and adds; it never deletes. Pruning
+                    # local files "missing" from the listing looks tidier but
+                    # cannot be done safely: a non-zero exit, a partial ``find``
+                    # (the pipeline reports ``sort``'s status), and a cluster
+                    # run that simply wrote no output are indistinguishable
+                    # here, and each would delete the user's own files. The
+                    # cluster's ``output/`` starts empty every run — upload
+                    # excludes it and the publish step replaces ``dest`` — so
+                    # what lands below is exactly this run's output regardless.
                     copied = await ssh_client.get_files(
                         remote,
                         local,
@@ -3134,12 +3190,18 @@ class RunManager:
 
     @staticmethod
     def _requeue_orphaned_staging(run: Run) -> None:
-        """Re-queue dataset transfers that died with the previous daemon.
+        """Re-queue daemon transfers that died with the previous daemon.
 
-        A staging item is RUNNING only while an in-process task drives it, so
+        A transfer item is RUNNING only while an in-process task drives it, so
         one found RUNNING on disk at startup has nothing behind it. Its
-        staging directory is discarded and the copy restarts from scratch —
-        the destination is content-addressed, so a fresh attempt is safe.
+        staging directory is discarded and the copy restarts from scratch.
+
+        Safe to retry in both cases, for different reasons. A dataset dest is
+        content-addressed, so a fresh attempt either finds the copy already
+        published or rebuilds the identical tree. A sync dest is a mutable
+        working copy, so retrying is safe instead because each step is
+        idempotent: the upload re-stages and re-publishes from the laptop's
+        current tree, and the return only overwrites and adds.
         """
         for item in run.items:
             if not item.task.is_daemon_transfer:

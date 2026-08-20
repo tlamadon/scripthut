@@ -24,7 +24,12 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from scripthut.config_schema import CacheConfig
-from scripthut.runs.cache import CacheManager
+from scripthut.runs.cache import (
+    HASH_EMPTY,
+    HASH_OK,
+    HASH_UNVERIFIABLE,
+    CacheManager,
+)
 from scripthut.runs.models import Run, RunItem, RunItemStatus, TaskDefinition
 
 
@@ -202,6 +207,57 @@ class TestHashInputs:
         assert out == {"a.dta": "deadbeef"}
         assert seen and 'cd "/sync/Data/Raw Data" && ' in seen[0]
         assert "cd /sync/Data/Raw Data && " not in seen[0]
+
+
+class TestHashPaths:
+    """``hash_paths`` separates "matched nothing" from "could not look".
+
+    Only the former is evidence of absence. Verifying declared outputs
+    depends on that distinction, so it is pinned here rather than left to
+    the caller to infer from ``None``.
+    """
+
+    @pytest.mark.asyncio
+    async def test_empty_patterns_is_ok_not_empty(self):
+        ssh = MagicMock()
+        ssh.run_command = AsyncMock()
+        hashes, reason = await _cm().hash_paths(ssh, "/wd", [])
+        assert (hashes, reason) == ({}, HASH_OK)
+        ssh.run_command.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_files_found_is_ok(self):
+        async def side(cmd, timeout=30):
+            return ("deadbeef  out.dta\n", "", 0)
+
+        hashes, reason = await _cm().hash_paths(_ssh(side), "/wd", ["out.dta"])
+        assert reason == HASH_OK
+        assert hashes == {"out.dta": "deadbeef"}
+
+    @pytest.mark.asyncio
+    async def test_zero_files_is_empty(self):
+        """Command ran, matched nothing — positive evidence of absence."""
+        async def side(cmd, timeout=30):
+            return ("", "", 0)
+
+        hashes, reason = await _cm().hash_paths(_ssh(side), "/wd", ["out.dta"])
+        assert (hashes, reason) == (None, HASH_EMPTY)
+
+    @pytest.mark.asyncio
+    async def test_nonzero_exit_is_unverifiable(self):
+        async def side(cmd, timeout=30):
+            return ("", "find: no such file", 1)
+
+        hashes, reason = await _cm().hash_paths(_ssh(side), "/wd", ["out.dta"])
+        assert (hashes, reason) == (None, HASH_UNVERIFIABLE)
+
+    @pytest.mark.asyncio
+    async def test_ssh_exception_is_unverifiable(self):
+        async def side(cmd, timeout=30):
+            raise RuntimeError("connection dropped")
+
+        hashes, reason = await _cm().hash_paths(_ssh(side), "/wd", ["out.dta"])
+        assert (hashes, reason) == (None, HASH_UNVERIFIABLE)
 
 
 # ---------------------------------------------------------------------------

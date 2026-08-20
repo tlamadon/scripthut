@@ -38,7 +38,10 @@ class TestRenderSkill:
     def test_description_carries_trigger_keywords(self):
         skill = render_skill()
         head = skill.split("---")[1]  # frontmatter block
-        for kw in ("Slurm", "PBS", "AWS Batch", "logs", "outputs", "stacks"):
+        for kw in (
+            "Slurm", "PBS", "AWS Batch", "logs", "outputs", "stacks",
+            "include", "workflow JSON",
+        ):
             assert kw in head, f"trigger keyword missing from description: {kw}"
 
     def test_body_defers_to_live_briefing(self):
@@ -50,13 +53,34 @@ class TestRenderSkill:
         skill = render_skill()
         for cmd in (
             "scripthut status",
-            "scripthut backend list --json",
+            "scripthut backend list",
             "scripthut run view",
             "scripthut run logs",
             "scripthut run outputs",
             "--dry-run",
+            "include:",
+            "env_groups",
         ):
             assert cmd in skill, f"core-loop command missing: {cmd}"
+
+    def test_read_only_commands_are_not_shown_with_json(self):
+        """Agents were hand-parsing ``--json`` instead of reading the table.
+
+        The skill must steer to the default output for inspection, and keep
+        ``--json`` only where a field is captured or the payload is
+        genuinely structured.
+        """
+        skill = render_skill()
+        assert "Never write a parser" in skill
+        assert "2>&1" in skill
+        for bad in (
+            "scripthut backend list --json",
+            "scripthut source list --json",
+            "scripthut run view $RUN_ID --json",
+        ):
+            assert bad not in skill, f"read-only command still shown with --json: {bad}"
+        # Capturing an id stays the legitimate use.
+        assert "--json | jq -r .id" in skill
 
     def test_no_baked_inventory(self):
         # The skill must stay config-agnostic — no live backend/stack names.

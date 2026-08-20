@@ -151,7 +151,7 @@ env_groups:
     - set:
         JULIA_DEPOT_PATH: "/scratch/researcher/julia_depot"
         JULIA_NUM_THREADS: "8"
-    - init: "module load julia/1.10"
+    # Site `module load julia/…` belongs on the backend's env_groups, not here.
 
 env:
   - set:

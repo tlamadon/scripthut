@@ -50,7 +50,7 @@ from scripthut.backends.base import (
     PartitionInfo,
     SubmitResult,
 )
-from scripthut.backends.utils import generate_script_body
+from scripthut.backends.utils import generate_script_body, reap_process_tree
 from scripthut.models import HPCJob, JobState
 
 if TYPE_CHECKING:
@@ -306,16 +306,23 @@ class LocalExecClient:
             command,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            # Own process group, so a timeout or cancellation can kill the
+            # whole command tree rather than just the shell.
+            start_new_session=True,
         )
         try:
             stdout_b, stderr_b = await asyncio.wait_for(
                 proc.communicate(), timeout=timeout,
             )
         except asyncio.TimeoutError:
-            proc.kill()
-            await proc.wait()
+            await reap_process_tree(proc)
             self._log(command, start, error=f"Timeout after {timeout}s")
             raise RuntimeError(f"Command timed out after {timeout}s")
+        except asyncio.CancelledError:
+            # Cancelling the awaiting task does not touch the child; without
+            # this the command outlives the run with both pipes still open.
+            await reap_process_tree(proc)
+            raise
         stdout = stdout_b.decode("utf-8", errors="replace")
         stderr = stderr_b.decode("utf-8", errors="replace")
         exit_code = proc.returncode if proc.returncode is not None else -1

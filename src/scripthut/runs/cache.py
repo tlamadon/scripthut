@@ -63,6 +63,16 @@ _SHA256_RESOLVE = (
     "else _scripthut_sha='shasum -a 256'; fi"
 )
 
+# Why :meth:`CacheManager.hash_paths` produced no hashes. The distinction is
+# load-bearing: ``EMPTY`` is positive evidence that the declared patterns
+# matched nothing on a filesystem we successfully read, while
+# ``UNVERIFIABLE`` means the question was never answered. A caller may treat
+# ``EMPTY`` as "the files are not there" and must never draw that conclusion
+# from ``UNVERIFIABLE`` — a dropped connection is not a missing file.
+HASH_OK = "ok"
+HASH_EMPTY = "empty"
+HASH_UNVERIFIABLE = "unverifiable"
+
 
 class CacheManager:
     """Computes cache keys and moves artifacts between a backend and the store.
@@ -172,35 +182,62 @@ class CacheManager:
         Returns ``None`` if the remote command errors or any declared pattern
         matches nothing, so the caller treats it as "cannot verify inputs"
         and runs the task rather than risk a stale hit.
-        """
-        if not inputs:
-            return {}
 
+        Thin wrapper over :meth:`hash_paths`, which additionally reports *why*
+        there are no hashes. Cache keying does not care about the difference —
+        both mean "do not trust a hit" — so this signature is unchanged.
+        """
+        hashes, _reason = await self.hash_paths(ssh, working_dir, inputs)
+        return hashes
+
+    async def hash_paths(
+        self,
+        ssh: SSHClient,
+        working_dir: str,
+        patterns: list[str],
+    ) -> tuple[dict[str, str] | None, str]:
+        """Hash files matching ``patterns``, reporting why when there are none.
+
+        Same walk as :meth:`hash_inputs`, but the second element distinguishes
+        the two ways of getting nothing:
+
+        * ``HASH_EMPTY`` — the command ran on the backend and resolved zero
+          files. Positive evidence that the patterns match nothing.
+        * ``HASH_UNVERIFIABLE`` — the command could not be run or exited
+          non-zero. No evidence either way; the caller must not conclude the
+          files are absent.
+
+        Verifying declared *outputs* needs that distinction: failing a task
+        because a connection dropped would be the same error as pruning files
+        because a listing failed.
+        """
+        if not patterns:
+            return {}, HASH_OK
         # Patterns are inserted unquoted so the remote shell expands globs.
         # ``working_dir`` is quoted via ``shell_quote_path`` so a leading
         # ``~`` still expands to ``$HOME`` and spaces (``Data/Raw Data``)
         # stay one token — same helper as ``generate_script_body``.
-        patterns = " ".join(inputs)
+        joined = " ".join(patterns)
         # `find` walks dirs and resolves the expanded patterns; missing
         # patterns make the shell pass the literal through and `find` warns
         # on stderr (captured) and exits nonzero — surfaced below.
         cmd = (
             f"cd {shell_quote_path(working_dir)} && "
             f"{_SHA256_RESOLVE} && "
-            f"find {patterns} -type f -print0 2>/dev/null "
+            f"find {joined} -type f -print0 2>/dev/null "
             f"| LC_ALL=C sort -z | xargs -0 -r $_scripthut_sha 2>/dev/null"
         )
         try:
             stdout, stderr, exit_code = await ssh.run_command(cmd, timeout=120)
         except Exception as e:  # noqa: BLE001 — never let hashing crash a submit
             logger.warning(f"cache: input hashing failed over SSH: {e}")
-            return None
+            return None, HASH_UNVERIFIABLE
         if exit_code != 0:
             logger.info(
                 f"cache: input hashing returned exit {exit_code} for "
-                f"{inputs} in {working_dir}: {stderr.strip()[:200]}"
+                f"{patterns} in {working_dir}: {stderr.strip()[:200]}"
             )
-            return None
+            return None, HASH_UNVERIFIABLE
 
         hashes: dict[str, str] = {}
         for line in stdout.splitlines():
@@ -219,15 +256,17 @@ class CacheManager:
             hashes[path] = digest
 
         if not hashes:
-            # Declared inputs that resolve to zero files is suspicious — the
-            # data the task depends on isn't there. Don't cache on an empty
-            # input set the user clearly didn't intend.
+            # Declared paths that resolve to zero files is suspicious — the
+            # data the task depends on (or was supposed to write) isn't
+            # there. Don't cache on an empty set the user clearly didn't
+            # intend. The command itself succeeded, so this is evidence of
+            # absence, not a failure to look.
             logger.info(
-                f"cache: declared inputs {inputs} matched no files in "
+                f"cache: declared paths {patterns} matched no files in "
                 f"{working_dir}; skipping cache for this task"
             )
-            return None
-        return hashes
+            return None, HASH_EMPTY
+        return hashes, HASH_OK
 
     # --- Action-cache lookup ----------------------------------------------
 

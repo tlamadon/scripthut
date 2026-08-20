@@ -153,13 +153,19 @@ sources:
 | `path` | path | **required** | Git repository on the scripthut host. Relative paths resolve against the config file's directory. |
 | `backend` | string | **required** | Backend whose filesystem receives the copy and runs the jobs. SSH backends only. |
 | `dest` | string | `<sync_dir>/<name>/` | Directory on the backend to copy into. Must not sit under `clone_dir` or `dataset_dir`, or equal the laptop `path`. |
-| `return` | string | `"output"` | Relative directory pulled cluster → laptop after the run. Excluded from the upload even if git-tracked. |
+| `return` | string | `"output"` | Relative directory pulled cluster → laptop after the run. Excluded from the upload even if git-tracked. Must stay inside `path`: leading/trailing `/` are stripped and `..` is refused. |
 | `workflows_glob` | string | `".hut/workflows/*.json"` | Glob pattern to find workflow JSON files on the laptop working tree. |
+| `timeout` | int | `86400` | Wall-clock seconds for the upload and for the pull, each. |
 
-On submit ScriptHut copies `git ls-files` working-tree bytes (dirty tracked files yes; untracked and gitignored no; `.git` not copied). Tracked symlinks are refused. Root tasks wait on `_sync.upload`; `_sync.return` starts when every other current item is terminal, so a failed task still pulls. `run watch` waits for the pull. Overwrite and add; local leftover files in `output/` that the cluster did not write stay. A second submit to the same dest is refused while another run is still active.
+On submit ScriptHut copies `git ls-files` working-tree bytes (dirty tracked files yes; untracked and gitignored no; `.git` not copied). Tracked symlinks are refused. Root tasks wait on `_sync.upload`; `_sync.return` starts when every other current item is terminal, so a failed task still pulls. `run watch` waits for the pull. A second submit to the same dest is refused while another run is still active.
+
+The two directions are deliberately asymmetric:
+
+- **Upload replaces `dest`.** The tree is staged beside it, verified against the local file sizes, then moved into place — so a file you delete locally is gone from the backend on the next run, and a half-finished transfer is never left looking complete.
+- **The pull only overwrites and adds. It never deletes.** Local leftovers in `output/` that the cluster did not write stay, and are yours to remove. This is not tidiness lost: a failed listing, a partial remote walk, and a run that simply produced no output all look identical to the puller, so pruning on that signal would delete your own files.
 
 !!! warning "The default dest is home, which has a quota"
-    `~/scripthut-sync/<name>/` mirrors `clone_dir` and `dataset_dir`. Point the backend's `sync_dir` (or the source's `dest`) at scratch before copying anything large.
+    `~/scripthut-sync/<name>/` mirrors `clone_dir` and `dataset_dir`. Point the backend's `sync_dir` (or the source's `dest`) at a larger filesystem before copying anything big — often `/scratch/<user>`, though not every cluster provides one.
 
 `scripthut disk scan` lists each dest under **Sync working copies**. A dest still named in config is live even with no remembered run; a leftover directory under `sync_dir` from a source you deleted shows as orphaned. `disk clean` will not delete either — these are working copies, not hashed clones.
 

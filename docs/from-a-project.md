@@ -148,7 +148,7 @@ env_groups:
     - init: "echo Running with $(julia --version)"
 ```
 
-The project-local file is now self-describing: anyone who clones the repo and has a global `scripthut.yaml` with `mercury-nb` configured can run the workflows. The repo doesn't need to leak SSH keys or backend hostnames to do that.
+The project-local file is now self-describing: anyone who clones the repo and has a global `scripthut.yaml` with `mercury-nb` configured can run the workflows. Put site `module load` on the **backend** `env_groups` in the user-global file, not in this repo file. The repo doesn't need to leak SSH keys or backend hostnames to do that.
 
 ---
 

@@ -147,9 +147,10 @@ class TestCreateRunFromSyncSource:
         assert not (dest / "skip.dta").exists()
         assert not (dest / "untracked.py").exists()
         assert not (dest / ".git").exists()
-        # Pull wrote the cluster result and removed the local-only stale file.
+        # Pull wrote the cluster result. It overwrites and adds; it never
+        # deletes, so a local-only file in output/ survives.
         assert (repo / "output" / "result.txt").read_text().strip() == "from-cluster"
-        assert not (repo / "output" / "table.csv").exists()
+        assert (repo / "output" / "table.csv").read_text() == "stale"
 
     @pytest.mark.asyncio
     async def test_api_only_backend_refused(self, tmp_path: Path):
@@ -244,6 +245,37 @@ class TestCreateRunFromSyncSource:
         assert not (dest / "keep.py").exists()
 
     @pytest.mark.asyncio
+    async def test_missing_remote_output_leaves_local_output_alone(
+        self, tmp_path: Path
+    ):
+        """A run that writes no output/ must not touch the laptop's output/.
+
+        The cluster's output/ is absent unless a task creates it (the upload
+        excludes the return dir and the publish step replaces dest), so this
+        is the ordinary shape of a run whose tasks produce nothing — not an
+        error path. It must never be read as "delete the local copy".
+        """
+        repo = _repo(tmp_path)
+        dest = tmp_path / "cluster-copy"
+        src = SyncSourceConfig(
+            name="wl", path=repo, backend="local", dest=str(dest),
+        )
+        mgr, backend, _ = _mgr(tmp_path, src)
+        tasks_json = json.dumps(
+            {"tasks": [{"id": "quiet", "name": "quiet", "command": "true"}]}
+        )
+        run = await mgr.create_run_from_source("wl", "run.json", tasks_json, "local")
+        await _drive(mgr, backend, run)
+
+        assert run.status == RunStatus.COMPLETED
+        ret = run.get_item_by_task_id(SYNC_RETURN_ID)
+        assert ret is not None
+        assert ret.status == RunItemStatus.COMPLETED
+        assert not (dest / "output").exists()
+        # The pre-existing local file is still there.
+        assert (repo / "output" / "table.csv").read_text() == "stale"
+
+    @pytest.mark.asyncio
     async def test_pull_runs_after_failed_task(self, tmp_path: Path):
         repo = _repo(tmp_path)
         dest = tmp_path / "cluster-copy"
@@ -268,7 +300,7 @@ class TestCreateRunFromSyncSource:
         assert ret is not None
         assert ret.status == RunItemStatus.COMPLETED
         assert (repo / "output" / "x.txt").read_text().strip() == "fail-out"
-        assert not (repo / "output" / "table.csv").exists()
+        assert (repo / "output" / "table.csv").read_text() == "stale"
 
     @pytest.mark.asyncio
     async def test_cancel_still_pulls_output(self, tmp_path: Path):

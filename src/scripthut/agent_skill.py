@@ -51,10 +51,11 @@ description: >-
   local machine (local backend). Use when the user wants to run or
   submit a workflow, job, or compute task; check run, job, or cluster
   status; tail or inspect job logs; fetch collected outputs under
-  `$SCRIPTHUT_OUTPUT_DIR`; debug a failed run; get a local data
-  directory, dataset, or locally-built container onto a cluster (stage,
-  copy, or scp a folder to scratch) or declare a workflow's data
-  dependency; manage software stacks (venv, Conda, Julia); probe the
+  `$SCRIPTHUT_OUTPUT_DIR`; debug a failed run; write or edit
+  workflow JSON; declare a named env or data dependency (`include`,
+  stacks, `data`, `env_groups`); get a local data directory, dataset, or
+  locally-built container onto a cluster (stage, copy, or scp a folder
+  onto a cluster); manage software stacks (venv, Conda, Julia); probe the
   result cache (would this task be a cache hit?); fetch a task's
   provenance manifest (input/output hashes); or estimate compute
   costs — not for LaTeX/Workshop build failures (latex-debug), not
@@ -68,7 +69,12 @@ description: >-
 
 Drive jobs with the `scripthut` CLI. Flags, exit codes, and the live
 inventory live in `scripthut agent prompt` — run it first, and again
-when `scripthut.yaml` changes. Every parseable command takes `--json`.
+when `scripthut.yaml` changes.
+
+**Never write a parser around ScriptHut output.** `run view` and `run
+list` already tabulate status, job ids, CPU%, and peak memory — read
+them. Use `--json` only to capture one field, via `jq -r`. Logs go to
+stderr and `--json` is clean on stdout, so never add `2>&1`.
 
 ```bash
 scripthut agent prompt
@@ -78,10 +84,11 @@ scripthut agent prompt
 
 1. `scripthut status` — server reachable, auth working. Stop and report
    the diagnostic on failure.
-2. `scripthut backend list --json`.
-3. Prefer a source workflow over ad-hoc: `scripthut source list --json`,
-   `scripthut source view <name> --json`.
-4. Stack: `scripthut stack check <name> --json`;
+2. `scripthut backend list`.
+3. Prefer a source workflow over ad-hoc: `scripthut source list`,
+   `scripthut source view <name>`.
+4. Named env: see **Named lookups** below. Stack involved:
+   `scripthut stack check <name>`;
    `scripthut stack install <name>` if not ready.
 5. Non-trivial ad-hoc: `scripthut task run ... --dry-run`.
 6. Tasks that declare `inputs`/`outputs`:
@@ -107,12 +114,12 @@ Background `scripthut run watch $RUN_ID --exit-status` (the local
 daemon counts). Prints `Run … COMPLETED` / `Run … FAILED` with failed
 task ids and a `run logs` hint; exits non-zero on failure. One-shot:
 `scripthut workflow run <file> --source <name> --backend <b> --watch`
-(also background). Re-poll `scripthut run view $RUN_ID --json` only
-when a background watch is unavailable.
+(also background). Re-poll `scripthut run view $RUN_ID` only when a
+background watch is unavailable.
 
 ## After submit
 
-- Status: `scripthut run view $RUN_ID --json`
+- Status: `scripthut run view $RUN_ID`
 - Live stdout: `scripthut run logs $RUN_ID <task_id> -f`
 - FAILED stderr: `scripthut run logs $RUN_ID <task_id> --error --tail 200`
 - `$SCRIPTHUT_OUTPUT_DIR` (tool logs, `task-summary.md`, plots) is **not**
@@ -141,9 +148,24 @@ copy is shared by every run whose data hashes the same.
 
 Staging is async: `workflow run` returns immediately; the copy is item
 `_data.<name>` that real tasks depend on. Home has a quota far below
-most datasets — ask for scratch `dataset_dir` before large copies; do
-not guess the path. Full rules (symlinks, empty dirs, containers):
+most datasets — ask for a larger `dataset_dir` before large copies.
+`/scratch` is common but not universal; never guess the path or assume
+scratch exists. Full rules (symlinks, empty dirs, containers):
 `scripthut agent prompt`.
+
+## Named lookups
+
+Same JSON on every cluster. Omitting a name injects nothing.
+
+- `data: [<name>]` — user-global `datasets:`; tasks read `DATA_*`.
+- `env: [{{include: [<name>]}}]` — **that backend's** `env_groups`
+  (`module load`). Empty list = already on PATH. Unknown name fails
+  submit. Do not put `module load` in `.hut/workflows`.
+- `env: [{{stacks: [<name>]}}]` — ScriptHut-built; `stack check` /
+  `install`.
+
+`backends[].env_groups` live in user-global YAML; daemon restart after
+editing them.
 
 ## Failure
 
@@ -153,6 +175,20 @@ workflow content. Failed `_data.<name>` is staging — `error` names the
 cause (missing/empty local dir, broken or escaping symlink, unusable
 `root`/`dataset_dir`, hash mismatch); downstream is `dep_failed`. Fix
 and submit a **new** run; do not rerun the failed one.
+
+`_sync.upload` / `_sync.return` are the `type: sync` transfers, run by
+the daemon over SFTP — no job id, no logs, the reason is in `error`. A
+failed `_sync.upload` makes every task `dep_failed`; fix the cause, do
+not chase the dependents. `_sync.return` runs even after failure or
+cancellation, and only overwrites and adds — it never deletes local
+files, so a stale file in `output/` is yours to remove.
+
+`declared outputs matched no files` means the task exited 0 without
+writing the paths it declared in `outputs` — almost always a command
+that swallowed its own error (batch interpreters often exit 0 on a
+failed script). Read the task's stderr and logs for the real cause; do
+not "fix" it by deleting the `outputs` declaration. A task whose
+artifact is genuinely conditional should not declare it.
 
 ## Gotchas
 

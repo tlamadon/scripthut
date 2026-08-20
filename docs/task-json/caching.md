@@ -47,6 +47,34 @@ Example:
 }
 ```
 
+### `outputs` is also a postcondition
+
+Declaring `outputs` asserts that the task writes them. If the task exits 0 and
+**none** of the declared paths exist on the backend, ScriptHut marks it
+`FAILED` with:
+
+```
+Task exited 0 but its declared outputs matched no files in <working_dir>: model.pt, metrics.json
+```
+
+Its dependents become `dep_failed`, and nothing is written to the cache.
+
+"Exit 0" is not a reliable success signal: batch interpreters often exit 0
+after a script fails (Stata's `-e`, for one), and a shell pipeline reports only
+its last command's status.
+
+Two deliberate limits:
+
+- **Only a definitive answer fails the task.** If ScriptHut cannot run the
+  check — an API-only backend with no SSH, or the check itself erroring — the
+  task is left `COMPLETED`. Absence is never inferred from a failed check.
+- **It is all-or-nothing.** The task fails only when *no* declared path
+  matches. Declare two outputs and produce one and it passes.
+
+So declare `outputs` for artifacts the task writes on every successful run. An
+artifact produced only under some conditions should be left undeclared —
+declaring it would fail the runs that legitimately skip it.
+
 ---
 
 ## The Cache Key

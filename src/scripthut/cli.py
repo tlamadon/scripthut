@@ -1244,7 +1244,7 @@ def _render_agent_prompt(config: ScriptHutConfig | None) -> str:
                 "_No backends configured. The server auto-registers a "
                 "`local` backend in that case, so tasks submitted with "
                 "`--backend local` run as subprocesses on the scripthut "
-                "host — confirm with `scripthut backend list --json`._\n"
+                "host — confirm with `scripthut backend list`._\n"
             )
         else:
             from scripthut.config_schema import LocalBackendConfig as _Local
@@ -1305,7 +1305,7 @@ def _render_agent_prompt(config: ScriptHutConfig | None) -> str:
                     bits.append(f"inputs: {inputs}")
                 out.append(f"- {' · '.join(bits)}")
             out.append(
-                "\nRun `scripthut stack check <name> --json` before "
+                "\nRun `scripthut stack check <name>` before "
                 "submitting a task that needs one — install with "
                 "`scripthut stack install <name>` if it's not `ready`."
             )
@@ -1367,7 +1367,7 @@ def _render_agent_prompt(config: ScriptHutConfig | None) -> str:
                 out.append(f"- {' · '.join(bits)}")
             out.append(
                 "\nList workflows in a source: "
-                "`scripthut source view <name> --json`. Each git source is "
+                "`scripthut source view <name>`. Each git source is "
                 "pinned to a branch above — `scripthut workflow run` "
                 "re-syncs the source on the server before submitting, so "
                 "the run executes against **latest HEAD on that branch**. "
@@ -1382,6 +1382,17 @@ def _render_agent_prompt(config: ScriptHutConfig | None) -> str:
                 "refused while a run is still active. Dest directories "
                 "show up in `scripthut disk scan` as live working copies; "
                 "`disk clean` will not delete them. "
+                "The two transfers are run items you will see in `run view`: "
+                "**`_sync.upload`** (laptop → backend, every root task "
+                "depends on it) and **`_sync.return`** (backend → laptop, "
+                "runs last). Both are done by the daemon over SFTP, so "
+                "neither has a scheduler job id or logs — a failure shows up "
+                "in the item's `error`. A failed `_sync.upload` marks every "
+                "task `dep_failed`; fix the cause and resubmit rather than "
+                "chasing the dependents. `_sync.return` still runs after "
+                "task failure or cancellation, and it only overwrites and "
+                "adds — it never deletes local files. The `_sync.` task-id "
+                "prefix is reserved. "
                 "If the user just pushed a *new* workflow file (not just "
                 "edits to existing ones), run `scripthut source sync "
                 "<name>` first so the workflow list picks it up."
@@ -1483,7 +1494,13 @@ def _render_agent_prompt(config: ScriptHutConfig | None) -> str:
         "- **Caching / provenance**: `inputs` (paths/globs whose *content* "
         "feeds the result-cache key and the manifest), `outputs` (the "
         "task's artifact paths — stored/restored by the cache, hashed "
-        "into the manifest; a task with no `outputs` is never cached), "
+        "into the manifest; a task with no `outputs` is never cached). "
+        "**`outputs` is a postcondition**: a task that exits 0 without "
+        "writing any declared path is marked FAILED (`declared outputs "
+        "matched no files`), dependents `dep_failed`. So declare only paths "
+        "written on every successful run — leave conditional artifacts "
+        "undeclared. Unverifiable checks (no SSH) leave the task COMPLETED. "
+        "Also: "
         "`cache` (bool, default true — set false to always run), "
         "`cache_scope` (`\"commit\"` default: any new git commit busts "
         "the key; `\"inputs\"`: key from command + env + input hashes "
@@ -1511,16 +1528,26 @@ def _render_agent_prompt(config: ScriptHutConfig | None) -> str:
 
     out.append("## Inspecting state\n")
     out.append(
+        "**Never write a parser around ScriptHut output.** The default "
+        "output is meant to be read: `run view` already tabulates per-task "
+        "status, job id, CPU%, and peak memory, and `run list` tabulates "
+        "runs — a hand-rolled parser shows you *less*. Read it directly. "
+        "Reach for `--json` only to capture a single field into a variable, "
+        "and get that field with `jq -r` rather than an inline script. "
+        "`--json` writes clean JSON on stdout and logs go to stderr, so "
+        "**never add `2>&1`** — merging them is what forces the "
+        "skip-to-the-first-brace hacks, and it is self-inflicted.\n"
+        "\n"
         "```bash\n"
         "scripthut status                            # server reachable + auth OK?\n"
-        "scripthut backend list --json               # backend connectivity/health\n"
-        "scripthut source list --json                # sources configured on the server\n"
-        "scripthut source view <name> --json         # workflow files in one source\n"
-        "scripthut source sync [<name>] --json       # re-clone/re-glob + refresh workflow list\n"
-        "scripthut stack check [<name>] --json       # stacks ready / missing / installing\n"
+        "scripthut backend list                      # backend connectivity/health\n"
+        "scripthut source list                       # sources configured on the server\n"
+        "scripthut source view <name>                # workflow files in one source\n"
+        "scripthut source sync [<name>]              # re-clone/re-glob + refresh workflow list\n"
+        "scripthut stack check [<name>]              # stacks ready / missing / installing\n"
         "scripthut task probe --from-file t.json --backend <b> --json  # cache hit/miss per task, runs NOTHING\n"
-        "scripthut run list --json --limit 10        # recent runs\n"
-        "scripthut run view <id> --json              # one run, item statuses + counts\n"
+        "scripthut run list --limit 10               # recent runs\n"
+        "scripthut run view <id>                     # one run, per-task status/job/CPU%/mem\n"
         "scripthut run manifest <id> <task_id>       # provenance: input/output hashes, executor, timing\n"
         "scripthut run logs <id> <task_id> --tail 100         # stdout (task output)\n"
         "scripthut run logs <id> <task_id> --error --tail 100 # stderr (task errors)\n"
@@ -1529,6 +1556,10 @@ def _render_agent_prompt(config: ScriptHutConfig | None) -> str:
         "scripthut run outputs <id> <task_id> <rel-path>      # print one of those files\n"
         "scripthut run outputs <id> <task_id> <rel-path> --tail 200\n"
         "```\n"
+        "\n"
+        "`--json` above is kept only where the payload is genuinely "
+        "structured and there is nothing to read instead (`task probe`, "
+        "`run outputs` listings); `run manifest` is always JSON.\n"
     )
 
     out.append("## Result cache, probe, and manifests\n")
@@ -1640,17 +1671,35 @@ def _render_agent_prompt(config: ScriptHutConfig | None) -> str:
         "```\n"
         "All `${name}` references expand against the env-resolved-so-far. "
         "Per-task `set:` always wins; resolver order is "
-        "server → backend → repo-project → workflow-doc → task.\n"
+        "backend → server → repo-project → workflow-doc → task.\n"
+        "\n"
+        "**Three named lookups — do not collapse them.** A workflow with "
+        "no `include` / `stacks` / `data` is valid (nothing is injected). "
+        "A name you *do* declare must exist on the chosen backend:\n"
+        "- `data: [randhrs-2022]` — path in user-global `datasets:`; "
+        "copy lands under the backend's `dataset_dir`.\n"
+        "- `env: [{include: [stata-195]}]` — **cluster dialect** "
+        "(`module load`, site PATH) lives in that backend's "
+        "`env_groups:`, not in `.hut/workflows` and not in a repo "
+        "`scripthut.yaml`. Same JSON on every cluster. A backend that "
+        "already has the binary on PATH maps the name to an empty list "
+        "(`stata-195: []`). Unknown include name → ValueError at submit "
+        "(the task is not sbatch'ed). An `if:` that does not match the "
+        "current backend does not require the group.\n"
+        "- `env: [{stacks: [julia-1.12]}]` — ScriptHut **builds** this "
+        "(`scripthut stack install`). Use stacks for project runtimes; "
+        "use `include` for site modules.\n"
+        "Do not \"fix\" a missing include by inlining `init: module load "
+        "…` in the workflow JSON.\n"
         "\n"
         "**A source repo's `scripthut.yaml` also applies server-side.** "
         "If the source repo has a `scripthut.yaml` at its root, its "
         "`env` / `env_groups` are pulled in by the server when running "
-        "any workflow from that source — sitting *above* the server's "
-        "config / backend layer and *below* the workflow file's own "
-        "inline rules. So a Julia repo can define `env_groups: "
-        "{julia-1.12: [...]}` once at the root, and every workflow JSON "
-        "in `.hut/workflows/` can just `env: [{include: [julia-1.12]}]` "
-        "without duplicating the module-load text. The repo file is "
+        "any workflow from that source — sitting *after* the backend / "
+        "server maps and *below* the workflow file's own inline rules. "
+        "Use repo `env_groups` for **project** knobs (`WANDB_PROJECT`, "
+        "thread counts), not for `module load`. A repo that redefines "
+        "`stata-195` shadows the cluster map. The repo file is "
         "subject to the same project-local validation: `backends:` / "
         "`sources:` / `settings:` / `pricing:` are rejected (a repo must "
         "never redefine infrastructure server-side).\n"
@@ -1669,11 +1718,12 @@ def _render_agent_prompt(config: ScriptHutConfig | None) -> str:
         "the user made. Never overwrite the whole YAML.\n"
         "- **One concept per edit.** \"Add a CUDA env group\" is one edit; "
         "incidental reformatting belongs in a separate one.\n"
-        "- **Hot-reload, don't restart.** Stacks / workflows / env / "
-        "env_groups changes hot-reload via the server's Settings page "
-        "(Save & Reload). Backend changes still require a server "
-        "restart. The CLI re-reads YAML on every invocation, so no "
-        "reload step is needed there.\n"
+        "- **Hot-reload, don't restart.** Stacks / workflows / top-level "
+        "env / env_groups changes hot-reload via the server's Settings "
+        "page (Save & Reload). Backend changes — including "
+        "`backends[].env_groups` (the cluster name→command map) — still "
+        "require a server restart. The CLI re-reads YAML on every "
+        "invocation, so no reload step is needed there.\n"
         "- **Show the user the change** (the diff) before saving anything "
         "non-obvious.\n"
     )
@@ -1767,7 +1817,7 @@ def _render_agent_prompt(config: ScriptHutConfig | None) -> str:
         "mode install is a queued run rather than a blocking HTTP call, "
         "Cloudflare-Access timeouts don't matter — the CLI submits "
         "and exits; the run finishes server-side at its own pace. The "
-        "agent should `scripthut run view $RUN_ID --json` or `run "
+        "agent should `scripthut run view $RUN_ID` or `run "
         "watch $RUN_ID --exit-status` to track it.\n"
         "\n"
         "### How a task uses a stack (the v0.7.1 way)\n"
@@ -1892,8 +1942,10 @@ def _render_agent_prompt(config: ScriptHutConfig | None) -> str:
         "matching `clone_dir`. Fine for small data; HPC home quotas are "
         "usually far below real dataset sizes, and filling one breaks "
         "everything else the user is running. Before staging anything "
-        "large, set the backend's `dataset_dir` to scratch — ask the user "
-        "for the path, do not guess it.\n"
+        "large, point the backend's `dataset_dir` at a larger filesystem "
+        "— **ask the user for the path**. Many clusters expose one under "
+        "`/scratch`, but plenty do not; never guess it or assume scratch "
+        "exists.\n"
         "- Staging into the home directory *itself*, or into a clone "
         "dir, is refused: data must not scatter across the user's top "
         "level or land on checked-out code.\n"
@@ -2034,7 +2086,7 @@ def _render_agent_prompt(config: ScriptHutConfig | None) -> str:
         "- **The `--json` shape from `task run` matches `workflow run`** — "
         "capture `id` and pipe it to `run view` / `run watch`.\n"
         "- **In local mode, status doesn't refresh on its own.** Re-run "
-        "`scripthut run view <id> --json` to poll. Against a running server "
+        "`scripthut run view <id>` to poll. Against a running server "
         "(`SCRIPTHUT_SERVER` set), live tracking works.\n"
     )
 
@@ -2048,15 +2100,15 @@ def _render_agent_prompt(config: ScriptHutConfig | None) -> str:
         "Stop and report the diagnostic on failure.\n"
         "2. `scripthut agent prompt` — re-read on config/source/backend "
         "or branch change.\n"
-        "3. `scripthut backend list --json`.\n"
+        "3. `scripthut backend list`.\n"
         "4. Prefer a source workflow over ad-hoc: "
-        "`scripthut source list --json`, "
-        "`scripthut source view <name> --json`. The workflow already "
+        "`scripthut source list`, "
+        "`scripthut source view <name>`. The workflow already "
         "carries resolved env, `partition_map`, and stack assumptions.\n"
         "5. New workflow file not yet in `source view`: "
         "`scripthut source sync <name>`. Edits to existing files are "
         "picked up on `workflow run`.\n"
-        "6. Stack in use: `scripthut stack check <name> --json`; "
+        "6. Stack in use: `scripthut stack check <name>`; "
         "`scripthut stack install <name>` if not `ready`.\n"
         "7. Non-trivial ad-hoc: `scripthut task run ... --dry-run` and "
         "show the assembled TaskDefinition before submit.\n"
@@ -2075,7 +2127,7 @@ def _render_agent_prompt(config: ScriptHutConfig | None) -> str:
         "non-zero on failure. One-shot: "
         "`scripthut workflow run train.json --source <name> "
         "--backend <b> --watch` (also background). "
-        "Re-poll `scripthut run view $RUN_ID --json` only when a "
+        "Re-poll `scripthut run view $RUN_ID` only when a "
         "background watch is unavailable.\n"
         "10. Logs vs collected files:\n"
         "    - `scripthut run logs $RUN_ID <task_id> -f` — live stdout "
@@ -2902,7 +2954,7 @@ def _require_remote_backend(args: argparse.Namespace) -> str:
             "--backend is required when targeting a server. The local "
             "CLI iterates over every configured backend, but in "
             "server mode each backend is one separate install call; "
-            "pick one (`scripthut backend list --json` to see what's "
+            "pick one (`scripthut backend list` to see what's "
             "available) and re-run."
         )
     return backend
@@ -4688,6 +4740,16 @@ def main(argv: list[str]) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     handler = args.handler
+
+    # Under ``--json`` the caller wants a machine-readable document. The
+    # payload goes to stdout and these logs to stderr, so the two never
+    # actually collide — but four INFO lines per invocation (config load,
+    # ping, HTTP) are noisy enough that callers reach for ``2>&1`` to hide
+    # them, which merges the streams and corrupts the very document they
+    # were parsing. Quieting routine chatter removes the temptation.
+    # Warnings and errors still surface.
+    if getattr(args, "json", False):
+        logging.getLogger().setLevel(logging.WARNING)
 
     try:
         return asyncio.run(handler(args))

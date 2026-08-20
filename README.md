@@ -421,8 +421,9 @@ Sources are git repositories, backend filesystem paths, or a laptop working tree
 | Field | Description |
 |-------|-------------|
 | `path` | Git repository on the scripthut host (laptop) |
-| `dest` | Directory on the backend to copy into (default: `<sync_dir>/<name>/`). Shown by `disk scan` as a live working copy; `disk clean` will not delete it. |
-| `return` | Relative directory pulled back after the run (default: `output`) |
+| `dest` | Directory on the backend to copy into (default: `<sync_dir>/<name>/`). The upload replaces it wholesale, so a locally deleted file is gone from the backend next run. Shown by `disk scan` as a live working copy; `disk clean` will not delete it. |
+| `return` | Relative directory pulled back after the run (default: `output`). Must stay inside `path`; `..` is refused. The pull overwrites and adds — it never deletes local files. |
+| `timeout` | Wall-clock seconds for the upload and for the pull, each (default: `86400`) |
 
 #### Settings
 
@@ -441,6 +442,8 @@ When enabled, a task that declares `outputs` is content-addressed by a key deriv
 Two hashes do the work, Bazel-style: the *input/action hash* is the lookup key (`<store>/ac/<key>.json` manifest), and output blobs are stored *content-addressed* (`<store>/cas/<content_hash>.tar.gz`) so identical artifacts upload once and are reused across runs, branches, and clusters. Hashing and artifact transfer run cluster-side over SSH — the chosen `tool` (`aws` or `rclone`) must be on the backend's PATH. SSH backends only (Slurm/PBS); API-only backends silently skip caching.
 
 It's **off by default** and opt-in per task. A cache never replaces work it can't prove reusable: a missing/unhashable input, a miss, or a failed restore all fall back to running the task, and cached failures (non-zero exit) are never reused.
+
+Declaring `outputs` also makes them a **postcondition**, independent of whether caching is on: a task that exits 0 but wrote *none* of its declared paths is marked `FAILED` rather than `COMPLETED`, because "exit 0" is not a reliable success signal (batch interpreters like Stata's `-e` exit 0 on a failed script). If ScriptHut cannot verify — no SSH, or the check itself errors — the task is left `COMPLETED`; absence is never inferred from a failed check. Declare `outputs` only for artifacts written on every successful run. See [caching](docs/task-json/caching.md).
 
 ```yaml
 # scripthut.yaml — global cache config (shared infrastructure)
@@ -503,7 +506,7 @@ Tasks read the location from `DATA_<NAME>`, plus `DATA_DIR` when the workflow us
 | `datasets[].timeout` | Wall-clock limit for one transfer, in seconds | `86400` |
 | `<backend>.dataset_dir` | Where datasets land on that backend; distinct from `settings.data_dir`, the daemon's local cache | `~/scripthut-data` |
 
-> The home default suits small data. HPC home quotas are usually far below real dataset sizes — set `dataset_dir` to scratch before staging anything large.
+> The home default suits small data. HPC home quotas are usually far below real dataset sizes, so point `dataset_dir` at a larger filesystem before staging anything big. On many clusters that is `/scratch/<user>`, but not all provide one — ask for the path rather than assuming it exists.
 
 See [Data dependencies](docs/configuration/data.md) for resolution rules, failure modes, and staging containers.
 
@@ -882,7 +885,7 @@ If a generated task references a dependency that doesn't exist in the run, the e
 
 ### Environments
 
-ScriptHut resolves a task's environment by walking an ordered chain of **env rules** from five layers — **backend → server → workflow (config) → workflow (document) → task** — against a seed of `SCRIPTHUT_*` runtime variables. The full reference lives in [docs/configuration/environments.md](docs/configuration/environments.md). What follows is a quick tour.
+ScriptHut resolves a task's environment by walking an ordered chain of **env rules** — **backend → server → repo / workflow document → task** — against a seed of `SCRIPTHUT_*` runtime variables. The full reference lives in [docs/configuration/environments.md](docs/configuration/environments.md). What follows is a quick tour.
 
 #### One primitive: the `EnvRule`
 
@@ -905,10 +908,10 @@ Conditionals see the env as resolved so far, so a rule's `if:` can branch on the
 
 | Layer | Defined in | Typical use |
 |-------|------------|-------------|
-| Backend | `env:` on each backend in `scripthut.yaml` | Cluster facts: scratch path, modules bootstrap |
-| Server | top-level `env:` in `scripthut.yaml` | Org-wide defaults |
-| Workflow | `env:` on each workflow in `scripthut.yaml` | Workflow-specific overrides |
-| Task | `env:` array in the generator's JSON output | Per-task adjustments |
+| Backend | `env:` / `env_groups:` on each backend | Cluster map (`module load` for `stata-195`) |
+| Server | top-level `env:` / `env_groups:` | Portable org defaults |
+| Repo / document | source `scripthut.yaml` and workflow JSON | Project knobs; `include:` of backend names |
+| Task | `env:` on each task | Per-task `include` / `set` |
 
 Rules concatenate in that order. `set:` overwrites, `append:` extends — later layers naturally override earlier ones.
 
@@ -941,7 +944,7 @@ backends:
       - include: [gpu-stack]
 ```
 
-`env_groups:` is accepted on backends, the server, and workflows. A group defined at layer X is visible to that layer and all later layers; later layers shadow earlier ones by name. The `include:` rule can carry its own `if:` to gate the inlined rules.
+`env_groups:` is accepted on backends, the server, and workflows. A group defined at layer X is visible to that layer and all later layers; later layers shadow earlier ones by name. Unknown `include:` names fail the submit (unless the rule's `if:` does not match). An empty group on a backend (`stata-195: []`) means this cluster needs no extra bash. Do not put `module load` in the workflow JSON.
 
 #### Inspecting the resolved env
 

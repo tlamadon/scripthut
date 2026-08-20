@@ -59,6 +59,8 @@ Both formats are equivalent. The object format with the `"tasks"` key is recomme
 | `env_groups` | object | Named, reusable env-rule lists visible to this document's tasks. |
 | `data` | array | Names of [datasets](../configuration/data.md) to stage on the backend before any task runs. Each becomes `DATA_<NAME>`, plus `DATA_DIR` when there is exactly one. |
 
+Do not collapse the three named lookups. `data` maps to user-global `datasets:`. `include` maps to **that backend's** `env_groups` (cluster dialect such as `module load`; an empty group is a no-op; unknown names fail submit). `stacks` maps to ScriptHut-built runtimes. Same JSON on every cluster; omit a name to inject nothing. Details: [Environment Variables](environments.md) and [Data dependencies](../configuration/data.md).
+
 ---
 
 ## Task Fields
@@ -82,7 +84,7 @@ Each task object supports the following fields:
 | `error_file` | no | string | auto | Custom path for stderr log (Slurm/PBS only). If not set, defaults to `<log_dir>/scripthut_<run_id>_<task_id>.err`. Ignored on AWS Batch — stderr is merged into the CloudWatch stream. |
 | `env` | no | array | `[]` | Task-level env rules. Each entry is an `EnvRule` with optional `if`, `set`, `append`, `init`, and `include` fields. See [Environment Variables](environments.md). |
 | `inputs` | no | array | `[]` | Paths/globs whose content feeds the result-cache key. See [Result Caching](caching.md). |
-| `outputs` | no | array | `[]` | Paths/globs of the task's artifacts, stored/restored by the result cache. See [Result Caching](caching.md). |
+| `outputs` | no | array | `[]` | Paths/globs of the task's artifacts, stored/restored by the result cache. **Also a postcondition** — a task that exits 0 without writing any of them is marked FAILED. See [Result Caching](caching.md). |
 | `cache` | no | bool | `true` | Per-task opt-out of the result cache. See [Result Caching](caching.md). |
 | `cache_scope` | no | string | `"commit"` | `"commit"` (git commit busts the key) or `"inputs"` (key from command + env + input hashes only). See [Result Caching](caching.md). |
 | `generates_source` | no | string | `null` | Path to a JSON file this task creates on the backend containing additional tasks. See [Dynamic Task Generation](#dynamic-task-generation). |
@@ -123,7 +125,7 @@ This task will run with default resources: 1 CPU, 4G memory, 1 hour time limit, 
       "error_file": "/scratch/user/logs/train-v1.err",
       "env": [
         {"set": {"MODEL_NAME": "resnet50", "DATA_DIR": "/scratch/data/imagenet"}},
-        {"if": {"SCRIPTHUT_BACKEND": "hpc-cluster"}, "init": "module load cuda/12"}
+        {"include": ["cuda"]}
       ]
     }
   ]

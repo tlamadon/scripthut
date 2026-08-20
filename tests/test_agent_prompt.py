@@ -303,7 +303,11 @@ class TestYamlEditingGuidance:
         # The non-obvious semantic — AND across keys in `if:`.
         assert "AND" in prompt
         # Resolver order so the agent knows which layer wins.
-        assert "server → backend → repo-project → workflow-doc → task" in prompt
+        assert "backend → server → repo-project → workflow-doc → task" in prompt
+        assert "Unknown include name" in prompt
+        assert "Three named lookups" in prompt
+        assert "env_groups:" in prompt
+        assert "module load" in prompt
 
     def test_merge_semantics_documented(self):
         """The agent needs to know: env CONCATS, env_groups MERGE,
@@ -472,6 +476,49 @@ class TestObservabilitySurfaces:
         assert "$SCRIPTHUT_OUTPUT_DIR" in prompt
         # Distinct from scheduler stdout — the Stata-class failure mode.
         assert "run logs" in prompt
+
+
+class TestReadOutputDontParseIt:
+    """Agents were hand-writing parsers around ``--json`` and losing data.
+
+    Observed: ``run view --json 2>&1 | python3 -c '<parser>'`` — the
+    ``2>&1`` merged log lines into stdout (forcing a skip-to-first-brace
+    hack), and the parser printed less than the default table already
+    shows. The prompt must steer to reading the default output, and must
+    say the quiet part: no ``2>&1``.
+    """
+
+    def test_never_write_a_parser_is_stated(self):
+        prompt = _render_agent_prompt(ScriptHutConfig())
+        assert "Never write a parser" in prompt
+
+    def test_no_stderr_redirect_is_stated(self):
+        prompt = _render_agent_prompt(ScriptHutConfig())
+        assert "2>&1" in prompt
+        # And says which stream is which, so the rule is understandable.
+        assert "stdout" in prompt and "stderr" in prompt
+
+    def test_read_only_inspection_examples_drop_json(self):
+        prompt = _render_agent_prompt(ScriptHutConfig())
+        # These have a human-readable form worth reading; --json on them
+        # is what invited the parser.
+        assert "scripthut backend list --json" not in prompt
+        assert "scripthut source list --json" not in prompt
+        assert "scripthut run view <id> --json" not in prompt
+        assert "scripthut run list --json" not in prompt
+
+    def test_json_kept_where_a_field_is_captured(self):
+        prompt = _render_agent_prompt(ScriptHutConfig())
+        # Capturing an id is the legitimate use, via jq rather than a script.
+        assert "--json | jq -r .id" in prompt
+        # And where the payload is genuinely structured with nothing to read.
+        assert "task probe" in prompt and "--json" in prompt
+
+    def test_default_output_is_advertised_as_richer(self):
+        prompt = _render_agent_prompt(ScriptHutConfig())
+        # The concrete reason to prefer it: the table carries fields a
+        # parser won't surface.
+        assert "CPU%" in prompt
 
 
 # ---------- no-config fallback -------------------------------------------

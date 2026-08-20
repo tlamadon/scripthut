@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
+import os
 import re
+import signal
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -290,3 +294,23 @@ echo "Finished: $(date)"
 echo "Exit code: $EXIT_CODE"
 exit $EXIT_CODE
 """
+
+
+async def reap_process_tree(
+    proc: asyncio.subprocess.Process, *, timeout: float = 5.0
+) -> None:
+    """SIGKILL a spawned command's whole process group and wait briefly.
+
+    Callers must spawn with ``start_new_session=True`` so the shell leads its
+    own group. Killing only the shell leaves grandchildren alive holding the
+    stdout/stderr pipes, and ``proc.wait()`` then blocks for as long as they
+    live — turning a cancellation into a wait for the very command being
+    cancelled. The wait is bounded for the same reason: the kill has already
+    been delivered, so there is nothing to gain by blocking longer.
+    """
+    with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    with contextlib.suppress(ProcessLookupError, OSError):
+        proc.kill()
+    with contextlib.suppress(BaseException):
+        await asyncio.wait_for(proc.wait(), timeout=timeout)

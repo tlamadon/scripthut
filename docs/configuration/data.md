@@ -39,7 +39,7 @@ Paths must be literal: `$USER` is never expanded, and only `A-Z a-z 0-9 _ . - /`
 The remote home directory *itself* and any path inside a clone directory are refused. Subdirectories of home are fine, and are the default.
 
 !!! warning "The default is home, which has a quota"
-    `~/scripthut-data` mirrors `clone_dir` and suits small data. HPC home quotas are usually far below real dataset sizes, and filling one breaks everything else you are running. Set `dataset_dir` to scratch before staging anything large.
+    `~/scripthut-data` mirrors `clone_dir` and suits small data. HPC home quotas are usually far below real dataset sizes, and filling one breaks everything else you are running. Point `dataset_dir` at a larger filesystem before staging anything large — commonly `/scratch/<user>`, but confirm the cluster has one rather than assuming.
 
 ---
 

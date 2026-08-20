@@ -1,7 +1,15 @@
 """Laptop → cluster code copy for a ``type: sync`` source.
 
-File-list, dest layout, and workflow discovery live here. Transfer is
-``SSHClient.put_files`` / ``get_files`` (dedicated SFTP, dest may exist).
+File-list, dest layout, staging-path naming, and workflow discovery live here
+and nowhere else: change the dest shape, the return dir, or the staging suffix
+by editing this module.
+
+Upload stages into ``<dest>.sync-<run_id>``, verifies it, then replaces
+``dest``. The return pull overwrites and adds and never deletes. See the
+transfer-destination gotcha in AGENTS.md for why the two differ.
+
+Transfer is ``SSHClient.put_files`` / ``get_files`` on a dedicated SFTP
+connection; the ``mkdir``/``mv`` shell steps stay with the caller.
 """
 
 from __future__ import annotations

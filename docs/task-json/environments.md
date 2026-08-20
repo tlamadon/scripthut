@@ -22,17 +22,11 @@ A workflow that declares [data dependencies](../configuration/data.md) also gets
 
 ## Document-level `env:` and `env_groups:`
 
-The workflow JSON itself can carry an `env:` rule list and an `env_groups:` dictionary at the top level — alongside `tasks:`. These apply to every task the document produces. This is the natural home for env config that lives **in the project's repo** (the generator script that emits the JSON ships in your repo, so anything it writes is repo-versioned).
+The workflow JSON itself can carry an `env:` rule list and an `env_groups:` dictionary at the top level — alongside `tasks:`. Use this for **project** knobs (thread counts, `WANDB_PROJECT`). Cluster dialect (`module load`) belongs in the **backend's** `env_groups`, referenced here only by name.
 
 ```json
 {
   "title": "Grid over 2 params",
-  "env_groups": {
-    "julia-1.12": [
-      {"set": {"JULIA_DEPOT_PATH": "/scratch/${USER}/julia_depot"}},
-      {"init": "module load julia/1.12 awscli/2.10/2.10.3"}
-    ]
-  },
   "env": [
     {"include": ["julia-1.12"]}
   ],
@@ -44,10 +38,13 @@ The workflow JSON itself can carry an `env:` rule list and an `env_groups:` dict
 }
 ```
 
+`julia-1.12` is either a **stack** (`"stacks": ["julia-1.12"]`) ScriptHut built, or an env group mapped on each backend. Do not put `module load julia/…` in this file.
+
+
 In the resolver chain, document-level rules sit between the workflow-config layer (from `scripthut.yaml`) and the task layer:
 
 ```
-backend → server → workflow (config) → workflow-doc → task
+backend → server → repo / workflow-doc → task
 ```
 
 A `generates_source` child JSON can also carry its own top-level `env:` and `env_groups:`. New env rules append to the run's existing list; new groups merge in (later definitions shadow earlier). So a generator can dynamically add env config alongside the dynamic tasks it produces.
@@ -63,7 +60,7 @@ A task's `env:` is a list of `EnvRule` entries. Each entry can `set:` variables,
   "command": "python train.py",
   "env": [
     {"set": {"LEARNING_RATE": "0.001", "BATCH_SIZE": "64"}},
-    {"if": {"SCRIPTHUT_BACKEND": "mercury"}, "init": "module load cuda/11"},
+    {"include": ["cuda"]},
     {"include": ["monitoring"]}
   ]
 }
@@ -109,10 +106,7 @@ This is what a generator's complete stdout looks like — the same top-level `{"
           "WORK_DIR": "/scratch/${USER}/${SCRIPTHUT_RUN_ID}",
           "SEED": "42"
         }},
-        {"if": {"SCRIPTHUT_BACKEND": "mercury"},
-         "init": "module load cuda/11"},
-        {"if": {"SCRIPTHUT_BACKEND": "anvil"},
-         "init": "module load cuda-toolkit"},
+        {"include": ["cuda"]},
         {"include": ["wandb"]},
         {"append": {"PATH": "/opt/cuda/bin"}}
       ]
@@ -133,13 +127,13 @@ This is what a generator's complete stdout looks like — the same top-level `{"
 Points worth noting:
 
 - **`set:` cascades within a single task's `env:`** — `WORK_DIR` is written in the first rule, then referenced via `${WORK_DIR}` in the task's `command`. The `command` itself is *not* expanded by the resolver; rather, the generated submission script exports `WORK_DIR=...` before running the command so the shell does the substitution.
-- **`include:` resolves against env_groups defined upstream** — `wandb` here would be defined at the workflow level (in `scripthut.yaml`) or at the server level. The task doesn't define groups itself; it only references them.
-- **`if:` rules guard their entire block** — when neither `mercury` nor `anvil` matches `SCRIPTHUT_BACKEND` (e.g. running on a laptop), neither `module load` line is added. The `append: { PATH: /opt/cuda/bin }` after them is unconditional; if you only want it on GPU clusters, wrap it in an `if:` as well or move it inside an `env_group` whose include is guarded.
-- **Repeating values across tasks** — if many tasks share `WORK_DIR: /scratch/${USER}/${SCRIPTHUT_RUN_ID}`, lift it to the workflow's `env:` in `scripthut.yaml` (or to the document-level `"env"` above) instead of repeating it in every task. Anything not specific to a single task belongs upstream.
+- **`include:` resolves against env_groups defined upstream** — `cuda` is mapped per backend (`module load cuda/11` on Mercury, empty list where the toolkit is already on PATH). `wandb` can be a server- or project-level group. Unknown names fail the submit unless this rule's `if:` does not match.
+- **`if:` guards the whole rule** — use it for optional extras, not to hide a missing cluster map. Prefer a per-backend `env_groups` entry (including `[]` for no-op).
+- **Repeating values across tasks** — if many tasks share `WORK_DIR: /scratch/${USER}/${SCRIPTHUT_RUN_ID}`, lift it to the document-level `"env"` instead of repeating it in every task. Anything not specific to a single task belongs upstream.
 
 ## Resolution order — later rules win
 
-Rules from each layer are concatenated and evaluated top to bottom: backend rules, then server, then workflow, then task. `set:` overwrites; `append:` extends. So if the workflow sets `WORK_DIR=/shared` and the task sets `WORK_DIR=/scratch/local`, the task wins. The Env tab on the task detail page in the UI shows the resolved env with per-key provenance (which layer / which group wrote each value) — use it to debug surprising values. The same data is exposed at `GET /runs/{run_id}/tasks/{task_id}/env`.
+Rules from each layer are concatenated and evaluated top to bottom: backend, server, repo/document, then task. `set:` overwrites; `append:` extends. So if the document sets `WORK_DIR=/shared` and the task sets `WORK_DIR=/scratch/local`, the task wins. The Env tab on the task detail page in the UI shows the resolved env with per-key provenance (which layer / which group wrote each value) — use it to debug surprising values. The same data is exposed at `GET /runs/{run_id}/tasks/{task_id}/env`.
 
 ## Legacy fields (removed)
 

@@ -29,8 +29,8 @@ class EnvRule(BaseModel):
     include: list[str] = Field(
         default_factory=list,
         description=(
-            "Names of env_groups to inline at this position. The included rules "
-            "are evaluated in order, and inherit this rule's if-guard if any."
+            "Names of env_groups to inline at this position. Unknown names "
+            "raise at resolve time unless this rule's if-guard does not match."
         ),
     )
     stacks: list[str] = Field(
@@ -170,8 +170,10 @@ class SlurmBackendConfig(BaseModel):
         description=(
             "Parent directory on this backend for staged datasets, which land "
             "at <dataset_dir>/<dataset-name>/<hash>. Defaults to home like "
-            "clone_dir; point it at scratch for anything large, since HPC "
-            "home quotas are usually far below real dataset sizes."
+            "clone_dir. Home quotas are usually far below real dataset "
+            "sizes, so move it to a larger filesystem before staging big "
+            "data — often /scratch/<user>, but not every cluster has one; "
+            "confirm the path instead of assuming it."
         ),
     )
     sync_dir: str = Field(
@@ -179,7 +181,8 @@ class SlurmBackendConfig(BaseModel):
         description=(
             "Parent directory on this backend for type: sync working copies, "
             "which land at <sync_dir>/<source-name>/. Defaults to home like "
-            "clone_dir; point it at scratch. Must not sit under clone_dir "
+            "clone_dir; the same quota caveat as dataset_dir applies. Must "
+            "not sit under clone_dir "
             "or dataset_dir. The disk page inventories these dests as live "
             "working copies; disk clean will not delete them."
         ),
@@ -226,8 +229,10 @@ class PBSBackendConfig(BaseModel):
         description=(
             "Parent directory on this backend for staged datasets, which land "
             "at <dataset_dir>/<dataset-name>/<hash>. Defaults to home like "
-            "clone_dir; point it at scratch for anything large, since HPC "
-            "home quotas are usually far below real dataset sizes."
+            "clone_dir. Home quotas are usually far below real dataset "
+            "sizes, so move it to a larger filesystem before staging big "
+            "data — often /scratch/<user>, but not every cluster has one; "
+            "confirm the path instead of assuming it."
         ),
     )
     sync_dir: str = Field(
@@ -235,7 +240,8 @@ class PBSBackendConfig(BaseModel):
         description=(
             "Parent directory on this backend for type: sync working copies, "
             "which land at <sync_dir>/<source-name>/. Defaults to home like "
-            "clone_dir; point it at scratch. Must not sit under clone_dir "
+            "clone_dir; the same quota caveat as dataset_dir applies. Must "
+            "not sit under clone_dir "
             "or dataset_dir. The disk page inventories these dests as live "
             "working copies; disk clean will not delete them."
         ),
@@ -617,7 +623,9 @@ class SyncSourceConfig(BaseModel):
         alias="return",
         description=(
             "Relative directory pulled cluster → laptop after the run "
-            "(default output/). Excluded from the upload even if git-tracked."
+            "(default output/). Excluded from the upload even if git-tracked. "
+            "Must stay inside the source path: leading and trailing '/' are "
+            "stripped and '..' is rejected."
         ),
     )
     workflows_glob: str = Field(
@@ -642,6 +650,26 @@ class SyncSourceConfig(BaseModel):
         default="",
         description="Human-readable description of this source",
     )
+
+    @field_validator("return_dir")
+    @classmethod
+    def _return_dir_stays_inside_the_source(cls, v: str) -> str:
+        """Normalize the return dir here so every consumer gets a safe value.
+
+        The pull resolves this against the local source path, so an absolute
+        or ``..``-bearing value would point the transfer outside the repo.
+        Normalizing at the schema boundary means the upload side and the pull
+        side cannot disagree about what it means. Mirrors
+        ``runs.sync._normalize_return_dir``, which stays as the guard for
+        callers that build a path list directly.
+        """
+        cleaned = v.strip().strip("/")
+        if not cleaned or cleaned == "." or ".." in Path(cleaned).parts:
+            raise ValueError(
+                f"Invalid return dir {v!r}: it must be a relative directory "
+                "inside the source path, such as 'output' or 'results/final'."
+            )
+        return cleaned
 
 
 SourceConfig = Annotated[

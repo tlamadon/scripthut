@@ -15,13 +15,17 @@ backends:
       # known_hosts: ~/.ssh/known_hosts    # Optional: enable host key checking
     account: pi-faculty  # Slurm account for job submission (e.g., phd, pi-faculty)
     # login_shell: true  # Use #!/bin/bash -l to source .bash_profile in jobs
+    # env_groups:
+    #   stata-195:                         # workflows: {"include": ["stata-195"]}
+    #     - init: "module load stata/19.5" # other clusters: stata-195: []
     # clone_dir: ~/scripthut-repos  # Path whose disk usage is shown in the UI (default)
     # dataset_dir: /scratch/your_username  # Where `datasets:` (see below) are staged
     #                                   # on THIS cluster. Default ~/scripthut-data;
-    #                                   # point it at scratch for anything large,
+    #                                   # point it at a larger filesystem for big
+    #                                   # data (often /scratch, if the cluster has it),
     #                                   # since home quotas are usually much smaller.
     # sync_dir: /scratch/your_username/scripthut-sync  # type: sync working copies
-    #                                   # Default ~/scripthut-sync; point at scratch.
+    #                                   # Default ~/scripthut-sync; same quota caveat.
     #                                   # Disk scan lists these dests as live;
     #                                   # disk clean will not delete them.
 
@@ -156,12 +160,20 @@ sources:
   # Sync source — laptop git working tree copied to the backend on submit.
   # Uncommitted tracked files go; untracked/gitignored do not. `output/`
   # is excluded from the upload and pulled back when the run finishes.
+  #
+  # The upload replaces `dest` wholesale, so a file you delete locally is
+  # gone from the cluster on the next run. The pull is the opposite: it
+  # overwrites and adds, and never deletes, so anything of your own sitting
+  # in `output/` survives.
   # - name: wl-hcpu
   #   type: sync
   #   path: ~/Documents/GitHub/wl_hcpu
   #   backend: hpc-cluster
   #   # dest: /scratch/you/wl_hcpu     # default: <sync_dir>/<name>/
-  #   # return: output                 # cluster → laptop after the run
+  #   # return: output                 # cluster → laptop after the run.
+  #                                    # Relative to `path`; '..' is refused
+  #   # timeout: 86400                 # seconds for the upload and for the
+  #                                    # pull, each (default 24h)
 
 # Coding agents — the "Start coding agent" button on each git source launches a
 # Claude Code session as a job, in a fresh writable clone of the repo. Two modes:

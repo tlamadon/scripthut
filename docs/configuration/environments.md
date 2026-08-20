@@ -1,6 +1,6 @@
 # Environments
 
-ScriptHut resolves the environment for each task by walking an ordered chain of **env rules** from five layers — **backend → server → workflow (config) → workflow (document) → task** — against a seed of `SCRIPTHUT_*` runtime variables. Every layer contributes rules to the same list; later rules see earlier rules' effects, so conditionals can branch on any value set upstream (including the seed).
+ScriptHut resolves the environment for each task by walking an ordered chain of **env rules** — **backend → server → repo / workflow document → task** — against a seed of `SCRIPTHUT_*` runtime variables. Every layer contributes rules to the same list; later rules see earlier rules' effects, so conditionals can branch on any value set upstream (including the seed).
 
 ## The `EnvRule` shape
 
@@ -37,19 +37,18 @@ env:
 | `set` | object | Variables to write. Overwrites any prior value. `${name}` is expanded against env-so-far. |
 | `append` | object | Variables to extend. Joined to the existing value with `:` (creates the value if absent). `${name}` is expanded. |
 | `init` | string | Bash text appended (newline-joined) into the `extra_init` block. Runs **before** `set:`/`append:` exports in the generated script, so user-set vars override anything `module load` / `source` placed into the env. Followed by `cd <working_dir>` and the task command. `${name}` is expanded. |
-| `include` | list of strings | Names of `env_groups` to inline at this position. See [Reusable groups](#reusable-groups). |
+| `include` | list of strings | Names of `env_groups` to inline. Unknown names fail at submit unless this rule's `if:` does not match. Empty group = this cluster needs no extra bash. See [Reusable groups](#reusable-groups). |
 
 ## Where rules live
 
-`env:` is a list of rules accepted at five locations, evaluated in this order:
+`env:` is a list of rules accepted at these layers, evaluated in this order:
 
 | Layer | Defined in | Typical use |
 |-------|------------|-------------|
-| **Backend** | `env:` on each backend entry in `scripthut.yaml` | Cluster-specific facts — scratch paths, module-system bootstrap |
-| **Server** | top-level `env:` in `scripthut.yaml` | Org-wide defaults across all clusters |
-| **Workflow (config)** | `env:` on each workflow entry in `scripthut.yaml` | Workflow-specific overrides for ops-controlled config |
-| **Workflow (document)** | top-level `env:` inside the JSON the generator emits | Project-controlled config — lives in your repo, ships with your code. See [Task JSON → Environment Variables](../task-json/environments.md) |
-| **Task** | `env:` on each task in the JSON generator output | Per-task adjustments |
+| **Backend** | `env:` / `env_groups:` on each backend | Cluster map — scratch, `module load` for names like `stata-195` |
+| **Server** | top-level `env:` / `env_groups:` | Portable org defaults, not site modules |
+| **Repo / document** | source `scripthut.yaml` and workflow JSON `env:` | Project knobs; `include:` of backend names |
+| **Task** | `env:` on each task | Per-task `include` / `set` |
 
 Rules from each layer are concatenated in that order, then evaluated top-to-bottom. There is no separate "merge" step — `set` overwrites and `append` extends, so layer X overrides layer X-1 simply by being written later.
 
@@ -105,7 +104,7 @@ env:
     include: [gpu-stack]              # only fires on mercury
 ```
 
-Cycles between groups are detected and raise a clear error. Unknown group names log a warning and are skipped.
+Cycles between groups are detected and raise a clear error. Unknown group names raise at resolve time (the task is not submitted) unless this rule's `if:` does not match the current backend. An empty group (`stata-195: []`) is a deliberate no-op: this cluster already has the dependency on PATH.
 
 ## Inspecting the resolved env
 
@@ -119,32 +118,35 @@ Use this when a value isn't what you expect: the provenance pinpoints which laye
 
 ## Worked example: cluster-specific module loads
 
-The canonical case — "Mercury needs `module load gcc/12 cuda/11`, Anvil needs `module load gcc cuda-toolkit`, the laptop needs nothing":
+The workflow JSON names a dependency. Each backend maps that name to the bash it needs — or to nothing, if the binary is already on PATH. The JSON never contains `module load`.
 
 ```yaml
+# ~/.config/scripthut/scripthut.yaml
 backends:
   - name: mercury
     type: slurm
     ssh: { host: mercury.example.edu, user: alice }
-    env:
-      - set: { SCRATCH: /scratch/${USER} }
-      - init: "source /etc/profile.d/modules.sh"
+    env_groups:
+      stata-195:
+        - init: "module load stata/19.5"
 
-  - name: anvil
+  - name: acropolis
     type: pbs
-    ssh: { host: anvil.example.edu, user: alice }
-    env:
-      - set: { SCRATCH: /tmp/work/${USER} }
-
-workflows:
-  - name: train
-    backend: mercury                  # this workflow targets mercury
-    command: "python generate_tasks.py"
-    env:
-      - if: { SCRIPTHUT_BACKEND: mercury }
-        init: "module load gcc/12 cuda/11"
-      - if: { SCRIPTHUT_BACKEND: anvil }
-        init: "module load gcc cuda-toolkit"
+    ssh: { host: acropolis.example.edu, user: alice }
+    env_groups:
+      stata-195: []    # stata-mp is already on PATH
 ```
 
-The same workflow definition, ported to a different backend (e.g. by adding a second `train-anvil` workflow that points to `anvil`), gets the right module loads automatically — no per-backend duplication of the workflow.
+```json
+{
+  "tasks": [
+    {
+      "id": "finassets",
+      "command": "stata-mp -e -b do Data_FINASSETS_2022.do",
+      "env": [{ "include": ["stata-195"] }]
+    }
+  ]
+}
+```
+
+Mercury injects `module load stata/19.5`. Acropolis injects nothing. A backend with no `stata-195` group at all rejects the submit. A workflow that omits `include` is also valid — it has no named env dependency.

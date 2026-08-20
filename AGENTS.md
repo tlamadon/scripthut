@@ -27,10 +27,12 @@ Where to edit when changing a behavior, and what else has to move with it.
 | Changing | Edit | Also update |
 |---|---|---|
 | Dataset destination layout, manifest hash width, `DATA_*` variable names | `src/scripthut/runs/datasets.py` (the module docstring marks it as the one place) | Every doc layer below |
+| Named env groups (`include:` → backend `env_groups`) | `src/scripthut/runs/env.py` (`flatten`) | Agent prompt, `docs/configuration/environments.md`, this table |
 | Sync dest layout, `output/` return dir, `DATA_*`-unrelated `sync_dir` | `src/scripthut/runs/sync.py` (the module docstring marks it as the one place) | Every doc layer below |
 | A config field | `src/scripthut/config_schema.py` — the `description=` is user-visible via JSON schema and the Settings page, so it must be true | `scripthut.example.yaml`, README table, `docs/configuration/` |
 | Backend behavior | `src/scripthut/backends/` | `docs/configuration/backends.md` |
 | Anything an agent needs to know | `_render_agent_prompt()` in `src/scripthut/cli.py` | `tests/test_agent_prompt.py` pins its headings and key strings |
+| Declared-`outputs` enforcement, or the `hash_paths` reason contract | `src/scripthut/runs/cache.py` (`HASH_OK`/`HASH_EMPTY`/`HASH_UNVERIFIABLE`) and the check in `_after_item_completed` | `docs/task-json/caching.md`, README, agent prompt, skill |
 
 ### Documentation layers
 
@@ -49,5 +51,9 @@ The house skill at `dotfiles/skills/scripthut/` is maintained separately and is 
 ## Gotchas
 
 - A backend's `dataset_dir` is the remote parent for staged datasets; the unrelated `settings.data_dir` is the daemon's local cache base. The names were split deliberately so the two cannot be confused — do not reintroduce `data_dir` on a backend.
-- A backend's `sync_dir` is the remote parent for `type: sync` working copies. It must not sit under `clone_dir` or `dataset_dir`. Disk scan inventories dests as live; disk clean never deletes them.
+- A backend's `sync_dir` is the remote parent for `type: sync` working copies. It must not sit under `clone_dir` or `dataset_dir`. Disk scan inventories dests as live; disk clean never deletes them. (Transient `<dest>.sync-<run>` staging dirs are *not* known to the disk module — they classify as orphaned. Left as-is; the next run to that dest clears them.)
+- **Three transfer destinations, three deliberately different behaviors — do not unify them.** Sync upload replaces `dest` wholesale (mutable working copy). Sync return overwrites and adds, never deletes. A dataset dest is immutable, so `stage_dataset` discards its own staging copy on a race.
+- Shell command lists that clear a staging glob must be sequenced with `;`, not `&&`: with nothing to match, zsh and csh treat an unmatched glob as an error, so `&&` would fail every first transfer to a fresh dest on those login shells.
+- **Never infer absence from a check that failed.** The sync return pull, dataset verification, and declared-`outputs` enforcement all ask the backend "what files are here?". Each must distinguish "the walk ran and found nothing" from "the walk could not be made" — `CacheManager.hash_paths` encodes this as `HASH_EMPTY` vs `HASH_UNVERIFIABLE`, and only the former may be acted on. Collapsing them turns a dropped connection into deleted files.
+- Cluster dialect (`module load`) lives in `backends[].env_groups`. Workflows only `include:` the name. Unknown include names fail at submit; an empty group is a deliberate no-op. Do not put `module load` in `.hut/workflows`.
 - `SCRIPTHUT_`-prefixed variables cannot be set by env rules and are stripped from cache keys. Anything that must survive both — like a dataset destination — must not use that prefix.

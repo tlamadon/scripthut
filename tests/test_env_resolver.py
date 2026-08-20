@@ -385,12 +385,21 @@ def test_flatten_multiple_includes_in_one_rule_in_listed_order():
     assert env["FROM"] == "b"  # b included after a, so it wins
 
 
-def test_flatten_unknown_group_warns_and_skips(caplog):
+def test_flatten_unknown_group_raises():
     rules = [_lr(rule(include=["missing"]))]
-    with caplog.at_level(logging.WARNING):
-        out = flatten(rules, {})
+    with pytest.raises(ValueError, match="env_group 'missing'"):
+        flatten(rules, {})
+
+
+def test_flatten_empty_group_is_noop():
+    out = flatten([_lr(rule(include=["stata-195"]))], {"stata-195": []})
     assert out == []
-    assert any("missing" in r.message for r in caplog.records)
+
+
+def test_flatten_unknown_group_skipped_when_guard_misses():
+    rules = [_lr(rule(if_={"SCRIPTHUT_BACKEND": "mercury"}, include=["gpu-stack"]))]
+    out = flatten(rules, {}, env={"SCRIPTHUT_BACKEND": "anvil"})
+    assert out == []
 
 
 def test_flatten_nested_includes():
@@ -511,6 +520,12 @@ def test_flatten_unknown_stack_raises():
     rules = [_lr(rule(stacks=["typo-1.12"]))]
     with pytest.raises(ValueError, match="stack 'typo-1.12'"):
         flatten(rules, {}, {})
+
+
+def test_flatten_unknown_stack_skipped_when_guard_misses():
+    rules = [_lr(rule(if_={"GPU": "1"}, stacks=["cuda"]))]
+    out = flatten(rules, {}, {}, env={"GPU": "0"})
+    assert out == []
 
 
 def test_flatten_empty_init_stack_is_noop():

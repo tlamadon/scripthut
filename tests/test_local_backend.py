@@ -155,6 +155,51 @@ class TestLocalExecClient:
         assert client.is_connected is True
 
     @pytest.mark.asyncio
+    async def test_cancelling_reaps_the_whole_tree_promptly(self):
+        """Cancelling must kill the command tree, and must not wait for it.
+
+        Two failures this pins. Cancellation does not propagate to the child,
+        so without an explicit kill the command outlives the run holding both
+        pipes open. And killing only the shell leaves a grandchild (``sleep``
+        below) holding those pipes, which makes ``proc.wait()`` block for the
+        child's full lifetime — a cancel that waits 30s for the thing it is
+        cancelling. Hence the process *group* kill and the bounded wait.
+        """
+        import os
+        import tempfile
+        import time
+        from pathlib import Path
+
+        client = LocalExecClient()
+        pid_file = Path(tempfile.mkdtemp()) / "pid"
+        # `sleep` is a grandchild of the shell: the case that exposed the bug.
+        task = asyncio.create_task(
+            client.run_command(f"echo $$ > {pid_file}; sleep 30", timeout=60)
+        )
+        for _ in range(200):
+            await asyncio.sleep(0.02)
+            if pid_file.exists() and pid_file.read_text().strip():
+                break
+        pid = int(pid_file.read_text().strip())
+
+        started = time.monotonic()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        elapsed = time.monotonic() - started
+
+        # Prompt: nowhere near the 30s the grandchild would otherwise impose.
+        assert elapsed < 10, f"cancellation blocked for {elapsed:.1f}s"
+
+        for _ in range(200):
+            try:
+                os.kill(pid, 0)
+            except (ProcessLookupError, PermissionError):
+                return                       # group reaped — the point of the test
+            await asyncio.sleep(0.02)
+        pytest.fail(f"process group of {pid} survived cancellation")
+
+    @pytest.mark.asyncio
     async def test_nonzero_exit(self):
         client = LocalExecClient()
         _, _, code = await client.run_command("exit 7")

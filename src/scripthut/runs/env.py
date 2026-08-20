@@ -244,47 +244,48 @@ def collect_stacks(
     return stacks
 
 
+def _guards_match(lr: LabeledRule, env: Mapping[str, str] | None) -> bool:
+    """True if *lr* would apply against *env*. ``env is None`` skips the check."""
+    if env is None:
+        return True
+    if any(not _matches(g, env) for g in lr.extra_guards):
+        return False
+    if lr.rule.if_ is not None and not _matches(lr.rule.if_, env):
+        return False
+    return True
+
+
 def flatten(
     rules: list[LabeledRule],
     groups: Mapping[str, list[EnvRule]],
     stacks: Mapping[str, Stack] | None = None,
     _seen: frozenset[str] = frozenset(),
+    *,
+    env: Mapping[str, str] | None = None,
 ) -> list[LabeledRule]:
-    """Expand ``include:`` rules into env_group rules and ``stacks:`` into
-    synthetic ``init:`` rules carrying the stack's prep-completion text.
+    """Expand ``include:`` into group rules and ``stacks:`` into synthetic ``init:``.
 
-    Inner rules inherit the parent rule's source (annotated with ``via
-    group:NAME`` or ``via stack:NAME``) and its ``if:`` guard (added to
-    ``extra_guards`` so multiple guards AND together).
-
-    Stack references differ from group references in three places:
-
-    - Unknown stack names raise ``ValueError`` (vs. the lenient
-      "skip-with-warning" for unknown groups). Stacks are explicit
-      task ↔ environment contracts; a typo there silently producing a
-      task without the expected env is a worse failure mode than
-      failing the whole run.
-    - A stack expands to exactly one synthetic ``EnvRule`` carrying its
-      ``init:`` text (no recursive expansion — stacks don't reference
-      other stacks).
-    - The expansion happens at resolve time only. The runtime does NOT
-      verify the stack is installed on the backend; that's the
-      operator's responsibility (``scripthut stack install``).
+    Inner rules inherit source (``via group:NAME`` / ``via stack:NAME``) and
+    the parent's ``if:`` (AND via ``extra_guards``). Unknown names raise
+    ``ValueError``. An empty group is a no-op. If *env* is set and this
+    rule's guards miss, names are not looked up.
     """
     stacks = stacks or {}
     out: list[LabeledRule] = []
     for lr in rules:
-        if lr.rule.include:
+        applies = _guards_match(lr, env)
+        if lr.rule.include and applies:
             for name in lr.rule.include:
                 if name in _seen:
                     chain = " → ".join([*_seen, name])
                     raise ValueError(f"env_group cycle detected: {chain}")
                 if name not in groups:
-                    logger.warning(
-                        "env_group %r referenced from %s but not defined; skipping",
-                        name, lr.source,
+                    raise ValueError(
+                        f"env_group '{name}' referenced from {lr.source} but "
+                        f"not defined. Map it on this backend's env_groups, "
+                        f"use an empty list if this cluster needs no extra "
+                        f"bash, or remove the include."
                     )
-                    continue
                 inherited_guards = list(lr.extra_guards)
                 if lr.rule.if_ is not None:
                     inherited_guards.append(lr.rule.if_)
@@ -296,9 +297,11 @@ def flatten(
                     )
                     for r in groups[name]
                 ]
-                expanded = flatten(wrapped, groups, stacks, _seen | {name})
+                expanded = flatten(
+                    wrapped, groups, stacks, _seen | {name}, env=env,
+                )
                 out.extend(expanded)
-        if lr.rule.stacks:
+        if lr.rule.stacks and applies:
             for name in lr.rule.stacks:
                 if name not in stacks:
                     raise ValueError(
@@ -372,7 +375,7 @@ def resolve_for_task(
         doc_env_groups=doc_env_groups,
     )
     stacks = collect_stacks(config, doc_stacks=doc_stacks)
-    rules = flatten(rules, groups, stacks)
+    rules = flatten(rules, groups, stacks, env=seed)
     return resolve(rules, seed)
 
 
@@ -410,5 +413,5 @@ def resolve_for_task_detailed(
         doc_env_groups=doc_env_groups,
     )
     stacks = collect_stacks(config, doc_stacks=doc_stacks)
-    rules = flatten(rules, groups, stacks)
+    rules = flatten(rules, groups, stacks, env=seed)
     return resolve_detailed(rules, seed)
