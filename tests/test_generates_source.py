@@ -340,6 +340,56 @@ class TestHandleGeneratesSource:
 
         ssh_mock.run_command.assert_not_called()
 
+    @pytest.mark.asyncio
+    @patch.object(RunManager, "process_run", new_callable=AsyncMock)
+    async def test_resolves_image_sif_for_generated_tasks(self, mock_process):
+        """Generated tasks with image= must get image_sif stamped before submit."""
+        from scripthut.config_schema import SlurmBackendConfig
+
+        generated_json = json.dumps({
+            "tasks": [
+                {
+                    "id": "sim-0",
+                    "name": "Sim 0",
+                    "command": "Rscript x.R",
+                    "image": "ghcr.io/o/r:v1",
+                },
+            ]
+        })
+
+        ssh_mock = AsyncMock()
+
+        async def run_command(cmd: str):
+            if cmd.startswith("cat "):
+                return (generated_json, "", 0)
+            if "test -f" in cmd:
+                return ("present\n", "", 0)
+            return ("", "", 0)
+
+        ssh_mock.run_command = AsyncMock(side_effect=run_command)
+
+        backend = MagicMock(spec=SlurmBackendConfig)
+        backend.name = "test-cluster"
+        backend.image_dir = "~/scripthut-images"
+
+        config = MagicMock()
+        config.settings.filter_user = "testuser"
+        config.get_backend = MagicMock(return_value=backend)
+
+        manager = RunManager(
+            config=config, backends={"test-cluster": ssh_mock},
+        )
+        item = _make_run_item(
+            "gen", RunItemStatus.COMPLETED, generates_source="/p.json",
+        )
+        run = _make_run(items=[item])
+
+        await manager._handle_generates_source(run, item)
+
+        assert run.items[1].task.image_sif == (
+            "~/scripthut-images/ghcr.io_o_r_v1.sif"
+        )
+
 
 # -- _get_git_root tests -----------------------------------------------------
 

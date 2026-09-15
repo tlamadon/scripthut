@@ -195,6 +195,49 @@ class SSHClient:
             self._connection = None
             raise
 
+    async def write_file(
+        self, remote_path: str, content: str, *, mode: int = 0o600
+    ) -> None:
+        """Write ``content`` to ``remote_path`` over SFTP at ``mode``.
+
+        Preferred over ``run_command`` for secrets. A shell command carrying
+        the payload is visible in the remote process list for as long as it
+        runs, and a ``> file`` redirect creates the file at the login
+        session's umask, so a following ``chmod`` leaves a window where the
+        file is world-readable on a shared login node. SFTP has neither
+        problem: nothing reaches a command line, and the mode is applied
+        before the bytes are written.
+
+        Args:
+            remote_path: Absolute path on the backend. ``~`` is *not*
+                expanded — there is no shell involved.
+            content: File contents.
+            mode: Permission bits, default owner-only.
+        """
+        if not self.is_connected:
+            await self.connect()
+
+        if self._connection is None:
+            raise RuntimeError("Failed to establish SSH connection")
+
+        start = time.perf_counter()
+        try:
+            async with self._connection.start_sftp_client() as sftp:
+                # permissions in attrs are applied as the file is created, so
+                # there is no window at the session umask. The chmod after is
+                # belt-and-braces for servers that ignore open-time attrs.
+                async with sftp.open(
+                    remote_path, "w", attrs=asyncssh.SFTPAttrs(permissions=mode)
+                ) as f:
+                    await f.write(content)
+                await sftp.chmod(remote_path, mode)
+            self._log_command(f"sftp write {remote_path} (mode {mode:o})", start)
+        except asyncssh.Error as e:
+            logger.error(f"SFTP write to {remote_path} failed: {e}")
+            self._log_command(f"sftp write {remote_path}", start, error=str(e))
+            self._connection = None
+            raise
+
     async def __aenter__(self) -> "SSHClient":
         """Async context manager entry."""
         await self.connect()

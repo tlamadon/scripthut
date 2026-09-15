@@ -1239,6 +1239,34 @@ def _render_agent_prompt(config: ScriptHutConfig | None) -> str:
             )
             out.append("")
 
+        # ---- Container images ---------------------------------------------
+        out.append("### Container images (Slurm backends)")
+        out.append(
+            "Slurm tasks can name an `image:`; ScriptHut runs the command "
+            "inside it via Apptainer — so workflows need not hand-roll "
+            "`apptainer pull`/`exec`. **The image must already be on the "
+            "backend** — submission fails otherwise, naming the command to "
+            "run. It is not pulled as part of submitting, because a "
+            "multi-GB pull inside the submit request dies with the client's "
+            "read timeout and caches nothing."
+        )
+        out.append("")
+        out.append("```bash")
+        out.append(
+            "scripthut image check <uri> --backend <b>   # present? exit 1 if not"
+        )
+        out.append(
+            "scripthut image ensure <uri> --backend <b>  # pull once (blocks, minutes)"
+        )
+        out.append("```")
+        out.append(
+            "\nApptainer exposes `$HOME`, `/tmp` and the working directory "
+            "inside the container; anything else (cluster data such as "
+            "`/data`) needs the backend's `image_binds`. `image:` on "
+            "AWS Batch/EC2 is unrelated — there the cloud runtime pulls it."
+        )
+        out.append("")
+
         # ---- Sources ------------------------------------------------------
         out.append("### Sources (workflow JSON catalogs)")
         if not config.sources:
@@ -1370,15 +1398,17 @@ def _render_agent_prompt(config: ScriptHutConfig | None) -> str:
         "on the *backend*, not your local CWD).\n"
         "- **Behavior**: `dependencies` (list of other task ids), "
         "`env` (list of `{set: {KEY: VAL}}` rules), `image` (container "
-        "URI for AWS Batch/EC2).\n"
+        "URI — Slurm runs the command via Apptainer after "
+        "`scripthut image ensure`; AWS Batch/EC2 let the cloud runtime "
+        "pull it).\n"
         "- **Caching / provenance**: `inputs` (paths/globs whose *content* "
         "feeds the result-cache key and the manifest), `outputs` (the "
         "task's artifact paths — stored/restored by the cache, hashed "
         "into the manifest; a task with no `outputs` is never cached), "
         "`cache` (bool, default true — set false to always run), "
         "`cache_scope` (`\"commit\"` default: any new git commit busts "
-        "the key; `\"inputs\"`: key from command + env + input hashes "
-        "only, so unrelated commits reuse results — only safe when "
+        "the key; `\"inputs\"`: key from command + env + image + input "
+        "hashes only, so unrelated commits reuse results — only safe when "
         "`inputs` covers *everything* the command reads, code included).\n"
     )
 
@@ -1409,6 +1439,7 @@ def _render_agent_prompt(config: ScriptHutConfig | None) -> str:
         "scripthut source view <name> --json         # workflow files in one source\n"
         "scripthut source sync [<name>] --json       # re-clone/re-glob + refresh workflow list\n"
         "scripthut stack check [<name>] --json       # stacks ready / missing / installing\n"
+        "scripthut image check <uri> --backend <b> --json  # is a task's image: on the backend?\n"
         "scripthut task probe --from-file t.json --backend <b> --json  # cache hit/miss per task, runs NOTHING\n"
         "scripthut run list --json --limit 10        # recent runs\n"
         "scripthut run view <id> --json              # one run, item statuses + counts\n"
@@ -1468,9 +1499,9 @@ def _render_agent_prompt(config: ScriptHutConfig | None) -> str:
         "**`cache_scope: \"inputs\"` reuses across commits.** The default "
         "scope folds the git commit into the key (any commit busts every "
         "task's cache — safe). `\"inputs\"` drops it, giving per-task "
-        "invalidation: only changes to the declared inputs, command, or "
-        "env re-run the task. Only suggest it when `inputs` covers "
-        "everything the command reads — the code files themselves, "
+        "invalidation: only changes to the declared inputs, command, "
+        "env, or image re-run the task. Only suggest it when `inputs` "
+        "covers everything the command reads — the code files themselves, "
         "modules they import, config files. When unsure, keep the "
         "default.\n"
     )
@@ -2621,14 +2652,14 @@ async def _overlay_source_stacks(
     return config.model_copy(update={"stacks": list(by_name.values())})
 
 
-async def _remote_stack_call(
+async def _remote_api_call(
     args: argparse.Namespace, server: str, method: str, path: str,
     *, params: dict[str, Any] | None = None,
     json_body: Any | None = None,
     timeout: float = 1800.0,
     use_auth: bool = True,
 ) -> dict[str, Any]:
-    """Hit a ``/api/v1/stacks/...`` endpoint with auth + sensible error mapping.
+    """Hit an ``/api/v1/...`` endpoint with auth + sensible error mapping.
 
     Long default timeout because the install path blocks on ``prep``;
     Cloudflare-Access tunnels generally hold while data is flowing
@@ -2771,7 +2802,7 @@ async def _cmd_stack_check(args: argparse.Namespace) -> int:
             )
             return 2
         backend = _require_remote_backend(args)
-        data = await _remote_stack_call(
+        data = await _remote_api_call(
             args, server, "GET", f"/stacks/{args.name}/check",
             params={"backend": backend, "source": getattr(args, "source", None)},
             use_auth=not via_daemon,
@@ -2810,6 +2841,73 @@ async def _cmd_stack_check(args: argparse.Namespace) -> int:
     return 1 if bad else 0
 
 
+def _image_server(args: argparse.Namespace) -> tuple[str, bool]:
+    """Resolve the server for an image command, starting the daemon if needed.
+
+    Image commands are server-mediated with no local-SSH fallback: the pull
+    must run on the backend's login node, and only the server holds those
+    connections.
+    """
+    server, _ = _resolve_server_with_source(args)
+    if server is None:
+        return _ensure_local_server(args), True
+    return server, False
+
+
+async def _cmd_image_check(args: argparse.Namespace) -> int:
+    """Report whether one image is already pulled on one backend."""
+    server, via_daemon = _image_server(args)
+    data = await _remote_api_call(
+        args, server, "GET", "/images/check",
+        params={"image": args.image, "backend": args.backend},
+        use_auth=not via_daemon,
+        timeout=60.0,
+    )
+    if args.json:
+        _emit_json(data)
+    else:
+        mark = "✓" if data.get("present") else "✗"
+        print(f"  {mark} {data['image']}  on {data['backend']}")
+        print(f"    {data['path']}")
+        if not data.get("present"):
+            print(
+                f"    pull it with: scripthut image ensure {data['image']} "
+                f"--backend {data['backend']}"
+            )
+    return 0 if data.get("present") else 1
+
+
+async def _cmd_image_ensure(args: argparse.Namespace) -> int:
+    """Pull one image onto one backend, once.
+
+    Blocks for the duration of the pull (minutes for a multi-GB image),
+    hence the long timeout — same reasoning as ``stack install``'s original
+    blocking prep. This is deliberately not part of run submission: a pull
+    inside the submit request dies with the client's read timeout and leaves
+    nothing cached.
+    """
+    server, via_daemon = _image_server(args)
+    if not args.json:
+        print(f"Pulling {args.image} onto {args.backend} (this can take minutes)…")
+    data = await _remote_api_call(
+        args, server, "POST", "/images/ensure",
+        params={
+            "image": args.image,
+            "backend": args.backend,
+            "force": "true" if args.force else "false",
+        },
+        use_auth=not via_daemon,
+        timeout=3600.0,
+    )
+    if args.json:
+        _emit_json(data)
+    else:
+        verb = "pulled" if data.get("pulled") else "already present"
+        print(f"  ✓ {data['image']}  {verb}")
+        print(f"    {data['path']}")
+    return 0
+
+
 async def _cmd_stack_install(args: argparse.Namespace) -> int:
     server, source = _resolve_server_with_source(args)
     via_daemon = False
@@ -2818,7 +2916,7 @@ async def _cmd_stack_install(args: argparse.Namespace) -> int:
         via_daemon = True
     if server:
         backend = _require_remote_backend(args)
-        data = await _remote_stack_call(
+        data = await _remote_api_call(
             args, server, "POST", f"/stacks/{args.name}/install",
             params={
                 "backend": backend,
@@ -2896,7 +2994,7 @@ async def _cmd_stack_delete(args: argparse.Namespace) -> int:
         via_daemon = True
     if server:
         backend = _require_remote_backend(args)
-        data = await _remote_stack_call(
+        data = await _remote_api_call(
             args, server, "DELETE", f"/stacks/{args.name}",
             params={"backend": backend, "source": getattr(args, "source", None)},
             use_auth=not via_daemon,
@@ -3080,7 +3178,7 @@ async def _cmd_disk_status(args: argparse.Namespace) -> int:
         server = _ensure_local_server(args)
         via_daemon = True
     if server:
-        data = await _remote_stack_call(
+        data = await _remote_api_call(
             args, server, "GET", "/disk",
             params={"backend": getattr(args, "backend", None)},
             use_auth=not via_daemon, timeout=60.0,
@@ -3110,7 +3208,7 @@ async def _wait_disk_idle(
     deadline = time.monotonic() + 900
     while True:
         await asyncio.sleep(getattr(args, "interval", 2.0))
-        data = await _remote_stack_call(
+        data = await _remote_api_call(
             args, server, "GET", "/disk", params={"backend": backend_filter},
             use_auth=not via_daemon, timeout=60.0,
         )
@@ -3137,7 +3235,7 @@ async def _cmd_disk_scan(args: argparse.Namespace) -> int:
         return await _disk_scan_local(args)
 
     backend_filter = getattr(args, "backend", None)
-    data = await _remote_stack_call(
+    data = await _remote_api_call(
         args, server, "GET", "/disk", params={"backend": backend_filter},
         use_auth=not via_daemon, timeout=60.0,
     )
@@ -3146,7 +3244,7 @@ async def _cmd_disk_scan(args: argparse.Namespace) -> int:
         print("No SSH backends on the server.")
         return 0
     for b in targets:
-        resp = await _remote_stack_call(
+        resp = await _remote_api_call(
             args, server, "POST", "/disk/scan", params={"backend": b},
             use_auth=not via_daemon, timeout=60.0,
         )
@@ -3328,7 +3426,7 @@ async def _cmd_disk_clean(args: argparse.Namespace) -> int:
         return await _disk_clean_local(args)
 
     backend_filter = getattr(args, "backend", None)
-    data = await _remote_stack_call(
+    data = await _remote_api_call(
         args, server, "GET", "/disk", params={"backend": backend_filter},
         use_auth=not via_daemon, timeout=60.0,
     )
@@ -3339,7 +3437,7 @@ async def _cmd_disk_clean(args: argparse.Namespace) -> int:
 
     # Always plan from a fresh scan so the confirmation reflects reality.
     for b in targets:
-        await _remote_stack_call(
+        await _remote_api_call(
             args, server, "POST", "/disk/scan", params={"backend": b},
             use_auth=not via_daemon, timeout=60.0,
         )
@@ -3354,7 +3452,7 @@ async def _cmd_disk_clean(args: argparse.Namespace) -> int:
     for i, b in enumerate(targets):
         if i and not args.json:
             print()
-        plan_resp = await _remote_stack_call(
+        plan_resp = await _remote_api_call(
             args, server, "POST", "/disk/clean",
             json_body={
                 "backend": b,
@@ -3385,7 +3483,7 @@ async def _cmd_disk_clean(args: argparse.Namespace) -> int:
         ):
             print(f"{b}: skipped (not confirmed)", file=sys.stderr)
             continue
-        exec_resp = await _remote_stack_call(
+        exec_resp = await _remote_api_call(
             args, server, "POST", "/disk/clean",
             json_body={
                 "backend": b,
@@ -4112,7 +4210,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_tk_run.add_argument("--working-dir", dest="working_dir", default=None)
     p_tk_run.add_argument(
         "--image", default=None,
-        help="Container image (AWS Batch / EC2 backends)",
+        help=(
+            "Container image URI (Slurm: Apptainer after "
+            "`scripthut image ensure`; AWS Batch/EC2: cloud runtime pulls)"
+        ),
     )
     p_tk_run.add_argument(
         "--env", action="append", default=[],
@@ -4174,6 +4275,36 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_common(p_tk_probe)
     p_tk_probe.set_defaults(handler=_cmd_task_probe)
+
+    # ----- image ------------------------------------------------------------
+    # Pulling is a deliberate one-time step, not part of submitting a run:
+    # a multi-GB pull inside the submit request dies with the client's read
+    # timeout and leaves nothing cached. A task's image: must already be on
+    # the backend, or submission fails naming this command.
+    p_img = sub.add_parser(
+        "image", help="Manage container images on a backend (Slurm only)"
+    )
+    img_sub = p_img.add_subparsers(dest="image_cmd", required=True)
+
+    p_img_check = img_sub.add_parser(
+        "check", help="Is this image already pulled on the backend?"
+    )
+    p_img_check.add_argument("image", help="Image URI, e.g. ghcr.io/owner/repo:tag")
+    p_img_check.add_argument("--backend", required=True, help="Backend name")
+    _add_common(p_img_check)
+    p_img_check.set_defaults(handler=_cmd_image_check)
+
+    p_img_ensure = img_sub.add_parser(
+        "ensure",
+        help="Pull the image onto the backend's login node if absent (blocks)",
+    )
+    p_img_ensure.add_argument("image", help="Image URI, e.g. ghcr.io/owner/repo:tag")
+    p_img_ensure.add_argument("--backend", required=True, help="Backend name")
+    p_img_ensure.add_argument(
+        "--force", action="store_true", help="Re-pull even if already present"
+    )
+    _add_common(p_img_ensure)
+    p_img_ensure.set_defaults(handler=_cmd_image_ensure)
 
     # ----- stack ------------------------------------------------------------
     p_st = sub.add_parser("stack", help="Manage reusable software stacks")

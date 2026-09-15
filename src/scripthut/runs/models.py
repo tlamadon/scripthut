@@ -89,11 +89,18 @@ class TaskDefinition:
     error_file: str | None = None  # Custom stderr log path
     env: list[EnvRule] = field(default_factory=list)  # Task-level env rules
     gres: str | None = None  # Slurm-style generic resource spec, e.g. "gpu:2" or "gpu:v100:1"
-    image: str | None = None  # Container image URI (AWS Batch/ECS); overrides backend default
+    image: str | None = None  # Container URI (Slurm/Apptainer, AWS Batch/EC2)
+    # Resolved at submit time, not a workflow key: the path to the pulled
+    # Apptainer image on an SSH backend. The run manager fills this in from
+    # ``image`` (see RunManager._resolve_images); the backend wraps the task
+    # command in ``apptainer exec`` only when it is set, so a declared
+    # ``image`` that could not be pulled fails loudly instead of silently
+    # running on the bare node.
+    image_sif: str | None = None
     # --- Result caching (see scripthut.runs.cache) ---
     # Paths/globs (relative to working_dir) whose *content* feeds the cache
     # key, so the task re-runs when its data changes. Empty means the key
-    # depends only on command + env + git commit.
+    # depends only on command + env + image + git commit.
     inputs: list[str] = field(default_factory=list)
     # Paths/globs (relative to working_dir) that constitute the task's real
     # artifacts. These are tar'd and stored on a cache hit's *miss*, and
@@ -145,6 +152,9 @@ class TaskDefinition:
             env=env_rules,
             gres=data.get("gres"),
             image=data.get("image"),
+            # Round-trips so a run reloaded after a server restart keeps the
+            # image it already resolved; workflow authors never set it.
+            image_sif=data.get("image_sif"),
             inputs=list(data.get("inputs", [])),
             outputs=list(data.get("outputs", [])),
             cache=bool(data.get("cache", True)),
@@ -169,6 +179,7 @@ class TaskDefinition:
             "env": [r.model_dump(by_alias=True, exclude_defaults=True) for r in self.env],
             "gres": self.gres,
             "image": self.image,
+            "image_sif": self.image_sif,
             "inputs": self.inputs,
             "outputs": self.outputs,
             "cache": self.cache,

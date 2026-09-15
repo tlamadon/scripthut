@@ -216,6 +216,7 @@ async def init_backend(backend_config: SlurmBackendConfig | PBSBackendConfig) ->
             account=backend_config.account,
             partition_map=backend_config.partition_map,
             default_partition=backend_config.default_partition,
+            image_binds=backend_config.image_binds,
         )
         backend_type = "slurm"
 

@@ -166,6 +166,71 @@ async def fetch_disk_info(ssh: SSHClient, path: str) -> DiskInfo | None:
     return DiskInfo(total_bytes=total, avail_bytes=avail, path=path)
 
 
+CONTAINER_CMD_EOF = "SCRIPTHUT_CONTAINER_CMD"
+"""Heredoc delimiter for a containerised task command."""
+
+
+def wrap_command_in_container(
+    command: str, image_sif: str, binds: list[str] | None = None,
+) -> str:
+    """Wrap ``command`` so it executes inside ``image_sif`` via Apptainer.
+
+    The command is written to a temp file and run as ``apptainer exec <sif>
+    bash <file>`` rather than piped to ``bash -s``: a heredoc on the *exec*
+    would consume the container's stdin, so a task that reads stdin itself
+    would silently see the script text instead. Feeding ``cat`` keeps the
+    job's own stdin intact inside the container.
+
+    ``binds`` are host paths made visible inside the container, one
+    ``--bind`` each. Apptainer already exposes ``$HOME``, ``/tmp`` and the
+    CWD, so this is for cluster-local data outside them (``/data``).
+
+    The command runs under ``bash`` when the image has it and ``sh``
+    otherwise, chosen inside the container. Hardcoding ``bash`` fails on
+    minimal images (Alpine ships busybox ``ash``) with a bare
+    ``"bash": executable file not found in $PATH``, and hardcoding ``sh``
+    would silently drop bash syntax that existing task commands may use.
+    ``/bin/sh`` is present in any image worth running, so the probe itself
+    is safe.
+
+    ``apptainer exec`` is the last line, so the caller's ``EXIT_CODE=$?``
+    still captures the task's status (the ``trap`` cleans up the temp file
+    without touching ``$?``).
+
+    Raises:
+        ValueError: if ``command`` contains a line equal to the heredoc
+            delimiter, which would terminate the heredoc early.
+    """
+    for line in command.splitlines():
+        if line.strip() == CONTAINER_CMD_EOF:
+            raise ValueError(
+                f"Task command contains a line equal to {CONTAINER_CMD_EOF!r}, "
+                "which scripthut uses to delimit a containerised command. "
+                "Rename that line or drop the task's 'image'."
+            )
+    bind_args = "".join(f"--bind {shell_quote_path(b)} " for b in (binds or []))
+    return f"""# --- ScriptHut container exec ---
+_scripthut_cmd=$(mktemp /tmp/scripthut-cmd.XXXXXX.sh)
+trap 'rm -f "$_scripthut_cmd"' EXIT
+cat > "$_scripthut_cmd" <<'{CONTAINER_CMD_EOF}'
+{command}
+{CONTAINER_CMD_EOF}
+# A host LD_PRELOAD names host library paths, which by definition are absent
+# from the image: Apptainer inherits the environment, so every binary in the
+# container then prints "ld.so: object ... cannot be preloaded: ignored" to
+# stderr. Harmless but it drowns real errors. An image that wants a preload
+# can set one itself.
+#
+# Host language envs are worse: a login-profile PYTHONHOME pointed at a
+# cluster module makes the image's python3 look for encodings under the
+# host path and die with ModuleNotFoundError. Same pattern for PYTHONPATH.
+# Unset both before entering; the image's own defaults then apply.
+unset LD_PRELOAD PYTHONHOME PYTHONPATH
+apptainer exec {bind_args}{shell_quote_path(image_sif)} /bin/sh -c \\
+  'command -v bash >/dev/null 2>&1 && exec bash "$0" || exec sh "$0"' \\
+  "$_scripthut_cmd\""""
+
+
 def generate_script_body(
     task_name: str,
     task_id: str,
@@ -176,6 +241,8 @@ def generate_script_body(
     interactive_wait: bool = False,
     output_dir: str | None = None,
     run_summary_path: str | None = None,
+    image_sif: str | None = None,
+    image_binds: list[str] | None = None,
 ) -> str:
     """Generate the common body of an HPC submission script.
 
@@ -210,6 +277,15 @@ def generate_script_body(
 
     Both directories are ``mkdir -p``'d before the command runs so user
     scripts can append immediately without their own preflight.
+
+    ``image_sif`` is a path to an Apptainer image *already present on the
+    backend* (the run manager pulls it at submit time). When set, step 5 runs
+    inside that image instead of on the bare node. Everything before it —
+    module loads, env exports, the ``cd`` — still runs on the host, because
+    Apptainer inherits the host environment and bind-mounts ``$HOME``,
+    ``/tmp`` and the CWD by default. ``image_binds`` names host paths outside
+    those defaults that the task needs to see (cluster-local data such as
+    ``/data``); it is ignored without ``image_sif``.
     """
     env_lines = ""
     if env_vars:
@@ -262,6 +338,12 @@ fi
 
 """
 
+    body_command = (
+        wrap_command_in_container(command, image_sif, image_binds)
+        if image_sif
+        else command
+    )
+
     # pipefail makes `solve | tee log.txt` propagate solve's failure
     # instead of swallowing it behind tee's 0 exit. Without this the
     # job script exits 0, Slurm marks the job COMPLETED, and scripthut
@@ -280,7 +362,7 @@ echo "=================================="
 echo ""
 
 {extra_init_lines}{env_lines}{output_dir_block}cd {working_dir}
-{tmux_block}{command}
+{tmux_block}{body_command}
 EXIT_CODE=$?
 
 echo ""
