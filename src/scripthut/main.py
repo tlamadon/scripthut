@@ -719,12 +719,20 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # Persist any unsaved runs and disconnect SSH-based backends
     if state.run_manager and state.run_storage:
+        # usage_log is required by the Runtime dataclass but unused by
+        # shutdown_runtime (which only calls save_dirty and disconnects
+        # backends). Omitting it raised TypeError here, so every shutdown
+        # aborted before persisting runs or closing SSH connections.
+        # state.usage_log is None when shutdown beats _finish_startup, so
+        # fall back to an equivalent instance rather than skipping the save.
         await shutdown_runtime(
             Runtime(
                 config=state.config,
                 backends=state.backends,
                 run_storage=state.run_storage,
                 run_manager=state.run_manager,
+                usage_log=state.usage_log
+                or UsageLog(state.config.settings.data_dir_resolved / "usage.jsonl"),
             )
         )
         logger.info("Saved run data on shutdown")
@@ -3729,7 +3737,10 @@ def parse_args() -> argparse.Namespace:
 # import cost — and trigger asyncssh / runtime imports — just to start the web
 # server. Must stay in sync with the top-level parsers in cli.py.
 _CLI_SUBCOMMANDS = frozenset(
-    {"workflow", "run", "backend", "source", "stack", "agent", "task", "status", "daemon", "disk"}
+    {
+        "workflow", "run", "backend", "source", "stack", "image", "agent",
+        "task", "status", "daemon", "disk",
+    }
 )
 _SUBCOMMANDS = _CLI_SUBCOMMANDS | {"setup-aws-ec2"}
 

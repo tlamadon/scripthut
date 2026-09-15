@@ -66,13 +66,14 @@ scripthut agent prompt | xclip -selection clipboard  # Linux
 
 A re-read shows you the current contents, but for orientation:
 
-- **Inventory** — the backends, stacks, and sources you've configured (when a `scripthut.yaml` is discoverable).
+- **Inventory** — the backends, stacks, sources, and (on Slurm) container-image workflow you've configured (when a `scripthut.yaml` is discoverable).
 - **Submitting work** — the three input modes for `scripthut task run` (`--inline-script`, positional command, `--from-stdin`) and when to prefer a source workflow (`scripthut workflow run`).
+- **Container images** — Slurm `image:` runs via Apptainer; pull first with `scripthut image ensure` (submit never pulls). Do not hand-roll `apptainer` in task commands.
 - **TaskDefinition shape** — the JSON schema agents need when constructing tasks programmatically.
 - **Resource sizing defaults** — start small (1 CPU / 1 GB / 5 min), escalate only when an earlier run hit OOM or timed out.
 - **Editing `scripthut.yaml`** — the two-layer model (user-global vs. project-local), what each file is allowed to carry, merge semantics, env-rule schema (`set` / `if` / `include` / `stacks` / `append` / `init`), and edit discipline (read first, minimal diff, hot-reload not restart).
 - **Stacks** — full define → install → reference flow, including the v0.7.1 `stacks: [name]` env-rule reference syntax and the two failure modes that matter (unknown name → loud `ValueError`, no auto-install at submit time).
-- **Verify-then-submit loop** — the read-only steps the agent should run before any submission (`status`, `backend list`, `source view`, `stack check`, `--dry-run`) and how to track a run's status / output / logs after.
+- **Verify-then-submit loop** — the read-only steps the agent should run before any submission (`status`, `backend list`, `source view`, `stack check`, `image check` when a task sets `image:`, `--dry-run`) and how to track a run's status / output / logs after.
 - **Gotchas and exit codes** — `working_dir` is a path on the *backend*, partition names are remapped per backend, exit code `2` is reserved for `run watch --exit-status` failure, etc.
 
 ## Targeting a remote server

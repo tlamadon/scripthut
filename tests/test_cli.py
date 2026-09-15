@@ -1689,7 +1689,7 @@ async def test_stack_install_remote_submits_run_and_prints_id(capsys):
 
     args = _stack_args(name="foo", backend="cluster", source="src", rebuild=True)
     with patch.object(cli, "_resolve_server_with_source", return_value=("https://srv", "flag")), \
-         patch.object(cli, "_remote_stack_call", side_effect=fake_remote_call):
+         patch.object(cli, "_remote_api_call", side_effect=fake_remote_call):
         rc = await cli._cmd_stack_install(args)
 
     assert call_log["method"] == "POST"
@@ -1726,7 +1726,7 @@ async def test_stack_install_remote_watch_blocks_until_done(capsys):
 
     args = _stack_args(name="foo", backend="cluster", watch=True)
     with patch.object(cli, "_resolve_server_with_source", return_value=("https://srv", "flag")), \
-         patch.object(cli, "_remote_stack_call", side_effect=fake_remote_call), \
+         patch.object(cli, "_remote_api_call", side_effect=fake_remote_call), \
          patch.object(cli, "_cmd_run_watch", side_effect=fake_watch):
         rc = await cli._cmd_stack_install(args)
 
@@ -1754,7 +1754,7 @@ async def test_stack_install_remote_json_flag_prints_run_summary(capsys):
         }
     args = _stack_args(name="foo", backend="cluster", json=True)
     with patch.object(cli, "_resolve_server_with_source", return_value=("https://srv", "flag")), \
-         patch.object(cli, "_remote_stack_call", side_effect=fake_remote_call):
+         patch.object(cli, "_remote_api_call", side_effect=fake_remote_call):
         rc = await cli._cmd_stack_install(args)
     out = capsys.readouterr().out
     payload = __import__("json").loads(out)
@@ -1775,7 +1775,7 @@ async def test_stack_check_remote_dispatches_to_api(capsys):
 
     args = _stack_args(name="foo", backend="cluster")
     with patch.object(cli, "_resolve_server_with_source", return_value=("https://srv", "flag")), \
-         patch.object(cli, "_remote_stack_call", side_effect=fake_remote_call):
+         patch.object(cli, "_remote_api_call", side_effect=fake_remote_call):
         rc = await cli._cmd_stack_check(args)
 
     assert call_log["path"] == "/stacks/foo/check"
@@ -1794,7 +1794,7 @@ async def test_stack_check_remote_missing_state_returns_one():
 
     args = _stack_args(name="foo", backend="cluster")
     with patch.object(cli, "_resolve_server_with_source", return_value=("https://srv", "flag")), \
-         patch.object(cli, "_remote_stack_call", side_effect=fake_remote_call):
+         patch.object(cli, "_remote_api_call", side_effect=fake_remote_call):
         rc = await cli._cmd_stack_check(args)
     assert rc == 1
 
@@ -1811,7 +1811,7 @@ async def test_stack_delete_remote_dispatches_to_api(capsys):
 
     args = _stack_args(name="foo", backend="cluster")
     with patch.object(cli, "_resolve_server_with_source", return_value=("https://srv", "flag")), \
-         patch.object(cli, "_remote_stack_call", side_effect=fake_remote_call):
+         patch.object(cli, "_remote_api_call", side_effect=fake_remote_call):
         rc = await cli._cmd_stack_delete(args)
 
     assert call_log["method"] == "DELETE"
@@ -1858,10 +1858,10 @@ async def test_stack_install_local_path_unchanged_when_no_server(monkeypatch):
     with patch.object(cli, "load_config", return_value=fake_cfg), \
          patch.object(cli, "_overlay_source_stacks",
                       AsyncMock(return_value=fake_cfg)), \
-         patch.object(cli, "_remote_stack_call", remote_called):
+         patch.object(cli, "_remote_api_call", remote_called):
         rc = await cli._cmd_stack_install(args)
     # Stack not in local config → 2; the important assertion is that
-    # _remote_stack_call was never invoked.
+    # _remote_api_call was never invoked.
     assert rc == 2
     remote_called.assert_not_called()
 
@@ -2200,7 +2200,7 @@ CLEAN_REPORT = {
 
 
 def _fake_disk_server():
-    """(calls, fake _remote_stack_call) recording every HTTP interaction."""
+    """(calls, fake _remote_api_call) recording every HTTP interaction."""
     calls = []
 
     async def fake(args, server, method, path, **kw):
@@ -2252,7 +2252,7 @@ async def test_disk_clean_path_requires_backend(capsys):
 
 async def test_disk_clean_dry_run_never_execs(capsys):
     calls, fake = _fake_disk_server()
-    with patch.object(cli, "_remote_stack_call", new=fake):
+    with patch.object(cli, "_remote_api_call", new=fake):
         rc = await cli._cmd_disk_clean(_clean_args("--dry-run"))
     assert rc == 0
     assert _exec_calls(calls) == []
@@ -2263,7 +2263,7 @@ async def test_disk_clean_dry_run_never_execs(capsys):
 
 async def test_disk_clean_declined_confirm_no_exec(capsys):
     calls, fake = _fake_disk_server()
-    with patch.object(cli, "_remote_stack_call", new=fake), \
+    with patch.object(cli, "_remote_api_call", new=fake), \
          patch.object(cli, "_confirm_stderr", return_value=False):
         rc = await cli._cmd_disk_clean(_clean_args())
     assert rc == 0
@@ -2273,7 +2273,7 @@ async def test_disk_clean_declined_confirm_no_exec(capsys):
 
 async def test_disk_clean_yes_sends_plan_paths(capsys):
     calls, fake = _fake_disk_server()
-    with patch.object(cli, "_remote_stack_call", new=fake):
+    with patch.object(cli, "_remote_api_call", new=fake):
         rc = await cli._cmd_disk_clean(_clean_args("--yes"))
     assert rc == 0
     execs = _exec_calls(calls)

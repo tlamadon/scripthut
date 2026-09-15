@@ -20,6 +20,7 @@ ScriptHut runs your compute workflows the way GitHub Actions runs CI — declara
 - **Multi-backend** — submit and monitor Slurm, PBS/Torque, AWS Batch, and AWS EC2 from one place, including external (non-ScriptHut) jobs in a unified view.
 - **Dynamic task generation** — a task can emit a JSON file (`generates_source`) whose tasks are appended to the running DAG (two-phase plan-then-execute).
 - **Stacks** — reusable software environments (venv, Julia depot, Conda env, …) installed once per backend, content-hashed so rebuilds happen only on change.
+- **Container images** — Slurm tasks can name an `image:`; ScriptHut runs the command inside it via Apptainer. Pull once with `scripthut image ensure` (submit never pulls), so workflows stop hand-rolling `apptainer pull`/`exec`. See [`image`](docs/cli.md#image--manage-container-images-on-a-backend).
 - **Layered environment resolution** — compose env vars and init scripts from backend → server → workflow → task rules, with reusable groups and per-key provenance.
 - **Task outputs** — publish plots and Markdown that render per-task and roll up into a run-level summary.
 - **Cost estimation** — estimate run costs from EC2 spot/on-demand pricing via [instances.vantage.sh](https://instances.vantage.sh/).

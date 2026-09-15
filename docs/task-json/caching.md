@@ -30,7 +30,7 @@ The chosen `tool` must be on the `PATH` of the backend (the cluster login node),
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `inputs` | array | `[]` | Paths/globs (relative to `working_dir`) whose **content** feeds the cache key. The task re-runs when any of these files change. |
+| `inputs` | array | `[]` | Paths/globs (relative to `working_dir`) whose **content** feeds the cache key. The task re-runs when any of these files change. The key also includes `command`, non-volatile env, optional git commit (`cache_scope`), and `image` (so retagging a container cannot falsely hit). |
 | `outputs` | array | `[]` | Paths/globs (relative to `working_dir`) that are the task's real artifacts. Stored to the cache on completion, restored into `working_dir` on a hit. **A task with no `outputs` is never cached.** |
 | `cache` | bool | `true` | Per-task opt-out. Set `false` to always run this task even when the global cache is enabled. |
 | `cache_scope` | string | `"commit"` | What identifies "the same work". `"commit"` folds the git commit into the key; `"inputs"` drops it. See [Cache scope](#cache-scope-commit-vs-inputs). |

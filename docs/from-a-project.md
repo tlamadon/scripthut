@@ -204,6 +204,28 @@ This is what makes the model work in practice: hash inputs travel with the proje
 
 ---
 
+## Container images (Slurm)
+
+Slurm tasks can name an `image:`; ScriptHut runs the command inside it via
+Apptainer. That replaces hand-rolled `apptainer pull`/`exec` in the workflow.
+Building and publishing the image stays in the project (Dockerfile + CI);
+ScriptHut only pulls and executes.
+
+1. Put the URI on each task (ScriptHut does not expand variables in `image:`).
+2. Configure the backend once in the user-global file: `image_binds` for
+   cluster paths outside `$HOME` / `/tmp` / the working directory, and
+   `registry_user` / `registry_token` for a private registry.
+3. Pull once per cluster: `scripthut image ensure <uri> --backend <b>`.
+   Submitting never pulls — a missing image fails at submit with that command.
+4. Prefer a container over a `stacks:` entry when the runtime is a fixed
+   language stack you rebuild rarely; keep scripts in the git source, not in
+   the image.
+
+Details: [`image`](cli.md#image--manage-container-images-on-a-backend),
+backend fields in [Backends](configuration/backends.md).
+
+---
+
 ## Migrating an existing single-file setup
 
 If you have one big `scripthut.yaml` in your project today (the common starting point), you don't need to change anything — single-file setups keep working.

@@ -127,6 +127,44 @@ class AWSEC2Config(BaseModel):
     region: str = Field(description="AWS region")
 
 
+class ImagePullConfig(BaseModel):
+    """Resources for the job that pulls a container image.
+
+    The pull runs as an ``srun`` step on a worker node, not on the login
+    node. Assembling a SIF shells out to ``mksquashfs``, which is memory
+    hungry: on a login node it died with ``exit status 134: malloc():
+    corrupted top size`` against a ~1 GB image, where a worker allocation
+    has the memory it asks for. Defaults suit a few-GB image; raise
+    ``memory`` if ``mksquashfs`` is still killed.
+    """
+
+    cpus: int = Field(
+        default=1,
+        ge=1,
+        description=(
+            "CPUs for the pull job. Default 1 because sites cap interactive "
+            "(srun) steps — mercury rejects 2 with 'interactive job requests "
+            "2 cpu, exceeds 1 cpu limit'. Matches Stack.cpus for the same reason."
+        ),
+    )
+    memory: str = Field(
+        default="8G", description="Memory for the pull job (mksquashfs is the consumer)"
+    )
+    time_limit: str = Field(default="1:00:00", description="Wall clock for the pull job")
+    partition: str | None = Field(
+        default=None,
+        description="Partition for the pull job; None uses the backend default",
+    )
+    env: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Environment for the pull, e.g. APPTAINER_TMPDIR / "
+            "APPTAINER_CACHEDIR pointed at a filesystem with room for the "
+            "layer cache and squashfs scratch."
+        ),
+    )
+
+
 class SlurmBackendConfig(BaseModel):
     """Slurm backend configuration."""
 
@@ -165,6 +203,42 @@ class SlurmBackendConfig(BaseModel):
         default="~/scripthut-repos",
         description="Path on the backend whose disk usage is reported in the backend status panel (typically the parent directory where source repos are cloned)",
     )
+    image_dir: str = Field(
+        default="~/scripthut-images",
+        description=(
+            "Parent directory on the backend where a task's image: is pulled "
+            "to, one .sif per image URI"
+        ),
+    )
+    image_binds: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Host paths bind-mounted into a task's image, e.g. ['/data']. "
+            "Apptainer already exposes $HOME, /tmp and the working directory; "
+            "anything else is invisible inside the container until named here. "
+            "Cluster-local, so it belongs on the backend and not in workflow "
+            "JSON — the same JSON then runs on a cluster that mounts the data "
+            "somewhere else."
+        ),
+    )
+    image_pull: ImagePullConfig = Field(
+        default_factory=ImagePullConfig,
+        description="Resources and environment for the image-pull job",
+    )
+    registry_user: str | None = Field(
+        default=None,
+        description="Username for the container registry that serves image: URIs",
+    )
+    registry_token: Path | None = Field(
+        default=None,
+        description=(
+            "Path on the scripthut host to a file holding the registry token. "
+            "Pushed to the backend for the duration of the pull and deleted "
+            "after, exactly like a git source's deploy_key. Unset means rely "
+            "on whatever credentials the backend already has (e.g. a prior "
+            "`apptainer registry login`)."
+        ),
+    )
     env: list[EnvRule] = Field(
         default_factory=list,
         description="Backend-level env rules — cluster facts like SCRATCH and module init",
@@ -173,6 +247,11 @@ class SlurmBackendConfig(BaseModel):
         default_factory=dict,
         description="Named, reusable rule lists. Visible to this backend's env: and to all later layers (server, workflow, task).",
     )
+
+    @property
+    def registry_token_resolved(self) -> Path | None:
+        """Return the resolved registry token path with ~ expansion."""
+        return self.registry_token.expanduser() if self.registry_token else None
 
 
 class PBSBackendConfig(BaseModel):

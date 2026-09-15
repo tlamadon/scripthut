@@ -297,6 +297,28 @@ scripthut stack install julia-1.11      # build any that aren't
 scripthut workflow run grid-search      # submit work that relies on the stack
 ```
 
+## `image` — manage container images on a backend
+
+Slurm tasks can name an `image:`; ScriptHut runs the command inside it via Apptainer — so workflows need not hand-roll `apptainer pull`/`exec`. On AWS Batch/EC2 the cloud runtime pulls `image:` itself.
+
+```bash
+scripthut image check  <uri> --backend X          # present? exit 1 if not
+scripthut image ensure <uri> --backend X [--force]  # pull once (blocks)
+```
+
+**Pulling is a separate, one-time step; submitting a run never pulls.** A task whose image is missing fails at submit, naming the `image ensure` command to run. That split is deliberate: a multi-GB pull inside the submit request outlives the client's read timeout, and the disconnect cancels the transfer, so nothing is cached and no retry can make progress.
+
+- `ensure` blocks for the duration of the pull — minutes for a multi-GB image — and is idempotent: already-present returns `already_present` without contacting the registry. `--force` re-pulls over it.
+- The pull runs as an `srun` step on a worker node (`mksquashfs` needs more memory than a login node typically allows) and writes to `image_dir` in shared `$HOME`, so every later task sees the file. Resources come from the backend's [`image_pull`](configuration/backends.md#image_pull).
+- Private registries: set `registry_user` / `registry_token` on the backend. The token is SFTP'd to the backend for the pull and deleted after — no persistent `apptainer registry login` needed.
+- Inside the container, Apptainer exposes `$HOME`, `/tmp` and the working directory. Anything else needs the backend's `image_binds`.
+
+```bash
+scripthut image ensure ghcr.io/me/sims:v2 --backend hpc-cluster
+scripthut image check  ghcr.io/me/sims:v2 --backend hpc-cluster   # ✓
+scripthut workflow run smoke.json --source sims --backend hpc-cluster
+```
+
 ## `project` — inspect git projects
 
 ```bash

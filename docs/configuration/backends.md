@@ -31,6 +31,18 @@ backends:
     login_shell: false        # optional, default: false
     max_concurrent: 100       # optional, default: 100
     clone_dir: ~/scripthut-repos  # optional, disk usage reported in UI
+
+    # Container images, for tasks that set `image:` (all optional)
+    image_dir: ~/scripthut-images
+    image_binds: ["/data"]        # host paths to expose inside the container
+    registry_user: your_github_user
+    registry_token: ~/.config/scripthut/secrets/ghcr-token
+    image_pull:                   # resources for the pull job
+      cpus: 1
+      memory: 8G
+      time_limit: "1:00:00"
+      env:
+        APPTAINER_TMPDIR: /scratch/me/apptainer
 ```
 
 | Field | Type | Default | Description |
@@ -42,6 +54,25 @@ backends:
 | `login_shell` | boolean | `false` | If `true`, job scripts use `#!/bin/bash -l` to source your login profile (`.bash_profile`, etc.). |
 | `max_concurrent` | integer | `100` | Maximum total concurrent jobs across all runs on this backend. Must be >= 1. |
 | `clone_dir` | string | `~/scripthut-repos` | Path on the backend whose disk usage is shown in the backend status panel. Typically the parent directory where source repos are cloned. |
+| `image_dir` | string | `~/scripthut-images` | Where a task's `image:` is pulled to, one `.sif` per image URI. |
+| `image_binds` | list | `[]` | Host paths bind-mounted into a containerised task. Apptainer already exposes `$HOME`, `/tmp` and the working directory; cluster data outside them (`/data`, `/scratch/…`) is invisible until named here. Cluster-local, so it lives on the backend and not in workflow JSON. |
+| `registry_user` | string | `null` | Username for the registry serving `image:` URIs. |
+| `registry_token` | path | `null` | Path **on the scripthut host** to a file holding the registry token. Pushed to the backend over SFTP for the duration of one pull, then deleted — like a git source's `deploy_key`. Unset means rely on credentials the backend already has (e.g. a prior `apptainer registry login`). |
+| `image_pull` | object | see below | Resources and environment for the image-pull job. |
+
+### `image_pull`
+
+Pulling runs as a synchronous `srun` step on a worker node, not on the login node: assembling a SIF shells out to `mksquashfs`, which is memory-hungry and has been seen to abort on a login node (`exit status 134: malloc(): corrupted top size`) against a ~1 GB image.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `cpus` | integer | `1` | CPUs for the pull job. Default 1 because sites cap interactive (`srun`) steps — one cluster rejects 2 with *"interactive job requests 2 cpu, exceeds 1 cpu limit"*. |
+| `memory` | string | `8G` | Memory for the pull job. Raise this first if `mksquashfs` is killed. |
+| `time_limit` | string | `1:00:00` | Wall clock for the pull job. |
+| `partition` | string | `null` | Partition for the pull job; `null` uses the backend's `default_partition`. |
+| `env` | object | `{}` | Environment for the pull, e.g. `APPTAINER_TMPDIR` / `APPTAINER_CACHEDIR` pointed at a filesystem with room for the layer cache and squashfs scratch. |
+
+Images are **not** pulled as part of submitting a run — see [`image`](../cli.md#image--manage-container-images-on-a-backend).
 
 ## PBS/Torque Backend
 
@@ -97,7 +128,7 @@ backends:
 Details worth knowing:
 
 - **POSIX-only (Linux/macOS hosts).** The local backend drives everything through a POSIX shell — bash task scripts, exit-code supervisors, process-group cancellation. On a Windows host it is skipped at startup with a warning (and the no-backends auto-registration doesn't fire); remote SSH backends work from Windows as usual.
-- **Execution is dumb by design.** There is no mtime or freshness logic: a task runs unconditionally unless the result cache answered *hit* before submission. Change detection belongs to the cache key (command + env + input hashes), not to the executor.
+- **Execution is dumb by design.** There is no mtime or freshness logic: a task runs unconditionally unless the result cache answered *hit* before submission. Change detection belongs to the cache key (command + env + image + input hashes), not to the executor.
 - **Durability.** Each job writes a spool entry (pid + metadata) and records its exit code to a file when it finishes, under `<data_dir>/local-jobs/<backend>/`. Running jobs survive a scripthut restart — a restarted server picks their verdicts up from the spool, the same way sacct resolves Slurm jobs.
 - **Resource requests are informational.** `cpus`/`memory`/`time_limit` are recorded but not enforced (there is no scheduler); concurrency is bounded by `max_concurrent`.
 - **Content hashing works out of the box on Linux and macOS.** The hashing pipeline prefers `sha256sum` and falls back to `shasum -a 256` (shipped with macOS), so the cache and [task manifests](../task-json/manifests.md) need no extra installs. Artifact transfer still needs your configured cache `tool` (`aws` or `rclone`) on the PATH. The per-task *outputs panel* listing uses GNU `find -printf` and is skipped silently on stock macOS (install findutils via Homebrew if you want it) — tasks run, cache, and produce manifests regardless.

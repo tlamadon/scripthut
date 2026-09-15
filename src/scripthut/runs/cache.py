@@ -94,20 +94,23 @@ class CacheManager:
         env: dict[str, str],
         commit_hash: str | None,
         input_hashes: dict[str, str],
+        image: str | None = None,
     ) -> str:
         """Return the input/action hash for a task.
 
         Deterministic across machines: identical (command, non-volatile env,
-        commit, per-input content hashes) → identical key. Resource knobs
-        (cpus/memory/partition) are deliberately excluded — resizing a job
-        must not bust the cache.
+        commit, image URI, per-input content hashes) → identical key. Resource
+        knobs (cpus/memory/partition) are deliberately excluded — resizing a
+        job must not bust the cache. ``image`` is included so retagging the
+        container without touching command/inputs cannot falsely hit.
         """
         payload = json.dumps(
             {
-                "v": 1,
+                "v": 2,
                 "command": command,
                 "env": self._env_for_key(env),
                 "commit": commit_hash or "",
+                "image": image or "",
                 "inputs": input_hashes,
             },
             sort_keys=True,

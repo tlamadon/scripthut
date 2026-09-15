@@ -310,6 +310,7 @@ class SlurmBackend(JobBackend):
         account: str | None = None,
         partition_map: dict[str, str] | None = None,
         default_partition: str | None = None,
+        image_binds: list[str] | None = None,
     ) -> None:
         """Initialize with an SSH client connected to the Slurm head node.
 
@@ -323,11 +324,17 @@ class SlurmBackend(JobBackend):
         ``default_partition`` is the fallback when the task's partition
         isn't in the map. With neither set, the task's value passes
         through unchanged.
+
+        ``image_binds`` are this cluster's host paths to bind into a
+        containerised task (``/data``), for the same reason
+        ``partition_map`` lives here: it is a fact about the cluster, so
+        the workflow JSON stays portable.
         """
         self._ssh = ssh_client
         self._account = account
         self._partition_map = partition_map or {}
         self._default_partition = default_partition
+        self._image_binds = image_binds or []
 
     def _resolve_partition(self, task_partition: str) -> str:
         """Translate a task's logical partition to this cluster's name."""
@@ -1122,6 +1129,10 @@ class SlurmBackend(JobBackend):
             interactive_wait=interactive_wait,
             output_dir=output_dir,
             run_summary_path=run_summary_path,
+            # Set by RunManager._resolve_images at submit time. None when the
+            # task declared no image, so the command runs on the bare node.
+            image_sif=task.image_sif,
+            image_binds=self._image_binds,
         )
         return header + "\n" + body
 

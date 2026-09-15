@@ -3,23 +3,26 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
 import logging
+import re
 import shlex
 import uuid
 from datetime import datetime, timezone
 from fnmatch import fnmatch
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from scripthut.backends.base import JobBackend
+from scripthut.backends.utils import shell_quote_path
 from scripthut.config_schema import (
     AgentConfig,
     EnvRule,
     GitSourceConfig,
+    ImagePullConfig,
     PathSourceConfig,
     ScriptHutConfig,
+    SlurmBackendConfig,
     Stack,
 )
 from scripthut.models import JobState
@@ -297,6 +300,14 @@ class RunManager:
         # (same as _resolve_working_dirs does with clone_dir)
         self._resolve_working_dirs(new_tasks, item.task.working_dir)
 
+        # Stamp image_sif the same way _build_run does. Without this,
+        # generated tasks keep image= but image_sif=None and the submit
+        # script runs the command on the bare host (e.g. interpreter not
+        # found) instead of inside the container.
+        backend_cfg = self.config.get_backend(run.backend_name)
+        if isinstance(backend_cfg, SlurmBackendConfig):
+            await self._resolve_images(new_tasks, ssh_client, backend_cfg)
+
         # Resolve wildcard deps against ALL tasks in the run
         all_tasks = [ri.task for ri in run.items] + new_tasks
         all_task_ids = [t.id for t in all_tasks]
@@ -541,37 +552,50 @@ class RunManager:
         opts = "-o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=accept-new"
         return f'export GIT_SSH_COMMAND="ssh -i {remote_key_path} {opts}"; '
 
-    async def _upload_deploy_key(
-        self, ssh_client: SSHClient, local_key_path: Path
+    async def _upload_secret_file(
+        self, ssh_client: SSHClient, local_key_path: Path, *, strip: bool = False
     ) -> str:
-        """Upload a local deploy key to a temp file on the backend.
+        """Upload a local secret file to a temp file on the backend.
 
-        The key content is base64-encoded before transmission over the
-        encrypted SSH channel, then decoded into a temp file with 600
-        permissions.
+        Used for a git source's deploy key and for a container registry
+        token: both are short-lived credentials the backend needs for one
+        command and must not keep.
+
+        Written over SFTP at mode 600, never through a shell command: a
+        command carrying the payload shows up in the backend's process list
+        while it runs, and a ``> file`` redirect creates the file at the
+        session umask so a following ``chmod`` leaves it briefly readable by
+        other users of a shared login node. The filename is generated here
+        rather than by remote ``mktemp`` because SFTP needs no shell — one
+        round trip instead of two.
+
+        ``strip`` removes surrounding whitespace. Set it for a token, whose
+        value is a single line an editor will happily add a newline to — a
+        trailing ``\\n`` becomes part of the password and the registry answers
+        401 for no visible reason. Leave it off for an SSH key, where the
+        trailing newline is part of the PEM format and stripping it makes the
+        key unreadable.
 
         Returns:
             The remote temp file path.
         """
         resolved = local_key_path.expanduser()
         if not resolved.exists():
-            raise ValueError(f"Deploy key not found: {resolved}")
-        key_content = resolved.read_text()
-        key_b64 = base64.b64encode(key_content.encode()).decode()
-        cmd = (
-            "TMPKEY=$(mktemp /tmp/scripthut_key_XXXXXX) && "
-            f"echo '{key_b64}' | base64 -d > $TMPKEY && "
-            "chmod 600 $TMPKEY && echo $TMPKEY"
-        )
-        stdout, stderr, exit_code = await ssh_client.run_command(cmd)
-        if exit_code != 0:
-            raise ValueError(f"Failed to upload deploy key: {stderr}")
-        return stdout.strip()
+            raise ValueError(f"Secret file not found: {resolved}")
+        content = resolved.read_text()
+        if strip:
+            content = content.strip()
+        remote_path = f"/tmp/scripthut_secret_{uuid.uuid4().hex}"
+        try:
+            await ssh_client.write_file(remote_path, content, mode=0o600)
+        except Exception as e:
+            raise ValueError(f"Failed to upload secret file: {e}") from e
+        return remote_path
 
-    async def _cleanup_deploy_key(
+    async def _cleanup_secret_file(
         self, ssh_client: SSHClient, remote_key_path: str
     ) -> None:
-        """Remove a temporary deploy key from the backend."""
+        """Remove a temporary secret file from the backend."""
         await ssh_client.run_command(f"rm -f {remote_key_path}")
 
     async def _clone_git_repo(
@@ -601,7 +625,7 @@ class RunManager:
             # 1. Upload deploy key if configured
             if deploy_key is not None:
                 key_path = deploy_key.expanduser()
-                remote_key = await self._upload_deploy_key(
+                remote_key = await self._upload_secret_file(
                     ssh_client, key_path
                 )
 
@@ -658,7 +682,7 @@ class RunManager:
         finally:
             # 4. Always clean up the temp deploy key
             if remote_key is not None:
-                await self._cleanup_deploy_key(ssh_client, remote_key)
+                await self._cleanup_secret_file(ssh_client, remote_key)
 
     def get_backend_account(self, backend_name: str) -> str | None:
         """Get the account for a backend (Slurm --account, PBS -A, etc.)."""
@@ -702,6 +726,18 @@ class RunManager:
 
         self._resolve_wildcard_deps(tasks)
         self._validate_dependencies(tasks)
+
+        # Containers arrive the same way code does: pulled onto the backend
+        # now, over this SSH connection, keyed so a repeat costs one `test -f`.
+        # This lives in _build_run rather than in the source path because every
+        # entry point (source workflow, ad-hoc task, stack run, agent run)
+        # funnels through here — an `image:` honoured in one and ignored in
+        # another is exactly the silence `image_sif` exists to prevent.
+        # API-only backends (Batch/EC2) are skipped: there the cloud runtime
+        # pulls `image:` itself, so there is nothing for us to do.
+        backend_cfg = self.config.get_backend(backend_name)
+        if ssh_client is not None and isinstance(backend_cfg, SlurmBackendConfig):
+            await self._resolve_images(tasks, ssh_client, backend_cfg)
 
         account = self.get_backend_account(backend_name)
         login_shell = self.get_backend_login_shell(backend_name)
@@ -989,7 +1025,7 @@ class RunManager:
         remote_key: str | None = None
         try:
             if source.deploy_key is not None:
-                remote_key = await self._upload_deploy_key(
+                remote_key = await self._upload_secret_file(
                     ssh_client, source.deploy_key.expanduser()
                 )
 
@@ -1033,7 +1069,7 @@ class RunManager:
             return workspace, short_hash
         finally:
             if remote_key is not None:
-                await self._cleanup_deploy_key(ssh_client, remote_key)
+                await self._cleanup_secret_file(ssh_client, remote_key)
 
     def _resolve_working_dirs(
         self, tasks: list[TaskDefinition], clone_dir: str,
@@ -1044,6 +1080,270 @@ class RunManager:
                 task.working_dir = clone_dir
             elif not task.working_dir.startswith(("/", "~")):
                 task.working_dir = f"{clone_dir}/{task.working_dir}"
+
+    @staticmethod
+    def _image_sif_name(image_uri: str) -> str:
+        """Filesystem-safe ``.sif`` filename for a container image URI.
+
+        ``ghcr.io/owner/repo:tag`` becomes ``ghcr.io_owner_repo_tag.sif``.
+        The URI is the cache key, so a moving tag like ``:latest`` reuses one
+        file while a pinned ``:sha-<hex>`` gets its own — the same
+        content-addressed skip-if-present contract as a git clone keyed by
+        commit.
+        """
+        stripped = re.sub(r"^[a-z0-9+.-]+://", "", image_uri)
+        return re.sub(r"[^A-Za-z0-9._-]", "_", stripped) + ".sif"
+
+    @staticmethod
+    def _image_registry_host(image_uri: str) -> str:
+        """Registry hostname for an image URI (``docker.io`` when omitted).
+
+        Short names (``python:3.12-slim``, ``library/python:3.12-slim``) are
+        Docker Hub. A dotted first path component is treated as the host
+        (``ghcr.io/owner/repo:tag`` → ``ghcr.io``).
+        """
+        stripped = re.sub(r"^[a-z0-9+.-]+://", "", image_uri)
+        first = stripped.split("/", 1)[0]
+        if "/" not in stripped:
+            return "docker.io"
+        if "." not in first and ":" not in first and first != "localhost":
+            return "docker.io"
+        return first.split(":")[0]
+
+    _DOCKER_HUB_HOSTS = frozenset({
+        "docker.io", "index.docker.io", "registry-1.docker.io",
+    })
+
+    def _image_sif_path(self, image_uri: str, image_dir: str) -> str:
+        """Where ``image_uri`` lives on a backend."""
+        return f"{image_dir}/{self._image_sif_name(image_uri)}"
+
+    async def _image_present(self, ssh_client: SSHClient, sif_path: str) -> bool:
+        """Whether the image file already exists on the backend."""
+        stdout, _, _ = await ssh_client.run_command(
+            f"test -f {shell_quote_path(sif_path)} && echo present || echo absent"
+        )
+        return stdout.strip().endswith("present")
+
+    async def _ensure_image(
+        self,
+        ssh_client: SSHClient,
+        image_uri: str,
+        *,
+        image_dir: str,
+        registry_user: str | None = None,
+        registry_token: Path | None = None,
+        pull_config: "ImagePullConfig | None" = None,
+        default_partition: str | None = None,
+        force: bool = False,
+    ) -> tuple[str, bool]:
+        """Pull ``image_uri`` onto the backend if absent.
+
+        Returns ``(sif_path, pulled)`` — ``pulled`` False means it was
+        already there.
+
+        The pull runs as a synchronous ``srun`` step on a worker node, the
+        way ``stack install`` runs ``prep``. Building a SIF shells out to
+        ``mksquashfs``, which on mercury's login node aborted with
+        ``malloc(): corrupted top size`` on a ~1 GB image; a worker
+        allocation gets the memory it requests. ``$HOME`` is shared, so the
+        file the worker writes is what every later task execs.
+
+        Credential handling mirrors :meth:`_clone_git_repo`: push the token,
+        use it, delete it. The token is read on the backend with ``$(cat …)``
+        rather than interpolated, so it never appears in the remote process
+        list. Credentials are attached only for non-Docker-Hub registries —
+        a GHCR token configured on the backend must not be sent to Docker
+        Hub, or a public ``python:3.12-slim`` pull fails as unauthorized.
+
+        The pull is wrapped in ``flock`` with a re-check inside the lock, so
+        two concurrent callers can't write the same path and leave a
+        truncated image behind. (``flock`` on an NFS home is advisory at
+        best; the re-check is what actually prevents a double pull, and
+        ``image ensure`` being a manual step makes contention unlikely.)
+        """
+        sif_path = self._image_sif_path(image_uri, image_dir)
+        if not force and await self._image_present(ssh_client, sif_path):
+            logger.info(f"Image '{image_uri}' already present at {sif_path}")
+            return sif_path, False
+
+        sif_q = shell_quote_path(sif_path)
+        dir_q = shell_quote_path(image_dir)
+        lock_q = shell_quote_path(f"{sif_path}.lock")
+        # Apptainer needs a transport; accept a bare registry URI too.
+        uri = image_uri if "://" in image_uri else f"docker://{image_uri}"
+
+        remote_token: str | None = None
+        try:
+            auth_prefix = ""
+            # Backend registry_* is for private registries (e.g. GHCR). Do not
+            # send those credentials to Docker Hub — public short-name pulls
+            # then fail with "incorrect username or password".
+            use_registry_auth = (
+                registry_token is not None
+                and self._image_registry_host(image_uri)
+                not in self._DOCKER_HUB_HOSTS
+            )
+            if use_registry_auth:
+                remote_token = await self._upload_secret_file(
+                    ssh_client, registry_token, strip=True
+                )
+                auth_prefix = (
+                    f"APPTAINER_DOCKER_USERNAME={shlex.quote(registry_user or '')} "
+                    f'APPTAINER_DOCKER_PASSWORD="$(cat {remote_token})" '
+                )
+
+            cfg = pull_config or ImagePullConfig()
+            logger.info(
+                f"Pulling image '{uri}' to {sif_path} "
+                f"(srun: {cfg.cpus} cpu, {cfg.memory}, {cfg.time_limit})"
+            )
+
+            # Script body runs on the worker. The token path is resolved
+            # there too — $HOME is shared, /tmp is not, so the secret file
+            # the login node wrote is not visible; read it before srun.
+            env_lines = "".join(
+                f"export {k}={shlex.quote(v)}\n" for k, v in cfg.env.items()
+            )
+            skip = "" if force else f"if [ -f {sif_q} ]; then exit 0; fi\n"
+            script = (
+                "set -euo pipefail\n"
+                f"{env_lines}"
+                f"mkdir -p {dir_q}\n"
+                f"exec 9>{lock_q}\n"
+                "flock 9\n"
+                f"{skip}"
+                f"apptainer pull {'--force ' if force else ''}{sif_q} "
+                f"{shlex.quote(uri)}\n"
+            )
+
+            srun_parts = [
+                "srun",
+                "--job-name=scripthut-image-pull",
+                f"--cpus-per-task={cfg.cpus}",
+                f"--mem={cfg.memory}",
+                f"--time={cfg.time_limit}",
+            ]
+            partition = cfg.partition or default_partition
+            if partition:
+                srun_parts.append(f"--partition={shlex.quote(partition)}")
+            runner = " ".join(srun_parts) + " bash -s"
+
+            # The registry credentials are exported *outside* srun so the
+            # token file (login-node /tmp) is read before the job starts;
+            # srun forwards the environment to the step.
+            cmd = (
+                f"{auth_prefix}{runner} "
+                f"<<'__SCRIPTHUT_PULL__'\n{script}\n__SCRIPTHUT_PULL__"
+            )
+            _, stderr, exit_code = await ssh_client.run_command(cmd, timeout=3600)
+            if exit_code != 0:
+                raise ValueError(
+                    f"Failed to pull image '{image_uri}': {stderr.strip()}"
+                )
+        finally:
+            if remote_token:
+                await self._cleanup_secret_file(ssh_client, remote_token)
+
+        return sif_path, True
+
+    async def ensure_image_for_backend(
+        self, image_uri: str, backend_name: str, *, force: bool = False,
+    ) -> dict[str, Any]:
+        """Pull an image onto one backend; used by ``scripthut image ensure``.
+
+        Separate from run submission on purpose — see :meth:`_resolve_images`
+        for why a pull must not sit inside the submit request.
+        """
+        backend_cfg = self.config.get_backend(backend_name)
+        if backend_cfg is None:
+            raise ValueError(f"Backend '{backend_name}' not found in config")
+        if not isinstance(backend_cfg, SlurmBackendConfig):
+            raise ValueError(
+                f"Backend '{backend_name}' is not a Slurm backend; container "
+                "images are only pulled for SSH-based Slurm backends "
+                "(Batch/EC2 pull image: themselves at run time)"
+            )
+        ssh_client = self.get_ssh_client(backend_name)
+        if ssh_client is None:
+            raise ValueError(f"Backend '{backend_name}' has no SSH connection")
+
+        sif_path, pulled = await self._ensure_image(
+            ssh_client,
+            image_uri,
+            image_dir=backend_cfg.image_dir,
+            registry_user=backend_cfg.registry_user,
+            registry_token=backend_cfg.registry_token_resolved,
+            pull_config=backend_cfg.image_pull,
+            default_partition=backend_cfg.default_partition,
+            force=force,
+        )
+        return {
+            "image": image_uri,
+            "backend": backend_name,
+            "path": sif_path,
+            "pulled": pulled,
+            "state": "pulled" if pulled else "already_present",
+        }
+
+    async def check_image_for_backend(
+        self, image_uri: str, backend_name: str,
+    ) -> dict[str, Any]:
+        """Report whether an image is already on one backend."""
+        backend_cfg = self.config.get_backend(backend_name)
+        if not isinstance(backend_cfg, SlurmBackendConfig):
+            raise ValueError(
+                f"Backend '{backend_name}' is not a Slurm backend"
+            )
+        ssh_client = self.get_ssh_client(backend_name)
+        if ssh_client is None:
+            raise ValueError(f"Backend '{backend_name}' has no SSH connection")
+        sif_path = self._image_sif_path(image_uri, backend_cfg.image_dir)
+        present = await self._image_present(ssh_client, sif_path)
+        return {
+            "image": image_uri,
+            "backend": backend_name,
+            "path": sif_path,
+            "present": present,
+            "state": "present" if present else "absent",
+        }
+
+    async def _resolve_images(
+        self,
+        tasks: list[TaskDefinition],
+        ssh_client: SSHClient,
+        backend_config: SlurmBackendConfig,
+    ) -> None:
+        """Record each task's local .sif path, or fail naming the fix.
+
+        Locates only — it never pulls. Pulling here would put a multi-minute
+        transfer inside the submit request: the CLI's read timeout fires,
+        the disconnect cancels the coroutine, ``apptainer pull`` dies with
+        it, and nothing is cached, so no retry can ever make progress. The
+        pull is an explicit one-time step (``scripthut image ensure``), and
+        submit is fast and either works or says why.
+
+        Tasks that declare no image are untouched; a present image costs one
+        ``test -f`` per distinct URI.
+        """
+        wanted = {t.image for t in tasks if t.image}
+        if not wanted:
+            return
+
+        resolved: dict[str, str] = {}
+        for uri in sorted(wanted):
+            sif_path = self._image_sif_path(uri, backend_config.image_dir)
+            if not await self._image_present(ssh_client, sif_path):
+                raise ValueError(
+                    f"Image '{uri}' is not on backend "
+                    f"'{backend_config.name}' ({sif_path}). Pull it once "
+                    f"with:\n  scripthut image ensure {uri} "
+                    f"--backend {backend_config.name}"
+                )
+            resolved[uri] = sif_path
+        for task in tasks:
+            if task.image:
+                task.image_sif = resolved[task.image]
 
     async def _load_source_project_config(
         self,
@@ -1553,9 +1853,10 @@ class RunManager:
             env=merged_env,
             # cache_scope="inputs" drops the commit from the key so runs
             # from different commits reuse each other's results as long as
-            # command + env + declared input hashes match.
+            # command + env + image + declared input hashes match.
             commit_hash=commit_hash if task.cache_scope == "commit" else None,
             input_hashes=input_hashes,
+            image=task.image,
         )
         verdict: dict = {
             "task_id": task.id,

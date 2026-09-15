@@ -849,6 +849,43 @@ def make_api_router(state: AppState) -> APIRouter:
         state.notify_poll()
         return _run_summary(run)
 
+    @router.get("/images/check")
+    async def check_image_v1(image: str, backend: str) -> dict[str, Any]:
+        """Whether a container image is already pulled on one backend."""
+        rm = _require_manager()
+        try:
+            return await rm.check_image_for_backend(image, backend)
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e)) from e
+        except Exception as e:
+            logger.exception(f"image check '{image}' on '{backend}' failed")
+            raise HTTPException(status_code=500, detail=str(e)) from e
+
+    @router.post("/images/ensure")
+    async def ensure_image_v1(
+        image: str, backend: str, force: bool = False,
+    ) -> dict[str, Any]:
+        """Pull a container image onto one backend's login node.
+
+        Blocks until the pull finishes — minutes for a multi-GB image — so
+        callers must use a long client timeout (the CLI's image commands do,
+        as ``stack install`` does for ``prep``). It blocks rather than being
+        submitted as a one-task run because the pull has to happen on the
+        *login* node: compute nodes often have no route to a registry, and
+        ``$HOME`` is shared so one login-node pull serves every later task.
+
+        Idempotent: an image already present returns ``already_present``
+        without touching the registry. ``force`` re-pulls over it.
+        """
+        rm = _require_manager()
+        try:
+            return await rm.ensure_image_for_backend(image, backend, force=force)
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e)) from e
+        except Exception as e:
+            logger.exception(f"image ensure '{image}' on '{backend}' failed")
+            raise HTTPException(status_code=500, detail=str(e)) from e
+
     @router.delete("/stacks/{name}")
     async def delete_stack_v1(
         name: str, backend: str, source: str | None = None,

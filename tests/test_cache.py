@@ -87,6 +87,14 @@ class TestComputeKey:
     def test_input_hash_change_busts_key(self):
         assert self._key() != self._key(input_hashes={"data.csv": "feed00"})
 
+    def test_image_change_busts_key(self):
+        assert self._key(image="ghcr.io/o/r:v1") != self._key(
+            image="ghcr.io/o/r:v2"
+        )
+
+    def test_none_and_empty_image_are_equivalent(self):
+        assert self._key(image=None) == self._key(image="")
+
     def test_volatile_scripthut_env_ignored(self):
         """SCRIPTHUT_RUN_ID / CREATED_AT differ every run; they must not
         enter the key or the cache would never hit."""
@@ -97,7 +105,7 @@ class TestComputeKey:
         assert a == b
 
     def test_empty_inputs_still_keys(self):
-        # No declared inputs → keyed on command+env+commit only, still stable.
+        # No declared inputs → keyed on command+env+commit+image only, still stable.
         assert self._key(input_hashes={}) == self._key(input_hashes={})
 
     def test_key_is_hex_sha256(self):
@@ -687,10 +695,11 @@ class TestCacheScope:
         assert TaskDefinition.from_dict(t.to_dict()).cache_scope == "inputs"
 
     def test_default_key_unchanged(self):
-        """Guard: adding cache_scope must not move existing cache entries.
+        """Guard: the v2 key payload is pinned as a literal digest.
 
-        The key for a default-scope task is byte-identical to the pre-
-        cache_scope payload format, pinned here as a literal digest.
+        v2 added ``image`` (empty string when unset). Changing the payload
+        shape without bumping ``v`` would silently orphan or collide with
+        stored entries — catch accidental format drift here.
         """
         import hashlib
 
@@ -704,7 +713,8 @@ class TestCacheScope:
         )
         payload = (
             '{"command":"python train.py","commit":"abc123",'
-            '"env":{"A":"1"},"inputs":{"data.csv":"deadbeef"},"v":1}'
+            '"env":{"A":"1"},"image":"",'
+            '"inputs":{"data.csv":"deadbeef"},"v":2}'
         )
         assert key == hashlib.sha256(payload.encode()).hexdigest()
 
