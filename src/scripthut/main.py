@@ -999,8 +999,9 @@ from scripthut.api import make_api_router  # noqa: E402
 
 app.include_router(make_api_router(state))
 
-# Templates
-templates_path = Path(__file__).parent.parent.parent / "templates"
+# Templates. These ship inside the package, so resolve them relative to this
+# module rather than the source checkout layout.
+templates_path = Path(__file__).parent / "templates"
 templates = Jinja2Templates(directory=str(templates_path))
 templates.env.globals["scripthut_version"] = __version__
 

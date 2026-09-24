@@ -6,7 +6,6 @@ WORKDIR /app
 
 COPY pyproject.toml README.md ./
 COPY src/ src/
-COPY templates/ templates/
 
 RUN pip install --no-cache-dir -e .
 
