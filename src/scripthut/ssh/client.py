@@ -46,6 +46,8 @@ class SSHClient:
         # Probed lazily by openssh_version(); _UNPROBED distinguishes "not
         # asked yet" from "asked, and the banner was unreadable".
         self._openssh_version: tuple[int, int] | None | object = _UNPROBED
+        # Warn once per client, not on every reconnect.
+        self._warned_unverified = False
 
     @property
     def is_connected(self) -> bool:
@@ -64,13 +66,23 @@ class SSHClient:
 
             logger.info(f"Connecting to {self.user}@{self.host}:{self.port}")
 
-            # Configure known_hosts handling
-            known_hosts_arg: str | Path | None
+            # asyncssh wants the known_hosts path as a str. Handed a Path it
+            # raises `'PosixPath' object is not subscriptable` out of
+            # match_known_hosts, so turning verification on made a backend
+            # fail to connect at all — which left disabling it as the only
+            # way to get a working config.
+            known_hosts_arg: str | None
             if self.known_hosts is not None:
-                known_hosts_arg = self.known_hosts
+                known_hosts_arg = str(self.known_hosts)
             else:
-                # None means don't validate (for development)
+                # None disables host key checking entirely.
                 known_hosts_arg = None
+                if not self._warned_unverified:
+                    logger.warning(
+                        f"Host key verification is disabled for {self.host}; "
+                        "set this backend's ssh.known_hosts to enable it"
+                    )
+                    self._warned_unverified = True
 
             try:
                 # Build client_keys argument
