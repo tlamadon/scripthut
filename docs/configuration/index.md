@@ -6,7 +6,7 @@ The configuration file has the following top-level sections:
 
 ```yaml
 backends: [...]       # Remote compute backends (Slurm, PBS, AWS Batch, AWS EC2)
-sources: [...]        # Git or path sources carrying workflow JSON files
+sources: [...]        # Git remotes, local git repos, or backend paths carrying workflow JSON
 workflows: [...]      # Task generators (SSH commands returning JSON)
 stacks: [...]         # Reusable software environments installed once per backend
 env: [...]            # Server-level env rules (see Environments)
@@ -90,7 +90,7 @@ settings:
 | `server_host` | string | `"127.0.0.1"` | Host to bind the web server to. Use `0.0.0.0` to listen on all interfaces. |
 | `server_port` | integer | `8000` | Port to bind the web server to. |
 | `data_dir` | path | `~/.cache/scripthut` | Base directory for all stored data (run history, logs, `usage.jsonl`). |
-| `sources_cache_dir` | path | `<data_dir>/sources` | Directory to cache cloned repositories. |
+| `sources_cache_dir` | path | `<data_dir>/sources` | Directory to cache cloned repositories. Unused by sources with `local_path` — those are read in place. |
 | `filter_user` | string | `null` | Default username for the "My Jobs" filter in the UI. If `null`, all users' jobs are shown. |
 | `cli_server` | string | `null` | Default URL of a running scripthut server for the CLI. Overridden by `--server` and `SCRIPTHUT_SERVER`. See [CLI](../cli.md). |
 | `cli_autostart` | `ask` / `always` / `never` | `"ask"` | What the CLI does when no server is configured and no local daemon is running: prompt on a TTY, start one without asking, or fail with guidance. See [CLI § Local daemon](../cli.md#local-daemon). |
@@ -127,6 +127,13 @@ sources:
     branch: main
     deploy_key: ~/.ssh/ml-deploy-key
     backend: hpc-cluster
+
+  # Same thing, but the repo is already on this machine: read from the working
+  # tree and pushed to the backend over SSH. No deploy key, no git remote.
+  - name: my-project
+    type: git
+    local_path: ~/git/my-project
+    branch: main
 
 workflows:
   - name: simple-tasks

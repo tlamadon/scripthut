@@ -464,11 +464,41 @@ BackendConfig = Annotated[
 
 
 class GitSourceConfig(BaseModel):
-    """Git repository source configuration."""
+    """Git repository source configuration.
+
+    Two ways to say where the code lives, and they compose:
+
+    - ``url`` — a git remote. The server keeps a cache clone under
+      ``settings.sources_cache_dir`` to read workflows from, and the
+      backend clones the remote itself (needing ``deploy_key`` for a
+      private repo).
+    - ``local_path`` — a git repo on the machine running scripthut. The
+      server reads that working tree directly (no cache clone), and the
+      commit is pushed to the backend over the SSH connection scripthut
+      already holds. No deploy key, no network, no git remote at all.
+
+    With ``local_path`` set it wins for both reading and materialising;
+    ``url`` then stays as metadata and as the remote coding-agent runs
+    push branches to.
+    """
 
     name: str = Field(description="Unique identifier for this source")
     type: Literal["git"] = "git"
-    url: str = Field(description="Git repository URL (SSH format recommended)")
+    url: str = Field(
+        default="",
+        description=(
+            "Git repository URL (SSH format recommended). Optional when "
+            "'local_path' is set"
+        ),
+    )
+    local_path: Path | None = Field(
+        default=None,
+        description=(
+            "Path to a git repo on the scripthut host. When set, workflows "
+            "are read from this working tree and the resolved commit is "
+            "pushed to the backend instead of cloned from 'url'"
+        ),
+    )
     branch: str = Field(default="main", description="Branch to track")
     deploy_key: Path | None = Field(
         default=None,
@@ -505,6 +535,20 @@ class GitSourceConfig(BaseModel):
     def deploy_key_resolved(self) -> Path | None:
         """Return the resolved deploy key path with ~ expansion."""
         return self.deploy_key.expanduser() if self.deploy_key else None
+
+    @property
+    def local_path_resolved(self) -> Path | None:
+        """Return the resolved local repo path with ~ expansion."""
+        return self.local_path.expanduser() if self.local_path else None
+
+    @model_validator(mode="after")
+    def _check_url_or_local_path(self) -> "GitSourceConfig":
+        if not self.url and self.local_path is None:
+            raise ValueError(
+                f"git source '{self.name}' needs either 'url' (a git remote) "
+                "or 'local_path' (a git repo on this machine); it has neither."
+            )
+        return self
 
 
 class PathSourceConfig(BaseModel):
@@ -859,7 +903,10 @@ class ScriptHutConfig(BaseModel):
     )
     sources: list[SourceConfig] = Field(
         default_factory=list,
-        description="List of sources (git repos or backend paths) with workflow definitions",
+        description=(
+            "List of sources (git remotes, local git repos, or backend "
+            "paths) with workflow definitions"
+        ),
     )
     env: list[EnvRule] = Field(
         default_factory=list,

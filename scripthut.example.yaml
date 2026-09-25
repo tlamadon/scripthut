@@ -138,6 +138,30 @@ sources:
     # clone_dir: ~/scripthut-repos     # default — clones to <clone_dir>/<commit_hash>/
     # postclone: "rm -rf large_files"  # optional — run after cloning
 
+  # Local git source — the repo is already on THIS machine. ScriptHut reads
+  # workflows straight from the working tree and pushes the commit to the
+  # backend over the SSH connection it already has, so there is no deploy key,
+  # no git remote and no network in the loop. Handy for laptop-driven work and
+  # for private repos the cluster has no credentials for.
+  #
+  # What is read vs. what runs: workflow JSON and this repo's scripthut.yaml
+  # come from the WORKING TREE (edits count immediately, no commit needed);
+  # the code the backend runs is the branch tip. `scripthut source view` warns
+  # when the tree is dirty, because uncommitted work does not reach the backend.
+  #
+  # Needs an SSH backend (slurm/pbs) or a local backend — AWS Batch/EC2
+  # containers clone a URL themselves and cannot reach this machine's disk.
+  # Still `type: git` — local_path only changes where the code comes from.
+  # - name: my-project
+  #   type: git
+  #   local_path: ~/git/my-project
+  #   branch: main                     # which ref to send; default 'main'
+  #   # url: git@github.com:me/my-project.git   # optional; needed only for
+  #   #                                         # coding-agent runs
+  #   # clone_dir: ~/scripthut-repos   # backend side: <clone_dir>/<commit>/ plus
+  #   #                                # a shared bare mirror at .mirror.git
+  #   # postclone: "uv sync"
+
   # Path source — directory on the backend, workflows discovered via SSH
   # - name: shared-workflows
   #   type: path

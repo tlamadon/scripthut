@@ -168,9 +168,14 @@ scripthut stack install julia
 # Verify it's ready on each backend before submitting work.
 scripthut stack check julia
 
-# Submit the workflow. The project's working tree at HEAD becomes
-# the source the backend clones (you've configured a deploy key
-# in the project YAML, or you push the branch first).
+# Submit the workflow. How the code reaches the backend depends on how
+# the source is declared in the global config:
+#   - a git source with `url`:        the backend clones the remote (needs a
+#                                    deploy key for a private repo, and the
+#                                    branch has to be pushed first)
+#   - a git source with `local_path`: this repo's HEAD is pushed straight to
+#                                    the backend over SSH — no deploy key, no
+#                                    remote, nothing to push to GitHub first
 scripthut workflow run grid-search
 
 # Outside the project? CLI falls back to global config only.
@@ -210,7 +215,14 @@ If you have one big `scripthut.yaml` in your project today (the common starting 
 
 When you're ready to split, the rule of thumb is:
 
-- Move **`backends`, `settings`, `pricing`, `sources`** to `~/.config/scripthut/scripthut.yaml`. These describe *your* environment.
+- Move **`backends`, `settings`, `pricing`, `sources`** to `~/.config/scripthut/scripthut.yaml`. These describe *your* environment. A source pointing at this very repo belongs there too — its `local_path` is a fact about your machine, not about the project:
+
+  ```yaml
+  sources:
+    - name: my-project
+      type: git
+      local_path: ~/git/my-project   # read from here, pushed to the backend
+  ```
 - Leave **`stacks`, `workflows`, `projects`, `env`, `env_groups`** in the project's `scripthut.yaml`. These describe *what the project does*.
 
 After splitting, run `scripthut backend list` from inside the project — if it still sees your backends, the merge is working. If it lists nothing, the global file isn't being discovered (check `ls ~/.config/scripthut/scripthut.yaml`).

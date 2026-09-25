@@ -161,6 +161,8 @@ def make_api_router(state: AppState) -> APIRouter:
         }
         if isinstance(src, GitSourceConfig):
             common.update({"url": src.url, "branch": src.branch})
+            if src.local_path is not None:
+                common["local_path"] = str(src.local_path_resolved)
         elif isinstance(src, PathSourceConfig):
             common.update({"path": src.path, "backend": src.backend})
         return common
@@ -192,10 +194,15 @@ def make_api_router(state: AppState) -> APIRouter:
         except Exception as e:
             logger.warning(f"workflow discovery failed for source '{name}': {e}")
             discover_error = str(e)
+        # Non-fatal findings from the last sync/discovery pass — unparseable
+        # workflow files, and the dirty-working-tree notice for a local repo.
+        status = state.source_statuses.get(name)
         return {
             **_source_summary(source),
             "workflows": workflows,
             "discover_error": discover_error,
+            "warnings": list(status.warnings) if status else [],
+            "dirty": bool(status.dirty) if status else False,
         }
 
     @router.post("/tasks/run")

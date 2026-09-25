@@ -35,12 +35,17 @@ from scripthut.runs.models import (
 )
 from scripthut.sources.git import is_safe_branch_name
 from scripthut.ssh.client import SSHClient
-from scripthut.ssh.git_ssh import build_git_ssh_command
+from scripthut.ssh.git_ssh import build_git_ssh_command, local_openssh_version
 
 if TYPE_CHECKING:
     from scripthut.runs.storage import RunStorageManager
 
 logger = logging.getLogger(__name__)
+
+# Bare repo under a source's clone_dir that local-repo pushes land in, shared
+# by every run of that source. Dot-prefixed so the disk scanner's `"$d"/*`
+# enumeration skips it and never offers it for cleanup.
+_MIRROR_DIRNAME = ".mirror.git"
 
 # Marker stored on ``item.error`` when a SUBMITTED job vanishes from the
 # scheduler queue without ever being observed RUNNING.  Used by the polling
@@ -688,6 +693,188 @@ class RunManager:
             if remote_key is not None:
                 await self._cleanup_deploy_key(ssh_client, remote_key)
 
+    def _local_push_target(
+        self, source: GitSourceConfig, backend_name: str,
+    ) -> tuple[str, str]:
+        """Where to push a local repo for ``backend_name``, and how.
+
+        Returns ``(push_url, env_prefix)``. The whole local-vs-SSH
+        difference lives here: a local backend is a filesystem path with
+        no ssh in the picture, an SSH backend is an scp-style URL plus a
+        ``GIT_SSH_COMMAND``. Every other step runs through
+        ``ssh_client.run_command``, which ``LocalExecClient`` already
+        makes transport-transparent.
+
+        Raises:
+            ValueError: the backend has no filesystem to push to (the
+                API-only backends), or is unknown.
+        """
+        from scripthut.config_schema import LocalBackendConfig
+
+        backend_cfg = self.config.get_backend(backend_name)
+        if backend_cfg is None:
+            raise ValueError(f"Unknown backend: {backend_name}")
+
+        mirror = f"{source.clone_dir}/{_MIRROR_DIRNAME}"
+
+        if isinstance(backend_cfg, LocalBackendConfig):
+            # Pushing to a path, not a host: git hands it to no shell, so
+            # `~` has to be expanded here rather than left for the far end.
+            return str(Path(mirror).expanduser()), ""
+
+        ssh_cfg = getattr(backend_cfg, "ssh", None)
+        if ssh_cfg is None:
+            raise ValueError(
+                f"Source '{source.name}' has local_path set, but backend "
+                f"'{backend_name}' ({backend_cfg.type}) has no filesystem to "
+                "push a repo to. Use an SSH or local backend, or give the "
+                "source a 'url' so the backend can clone it itself."
+            )
+
+        # known_hosts: the backend's own file when configured, otherwise the
+        # same cache-dir file the server-side source clones learn into.
+        known_hosts = ssh_cfg.known_hosts_resolved
+        if known_hosts is None:
+            known_hosts = (
+                self.config.settings.sources_cache_dir_resolved / "known_hosts"
+            )
+            known_hosts.parent.mkdir(parents=True, exist_ok=True)
+        git_ssh = build_git_ssh_command(
+            key_path=str(ssh_cfg.key_path_resolved),
+            known_hosts=str(known_hosts),
+            openssh_version=local_openssh_version(),
+            port=ssh_cfg.port if ssh_cfg.port != 22 else None,
+        )
+        # scp-style URL: git passes the path through the far-side shell, so a
+        # leading `~` expands there.
+        push_url = f"{ssh_cfg.user}@{ssh_cfg.host}:{mirror}"
+        return push_url, f'GIT_SSH_COMMAND="{git_ssh}" '
+
+    async def _push_local_repo(
+        self,
+        ssh_client: SSHClient,
+        source: GitSourceConfig,
+        backend_name: str,
+    ) -> tuple[str, str]:
+        """Materialise a local git repo on the backend by pushing to it.
+
+        The counterpart to :meth:`_clone_git_repo` for sources that carry a
+        ``local_path``: instead of the backend fetching from a git remote
+        (and needing a deploy key to do it), the commit travels over the
+        connection scripthut already holds.
+
+            1. Resolve the commit locally — no ``git ls-remote``.
+            2. Ensure a bare mirror at ``<clone_dir>/.mirror.git``.
+            3. Push ``<sha>`` there as ``refs/heads/sh-<short_hash>``.
+            4. Clone that ref into ``<clone_dir>/<short_hash>`` if absent.
+
+        The mirror is shared by every run of this source, so only the first
+        push carries history; later ones send deltas. Step 4 is a local
+        clone on the backend, so git hardlinks the objects.
+
+        Returns:
+            ``(clone_path, short_hash)`` — same contract as
+            :meth:`_clone_git_repo`.
+        """
+        local_path = source.local_path_resolved
+        if local_path is None:  # pragma: no cover — guarded by the caller
+            raise ValueError(f"Source '{source.name}' has no local_path")
+        if not local_path.exists():
+            raise ValueError(
+                f"Source '{source.name}' local_path does not exist: {local_path}"
+            )
+
+        repo = shlex.quote(str(local_path))
+
+        # 1. Resolve the commit from the local repo.
+        rev = "HEAD" if not source.branch else f"refs/heads/{source.branch}"
+        if source.branch and not is_safe_branch_name(source.branch):
+            raise ValueError(f"Invalid branch name: {source.branch!r}")
+        stdout, stderr, code = await _run_local_shell(
+            f"git -C {repo} rev-parse --verify {rev}", timeout=30.0,
+        )
+        if code != 0 or not stdout.strip():
+            raise ValueError(
+                f"Could not resolve '{rev}' in local repo {local_path} for "
+                f"source '{source.name}': {stderr.strip() or 'rev-parse failed'}"
+            )
+        commit_hash = stdout.strip().split("\n")[0]
+        short_hash = commit_hash[:12]
+
+        # Uncommitted work is not what runs — say so rather than let the
+        # difference go unnoticed.
+        dirty, _, _ = await _run_local_shell(
+            f"git -C {repo} status --porcelain", timeout=30.0,
+        )
+        if dirty.strip():
+            logger.warning(
+                f"Source '{source.name}': working tree at {local_path} has "
+                f"uncommitted changes; submitting committed {short_hash}"
+            )
+
+        push_url, env_prefix = self._local_push_target(source, backend_name)
+        mirror = f"{source.clone_dir}/{_MIRROR_DIRNAME}"
+        clone_path = f"{source.clone_dir}/{short_hash}"
+        ref = f"refs/heads/sh-{short_hash}"
+
+        # 2. Ensure the bare mirror exists on the backend.
+        _, stderr, code = await ssh_client.run_command(
+            f"mkdir -p {source.clone_dir} && "
+            f"{{ test -d {mirror} || git init --bare -q {mirror}; }}",
+            timeout=60,
+        )
+        if code != 0:
+            raise ValueError(
+                f"Could not create mirror {mirror} on '{backend_name}': {stderr}"
+            )
+
+        # 3. Push the commit. --force because the ref is content-addressed:
+        # re-pushing the same commit is a no-op, and there is nothing to
+        # preserve if it somehow differs.
+        logger.info(
+            f"Pushing {local_path}@{short_hash} to {backend_name}:{mirror}"
+        )
+        _, stderr, code = await _run_local_shell(
+            f"{env_prefix}git -C {repo} push --force "
+            f"{shlex.quote(push_url)} {commit_hash}:{ref}",
+            timeout=1800.0,
+        )
+        if code != 0:
+            raise ValueError(
+                f"Failed to push {local_path} to '{backend_name}' "
+                f"({push_url}): {stderr.strip()}"
+            )
+
+        # 4. Clone that ref out of the mirror, unless this commit is already
+        # materialised (content-addressed, so re-runs reuse it).
+        stdout, _, _ = await ssh_client.run_command(
+            f"test -d {clone_path} && echo exists"
+        )
+        if "exists" in stdout:
+            logger.info(f"Reusing existing clone at {clone_path} ({short_hash})")
+            return clone_path, short_hash
+
+        _, stderr, code = await ssh_client.run_command(
+            f"git clone -q --branch sh-{short_hash} --single-branch "
+            f"{mirror} {clone_path}",
+            timeout=600,
+        )
+        if code != 0:
+            raise ValueError(
+                f"Failed to clone {mirror} to {clone_path} on "
+                f"'{backend_name}': {stderr}"
+            )
+
+        if source.postclone:
+            logger.info(f"Running postclone command in {clone_path}")
+            _, stderr, code = await ssh_client.run_command(
+                f"cd {clone_path} && {source.postclone}", timeout=300,
+            )
+            if code != 0:
+                raise ValueError(f"Postclone command failed: {stderr}")
+
+        return clone_path, short_hash
+
     def get_backend_account(self, backend_name: str) -> str | None:
         """Get the account for a backend (Slurm --account, PBS -A, etc.)."""
         backend = self.config.get_backend(backend_name)
@@ -987,9 +1174,15 @@ class RunManager:
         return [TaskDefinition.from_dict(t) for t in tasks_data]
 
     async def _clone_source_repo(
-        self, ssh_client: SSHClient, source: GitSourceConfig,
+        self, ssh_client: SSHClient, source: GitSourceConfig, backend_name: str,
     ) -> tuple[str, str]:
-        """Clone a git source's repo on the backend."""
+        """Materialise a git source's repo on the backend.
+
+        ``local_path`` sources are pushed from this machine; everything
+        else is cloned by the backend from ``url``.
+        """
+        if source.local_path is not None:
+            return await self._push_local_repo(ssh_client, source, backend_name)
         return await self._clone_git_repo(
             ssh_client,
             repo=source.url,
@@ -1145,9 +1338,19 @@ class RunManager:
             if ssh_client is not None:
                 # SSH backend: clone on the backend filesystem now.
                 clone_dir, commit_hash = await self._clone_source_repo(
-                    ssh_client, source
+                    ssh_client, source, backend_name
                 )
                 self._resolve_working_dirs(tasks, clone_dir)
+            elif not source.url:
+                # API-only backend (Batch/EC2): the container clones from a
+                # URL at runtime, and there is no route from it back to this
+                # machine's disk, so a local_path-only source cannot run here.
+                raise ValueError(
+                    f"Source '{source_name}' only has local_path set, but "
+                    f"backend '{backend_name}' runs containers that clone the "
+                    "repo themselves and cannot reach this machine. Give the "
+                    "source a 'url', or submit to an SSH or local backend."
+                )
             else:
                 # API-only backend: resolve the commit locally so the
                 # container can check out the same ref at runtime.  Don't
@@ -1188,7 +1391,10 @@ class RunManager:
             # a server-defined stack — same convention as env_groups.
             doc_stacks = {s.name: s for s in project_cfg.stacks}
 
-        git_repo = source.url if isinstance(source, GitSourceConfig) else None
+        git_repo = None
+        if isinstance(source, GitSourceConfig):
+            # url is empty for a local-only source; the path is what it ran from.
+            git_repo = source.url or str(source.local_path_resolved)
         git_branch = source.branch if isinstance(source, GitSourceConfig) else None
         run = await self._build_run(
             tasks, workflow_name, backend_name, None, ssh_client,
@@ -1292,6 +1498,13 @@ class RunManager:
             raise ValueError(
                 f"Coding agents require a git source; '{source_name}' is not one"
             )
+        if not source.url:
+            # The agent commits and pushes a branch; a mirror on the cluster
+            # is not somewhere it can push back to usefully yet.
+            raise ValueError(
+                f"Coding agents require a git source with a 'url' to push "
+                f"branches to; '{source_name}' only has local_path set."
+            )
 
         backend_name = backend
         ssh_client = self.get_ssh_client(backend_name)
@@ -1361,7 +1574,7 @@ class RunManager:
             if ssh_client:
                 try:
                     clone_dir, commit_hash = await self._clone_source_repo(
-                        ssh_client, source
+                        ssh_client, source, backend_name
                     )
                     self._resolve_working_dirs(tasks, clone_dir)
                 except Exception as e:
@@ -2436,6 +2649,11 @@ async def load_source_project_config(
 
     Read location depends on source type:
 
+    - **Git with ``local_path``**: read ``<local_path>/scripthut.yaml``
+      straight off disk. The working tree is what scripthut reads for a
+      local source — same rule as workflow discovery — so an edit takes
+      effect without a commit. (The *code* the backend runs is still
+      HEAD; a dirty tree is flagged on the source status.)
     - **Git**: ``git show <sha>:scripthut.yaml`` against the server's
       local clone at ``<sources_cache_dir>/<source.name>``. ``commit_hash=None``
       falls back to ``HEAD``, which after a fresh sync points at the
@@ -2459,7 +2677,20 @@ async def load_source_project_config(
     raw_text: str | None = None
     identity = f"source '{source.name}'/scripthut.yaml"
 
-    if isinstance(source, GitSourceConfig):
+    if isinstance(source, GitSourceConfig) and source.local_path is not None:
+        # source.local_path is narrowed to Path by the branch condition.
+        local_yaml = source.local_path.expanduser() / "scripthut.yaml"
+        if not local_yaml.exists():
+            # No per-repo overlay — the legitimate common case.
+            return None
+        try:
+            raw_text = local_yaml.read_text()
+        except OSError as e:
+            # Fail soft, same as the other branches: an unreadable overlay
+            # should not block a submission.
+            logger.warning(f"Could not read {identity}: {e}")
+            return None
+    elif isinstance(source, GitSourceConfig):
         clone_path = (
             config.settings.sources_cache_dir_resolved / source.name
         )

@@ -80,6 +80,8 @@ Sources are git repositories or backend filesystem paths containing workflow def
 
 For **git sources**, the repository is cloned locally for workflow discovery, and also cloned on the backend when a workflow is triggered (tasks run inside the cloned directory, just like git-based workflows).
 
+For **git sources with `local_path`** — a repo already on the machine running ScriptHut — neither clone happens: workflows are read from that working tree, and the commit is pushed to the backend over the SSH connection ScriptHut already holds. No deploy key, no git remote, no network. See [Local git source](#local-git-source).
+
 For **path sources**, workflows are discovered via SSH on the backend, and tasks run with `working_dir` resolved relative to the source path.
 
 ### Git Source
@@ -101,13 +103,54 @@ sources:
 |-------|------|---------|-------------|
 | `name` | string | **required** | Unique identifier for this source. |
 | `type` | string | **required** | Must be `"git"`. |
-| `url` | string | **required** | Git repository URL. SSH format recommended. |
+| `url` | string | **required** unless `local_path` is set | Git repository URL. SSH format recommended. |
 | `branch` | string | `"main"` | Branch to track. |
 | `deploy_key` | path | `null` | Path to deploy key for this repository. |
 | `backend` | string | **required** | Backend to submit discovered workflow tasks to. |
 | `workflows_glob` | string | `".hut/workflows/*.json"` | Glob pattern to find workflow JSON files (supports `**` for recursive matching). |
 | `clone_dir` | string | `"~/scripthut-repos"` | Parent directory on the backend. The repo is cloned into `<clone_dir>/<commit_hash>/`. |
 | `postclone` | string | `null` | Shell command to run in the clone directory after cloning. |
+
+### Local Git Source
+
+When the repo is already on the machine running ScriptHut, set `local_path` instead of (or alongside) `url`. ScriptHut then reads that working tree directly and pushes the commit to the backend itself:
+
+```yaml
+sources:
+  - name: my-project
+    type: git
+    local_path: ~/git/my-project
+    branch: main
+    # url: git@github.com:me/my-project.git  # optional; only coding agents need it
+    # clone_dir: ~/scripthut-repos
+    # postclone: "uv sync"
+```
+
+`local_path` replaces `deploy_key` rather than complementing it — there is no remote to authenticate to. A source must declare `url` or `local_path` (or both); declaring neither is a config error.
+
+**How the code reaches the backend.** On submit, ScriptHut resolves the branch tip locally, ensures a shared bare mirror at `<clone_dir>/.mirror.git` on the backend, pushes that commit to it as `refs/heads/sh-<commit>`, then clones that ref into `<clone_dir>/<commit>/` — the same content-addressed layout a `url` source uses, so re-running a commit reuses the existing directory and skips `postclone`. Only the first push carries history; later ones send just the new objects. The clone out of the mirror is local to the backend, so git hardlinks the objects and it costs almost no time or disk.
+
+**What is read versus what runs.** Workflow JSON and the repo's own `scripthut.yaml` are read from the **working tree**, so edits take effect immediately without a commit. The code the backend runs is the **branch tip**. Those differ whenever the tree is dirty, so `scripthut source view <name>` and the Sources page warn when it is:
+
+```
+$ scripthut source view my-project
+Source 'my-project' (type: git)
+  local_path: /home/me/git/my-project  (pushed to the backend)
+  url:    <none>
+  branch: main
+  warning: working tree has uncommitted changes; the backend runs committed HEAD (a1b2c3d)
+```
+
+Commit before submitting if you meant those changes to run. Files ignored by `.gitignore` never count as dirty.
+
+**Supported backends.** SSH backends (`slurm`, `pbs`) and the `local` backend. AWS Batch and EC2 run containers that clone a URL themselves and have no route back to your machine's disk, so a `local_path`-only source is refused there with an error saying so — give the source a `url` to use those.
+
+**Coding agents** still require a `url`: an agent commits and pushes a branch, and needs a remote to push it to.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `local_path` | path | `null` | Path to a git repo on the ScriptHut host. When set, workflows are read from this working tree and the resolved commit is pushed to the backend instead of cloned from `url`. |
+| `url` | string | `""` | Optional once `local_path` is set. Still used for coding-agent runs and shown as run metadata. |
 
 ### Path Source
 

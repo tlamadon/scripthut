@@ -304,6 +304,8 @@ class LocalClient:
             }
             if isinstance(s, GitSourceConfig):
                 base.update({"url": s.url, "branch": s.branch})
+                if s.local_path is not None:
+                    base["local_path"] = str(s.local_path_resolved)
             elif isinstance(s, PathSourceConfig):
                 base.update({"path": s.path, "backend": s.backend})
             out.append(base)
@@ -329,6 +331,8 @@ class LocalClient:
         }
         if isinstance(source, GitSourceConfig):
             base.update({"url": source.url, "branch": source.branch})
+            if source.local_path is not None:
+                base["local_path"] = str(source.local_path_resolved)
         elif isinstance(source, PathSourceConfig):
             base.update({"path": source.path, "backend": source.backend})
         return {
@@ -1255,7 +1259,13 @@ def _render_agent_prompt(config: ScriptHutConfig | None) -> str:
             for src in config.sources:
                 bits = [f"`{src.name}` ({src.type})"]
                 if isinstance(src, _Git):
-                    bits.append(f"git `{src.url}` branch `{src.branch}`")
+                    if src.local_path is not None:
+                        bits.append(
+                            f"local git repo `{src.local_path_resolved}` "
+                            f"branch `{src.branch}`"
+                        )
+                    else:
+                        bits.append(f"git `{src.url}` branch `{src.branch}`")
                     default_be = getattr(src, "backend", None)
                     if default_be:
                         bits.append(f"default backend `{default_be}`")
@@ -1275,7 +1285,15 @@ def _render_agent_prompt(config: ScriptHutConfig | None) -> str:
                 "branch's tip). "
                 "If the user just pushed a *new* workflow file (not just "
                 "edits to existing ones), run `scripthut source sync "
-                "<name>` first so the workflow list picks it up."
+                "<name>` first so the workflow list picks it up.\n"
+                "\nA source shown above as a **local git repo** works "
+                "differently: its workflow files and `scripthut.yaml` are "
+                "read from that working tree (so edits count immediately, "
+                "no commit or push needed), and the commit the backend runs "
+                "is that repo's branch tip, pushed to the backend over SSH. "
+                "Uncommitted changes therefore do *not* reach the backend — "
+                "`scripthut source view <name>` warns when the tree is "
+                "dirty. Nothing is fetched from a git remote."
             )
             out.append("")
 
@@ -2026,6 +2044,8 @@ def _local_source_summaries(config: ScriptHutConfig) -> list[dict[str, Any]]:
         }
         if isinstance(s, GitSourceConfig):
             base.update({"url": s.url, "branch": s.branch})
+            if s.local_path is not None:
+                base["local_path"] = str(s.local_path_resolved)
         elif isinstance(s, PathSourceConfig):
             base.update({"path": s.path, "backend": s.backend})
         out.append(base)
@@ -2224,13 +2244,24 @@ def _render_status(data: dict[str, Any], probe: dict[str, Any] | None) -> str:
     return "\n".join(lines)
 
 
+def _source_location(s: dict[str, Any]) -> str:
+    """Where a source's code comes from, for one-line listings.
+
+    A git source with ``local_path`` shows the local repo it is read and
+    pushed from — that, not the (optional) remote, is what a run uses.
+    """
+    if s.get("type") != "git":
+        return f"[{s.get('backend', '?')}] {s.get('path', '?')}"
+    branch = s.get("branch", "main")
+    if s.get("local_path"):
+        return f"{s['local_path']}@{branch} (local)"
+    return f"{s.get('url', '?')}@{branch}"
+
+
 def _format_source_line(s: dict[str, Any]) -> str:
     """One-line representation of a source for status output."""
     desc = f"  — {s['description']}" if s.get("description") else ""
-    if s.get("type") == "git":
-        loc = f"{s.get('url', '?')}@{s.get('branch', 'main')}"
-    else:
-        loc = f"[{s.get('backend', '?')}] {s.get('path', '?')}"
+    loc = _source_location(s)
     return f"{s['name']:<20} ({s.get('type', '?')})  {loc}{desc}"
 
 
@@ -3532,11 +3563,7 @@ async def _cmd_source_list(args: argparse.Namespace) -> int:
     print("Sources:")
     for s in sources:
         desc = f" — {s['description']}" if s.get("description") else ""
-        # Git sources show url@branch; path sources show backend:path.
-        if s.get("type") == "git":
-            loc = f"{s.get('url', '?')}@{s.get('branch', 'main')}"
-        else:
-            loc = f"[{s.get('backend', '?')}] {s.get('path', '?')}"
+        loc = _source_location(s)
         print(f"  {s['name']:<20} ({s.get('type', '?')})  {loc}{desc}")
     return 0
 
@@ -3587,7 +3614,9 @@ async def _cmd_source_view(args: argparse.Namespace) -> int:
         return 0
     print(f"Source '{data['name']}' (type: {data.get('type', '?')})")
     if data.get("type") == "git":
-        print(f"  url:    {data.get('url', '?')}")
+        if data.get("local_path"):
+            print(f"  local_path: {data['local_path']}  (pushed to the backend)")
+        print(f"  url:    {data.get('url') or '<none>'}")
         print(f"  branch: {data.get('branch', '?')}")
     else:
         print(f"  backend: {data.get('backend', '?')}")
@@ -3596,6 +3625,8 @@ async def _cmd_source_view(args: argparse.Namespace) -> int:
         print(f"  description: {data['description']}")
     if data.get("max_concurrent") is not None:
         print(f"  max_concurrent: {data['max_concurrent']}")
+    for warn in data.get("warnings") or []:
+        print(f"  warning: {warn}")
     err = data.get("discover_error")
     workflows = data.get("workflows", [])
     if err:

@@ -74,6 +74,20 @@ class SourceStatus:
     error: str | None = None
     workflows: list[SourceWorkflow] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    # local_path source whose working tree has drifted from HEAD. Kept as
+    # a flag rather than only a warning string because `discover_workflows`
+    # rewrites `warnings` on every pass.
+    dirty: bool = False
+
+    @property
+    def dirty_warning(self) -> str | None:
+        """What a dirty local working tree means for the next submission."""
+        if not self.dirty:
+            return None
+        return (
+            "working tree has uncommitted changes; the backend runs committed "
+            f"HEAD ({self.last_commit or 'unknown'})"
+        )
 
 
 class GitSourceManager:
@@ -100,7 +114,18 @@ class GitSourceManager:
         )
 
     def _get_source_path(self, name: str) -> Path:
-        """Get the local path for a source repository."""
+        """Where this source's repo lives on the scripthut host.
+
+        A ``local_path`` source is read in place — the user's own working
+        tree, never a copy under ``cache_dir``. Pointing the status here
+        is what makes workflow discovery, HEAD metadata and tree reads at
+        a ref work against it with no further changes.
+        """
+        source = self._sources.get(name)
+        if source is not None:
+            local = source.local_path_resolved
+            if local is not None:
+                return local
         return self.cache_dir / name
 
     def _build_ssh_command(self, deploy_key: Path | None) -> str:
@@ -157,6 +182,53 @@ class GitSourceManager:
             proc.returncode or 0,
         )
 
+    async def _refresh_local_source(self, name: str) -> SourceStatus:
+        """Refresh metadata for a ``local_path`` source without touching it.
+
+        The repo belongs to the user, so this only ever reads: no clone,
+        no pull, no fetch, no checkout. "Synced" for such a source means
+        no more than "the path is a readable git repo", and the dirty
+        flag records whether its working tree has drifted from the commit
+        a submission would actually send.
+        """
+        status = self._statuses[name]
+        path = status.path
+
+        if not path.exists():
+            status.cloned = False
+            status.dirty = False
+            status.error = f"local_path does not exist: {path}"
+            logger.error(f"Source {name}: {status.error}")
+            return status
+
+        _, stderr, code = await self._run_git(["rev-parse", "--git-dir"], cwd=path)
+        if code != 0:
+            status.cloned = False
+            status.dirty = False
+            status.error = (
+                f"local_path is not a git repository: {path}"
+                f"{f' ({stderr})' if stderr else ''}"
+            )
+            logger.error(f"Source {name}: {status.error}")
+            return status
+
+        status.cloned = True
+        status.error = None
+        status.last_commit = await self._get_head_commit(name)
+        status.last_commit_date = await self._get_head_commit_date(name)
+
+        porcelain, _, code = await self._run_git(
+            ["status", "--porcelain"], cwd=path,
+        )
+        # Non-zero here means we could not tell; don't claim it is clean.
+        status.dirty = bool(porcelain) or code != 0
+
+        logger.info(
+            f"Local source {name} at {path} "
+            f"(commit {status.last_commit}{', dirty' if status.dirty else ''})"
+        )
+        return status
+
     async def clone_source(self, name: str) -> SourceStatus:
         """Clone a source repository.
 
@@ -171,6 +243,12 @@ class GitSourceManager:
 
         source = self._sources[name]
         status = self._statuses[name]
+
+        # A local_path source MUST NOT reach the rmtree below: status.path
+        # is the user's own repository, not a cache copy we own.
+        if source.local_path is not None:
+            return await self._refresh_local_source(name)
+
         dest_path = status.path
 
         # Ensure cache directory exists
@@ -215,6 +293,11 @@ class GitSourceManager:
 
         source = self._sources[name]
         status = self._statuses[name]
+
+        # Nothing to pull for a local source, and pulling would rewrite
+        # the user's working tree. Just re-read it.
+        if source.local_path is not None:
+            return await self._refresh_local_source(name)
 
         if not status.cloned or not status.path.exists():
             return await self.clone_source(name)
@@ -319,6 +402,27 @@ class GitSourceManager:
 
         source = self._sources[name]
         status = self._statuses[name]
+
+        if source.local_path is not None:
+            # Every branch is already here; fetching would only churn the
+            # user's FETCH_HEAD.
+            status = await self._refresh_local_source(name)
+            if not status.cloned:
+                raise ValueError(
+                    f"Source '{name}' is not readable: {status.error}"
+                )
+            stdout, stderr, code = await self._run_git(
+                ["rev-parse", "--verify", f"refs/heads/{branch}"],
+                cwd=status.path,
+            )
+            if code != 0 or not stdout:
+                raise ValueError(
+                    f"Branch '{branch}' not found in local repo "
+                    f"{status.path} for source '{name}': "
+                    f"{stderr or 'rev-parse failed'}"
+                )
+            return stdout
+
         if not status.cloned or not status.path.exists():
             status = await self.clone_source(name)
             if not status.cloned:
@@ -386,11 +490,14 @@ class GitSourceManager:
 
         workflows: list[SourceWorkflow] = []
         parse_warnings: list[str] = []
+        # Discovery owns `warnings`, so anything the sync pass found has to
+        # be re-seeded here or it disappears on the next refresh.
+        standing = [w for w in (status.dirty_warning,) if w]
         matched_files = sorted(status.path.glob(source.workflows_glob))
         if not matched_files:
             logger.debug(f"No workflow files matching '{source.workflows_glob}' in {status.path}")
             status.workflows = []
-            status.warnings = []
+            status.warnings = standing
             return []
 
         for json_file in matched_files:
@@ -415,7 +522,7 @@ class GitSourceManager:
                 parse_warnings.append(msg)
                 logger.warning(f"Skipping invalid workflow file {json_file}: {e}")
 
-        status.warnings = parse_warnings
+        status.warnings = standing + parse_warnings
 
         status.workflows = workflows
         logger.info(f"Discovered {len(workflows)} workflows in source {name}")

@@ -94,6 +94,7 @@ def build_git_ssh_command(
     known_hosts: str | None = None,
     openssh_version: tuple[int, int] | None = None,
     quote_paths: bool = True,
+    port: int | None = None,
 ) -> str:
     """Build the ``ssh`` invocation for ``GIT_SSH_COMMAND``.
 
@@ -108,10 +109,16 @@ def build_git_ssh_command(
         quote_paths: Shell-quote the paths. Callers that need a literal
             ``~`` to survive into the remote shell pass False — quoting
             it would create a directory named ``~``.
+        port: Port to connect on, for callers pushing to a backend that
+            does not listen on 22. None leaves ssh's default; the scp-style
+            URLs git takes have nowhere to put a port, so it has to ride
+            in the command.
     """
     quote = shlex.quote if quote_paths else (lambda value: value)
 
     parts = ["ssh"]
+    if port is not None:
+        parts += ["-p", str(port)]
     if key_path is not None:
         # IdentitiesOnly stops ssh from offering every agent key first and
         # tripping the server's MaxAuthTries before it reaches this one.
