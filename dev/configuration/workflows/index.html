@@ -728,6 +728,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#local-git-source" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Local Git Source
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#path-source" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1157,6 +1168,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#local-git-source" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Local Git Source
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#path-source" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1341,6 +1363,7 @@
 <h2 id="sources">Sources<a class="headerlink" href="#sources" title="Permanent link">&para;</a></h2>
 <p>Sources are git repositories or backend filesystem paths containing workflow definitions. ScriptHut discovers workflow JSON files using the <code>workflows_glob</code> pattern (default: <code>.hut/workflows/*.json</code>). You can use glob wildcards like <code>**/*.hut.json</code> to match files recursively across any subdirectory. Each matched JSON file appears as a triggerable workflow on the Sources page.</p>
 <p>For <strong>git sources</strong>, the repository is cloned locally for workflow discovery, and also cloned on the backend when a workflow is triggered (tasks run inside the cloned directory, just like git-based workflows).</p>
+<p>For <strong>git sources with <code>local_path</code></strong> — a repo already on the machine running ScriptHut — neither clone happens: workflows are read from that working tree, and the commit is pushed to the backend over the SSH connection ScriptHut already holds. No deploy key, no git remote, no network. See <a href="#local-git-source">Local git source</a>.</p>
 <p>For <strong>path sources</strong>, workflows are discovered via SSH on the backend, and tasks run with <code>working_dir</code> resolved relative to the source path.</p>
 <h3 id="git-source">Git Source<a class="headerlink" href="#git-source" title="Permanent link">&para;</a></h3>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="nt">sources</span><span class="p">:</span>
@@ -1379,7 +1402,7 @@
 <tr>
 <td><code>url</code></td>
 <td>string</td>
-<td><strong>required</strong></td>
+<td><strong>required</strong> unless <code>local_path</code> is set</td>
 <td>Git repository URL. SSH format recommended.</td>
 </tr>
 <tr>
@@ -1420,13 +1443,61 @@
 </tr>
 </tbody>
 </table>
-<h3 id="path-source">Path Source<a class="headerlink" href="#path-source" title="Permanent link">&para;</a></h3>
+<h3 id="local-git-source">Local Git Source<a class="headerlink" href="#local-git-source" title="Permanent link">&para;</a></h3>
+<p>When the repo is already on the machine running ScriptHut, set <code>local_path</code> instead of (or alongside) <code>url</code>. ScriptHut then reads that working tree directly and pushes the commit to the backend itself:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="nt">sources</span><span class="p">:</span>
-<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">shared-workflows</span>
-<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">path</span>
-<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="w">    </span><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">/shared/project-workflows</span>
-<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="w">    </span><span class="nt">backend</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">hpc-cluster</span>
-<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="w">    </span><span class="c1"># workflows_glob: "**/*.hut.json"  # default: .hut/workflows/*.json</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">my-project</span>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">git</span>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="w">    </span><span class="nt">local_path</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">~/git/my-project</span>
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="w">    </span><span class="nt">branch</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">main</span>
+<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="w">    </span><span class="c1"># url: git@github.com:me/my-project.git  # optional; only coding agents need it</span>
+<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="w">    </span><span class="c1"># clone_dir: ~/scripthut-repos</span>
+<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="w">    </span><span class="c1"># postclone: "uv sync"</span>
+</code></pre></div>
+<p><code>local_path</code> replaces <code>deploy_key</code> rather than complementing it — there is no remote to authenticate to. A source must declare <code>url</code> or <code>local_path</code> (or both); declaring neither is a config error.</p>
+<p><strong>How the code reaches the backend.</strong> On submit, ScriptHut resolves the branch tip locally, ensures a shared bare mirror at <code>&lt;clone_dir&gt;/.mirror.git</code> on the backend, pushes that commit to it as <code>refs/heads/sh-&lt;commit&gt;</code>, then clones that ref into <code>&lt;clone_dir&gt;/&lt;commit&gt;/</code> — the same content-addressed layout a <code>url</code> source uses, so re-running a commit reuses the existing directory and skips <code>postclone</code>. Only the first push carries history; later ones send just the new objects. The clone out of the mirror is local to the backend, so git hardlinks the objects and it costs almost no time or disk.</p>
+<p><strong>What is read versus what runs.</strong> Workflow JSON and the repo's own <code>scripthut.yaml</code> are read from the <strong>working tree</strong>, so edits take effect immediately without a commit. The code the backend runs is the <strong>branch tip</strong>. Those differ whenever the tree is dirty, so <code>scripthut source view &lt;name&gt;</code> and the Sources page warn when it is:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>$ scripthut source view my-project
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>Source 'my-project' (type: git)
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>  local_path: /home/me/git/my-project  (pushed to the backend)
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>  url:    &lt;none&gt;
+<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>  branch: main
+<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>  warning: working tree has uncommitted changes; the backend runs committed HEAD (a1b2c3d)
+</code></pre></div>
+<p>Commit before submitting if you meant those changes to run. Files ignored by <code>.gitignore</code> never count as dirty.</p>
+<p><strong>Supported backends.</strong> SSH backends (<code>slurm</code>, <code>pbs</code>) and the <code>local</code> backend. AWS Batch and EC2 run containers that clone a URL themselves and have no route back to your machine's disk, so a <code>local_path</code>-only source is refused there with an error saying so — give the source a <code>url</code> to use those.</p>
+<p><strong>Coding agents</strong> still require a <code>url</code>: an agent commits and pushes a branch, and needs a remote to push it to.</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>local_path</code></td>
+<td>path</td>
+<td><code>null</code></td>
+<td>Path to a git repo on the ScriptHut host. When set, workflows are read from this working tree and the resolved commit is pushed to the backend instead of cloned from <code>url</code>.</td>
+</tr>
+<tr>
+<td><code>url</code></td>
+<td>string</td>
+<td><code>""</code></td>
+<td>Optional once <code>local_path</code> is set. Still used for coding-agent runs and shown as run metadata.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="path-source">Path Source<a class="headerlink" href="#path-source" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="nt">sources</span><span class="p">:</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">shared-workflows</span>
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">path</span>
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="w">    </span><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">/shared/project-workflows</span>
+<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="w">    </span><span class="nt">backend</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">hpc-cluster</span>
+<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="w">    </span><span class="c1"># workflows_glob: "**/*.hut.json"  # default: .hut/workflows/*.json</span>
 </code></pre></div>
 <table>
 <thead>
