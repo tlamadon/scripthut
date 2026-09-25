@@ -35,6 +35,7 @@ from scripthut.runs.models import (
 )
 from scripthut.sources.git import is_safe_branch_name
 from scripthut.ssh.client import SSHClient
+from scripthut.ssh.git_ssh import build_git_ssh_command
 
 if TYPE_CHECKING:
     from scripthut.runs.storage import RunStorageManager
@@ -525,21 +526,46 @@ class RunManager:
                 return f"https://{host}/{path}"
         return repo
 
-    @staticmethod
-    def _build_remote_git_ssh_command(remote_key_path: str | None) -> str:
-        """Build GIT_SSH_COMMAND prefix for remote execution.
+    async def _build_remote_git_ssh_command(
+        self,
+        ssh_client: SSHClient,
+        remote_key_path: str | None,
+        clone_dir: str,
+    ) -> str:
+        """Build the GIT_SSH_COMMAND prefix for git commands run on a backend.
+
+        The host-key policy is chosen from the *backend's* ssh version
+        rather than hardcoded: ``accept-new`` aborts outright on the
+        OpenSSH 7.4 that older cluster login nodes still ship. See
+        :mod:`scripthut.ssh.git_ssh`.
+
+        Learned host keys go next to the clones instead of into
+        ``~/.ssh/known_hosts``, because a cluster home is often
+        read-only, over quota, or shared across nodes in ways that make
+        writing there fail or race.
 
         Args:
-            remote_key_path: Path to deploy key on the backend (or None).
+            ssh_client: Connected client for the backend that will run git.
+            remote_key_path: Path to the deploy key on the backend, or None.
+            clone_dir: Where clones live; the known_hosts file sits beside them.
 
         Returns:
-            Shell prefix string to prepend to git commands, e.g.
-            ``GIT_SSH_COMMAND="ssh -i /tmp/key ..." `` or empty string.
+            Shell prefix to prepend to a git command, or an empty string
+            when no deploy key is in play (those clones use HTTPS and
+            never touch ssh).
         """
         if not remote_key_path:
             return ""
-        opts = "-o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=accept-new"
-        return f'export GIT_SSH_COMMAND="ssh -i {remote_key_path} {opts}"; '
+        command = build_git_ssh_command(
+            key_path=remote_key_path,
+            known_hosts=f"{clone_dir}/.known_hosts",
+            openssh_version=await ssh_client.openssh_version(),
+            # clone_dir may still be `~/...`; quoting would stop the remote
+            # shell expanding it and create a directory literally named `~`.
+            quote_paths=False,
+        )
+        # ssh writes the known_hosts file but will not create its directory.
+        return f'mkdir -p {clone_dir}; export GIT_SSH_COMMAND="{command}"; '
 
     async def _upload_deploy_key(
         self, ssh_client: SSHClient, local_key_path: Path
@@ -605,7 +631,9 @@ class RunManager:
                     ssh_client, key_path
                 )
 
-            git_ssh = self._build_remote_git_ssh_command(remote_key)
+            git_ssh = await self._build_remote_git_ssh_command(
+                ssh_client, remote_key, clone_dir
+            )
             # Use HTTPS for public repos (no deploy key) to avoid SSH key issues
             effective_repo = repo if remote_key else self._to_https_url(repo)
 
@@ -993,7 +1021,9 @@ class RunManager:
                     ssh_client, source.deploy_key.expanduser()
                 )
 
-            git_ssh = self._build_remote_git_ssh_command(remote_key)
+            git_ssh = await self._build_remote_git_ssh_command(
+                ssh_client, remote_key, source.clone_dir
+            )
             effective_repo = source.url if remote_key else self._to_https_url(source.url)
 
             # Resolve HEAD commit for run metadata.

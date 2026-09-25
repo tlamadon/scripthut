@@ -10,12 +10,16 @@ from typing import TYPE_CHECKING
 
 import asyncssh
 
+from scripthut.ssh.git_ssh import parse_openssh_version
+
 if TYPE_CHECKING:
     from collections.abc import Callable
 
     from scripthut.ssh.command_log import CommandLogEntry
 
 logger = logging.getLogger(__name__)
+
+_UNPROBED = object()
 
 
 class SSHClient:
@@ -39,6 +43,9 @@ class SSHClient:
         self._connection: asyncssh.SSHClientConnection | None = None
         self._lock = asyncio.Lock()
         self.on_command: Callable[[CommandLogEntry], None] | None = None
+        # Probed lazily by openssh_version(); _UNPROBED distinguishes "not
+        # asked yet" from "asked, and the banner was unreadable".
+        self._openssh_version: tuple[int, int] | None | object = _UNPROBED
 
     @property
     def is_connected(self) -> bool:
@@ -194,6 +201,38 @@ class SSHClient:
             # Try to reconnect on next attempt
             self._connection = None
             raise
+
+    async def openssh_version(self) -> tuple[int, int] | None:
+        """The remote ``ssh`` client's ``(major, minor)`` version, cached.
+
+        Used to pick a ``StrictHostKeyChecking`` value the remote ssh
+        actually understands — see :mod:`scripthut.ssh.git_ssh`. Cached
+        for the lifetime of the client because it cannot change under
+        us, and a clone should not pay for a round trip per call.
+
+        Returns None if the banner is unreadable or the probe fails; the
+        caller treats that as "assume old".
+        """
+        if self._openssh_version is not _UNPROBED:
+            return self._openssh_version  # type: ignore[return-value]
+
+        try:
+            # `ssh -V` writes the banner to stderr, not stdout.
+            stdout, stderr, _ = await self.run_command("ssh -V", timeout=15)
+        except Exception as e:
+            # A dropped connection says nothing about the remote ssh, so
+            # don't cache it — answer "unknown" now and probe again later.
+            logger.warning(f"Could not probe ssh version on {self.host}: {e}")
+            return None
+
+        version = parse_openssh_version(f"{stderr}\n{stdout}")
+        if version is None:
+            logger.warning(
+                f"Unrecognised ssh version on {self.host}; "
+                "assuming it predates StrictHostKeyChecking=accept-new"
+            )
+        self._openssh_version = version
+        return version
 
     async def __aenter__(self) -> "SSHClient":
         """Async context manager entry."""

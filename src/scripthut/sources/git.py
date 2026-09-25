@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from scripthut.config_schema import GitSourceConfig
+from scripthut.ssh.git_ssh import build_git_ssh_command, local_openssh_version
 
 logger = logging.getLogger(__name__)
 
@@ -103,13 +104,19 @@ class GitSourceManager:
         return self.cache_dir / name
 
     def _build_ssh_command(self, deploy_key: Path | None) -> str:
-        """Build the GIT_SSH_COMMAND for a deploy key."""
-        # Common options to disable interactive prompts
-        common_opts = "-o BatchMode=yes -o PasswordAuthentication=no -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null"
-        if deploy_key is None:
-            return f"ssh {common_opts}"
-        key_path = deploy_key.expanduser()
-        return f"ssh -i {key_path} -o IdentitiesOnly=yes {common_opts}"
+        """Build the GIT_SSH_COMMAND for a deploy key.
+
+        Host keys are kept in the cache dir rather than pointed at
+        ``/dev/null``: forgetting every key on every run makes
+        ``accept-new`` meaningless, since a host whose key silently
+        changed always looks brand new.
+        """
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        return build_git_ssh_command(
+            key_path=str(deploy_key.expanduser()) if deploy_key else None,
+            known_hosts=str(self.cache_dir / "known_hosts"),
+            openssh_version=local_openssh_version(),
+        )
 
     async def _run_git(
         self,
