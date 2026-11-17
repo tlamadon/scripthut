@@ -1,5 +1,6 @@
 """Pydantic models for YAML configuration schema."""
 
+import re
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Any, Literal
 from urllib.parse import quote
@@ -88,7 +89,64 @@ class SSHConfig(BaseModel):
 
 
 
-class SlurmBackendConfig(BaseModel):
+def image_reference(value: str, allow_tag: bool = False) -> str:
+    value = value.strip()
+    if "://" in value.removeprefix("docker://"):
+        raise ValueError("Image reference must use a registry reference or docker:// URI")
+    if not re.fullmatch(r"(?:docker://)?[A-Za-z0-9][A-Za-z0-9._:/@+-]*", value):
+        raise ValueError("Image reference must be a registry reference without credentials or whitespace")
+    if value.count("@") > 1:
+        raise ValueError("Image reference must not contain registry credentials")
+    if "@" in value and not re.search(r"@sha256:[a-fA-F0-9]{64}$", value):
+        raise ValueError("Image reference requires a valid sha256 digest")
+    if not allow_tag and not re.search(r"@sha256:[a-fA-F0-9]{64}$", value):
+        raise ValueError("Image reference must be pinned by digest; set allow_tag: true to opt out")
+    return value
+
+
+class SourceImage(BaseModel):
+    name: str = Field(pattern=r"^[A-Za-z0-9_]+$")
+    ref: str | None = None
+    ref_file: str | None = None
+    allow_tag: bool = False
+
+    @model_validator(mode="after")
+    def _validate_image(self) -> "SourceImage":
+        if (self.ref is None) == (self.ref_file is None):
+            raise ValueError("Image requires exactly one of ref and ref_file")
+        if self.ref is not None:
+            self.ref = image_reference(self.ref, self.allow_tag)
+        if self.ref_file is not None and (
+            not self.ref_file or PurePosixPath(self.ref_file).is_absolute()
+            or ".." in PurePosixPath(self.ref_file).parts
+            or any(c in self.ref_file for c in "\0\r\n")
+        ):
+            raise ValueError("Image ref_file must be a relative repository path without '..'")
+        if self.ref_file is not None:
+            self.ref_file = str(PurePosixPath(self.ref_file))
+        return self
+
+
+class ImageBackendConfig(BaseModel):
+    image_dir: str | None = None
+    registry_user: str | None = None
+    registry_token_file: Path | None = None
+
+    @model_validator(mode="after")
+    def _validate_images(self) -> "ImageBackendConfig":
+        if self.image_dir is not None and (
+            not self.image_dir.startswith("/") or ".." in PurePosixPath(self.image_dir).parts
+            or any(c in self.image_dir for c in "\0\r\n")
+        ):
+            raise ValueError("image_dir must be an absolute backend path")
+        if bool(self.registry_user) != (self.registry_token_file is not None):
+            raise ValueError("registry_user and registry_token_file must be configured together")
+        if self.registry_user and any(c in self.registry_user for c in "\0\r\n"):
+            raise ValueError("registry_user must be a single line")
+        return self
+
+
+class SlurmBackendConfig(ImageBackendConfig):
     """Slurm backend configuration."""
 
     name: str = Field(description="Unique identifier for this backend")
@@ -131,7 +189,7 @@ class SlurmBackendConfig(BaseModel):
     )
 
 
-class PBSBackendConfig(BaseModel):
+class PBSBackendConfig(ImageBackendConfig):
     """PBS/Torque backend configuration."""
 
     name: str = Field(description="Unique identifier for this backend")
@@ -221,6 +279,7 @@ class GitSourceConfig(BaseModel):
         default="~/scripthut-repos",
         description="Parent directory on the backend where repos are cloned into (clone goes into <clone_dir>/<commit_hash>/)",
     )
+    images: list[SourceImage] = Field(default_factory=list)
     workdir: str | None = None
     flow_dir: str = "."
 
@@ -230,6 +289,9 @@ class GitSourceConfig(BaseModel):
 
     @model_validator(mode="after")
     def _check_directories(self) -> "GitSourceConfig":
+        names = [image.name.upper() for image in self.images]
+        if len(names) != len(set(names)):
+            raise ValueError("Image names must be unique after upper-casing")
         if self.workdir is not None and (
             not self.workdir.startswith("/")
             or ".." in PurePosixPath(self.workdir).parts

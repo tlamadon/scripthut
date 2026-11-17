@@ -214,6 +214,21 @@ class SSHClient:
             self._connection = None
             raise
 
+    async def write_private_file(self, command: str, content: str) -> None:
+        """Send a secret through stdin without logging payloads or remote diagnostics."""
+        if not self.is_connected:
+            await self.connect()
+        if self._connection is None:
+            raise RuntimeError("Failed to establish credential upload channel")
+        try:
+            result = await asyncio.wait_for(
+                self._connection.run(command, input=content, check=False), timeout=30
+            )
+            if result.exit_status != 0:
+                raise RuntimeError("Private credential upload failed")
+        except Exception:
+            raise RuntimeError("Private credential upload failed; no submission attempted") from None
+
     async def openssh_version(self) -> tuple[int, int] | None:
         """The remote ``ssh`` client's ``(major, minor)`` version, cached.
 

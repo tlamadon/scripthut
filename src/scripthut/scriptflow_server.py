@@ -28,7 +28,10 @@ class CombinedRead:
     """Fetch record and controller evidence in one SSH command."""
 
     def __init__(self, transport: CommandTransport, job_id: str | None, *,
-                 job_name: str | None = None, since: str | None = None):
+                 job_name: str | None = None, since: str | None = None,
+                 image_command: str | None = None):
+        self.image_command = image_command
+        self.image_preparation: dict[str, str] | None = None
         self.transport = transport
         self.job_id = job_id
         self.job_name = job_name
@@ -51,7 +54,17 @@ class CombinedRead:
         script = command + "\nrc=$?\nprintf %s " + shlex.quote(marker) + '\nprintf "%s\\n" "$rc"\n'
         script += query + "\nqr=$?\nprintf %s " + shlex.quote(marker) + '\nprintf "%s\\n" "$qr"\n'
         script += queue + "\nqr=$?\nprintf %s " + shlex.quote(marker) + '\nprintf "%s\\n" "$qr"'
+        image_marker = "\nSF_IMAGES_" + uuid.uuid4().hex + "\n"
+        if self.image_command:
+            script += "\nprintf %s " + shlex.quote(image_marker) + "\n" + self.image_command
         stdout, stderr, code = await self.transport.run_command(script, timeout=timeout)
+        if self.image_command and not code:
+            from scripthut.scriptflow_images import parse_status
+
+            stdout, separator, content = stdout.partition(image_marker)
+            if not separator:
+                raise ObservationError("malformed", "Missing image observation frame")
+            self.image_preparation = parse_status(content)
         if code:
             raise ObservationError("unreachable", "Combined record read failed")
         parts = stdout.split(marker)
@@ -119,12 +132,19 @@ class ScriptFlowService:
             if cached.launch_key:
                 launch = await LaunchStore(self.store.directory).get(cached.launch_key)
                 job_id = launch.job_id if launch else None
+            from scripthut.scriptflow_images import observation_command
+
             combined = CombinedRead(
                 self.transport(cached), job_id,
                 job_name=launch.job_name if launch else None,
                 since=launch.created_at if launch else None,
+                image_command=observation_command(launch) if launch else None,
             )
             await RecordReader(combined).fetch(cached)
+            if combined.image_command and cached.problem in (None, "missing"):
+                cached.image_preparation = combined.image_preparation
+                if combined.controller is not None:
+                    cached.controller = combined.controller
             if not cached.last_fetch_failed and combined.controller is not None:
                 cached.controller = combined.controller
         except Exception as exc:

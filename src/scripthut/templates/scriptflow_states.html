@@ -4,3 +4,5 @@
 {% if run.observation.error %}<p class="text-amber-800">{{ run.observation.error }}</p>{% endif %}
 <p>Controller: <strong>{{ run.controller.state if run.controller else 'unknown / not managed' }}</strong>{% if run.controller %} (observed {{ run.controller.observed_at }}){% endif %}</p>
 {% if run.source %}<p>Source: {{ run.source.name }} · Branch: {{ run.source.branch }} · Commit: {{ run.source.short_commit }} · Detached: {{ run.source.detached }}</p>{% endif %}
+{% for image in run.images %}<p>Image {{ image.name }}: {{ image.ref }} · {{ image.path }}</p>{% endfor %}
+{% if run.image_preparation %}<p>Image preparation: {{ run.image_preparation.status }}</p>{% if run.image_preparation.status == 'failed' %}<p class="text-amber-800">Launch problem: image preparation failed before ScriptFlow started.</p><pre class="whitespace-pre-wrap">{{ run.image_preparation.error }}</pre>{% endif %}{% endif %}

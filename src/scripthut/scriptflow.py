@@ -125,6 +125,8 @@ class CachedRun(BaseModel):
     problem: str | None = None
     fetch_error: str | None = None
     launch_key: str | None = None
+    images: list[dict[str, str]] = Field(default_factory=list)
+    image_preparation: dict[str, str] | None = None
     source: dict[str, Any] | None = None
     controller: dict[str, Any] | None = None
     cancel_present: bool | None = None
@@ -151,6 +153,8 @@ class CachedRun(BaseModel):
             else (
                 "not started" if self.launch_key and self.problem == "missing" else "unavailable"
             ),
+            "images": self.images,
+            "image_preparation": self.image_preparation,
             "source": self.source,
             "controller": self.controller,
             "controller_notice": (

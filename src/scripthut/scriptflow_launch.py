@@ -56,6 +56,7 @@ class Launch(BaseModel):
     created_at: str = Field(default_factory=now)
     updated_at: str = Field(default_factory=now)
     force_pattern: str | None = None
+    images: list[dict[str, str]] = Field(default_factory=list)
     source: str | None = None
     branch: str | None = None
     commit: str | None = None
@@ -290,6 +291,10 @@ def job_script(config: ScriptHutConfig, launch: Launch, cleanup: bool = False) -
         "set -eu",
         "cd -- " + q(launch.workdir),
     ]
+    if launch.images and not cleanup:
+        from scripthut.scriptflow_images import token_cleanup
+
+        lines.insert(lines.index("set -e"), "trap " + q(token_cleanup(launch)) + " EXIT")
     command = (
         shlex.join(["scriptflow", "cleanup", launch.run_id, "--runs-dir", launch.runs_dir])
         if cleanup
@@ -318,6 +323,10 @@ def job_script(config: ScriptHutConfig, launch: Launch, cleanup: bool = False) -
             f"test ! -L {q(launch.run_directory)} || exit 73",
             "mkdir -- " + q(claim) + " || exit 73",
         ]
+    if launch.images and not cleanup:
+        from scripthut.scriptflow_images import preparation_script
+
+        lines.append(preparation_script(config, launch))
     # Fixed-position receipt fields are parsed locally; no remote interpreter.
     writer = (
         f"receipt={q(receipt)}\n"
@@ -368,6 +377,7 @@ async def register_launch(store: ReferenceStore, launch: Launch) -> CachedRun:
     cached = await store.register(launch.reference)
     cached.launch_key = launch.key
     cached.source = launch.source_metadata()
+    cached.images = launch.images
     await store.save(cached)
     return cached
 
@@ -397,6 +407,7 @@ async def launch_run(
             launch.flow != proposed.flow
             or launch.workdir != proposed.workdir
             or launch.resources != proposed.resources
+            or launch.images != proposed.images
             or launch.force_pattern != proposed.force_pattern
             or (launch.source, launch.branch, launch.commit, launch.flow_dir, launch.snapshot)
             != (
@@ -489,6 +500,10 @@ async def launch_run(
             shlex.join(["sh", "-c", guard, "scripthut-guard", launch.run_directory, launch.workdir])
         )
         await reader.execute(shlex.join(["mkdir", "-p", "--", launch.runs_dir]))
+        if launch.images:
+            from scripthut.scriptflow_images import upload_token
+
+            await upload_token(config, reader, launch)
         launch.stage = "submitting"
         await launches.save(launch)
         try:
@@ -505,6 +520,7 @@ async def launch_run(
 
 def launch_output(launch: Launch) -> dict[str, Any]:
     return {
+        "images": launch.images,
         "source": launch.source_metadata(),
         "status": launch.stage,
         "request_id": launch.request_id,

@@ -47,6 +47,7 @@ def add_parser(
         "release",
         "discover",
         "flows",
+        "images",
     ):
         parser = verbs.add_parser(verb)
         add_common(parser)
@@ -57,7 +58,7 @@ def add_parser(
             location.add_argument("--workdir")
             location.add_argument("--source")
             parser.add_argument("--runs-dir")
-        if verb == "flows":
+        if verb in ("flows", "images"):
             parser.add_argument("--backend")
             parser.add_argument("--source", required=True)
             revision = parser.add_mutually_exclusive_group()
@@ -113,6 +114,11 @@ def format_view(data: dict[str, Any]) -> str:
         f"  last successful fetch: {observation['last_successful_fetch'] or 'never'}",
         f"  heartbeat age: {observation['heartbeat_age_seconds']} seconds",
     ]
+    for image in data.get("images", []):
+        lines.append(f"  image {image['name']}: {image['ref']} -> {image['path']}")
+    if data.get("image_preparation"):
+        preparation = data["image_preparation"]
+        lines.append(f"  image preparation: {preparation['status']} {preparation['error']}")
     if data.get("source"):
         source = data["source"]
         lines.append(
@@ -178,6 +184,9 @@ async def observe(
 
             launch = await LaunchStore(store.directory).get(cached.launch_key)
             if launch:
+                from scripthut.scriptflow_images import observe_images
+
+                cached.image_preparation = await observe_images(reader, launch)
                 cached.controller = await controller_observation(
                     ControllerBackend(client), reader, launch
                 )
@@ -296,7 +305,7 @@ async def handle(args: argparse.Namespace) -> int:
                 raise ObservationError("invalid_tail", "Tail must be nonnegative")
         config = load_config(args.config)
         store = ReferenceStore(config.settings.data_dir_resolved / "scriptflow")
-        if args.scriptflow_cmd in ("launch", "cleanup", "release", "discover", "flows"):
+        if args.scriptflow_cmd in ("launch", "cleanup", "release", "discover", "flows", "images"):
             data = await handle_controller(config, store, args)
             if args.json:
                 print(json.dumps(data, indent=2))
@@ -358,6 +367,11 @@ async def handle(args: argparse.Namespace) -> int:
                     f"{data['cancellation']['requested']}  "
                     f"{(data.get('controller') or {}).get('state', '-')}"
                 )
+                for image in data.get("images", []):
+                    print(f"  image {image['name']}: {image['ref']} -> {image['path']}")
+                if data.get("image_preparation"):
+                    preparation = data["image_preparation"]
+                    print(f"  image preparation: {preparation['status']} {preparation['error']}")
                 if data.get("source"):
                     source = data["source"]
                     print(
@@ -398,6 +412,7 @@ async def handle_controller(
         launch_run,
         make_launch,
     )
+    from scripthut.scriptflow_images import image_paths, presence, resolve_images
     from scripthut.scriptflow_sources import (
         SourceCheckout,
         flow_workdir,
@@ -411,8 +426,11 @@ async def handle_controller(
 
     source = source_config(config, args.source) if getattr(args, "source", None) else None
     revision = None
-    if source and args.scriptflow_cmd in ("launch", "flows"):
+    if source and args.scriptflow_cmd in ("launch", "flows", "images"):
         revision = await resolve_revision(config, source, args.branch, args.commit)
+    declared_images = []
+    if revision is not None and args.scriptflow_cmd in ("launch", "images"):
+        declared_images = await resolve_images(config, revision)
     if args.scriptflow_cmd == "flows" and source and source.local_path is not None:
         assert revision is not None
         return {
@@ -430,17 +448,23 @@ async def handle_controller(
         if not source:
             proposed = make_launch(config, args)
         name = args.backend
-    elif args.scriptflow_cmd in ("discover", "flows"):
+    elif args.scriptflow_cmd in ("discover", "flows", "images"):
         name = args.backend
     else:
         cached = await store.get(args.reference)
         name = cached.reference.backend
-    settings = backend_config(config, name)
+    settings = config.get_backend(name) if args.scriptflow_cmd == "images" else backend_config(config, name)
+    if settings is None:
+        raise ValueError("Unknown image backend")
     client = _ssh_client_for(settings)
     backend = ControllerBackend(client)
     reader = RecordReader(client)
     try:
         prepare = None
+        images = await image_paths(config, reader, name, declared_images)
+        if args.scriptflow_cmd == "images":
+            assert source is not None
+            return {"source": source.name, "images": await presence(reader, images)}
         if source:
             directory = await workdir_for(
                 reader,
@@ -459,6 +483,7 @@ async def handle_controller(
                 assert revision is not None
                 pinned_revision = revision
                 proposed = make_launch(config, args)
+                proposed.images = images
                 proposed.source = source.name
                 proposed.branch = revision.branch
                 proposed.commit = revision.commit
