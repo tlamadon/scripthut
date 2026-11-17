@@ -86,6 +86,7 @@ settings:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
+| `legacy_runs_enabled` | boolean | `true` | Enable legacy run storage, execution and routes. Restart required when changing. |
 | `poll_interval` | integer | `60` | Interval in seconds between job status polls. Minimum: 5. |
 | `server_host` | string | `"127.0.0.1"` | Host to bind the web server to. Use `0.0.0.0` to listen on all interfaces. |
 | `server_port` | integer | `8000` | Port to bind the web server to. |
@@ -178,3 +179,23 @@ settings:
   data_dir: ~/.cache/scripthut
   filter_user: researcher
 ```
+
+
+### ScriptFlow-only server mode
+
+```yaml
+settings:
+  legacy_runs_enabled: false
+```
+
+Start with `scripthut --config scripthut.yaml`, retaining the configured bind address
+and port, then open `/scriptflow`. This mode does not construct or restore legacy run
+storage/management and skips legacy reconciliation/admission/completion. Existing legacy
+run files are left untouched. Legacy run/task/workflow execution routes and the Runs
+navigation link are absent. Legacy disk tools and task-install routes are also unavailable.
+Only SSH backend connections are initialized; generic scheduler/job polling is skipped,
+while ScriptFlow's own observation cycle remains active. Legacy local CLI execution and
+disk operations refuse this setting; ScriptFlow commands remain available.
+
+The default is `true`, preserving all existing behavior. Switching modes requires a server
+restart, not hot reload. This setting does not cancel existing work on any backend.

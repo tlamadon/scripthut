@@ -263,6 +263,8 @@ class LocalClient:
         config = load_config(self._config_path)
         # Don't restore by default — the CLI is short-lived and restoring
         # would re-trigger process_run on every active run.
+        if not config.settings.legacy_runs_enabled:
+            raise RuntimeError("Legacy runs are disabled by settings.legacy_runs_enabled")
         self._runtime = await init_runtime(config, restore_runs=self._restore_runs)
         return self
 
@@ -3082,6 +3084,8 @@ async def _disk_scan_local(args: argparse.Namespace) -> int:
         print("No SSH backends configured.")
         return 0
 
+    if not config.settings.legacy_runs_enabled:
+        raise RuntimeError("Legacy disk tools are disabled by settings.legacy_runs_enabled")
     storage = RunStorageManager(config.settings.data_dir_resolved / "workflows")
     runs = list(storage.load_all_runs().values())
     svc = DiskScanService()
@@ -3295,6 +3299,8 @@ async def _disk_clean_local(args: argparse.Namespace) -> int:
         file=sys.stderr,
     )
 
+    if not config.settings.legacy_runs_enabled:
+        raise RuntimeError("Legacy disk tools are disabled by settings.legacy_runs_enabled")
     storage = RunStorageManager(config.settings.data_dir_resolved / "workflows")
     runs = list(storage.load_all_runs().values())
     svc = DiskScanService()

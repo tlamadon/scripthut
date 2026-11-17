@@ -735,6 +735,11 @@ class CliAuthConfig(BaseModel):
 class GlobalSettings(BaseModel):
     """Global application settings."""
 
+    legacy_runs_enabled: bool = Field(
+        default=True,
+        description="Enable legacy workflow execution and storage (restart required)",
+    )
+
     poll_interval: int = Field(
         default=60,
         ge=5,

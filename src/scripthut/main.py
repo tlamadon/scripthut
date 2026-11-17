@@ -198,6 +198,12 @@ async def poll_backend(backend_state: BackendState, filter_user: str | None = No
             )
             return
 
+    if state.config and not state.config.settings.legacy_runs_enabled:
+        backend_state.status.connected = bool(
+            backend_state.ssh_client and backend_state.ssh_client.is_connected
+        )
+        return
+
     start_time = time.perf_counter()
     try:
         jobs = await backend_state.backend.get_jobs(user=filter_user)
@@ -599,26 +605,27 @@ async def poll_jobs() -> None:
             total_jobs = sum(len(c.jobs) for c in state.backends.values())
             logger.info(f"Polled {total_jobs} jobs from {len(tasks)} backends (filter_user={filter_user})")
 
-        # Update run statuses based on polled jobs
-        if state.run_manager and state.run_manager.get_active_runs():
-            backend_jobs: dict[str, list[tuple]] = {}
-            for name, bs in state.backends.items():
-                backend_jobs[name] = [
-                    (job.job_id, job.state, getattr(job, "reason", None))
-                    for job in bs.jobs
-                ]
-            await state.run_manager.update_all_runs(backend_jobs)
+        if state.config.settings.legacy_runs_enabled:
+            # Update run statuses based on polled jobs
+            if state.run_manager and state.run_manager.get_active_runs():
+                backend_jobs: dict[str, list[tuple]] = {}
+                for name, bs in state.backends.items():
+                    backend_jobs[name] = [
+                        (job.job_id, job.state, getattr(job, "reason", None))
+                        for job in bs.jobs
+                    ]
+                await state.run_manager.update_all_runs(backend_jobs)
 
-        # Save dirty runs
-        if state.run_manager:
-            state.run_manager.save_dirty()
+            # Save dirty runs
+            if state.run_manager:
+                state.run_manager.save_dirty()
 
-        # Emit run lifecycle notifications and refresh progress stats from
-        # the freshly-updated run statuses.
-        if state.run_manager:
-            runs = state.run_manager.runs.values()
-            notification_hub.scan(runs)
-            notification_hub.update_stats(runs)
+            # Emit run lifecycle notifications and refresh progress stats from
+            # the freshly-updated run statuses.
+            if state.run_manager:
+                runs = state.run_manager.runs.values()
+                notification_hub.scan(runs)
+                notification_hub.update_stats(runs)
 
         await scriptflow_service.poll()
 
@@ -628,7 +635,7 @@ async def poll_jobs() -> None:
 
         # Cleanup old runs once per hour
         poll_count += 1
-        if poll_count >= 60 and state.run_storage:
+        if state.config.settings.legacy_runs_enabled and poll_count >= 60 and state.run_storage:
             # Flush to the usage ledger *first*: cleanup is about to delete
             # the very runs the activity graph's history comes from.
             if state.usage_log:
@@ -670,6 +677,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     set_config(config)
     state.config = config
+    from scripthut.legacy import configure_routes
+    configure_routes(app, config.settings.legacy_runs_enabled)
+    templates.env.globals["legacy_runs_enabled"] = config.settings.legacy_runs_enabled
 
     logger.info(f"Loaded configuration with {len(config.backends)} backends, {len(config.sources)} sources")
 
@@ -730,6 +740,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             )
         )
         logger.info("Saved run data on shutdown")
+    elif state.config and not state.config.settings.legacy_runs_enabled:
+        await shutdown_runtime(Runtime(config=state.config, backends=state.backends))
 
 
 async def _finish_startup(config: ScriptHutConfig) -> None:
@@ -754,15 +766,17 @@ async def _finish_startup(config: ScriptHutConfig) -> None:
         # On first upgrade this seeds the activity graph with the last 30
         # days; afterwards it just catches anything the final hourly flush
         # missed before the process last exited.
-        state.usage_log.record(state.run_manager.runs.values())
+        if state.usage_log and state.run_manager:
+            state.usage_log.record(state.run_manager.runs.values())
 
         # Record existing runs/failures so we don't announce them as "new" —
         # only transitions from here on generate notifications.
-        notification_hub.prime(state.run_manager.runs.values())
+        if state.run_manager:
+            notification_hub.prime(state.run_manager.runs.values())
 
         # Sources sync after backends so path-source discovery (which needs
         # a connected SSH client) doesn't race the connects.
-        if config.sources:
+        if config.sources and config.settings.legacy_runs_enabled:
             asyncio.create_task(sync_sources_background())
 
         # Initialize pricing service (optional)
@@ -933,6 +947,8 @@ def reload_runtime_config(new_config: ScriptHutConfig) -> ReloadReport:
         )
 
     old = state.config
+    if old.settings.legacy_runs_enabled != new_config.settings.legacy_runs_enabled:
+        raise RuntimeError("Changing legacy_runs_enabled requires a restart")
 
     added_b, removed_b, modified_b = _diff_named(old.backends, new_config.backends)
     if added_b or removed_b or modified_b:

@@ -81,9 +81,9 @@ class Runtime:
 
     config: ScriptHutConfig
     backends: dict[str, BackendState]
-    run_storage: RunStorageManager
-    run_manager: RunManager
-    usage_log: UsageLog
+    run_storage: RunStorageManager | None = None
+    run_manager: RunManager | None = None
+    usage_log: UsageLog | None = None
 
 
 async def init_ec2_backend(
@@ -275,6 +275,12 @@ async def init_runtime(
         on_phase("connecting backends")
     backends: dict[str, BackendState] = {}
 
+    if not config.settings.legacy_runs_enabled:
+        ssh_states = await asyncio.gather(
+            *(init_backend(c) for c in [*config.slurm_backends, *config.pbs_backends])
+        )
+        return Runtime(config=config, backends={bs.name: bs for bs in ssh_states})
+
     # Escape hatch: a config with no backends at all still gets a working
     # executor — the built-in local backend, running tasks as subprocesses
     # on this machine. Explicitly-declared backends (including explicit
@@ -364,7 +370,8 @@ async def init_runtime(
 
 async def shutdown_runtime(runtime: Runtime) -> None:
     """Persist any dirty runs and disconnect all SSH-based backends."""
-    runtime.run_manager.save_dirty()
+    if runtime.run_manager is not None:
+        runtime.run_manager.save_dirty()
     for backend_state in runtime.backends.values():
         if backend_state.ssh_client:
             await backend_state.ssh_client.disconnect()
