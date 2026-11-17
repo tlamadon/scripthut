@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 
 from scripthut.backends.slurm import SLURM_TERMINAL_STATES, SlurmBackend
 from scripthut.config_schema import ScriptFlowConfig, ScriptHutConfig, SlurmBackendConfig
-from scripthut.runs.env import LabeledRule, flatten, resolve
+from scripthut.environment import LabeledRule, flatten, resolve
 from scripthut.scriptflow import (
     TERMINAL_STATES,
     CachedRun,
