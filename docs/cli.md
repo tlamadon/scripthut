@@ -360,7 +360,8 @@ Without `--exit-status`, `run watch` always returns 0 once the run reaches a ter
 
 ## `scriptflow` — observe existing runs
 
-These commands only observe ScriptFlow runs already started independently. They use
+These commands observe ScriptFlow runs already started independently and can request
+cancellation through ScriptFlow’s file protocol. They use
 local configuration and command transport directly, without initializing the legacy
 run manager or starting a daemon. They do not use the API, web UI, or background polling.
 The configured backend must be Slurm or PBS with SSH file access.
@@ -373,7 +374,8 @@ scripthut scriptflow logs <reference-id> <task-id>
 scripthut scriptflow logs <reference-id> <task-id> --attempt 1 --tail 50 --json
 ```
 
-All four commands accept `--config <file>` and `--json`. They intentionally have no
+All commands accept `--config <file>`, `--json` and `--verbose`. SSH connection detail
+is hidden by default; warnings and errors remain visible. `--verbose` enables transport logs. They intentionally have no
 `--server` or HTTP-auth options; `SCRIPTHUT_SERVER` and `settings.cli_server` do not
 select their transport. The machine running the CLI needs the selected backend's
 SSH credentials. No Python or ScriptFlow command is executed on the login node.
@@ -392,7 +394,7 @@ an observation problem instead of changing the workflow state. Local filesystem 
 are reported; the remote record remains authoritative.
 
 JSON `view`/`register` results have `reference_id`, `backend`, `run_directory`, `workflow`,
-and `observation`. `list --json` returns an array of the same shape.
+`observation`, and `cancellation`. `list --json` returns an array of the same shape.
 
 - `workflow`: schema-1 projection with run ID, flow, state, error, cleanup flag, timestamps,
   host, working directory, and task/attempt records. It is null until the first successful
@@ -404,6 +406,8 @@ and `observation`. `list --json` returns an array of the same shape.
   timestamps. Stale means a nonterminal heartbeat older than 30 seconds; terminal runs
   are never heartbeat-stale, even if cleanup is pending. Fetch failures remain separate.
 
+Logs accept a task ID or a unique task name. An ID always wins; an ambiguous name
+returns an error listing matching IDs. JSON reports the selected task ID.
 Logs default to the last attempt in the task's `attempts` array. `--attempt` selects its
 1-based position; `--tail N` returns the final N lines (zero returns none). Without `--tail`,
 the entire log is read. `logs --json` adds `task_id`, `attempt`, and `content` to the view
@@ -417,8 +421,70 @@ symlink to a file outside the directory is refused. The remote host must provide
 basic utilities. Use the canonical run directory if symlink aliases would make absolute
 log paths appear outside it. Output paths are displayed in JSON but never fetched.
 
-Exit codes: 0 means the observation/read succeeded (including a stale heartbeat or a
+For register/view/logs, exit codes: 0 means the observation/read succeeded (including a stale heartbeat or a
 workflow that reported failure); 1 means an observation, reference, configuration, cache,
 or log error; 2 is argument-parser usage failure. Thus observation exit status is not a
 workflow completion verdict. On errors, JSON output includes cached workflow evidence
 when available; command-level errors instead return `error` and `kind`.
+
+
+### Local removal and listing
+
+```bash
+scripthut scriptflow unregister <reference-id> --json
+```
+
+This deletes only the local reference and cached snapshot; it makes no remote call.
+JSON returns `{"reference_id": "...", "status": "unregistered"}`. Missing references
+return exit 1. A successfully produced `list` exits 0 even when individual references
+are unreachable or missing; their problems remain in the OBSERVATION column and JSON.
+Failure to load configuration or local storage still exits 1.
+
+### Cancellation requests
+
+```bash
+scripthut scriptflow cancel <reference-id> --json
+scripthut scriptflow cancel <reference-id> --wait --json
+scripthut scriptflow cancel <reference-id> --wait 300 --json
+```
+
+Cancel first fetches the record; an unreadable record prevents writing. For a nonterminal
+run, it writes UTC `requested_at` JSON to a temporary file inside the run directory and
+renames it to `cancel.json` without overwriting an existing request. Canonical-path
+containment applies to writes too. This requires `mktemp`, GNU-compatible `mv -nT`,
+`realpath -m`, and basic shell utilities. ScriptFlow alone cancels its task jobs.
+A repeat request leaves the file intact and reports “already requested”. An uncertain
+write acknowledgement returns an error; retrying reconciles with the existing file.
+
+Without `--wait`, a terminal record causes no write and exits 0, reporting its state
+and `cleanup_pending`. Otherwise successful delivery exits 0 with status `requested`.
+Delivery does not mean cancellation is finished. The controller may take about a minute
+to notice the file on network storage.
+
+`--wait` defaults to 180 seconds; an explicit nonnegative number sets the polling budget.
+It polls every two seconds until terminal state and `cleanup_pending: false`. An in-flight
+transport read may extend the budget by its timeout. It does not relabel outcomes: a run
+that finishes first can report `completed` or `failed`. With `--wait`, even a terminal
+record with cleanup pending must be confirmed before exit 0.
+
+JSON includes `cancel_result.status` and `cancel_result.message` alongside the normal view:
+
+| Status | Meaning | Exit |
+| --- | --- | --- |
+| `requested` | Request delivered or already present; no wait requested | 0 |
+| `terminal` | Already terminal; no wait requested, no write | 0 |
+| `confirmed` | Terminal with cleanup complete | 0 |
+| `pending` | Wait timed out while running or cleanup pending | 1 |
+| `controller_not_responding` | Running with stale heartbeat; workflow state unchanged | 1 |
+| `unreachable` | Record unreadable or request acknowledgement unavailable | 1 |
+
+For a stale controller, the message asks the user to run `scriptflow cleanup <run-id>`
+on the cluster in the appropriate environment. ScriptHut performs no cleanup or allocation
+release. Observation errors are never converted into workflow outcomes.
+
+View and list report `cancellation.requested` (the last observed existence of `cancel.json`,
+or null before a successful read). Existence is fetched in the same command as `run.json`.
+`cancellation.requested_at` is the local time this client first acknowledged a cancellation
+request, not the original timestamp of a request created elsewhere; it is null if this
+client has only observed it. Both fields are cached evidence on fetch failure; consult
+`observation` for freshness. Unregistering discards this local history.

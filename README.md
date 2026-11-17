@@ -37,12 +37,15 @@ ScriptHut ownership of their tasks:
 scripthut scriptflow register --backend hpc --run-dir /data/project/.sf/runs/example-run --json
 scripthut scriptflow list
 scripthut scriptflow view <reference-id> --json
-scripthut scriptflow logs <reference-id> <task-id> --tail 50
+scripthut scriptflow logs <reference-id> <task-id-or-name> --tail 50
+scripthut scriptflow cancel <reference-id> --wait --json
+scripthut scriptflow unregister <reference-id>
 ```
 
 Use the reference ID returned by registration. These commands use local backend
 configuration and read remote files through the existing SSH transport; they do not
-use the web API, start a daemon, or launch/cancel jobs. Workflow state and observation
+use the web API, start a daemon, or directly control task jobs. Cancellation writes a
+request file for ScriptFlow to process; unregister removes only the local cache. Workflow state and observation
 freshness are reported separately. See [ScriptFlow CLI](docs/cli.md#scriptflow--observe-existing-runs)
 for caching, attempt selection, path restrictions and exit codes.
 

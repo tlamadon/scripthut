@@ -82,7 +82,8 @@ class FakeTransport:
         self.commands.append(command)
         if self.error:
             raise self.error
-        return self.content, "", self.code
+        prefix = "0\n" if "scripthut-read" in command and "run.json" in command else ""
+        return prefix + self.content, "", self.code
 
 
 @pytest.mark.parametrize("state", ["running", "completed", "failed", "cancelled", "interrupted"])
@@ -375,7 +376,7 @@ def test_first_fetch_missing_still_registers(cli_context, capsys):
     data = json.loads(capsys.readouterr().out)
     assert data["workflow"] is None
     assert data["observation"]["status"] == "missing"
-    assert cli.main(["scriptflow", "list", "--json"]) == 1
+    assert cli.main(["scriptflow", "list", "--json"]) == 0
     assert len(json.loads(capsys.readouterr().out)) == 1
 
 
@@ -404,10 +405,255 @@ def test_cli_logs(cli_context, capsys, monkeypatch):
     assert capsys.readouterr().out == "example log\n"
 
 
-def test_only_read_only_verbs_and_no_server_mode():
+def test_no_execution_verbs_or_server_mode():
     parser = cli.build_parser()
-    for verb in ("run", "cancel", "cleanup", "retry"):
+    for verb in ("run", "cleanup", "retry"):
         with pytest.raises(SystemExit):
             parser.parse_args(["scriptflow", verb])
     with pytest.raises(SystemExit):
         parser.parse_args(["scriptflow", "list", "--server", "https://example.edu"])
+
+
+class CancelTransport(FakeTransport):
+    def __init__(self, records):
+        super().__init__()
+        self.records = records
+        self.present = False
+        self.writes = 0
+
+    async def run_command(self, command, timeout=30):
+        self.commands.append(command)
+        if "scripthut-cancel" in command:
+            if self.present:
+                return "already", "", 0
+            self.writes += 1
+            self.present = True
+            return "requested", "", 0
+        raw = self.records.pop(0) if len(self.records) > 1 else self.records[0]
+        if isinstance(raw, Exception):
+            raise raw
+        return f"{int(self.present)}\n" + json.dumps(raw), "", 0
+
+
+def fresh_record(state="running", cleanup=False):
+    raw = record(state)
+    raw["heartbeat"] = datetime.now(UTC).isoformat()
+    raw["cleanup_pending"] = cleanup
+    return raw
+
+
+async def cancel_context(tmp_path, transport, wait=None):
+    from scripthut.scriptflow_cli import cancel
+
+    store = ReferenceStore(tmp_path / "scriptflow")
+    cached = await store.register(Reference.create("cluster", RUN_DIRECTORY))
+    reader = RecordReader(transport)
+    await reader.fetch(cached)
+    await store.save(cached)
+    return await cancel(reader, cached, store, wait), store, cached
+
+
+async def test_cancel_requested_and_repeat(tmp_path):
+    transport = CancelTransport([fresh_record()])
+    (data, failed), store, cached = await cancel_context(tmp_path, transport)
+    assert not failed
+    assert data["cancel_result"]["status"] == "requested"
+    assert data["cancellation"]["requested"]
+    assert (await store.get(cached.reference.id)).cancel_requested_at is not None
+    (data, failed), _, _ = await cancel_context(tmp_path, transport)
+    assert not failed and "already requested" in data["cancel_result"]["message"]
+    assert transport.writes == 1
+    assert all(
+        not any(word in command for word in ("scancel", "qdel", "scriptflow cancel", "python"))
+        for command in transport.commands
+    )
+
+
+@pytest.mark.parametrize("state", ["completed", "failed", "cancelled", "interrupted"])
+@pytest.mark.parametrize("cleanup", [False, True])
+async def test_cancel_terminal_no_write(tmp_path, state, cleanup):
+    transport = CancelTransport([fresh_record(state, cleanup)])
+    (data, failed), _, _ = await cancel_context(tmp_path, transport)
+    assert not failed and transport.writes == 0
+    assert data["workflow"]["state"] == state
+    assert data["workflow"]["cleanup_pending"] is cleanup
+    assert all("scripthut-cancel" not in c for c in transport.commands)
+
+
+async def test_cancel_unreadable_no_write(tmp_path):
+    transport = CancelTransport([OSError("offline")])
+    (data, failed), _, _ = await cancel_context(tmp_path, transport)
+    assert failed and data["cancel_result"]["status"] == "unreachable"
+    assert transport.writes == 0
+
+
+@pytest.mark.parametrize("state", ["cancelled", "completed", "failed"])
+async def test_wait_confirmed_preserves_outcome(tmp_path, monkeypatch, state):
+    from scripthut import scriptflow_cli
+
+    monkeypatch.setattr(scriptflow_cli.asyncio, "sleep", AsyncMock())
+    transport = CancelTransport([fresh_record(), fresh_record(state)])
+    (data, failed), _, _ = await cancel_context(tmp_path, transport, 180)
+    assert not failed and data["cancel_result"]["status"] == "confirmed"
+    assert data["workflow"]["state"] == state
+
+
+@pytest.mark.parametrize(
+    "raw,status",
+    [
+        (fresh_record(), "pending"),
+        (fresh_record("cancelled", True), "pending"),
+        (record(), "controller_not_responding"),
+    ],
+)
+async def test_wait_pending_or_stale(tmp_path, raw, status):
+    transport = CancelTransport([raw])
+    (data, failed), _, _ = await cancel_context(tmp_path, transport, 0)
+    assert failed and data["cancel_result"]["status"] == status
+    if status == "controller_not_responding":
+        assert "scriptflow cleanup example-run" in data["cancel_result"]["message"]
+        assert data["workflow"]["state"] == "running"
+
+
+async def test_wait_unreachable(tmp_path, monkeypatch):
+    from scripthut import scriptflow_cli
+
+    monkeypatch.setattr(scriptflow_cli.asyncio, "sleep", AsyncMock())
+    transport = CancelTransport([fresh_record(), OSError("offline")])
+    (data, failed), _, _ = await cancel_context(tmp_path, transport, 180)
+    assert failed and data["cancel_result"]["status"] == "unreachable"
+    assert data["workflow"]["state"] == "running"
+    assert data["cancellation"]["requested"]
+
+
+async def test_cancel_shell_atomic_containment_and_no_clobber(tmp_path):
+    class LocalTransport:
+        async def run_command(self, command, timeout=30):
+            process = await asyncio.create_subprocess_exec(
+                "sh", "-c", command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await process.communicate()
+            return stdout.decode(), stderr.decode(), process.returncode
+
+    directory = tmp_path / "run 'quoted'"
+    directory.mkdir()
+    (directory / "run.json").write_text(json.dumps(fresh_record()))
+    cached = CachedRun(reference=Reference.create("cluster", str(directory)))
+    reader = RecordReader(LocalTransport())
+    await reader.fetch(cached)
+    assert cached.cancel_present is False
+    assert await reader.request_cancel(cached)
+    path = directory / "cancel.json"
+    original = path.read_text()
+    assert datetime.fromisoformat(json.loads(original)["requested_at"]).utcoffset() == timedelta(0)
+    assert not await reader.request_cancel(cached)
+    assert path.read_text() == original
+    assert not list(directory.glob(".cancel.*"))
+    await reader.fetch(cached)
+    assert cached.cancel_present is True
+    path.unlink()
+    outside = tmp_path / "outside.json"
+    outside.write_text("untouched")
+    path.symlink_to(outside)
+    with pytest.raises(ObservationError, match="outside"):
+        await reader.request_cancel(cached)
+    assert outside.read_text() == "untouched"
+    await reader.fetch(cached)
+    assert cached.problem == "unsafe_path"
+
+
+async def test_task_names_and_id_precedence():
+    raw = record()
+    reader = RecordReader(FakeTransport("log"))
+    cached = CachedRun(reference=Reference.create("cluster", RUN_DIRECTORY), snapshot=raw)
+    assert await reader.logs(cached, "example") == ("log", 2)
+    raw["tasks"]["second"] = copy.deepcopy(raw["tasks"]["first"])
+    raw["tasks"]["second"]["task_id"] = "second"
+    with pytest.raises(ObservationError, match="first, second"):
+        await reader.logs(cached, "example")
+    raw["tasks"]["second"]["name"] = "first"
+    assert await reader.logs(cached, "first") == ("log", 2)
+
+
+def test_unregister_local_only(cli_context, capsys, tmp_path):
+    _, transport = cli_context
+    cli.main(
+        ["scriptflow", "register", "--backend", "cluster", "--run-dir", RUN_DIRECTORY, "--json"]
+    )
+    reference = json.loads(capsys.readouterr().out)["reference_id"]
+    transport.commands.clear()
+    assert cli.main(["scriptflow", "unregister", reference, "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "unregistered"
+    assert not list((tmp_path / "scriptflow").glob("*.json"))
+    assert not transport.commands
+
+
+def test_cli_cancel_no_legacy_and_default_wait(cli_context, capsys, monkeypatch):
+    cli.main(
+        ["scriptflow", "register", "--backend", "cluster", "--run-dir", RUN_DIRECTORY, "--json"]
+    )
+    reference = json.loads(capsys.readouterr().out)["reference_id"]
+    transport = CancelTransport([fresh_record()])
+    monkeypatch.setattr(cli, "_ssh_client_for", lambda _: transport)
+    assert cli.main(["scriptflow", "cancel", reference, "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["cancel_result"]["status"] == "requested"
+    args = cli.build_parser().parse_args(["scriptflow", "cancel", reference, "--wait"])
+    assert args.wait == 180
+    assert cli.main(["scriptflow", "cancel", reference, "--wait", "0", "--json"]) == 1
+    assert json.loads(capsys.readouterr().out)["cancel_result"]["status"] == "pending"
+
+
+def test_quiet_logging_restored(cli_context, caplog, capsys, monkeypatch):
+    import logging
+
+    _, transport = cli_context
+    original = transport.run_command
+
+    async def read(command, timeout=30):
+        logging.getLogger("asyncssh").info("connection detail")
+        logging.getLogger("scripthut.ssh.client").warning("connection warning")
+        return await original(command, timeout)
+
+    monkeypatch.setattr(transport, "run_command", read)
+    with caplog.at_level(logging.INFO):
+        cli.main(["scriptflow", "register", "--backend", "cluster", "--run-dir", RUN_DIRECTORY])
+        assert "connection detail" not in caplog.text
+        assert "connection warning" in caplog.text
+        caplog.clear()
+        cli.main(["scriptflow", "list", "--verbose"])
+        assert "connection detail" in caplog.text
+
+
+@pytest.mark.parametrize("content,code", [("broken", 0), ('{"schema_version": 9}', 0), ("", 44)])
+def test_cli_cancel_bad_record_no_write(cli_context, capsys, content, code):
+    _, transport = cli_context
+    cli.main(
+        ["scriptflow", "register", "--backend", "cluster", "--run-dir", RUN_DIRECTORY, "--json"]
+    )
+    reference = json.loads(capsys.readouterr().out)["reference_id"]
+    transport.content, transport.code = content, code
+    transport.commands.clear()
+    assert cli.main(["scriptflow", "cancel", reference, "--json"]) == 1
+    assert json.loads(capsys.readouterr().out)["cancel_result"]["status"] == "unreachable"
+    assert len(transport.commands) == 1
+    assert "scripthut-cancel" not in transport.commands[0]
+
+
+def test_list_unreachable_succeeds(cli_context, capsys):
+    _, transport = cli_context
+    cli.main(["scriptflow", "register", "--backend", "cluster", "--run-dir", RUN_DIRECTORY])
+    capsys.readouterr()
+    transport.error = OSError("offline")
+    assert cli.main(["scriptflow", "list"]) == 0
+    assert "unreachable" in capsys.readouterr().out
+
+
+async def test_unregister_broken_cache(tmp_path):
+    store = ReferenceStore(tmp_path)
+    reference = Reference.create("cluster", RUN_DIRECTORY)
+    path = tmp_path / f"{reference.id}.json"
+    path.write_text("broken")
+    await store.unregister(reference.id)
+    assert not path.exists()
+    with pytest.raises(ObservationError, match="not registered"):
+        await store.unregister(reference.id)

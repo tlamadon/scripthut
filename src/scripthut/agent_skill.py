@@ -53,7 +53,8 @@ description: >-
   status; tail or inspect job logs; debug a failed run; manage software
   stacks (venv, Conda, Julia); probe the result cache (would this task
   be a cache hit?); fetch a task's provenance manifest (input/output
-  hashes); observe independently started ScriptFlow runs; or estimate compute costs.
+  hashes); observe or request cancellation of independently started ScriptFlow
+  runs; or estimate compute costs.
 ---
 
 {_marker_line()}
@@ -85,7 +86,13 @@ For a run started with ScriptFlow, use `scripthut scriptflow register --backend 
 or `scripthut scriptflow logs <reference-id> <task-id> --tail 50`. Registration returns the
 reference ID. These commands use local configuration and file transport, not the daemon
 or API. Preserve the distinction between workflow outcome and stale/unreachable observation.
-Do not submit, retry or cancel ScriptFlow tasks through the legacy commands below.
+Use `scripthut scriptflow cancel <reference-id> --wait --json` to request cancellation
+through its file protocol; only terminal state with cleanup complete confirms it.
+A stale controller requires user-run cleanup on the cluster; no cleanup is automated.
+Use `scripthut scriptflow unregister <reference-id>` to remove only the local cache.
+Logs accept a unique task name or ID (IDs win); list exits 0 with per-reference problems.
+Use `--verbose` for SSH detail. Do not submit, retry or cancel ScriptFlow tasks through
+the legacy commands below.
 
 ## Core loop — verify, then submit
 

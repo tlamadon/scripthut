@@ -1852,7 +1852,12 @@ def _render_agent_prompt(config: ScriptHutConfig | None) -> str:
         "Keep workflow state separate from observation freshness; a fetch failure preserves "
         "cached state. Exit 1 reports an observation/log error, not a workflow failure. "
         "Do not route ScriptFlow tasks through task run, run cancel, or run rerun; "
-        "ScriptFlow owns execution.\n"
+        "ScriptFlow owns execution. Use `scripthut scriptflow cancel <reference-id> --wait --json` "
+        "to write its cancellation request and wait up to 180 seconds. Only terminal state with "
+        "cleanup_pending false confirms completion; stale/unreachable is an observation problem. "
+        "No cleanup or scheduler cancellation is performed. Use `scripthut scriptflow unregister "
+        "<reference-id>` to remove only local cache. Logs also accept a unique task name; IDs win. "
+        "List exits 0 despite individual observation errors. Use --verbose for SSH detail.\n"
     )
 
     out.append("## Typical agent loop — verify, then submit\n")

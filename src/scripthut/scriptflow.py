@@ -124,6 +124,8 @@ class CachedRun(BaseModel):
     last_fetch_failed: bool = False
     problem: str | None = None
     fetch_error: str | None = None
+    cancel_present: bool | None = None
+    cancel_requested_at: AwareDatetime | None = None
 
     def projection(self, now: datetime | None = None) -> dict[str, Any]:
         now = now or datetime.now(UTC)
@@ -141,6 +143,12 @@ class CachedRun(BaseModel):
             "backend": self.reference.backend,
             "run_directory": self.reference.run_directory,
             "workflow": snapshot,
+            "cancellation": {
+                "requested": self.cancel_present,
+                "requested_at": self.cancel_requested_at.isoformat()
+                if self.cancel_requested_at
+                else None,
+            },
             "observation": {
                 "status": status,
                 "heartbeat_age_seconds": age,
@@ -195,6 +203,12 @@ class ReferenceStore:
         await self.save(cached)
         return cached
 
+    async def unregister(self, reference_id: str) -> None:
+        try:
+            await asyncio.to_thread(self._path(reference_id).unlink)
+        except FileNotFoundError as exc:
+            raise ObservationError("not_found", "ScriptFlow reference is not registered") from exc
+
     async def save(self, cached: CachedRun) -> None:
         def write() -> None:
             self.directory.mkdir(parents=True, exist_ok=True)
@@ -220,7 +234,9 @@ class RecordReader:
     def __init__(self, transport: CommandTransport) -> None:
         self.transport = transport
 
-    async def read(self, reference: Reference, path: str, tail: int | None = None) -> str:
+    async def read(
+        self, reference: Reference, path: str, tail: int | None = None, *, record: bool = False
+    ) -> str:
         root = absolute_path(reference.run_directory)
         path = absolute_path(path)
         if not path.startswith(root + "/"):
@@ -234,10 +250,22 @@ class RecordReader:
                 'target=$(realpath -e -- "$2") || exit 44',
                 'case "$target" in "$root"/*) ;; *) exit 43 ;; esac',
                 '[ -f "$target" ] || exit 44',
+                *(
+                    [
+                        'cancel=$(realpath -m -- "$root/cancel.json") || exit 44',
+                        'case "$cancel" in "$root"/*) ;; *) exit 43 ;; esac',
+                        'if [ -e "$root/cancel.json" ]; then printf "1\\n"; else printf "0\\n"; fi',
+                    ]
+                    if record
+                    else []
+                ),
                 'cat -- "$target"' if tail is None else f'tail -n {tail} -- "$target"',
             ]
         )
         command = shlex.join(["sh", "-c", script, "scripthut-read", root, path])
+        return await self.execute(command)
+
+    async def execute(self, command: str) -> str:
         try:
             stdout, stderr, code = await self.transport.run_command(command)
         except Exception as exc:
@@ -257,7 +285,11 @@ class RecordReader:
             content = await self.read(
                 cached.reference,
                 cached.reference.run_directory + "/run.json",
+                record=True,
             )
+            present, separator, content = content.partition("\n")
+            if not separator or present not in ("0", "1"):
+                raise ObservationError("malformed", "Invalid record transport response")
             raw, _ = parse_record(content)
         except ObservationError as exc:
             cached.last_fetch_failed = True
@@ -265,12 +297,59 @@ class RecordReader:
             cached.fetch_error = str(exc)
         else:
             cached.snapshot = raw
+            cached.cancel_present = present == "1"
             cached.last_successful_fetch = datetime.now(UTC)
             cached.last_fetch_failed = False
             cached.problem = None
             cached.fetch_error = None
         cached.last_fetch_at = datetime.now(UTC)
         return cached
+
+    async def request_cancel(self, cached: CachedRun) -> bool:
+        if cached.last_fetch_failed or cached.snapshot is None:
+            raise ObservationError("unavailable", "Fetch a readable record before cancellation")
+        _, snapshot = parse_record(json.dumps(cached.snapshot))
+        if snapshot.state in TERMINAL_STATES:
+            return False
+        root = absolute_path(cached.reference.run_directory)
+        stamp = datetime.now(UTC)
+        payload = json.dumps({"requested_at": stamp.isoformat()})
+        script = "\n".join(
+            [
+                'root=$(realpath -e -- "$1") || exit 44',
+                'cd -P -- "$root" || exit 44',
+                "target=$(realpath -m -- cancel.json) || exit 44",
+                'case "$target" in "$root"/*) ;; *) exit 43 ;; esac',
+                'if [ -e cancel.json ] || [ -L cancel.json ]; then printf "already"; exit 0; fi',
+                "umask 077",
+                "tmp=$(mktemp .cancel.XXXXXXXXXX) || exit 45",
+                "trap 'rm -f -- \"$tmp\"' EXIT HUP INT TERM",
+                'printf "%s\\n" "$2" > "$tmp" || exit 45',
+                'mv -nT -- "$tmp" cancel.json || exit 45',
+                'if [ -e "$tmp" ]; then printf "already"; else printf "requested"; fi',
+            ]
+        )
+        response = await self.execute(
+            shlex.join(["sh", "-c", script, "scripthut-cancel", root, payload])
+        )
+        if response not in ("requested", "already"):
+            raise ObservationError(
+                "unreachable", "Cancellation acknowledgement missing; retry to reconcile"
+            )
+        cached.cancel_present = True
+        cached.cancel_requested_at = cached.cancel_requested_at or stamp
+        return response == "requested"
+
+    @staticmethod
+    def select_task(snapshot: Snapshot, selector: str) -> str:
+        if selector in snapshot.tasks:
+            return selector
+        matches = [key for key, task in snapshot.tasks.items() if task.name == selector]
+        if len(matches) > 1:
+            raise ObservationError("ambiguous_task", "Task name matches IDs: " + ", ".join(matches))
+        if not matches:
+            raise ObservationError("not_found", "Task is not present in this ScriptFlow record")
+        return matches[0]
 
     async def logs(
         self,
@@ -282,9 +361,7 @@ class RecordReader:
         if cached.last_fetch_failed or cached.snapshot is None:
             raise ObservationError("unavailable", "Fetch a readable current record before logs")
         _, snapshot = parse_record(json.dumps(cached.snapshot))
-        task = snapshot.tasks.get(task_id)
-        if task is None:
-            raise ObservationError("not_found", "Task is not present in this ScriptFlow record")
+        task = snapshot.tasks[self.select_task(snapshot, task_id)]
         number = attempt_number if attempt_number is not None else len(task.attempts)
         if number < 1 or number > len(task.attempts):
             raise ObservationError("not_found", "Task has no such attempt")
