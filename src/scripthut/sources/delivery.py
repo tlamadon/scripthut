@@ -75,6 +75,8 @@ class SourceDelivery:
         ssh_client: SSHClient,
         remote_key_path: str | None,
         clone_dir: str,
+        *,
+        quoted_paths: bool = False,
     ) -> str:
         """Build the GIT_SSH_COMMAND prefix for git commands run on a backend.
 
@@ -106,9 +108,14 @@ class SourceDelivery:
             openssh_version=await ssh_client.openssh_version(),
             # clone_dir may still be `~/...`; quoting would stop the remote
             # shell expanding it and create a directory literally named `~`.
-            quote_paths=False,
+            quote_paths=quoted_paths,
         )
         # ssh writes the known_hosts file but will not create its directory.
+        if quoted_paths:
+            return (
+                f"mkdir -p -- {shlex.quote(clone_dir)} && "
+                f"export GIT_SSH_COMMAND={shlex.quote(command)} && "
+            )
         return f'mkdir -p {clone_dir}; export GIT_SSH_COMMAND="{command}"; '
 
     async def _upload_deploy_key(
@@ -276,6 +283,9 @@ class SourceDelivery:
         ssh_client: SSHClient,
         source: GitSourceConfig,
         backend_name: str,
+        *,
+        commit: str | None = None,
+        objects_only: bool = False,
     ) -> tuple[str, str]:
         """Materialise a local git repo on the backend by pushing to it.
 
@@ -308,7 +318,7 @@ class SourceDelivery:
         repo = shlex.quote(str(local_path))
 
         # 1. Resolve the commit from the local repo.
-        rev = "HEAD" if not source.branch else f"refs/heads/{source.branch}"
+        rev = commit or ("HEAD" if not source.branch else f"refs/heads/{source.branch}")
         if source.branch and not is_safe_branch_name(source.branch):
             raise ValueError(f"Invalid branch name: {source.branch!r}")
         stdout, stderr, code = await self._source_shell(
@@ -338,10 +348,13 @@ class SourceDelivery:
         clone_path = f"{source.clone_dir}/{short_hash}"
         ref = f"refs/heads/sh-{short_hash}"
 
+        mirror_arg = shlex.quote(mirror) if objects_only else mirror
+        root_arg = shlex.quote(source.clone_dir) if objects_only else source.clone_dir
+
         # 2. Ensure the bare mirror exists on the backend.
         _, stderr, code = await ssh_client.run_command(
-            f"mkdir -p {source.clone_dir} && "
-            f"{{ test -d {mirror} || git init --bare -q {mirror}; }}",
+            f"mkdir -p {root_arg} && "
+            f"{{ test -d {mirror_arg} || git init --bare -q {mirror_arg}; }}",
             timeout=60,
         )
         if code != 0:
@@ -355,8 +368,9 @@ class SourceDelivery:
         logger.info(
             f"Pushing {local_path}@{short_hash} to {backend_name}:{mirror}"
         )
+        force = "" if objects_only else "--force "
         _, stderr, code = await self._source_shell(
-            f"{env_prefix}git -C {repo} push --force "
+            f"{env_prefix}git -C {repo} push {force}"
             f"{shlex.quote(push_url)} {commit_hash}:{ref}",
             timeout=1800.0,
         )
@@ -365,6 +379,9 @@ class SourceDelivery:
                 f"Failed to push {local_path} to '{backend_name}' "
                 f"({push_url}): {stderr.strip()}"
             )
+
+        if objects_only:
+            return mirror, commit_hash
 
         # 4. Clone that ref out of the mirror, unless this commit is already
         # materialised (content-addressed, so re-runs reuse it).

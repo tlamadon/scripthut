@@ -3,3 +3,4 @@
 <p>Last successful read: {{ run.observation.last_successful_fetch or 'never' }}</p>
 {% if run.observation.error %}<p class="text-amber-800">{{ run.observation.error }}</p>{% endif %}
 <p>Controller: <strong>{{ run.controller.state if run.controller else 'unknown / not managed' }}</strong>{% if run.controller %} (observed {{ run.controller.observed_at }}){% endif %}</p>
+{% if run.source %}<p>Source: {{ run.source.name }} · Branch: {{ run.source.branch }} · Commit: {{ run.source.short_commit }} · Detached: {{ run.source.detached }}</p>{% endif %}

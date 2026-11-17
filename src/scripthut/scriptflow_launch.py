@@ -11,7 +11,7 @@ import re
 import shlex
 import tempfile
 import uuid
-from collections.abc import Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -19,9 +19,9 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from scripthut.scheduler import SLURM_TERMINAL_STATES, SlurmControl
 from scripthut.config_schema import ScriptFlowConfig, ScriptHutConfig, SlurmBackendConfig
 from scripthut.environment import LabeledRule, flatten, resolve
+from scripthut.scheduler import SLURM_TERMINAL_STATES, SlurmControl
 from scripthut.scriptflow import (
     TERMINAL_STATES,
     CachedRun,
@@ -56,10 +56,31 @@ class Launch(BaseModel):
     created_at: str = Field(default_factory=now)
     updated_at: str = Field(default_factory=now)
     force_pattern: str | None = None
+    source: str | None = None
+    branch: str | None = None
+    commit: str | None = None
+    repository_workdir: str | None = None
+    flow_dir: str = "."
+    detached: bool = False
+    snapshot: bool = False
     job_id: str | None = None
     cleanup_job_id: str | None = None
     cleanup_stage: str | None = None
     cleanup_token: str | None = None
+
+    def source_metadata(self) -> dict[str, Any] | None:
+        if not self.source:
+            return None
+        return {
+            "name": self.source,
+            "branch": self.branch,
+            "commit": self.commit,
+            "short_commit": self.commit[:12] if self.commit else None,
+            "workdir": self.repository_workdir,
+            "flow_dir": self.flow_dir,
+            "detached": self.detached,
+            "snapshot": self.snapshot,
+        }
 
     @property
     def receipt(self) -> str:
@@ -346,6 +367,7 @@ async def receipt_read(
 async def register_launch(store: ReferenceStore, launch: Launch) -> CachedRun:
     cached = await store.register(launch.reference)
     cached.launch_key = launch.key
+    cached.source = launch.source_metadata()
     await store.save(cached)
     return cached
 
@@ -357,6 +379,7 @@ async def launch_run(
     backend: ControllerBackend,
     reader: RecordReader,
     resubmit: bool = False,
+    prepare: Callable[[Launch], Awaitable[None]] | None = None,
 ) -> dict[str, Any]:
     launches = LaunchStore(store.directory)
     with launches.lock("0" * 32):
@@ -375,6 +398,14 @@ async def launch_run(
             or launch.workdir != proposed.workdir
             or launch.resources != proposed.resources
             or launch.force_pattern != proposed.force_pattern
+            or (launch.source, launch.branch, launch.commit, launch.flow_dir, launch.snapshot)
+            != (
+                proposed.source,
+                proposed.branch,
+                proposed.commit,
+                proposed.flow_dir,
+                proposed.snapshot,
+            )
         ):
             raise ValueError("Existing launch uses different settings; use a new --run-id")
         if launch.job_id:
@@ -405,6 +436,54 @@ async def launch_run(
             if not resubmit:
                 return launch_output(launch)
         script = job_script(config, launch)
+        if prepare:
+            assert launch.repository_workdir is not None
+            for path in launches.directory.glob("*.json"):
+                other = await launches.get(path.stem)
+                if (
+                    other is None
+                    or other.key == launch.key
+                    or other.backend != launch.backend
+                    or other.repository_workdir != launch.repository_workdir
+                    or other.stage not in ("submitting", "ambiguous", "unknown", "acknowledged")
+                ):
+                    continue
+                observed = CachedRun(reference=other.reference)
+                await reader.fetch(observed)
+                if observed.last_fetch_failed:
+                    controller = await controller_observation(backend, reader, other)
+                    if observed.problem != "missing" or controller["state"] != "ended":
+                        raise ValueError(
+                            f"{launch.repository_workdir}: previous controller "
+                            f"{other.job_name} has no readable workflow record; "
+                            "observe or release it before preparing another launch"
+                        )
+                elif observed.snapshot and observed.snapshot["state"] == "running":
+                    stale = (
+                        " (stale heartbeat)"
+                        if observed.projection()["observation"]["stale"]
+                        else ""
+                    )
+                    raise ValueError(
+                        f"{launch.repository_workdir}: running ScriptFlow run "
+                        f"{other.run_id}{stale}; resolve it or run scriptflow cleanup "
+                        f"{other.run_id} on a compute node"
+                    )
+            await reader.execute(
+                shlex.join(
+                    [
+                        "sh",
+                        "-c",
+                        'if [ -e "$1" ] || [ -L "$1" ]; then '
+                        'echo "$2: run directory $1 already exists" >&2; exit 73; fi',
+                        "scripthut-source-guard",
+                        launch.run_directory,
+                        launch.repository_workdir,
+                    ]
+                )
+            )
+            await prepare(launch)
+            await launches.save(launch)
         guard = 'if [ -e "$1" ] || [ -L "$1" ]; then exit 73; fi\n[ -d "$2" ] || exit 44'
         await reader.execute(
             shlex.join(["sh", "-c", guard, "scripthut-guard", launch.run_directory, launch.workdir])
@@ -426,6 +505,7 @@ async def launch_run(
 
 def launch_output(launch: Launch) -> dict[str, Any]:
     return {
+        "source": launch.source_metadata(),
         "status": launch.stage,
         "request_id": launch.request_id,
         "reference_id": launch.reference.id,

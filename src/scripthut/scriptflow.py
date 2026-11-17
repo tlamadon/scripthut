@@ -125,6 +125,7 @@ class CachedRun(BaseModel):
     problem: str | None = None
     fetch_error: str | None = None
     launch_key: str | None = None
+    source: dict[str, Any] | None = None
     controller: dict[str, Any] | None = None
     cancel_present: bool | None = None
     cancel_requested_at: AwareDatetime | None = None
@@ -150,6 +151,7 @@ class CachedRun(BaseModel):
             else (
                 "not started" if self.launch_key and self.problem == "missing" else "unavailable"
             ),
+            "source": self.source,
             "controller": self.controller,
             "controller_notice": (
                 "Controller ended; workflow heartbeat is stale. Task jobs were left running. "

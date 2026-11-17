@@ -1,7 +1,8 @@
 """Pydantic models for YAML configuration schema."""
 
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Annotated, Any, Literal
+from urllib.parse import quote
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -220,6 +221,30 @@ class GitSourceConfig(BaseModel):
         default="~/scripthut-repos",
         description="Parent directory on the backend where repos are cloned into (clone goes into <clone_dir>/<commit_hash>/)",
     )
+    workdir: str | None = None
+    flow_dir: str = "."
+
+    @property
+    def working_directory(self) -> str:
+        return self.workdir or f"{self.clone_dir}/.worktrees/source-{quote(self.name, safe='')}"
+
+    @model_validator(mode="after")
+    def _check_directories(self) -> "GitSourceConfig":
+        if self.workdir is not None and (
+            not self.workdir.startswith("/")
+            or ".." in PurePosixPath(self.workdir).parts
+            or any(c in self.workdir for c in "\0\n\r")
+        ):
+            raise ValueError("workdir must be an absolute backend path without '..'")
+        if (
+            PurePosixPath(self.flow_dir).is_absolute()
+            or ".." in PurePosixPath(self.flow_dir).parts
+            or any(c in self.flow_dir for c in "\0\n\r")
+        ):
+            raise ValueError("flow_dir must be relative and stay inside the repository (no '..')")
+        self.flow_dir = str(PurePosixPath(self.flow_dir))
+        return self
+
     postclone: str | None = Field(
         default=None,
         description="Shell command to run in the clone directory after cloning",

@@ -970,7 +970,10 @@ async def jobs_stream(request: Request):
 
 @app.get("/sources", response_class=HTMLResponse)
 async def sources_page(request: Request):
-    return templates.TemplateResponse("sources.html", {"request": request, "sources": state.config.sources if state.config else []})
+    from scripthut.scriptflow_sources import source_rows
+
+    rows = await source_rows(state.config, state.backends) if state.config else []
+    return templates.TemplateResponse("sources.html", {"request": request, "sources": rows})
 
 
 @app.get("/terminals", response_class=HTMLResponse)

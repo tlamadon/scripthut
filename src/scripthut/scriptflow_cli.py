@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import logging
 import shlex
@@ -45,15 +46,27 @@ def add_parser(
         "cleanup",
         "release",
         "discover",
+        "flows",
     ):
         parser = verbs.add_parser(verb)
         add_common(parser)
         parser.add_argument("--verbose", action="store_true", help="Show transport logging")
         if verb in ("launch", "discover"):
-            parser.add_argument("--backend", required=True)
-            parser.add_argument("--workdir", required=True)
+            parser.add_argument("--backend")
+            location = parser.add_mutually_exclusive_group(required=True)
+            location.add_argument("--workdir")
+            location.add_argument("--source")
             parser.add_argument("--runs-dir")
+        if verb == "flows":
+            parser.add_argument("--backend")
+            parser.add_argument("--source", required=True)
+            revision = parser.add_mutually_exclusive_group()
+            revision.add_argument("--branch")
+            revision.add_argument("--commit")
         if verb == "launch":
+            parser.add_argument("--branch")
+            parser.add_argument("--commit")
+            parser.add_argument("--snapshot", action="store_true")
             parser.add_argument("--flow", required=True)
             parser.add_argument("--force-pattern", help="ScriptFlow task force pattern")
             parser.add_argument("--run-id")
@@ -100,6 +113,12 @@ def format_view(data: dict[str, Any]) -> str:
         f"  last successful fetch: {observation['last_successful_fetch'] or 'never'}",
         f"  heartbeat age: {observation['heartbeat_age_seconds']} seconds",
     ]
+    if data.get("source"):
+        source = data["source"]
+        lines.append(
+            f"  source: {source['name']} branch={source['branch']} "
+            f"commit={source['short_commit']} detached={source['detached']}"
+        )
     if data.get("controller"):
         lines.append(
             f"  controller: {data['controller']['state']} "
@@ -277,7 +296,7 @@ async def handle(args: argparse.Namespace) -> int:
                 raise ObservationError("invalid_tail", "Tail must be nonnegative")
         config = load_config(args.config)
         store = ReferenceStore(config.settings.data_dir_resolved / "scriptflow")
-        if args.scriptflow_cmd in ("launch", "cleanup", "release", "discover"):
+        if args.scriptflow_cmd in ("launch", "cleanup", "release", "discover", "flows"):
             data = await handle_controller(config, store, args)
             if args.json:
                 print(json.dumps(data, indent=2))
@@ -339,6 +358,12 @@ async def handle(args: argparse.Namespace) -> int:
                     f"{data['cancellation']['requested']}  "
                     f"{(data.get('controller') or {}).get('state', '-')}"
                 )
+                if data.get("source"):
+                    source = data["source"]
+                    print(
+                        f"  source={source['name']} branch={source['branch']} "
+                        f"commit={source['short_commit']} detached={source['detached']}"
+                    )
                 if data.get("controller_notice"):
                     print("  " + data["controller_notice"])
         elif args.scriptflow_cmd == "logs" and not failed:
@@ -364,22 +389,48 @@ async def handle(args: argparse.Namespace) -> int:
 async def handle_controller(
     config: ScriptHutConfig, store: ReferenceStore, args: argparse.Namespace
 ) -> Any:
-    from scripthut.ssh.config import _ssh_client_for
     from scripthut.scriptflow_launch import (
         ControllerBackend,
+        Launch,
         backend_config,
         control,
         discover,
         launch_run,
         make_launch,
     )
+    from scripthut.scriptflow_sources import (
+        SourceCheckout,
+        flow_workdir,
+        list_flows,
+        resolve_revision,
+        select_backend,
+        source_config,
+        workdir_for,
+    )
+    from scripthut.ssh.config import _ssh_client_for
 
+    source = source_config(config, args.source) if getattr(args, "source", None) else None
+    revision = None
+    if source and args.scriptflow_cmd in ("launch", "flows"):
+        revision = await resolve_revision(config, source, args.branch, args.commit)
+    if args.scriptflow_cmd == "flows" and source and source.local_path is not None:
+        assert revision is not None
+        return {
+            "source": source.name,
+            "commit": revision.commit,
+            "flows": await list_flows(config, revision),
+        }
+    if source:
+        args.backend = select_backend(config, args.backend)
+    elif args.scriptflow_cmd == "launch" and (args.branch or args.commit or args.snapshot):
+        raise ValueError("--branch, --commit and --snapshot require --source")
     cached = None
     proposed = None
     if args.scriptflow_cmd == "launch":
-        proposed = make_launch(config, args)
-        name = proposed.backend
-    elif args.scriptflow_cmd == "discover":
+        if not source:
+            proposed = make_launch(config, args)
+        name = args.backend
+    elif args.scriptflow_cmd in ("discover", "flows"):
         name = args.backend
     else:
         cached = await store.get(args.reference)
@@ -389,9 +440,43 @@ async def handle_controller(
     backend = ControllerBackend(client)
     reader = RecordReader(client)
     try:
+        prepare = None
+        if source:
+            directory = await workdir_for(
+                reader,
+                source,
+                revision.commit if revision and getattr(args, "snapshot", False) else None,
+            )
+            args.workdir = flow_workdir(directory, source)
+            if args.scriptflow_cmd == "flows":
+                assert revision is not None
+                return {
+                    "source": source.name,
+                    "commit": revision.commit,
+                    "flows": await list_flows(config, revision, reader),
+                }
+            if args.scriptflow_cmd == "launch":
+                assert revision is not None
+                pinned_revision = revision
+                proposed = make_launch(config, args)
+                proposed.source = source.name
+                proposed.branch = revision.branch
+                proposed.commit = revision.commit
+                proposed.repository_workdir = directory
+                proposed.flow_dir = source.flow_dir
+                proposed.detached = revision.detached
+                proposed.snapshot = args.snapshot
+                if not args.run_id:
+                    proposed.key = hashlib.sha256(
+                        (proposed.key + source.name + revision.commit).encode()
+                    ).hexdigest()[:32]
+
+                async def prepare(launch: Launch) -> None:
+                    await SourceCheckout(config).prepare(reader, launch, pinned_revision)
+
         if proposed:
             return await launch_run(
-                config, proposed, store, backend, reader, args.resubmit_ambiguous
+                config, proposed, store, backend, reader, args.resubmit_ambiguous, prepare
             )
         if args.scriptflow_cmd == "discover":
             return await discover(reader, store, name, args.workdir, args.runs_dir, args.register)
