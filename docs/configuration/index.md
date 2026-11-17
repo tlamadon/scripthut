@@ -21,6 +21,36 @@ still supports a single SSH backend when no YAML exists.
 `scriptflow.env_group` must name an environment group on the selected backend.
 Launch options can override resources. Configuration does not install ScriptFlow.
 
+## Git source working directories
+
+```yaml
+sources:
+  - name: example
+    type: git
+    url: https://example.edu/example.git
+    branch: main
+    clone_dir: /data/repos
+    workdir: /data/example       # optional; absolute backend path
+    flow_dir: analysis           # optional; default repository root (.)
+    # local_path: /data/local-example  # use local committed code instead of URL
+    # deploy_key: ~/.ssh/example_deploy
+    # postclone: mkdir -p output
+```
+
+Without `workdir`, the fixed checkout is
+`<clone_dir>/.worktrees/source-<URL-encoded source name>`. This cannot collide
+with the existing `<clone_dir>/<12-character commit>` layout selected by
+`--snapshot`. `flow_dir` is relative, contains no `..`, and must resolve inside
+the repository. ScriptFlow runs from `<workdir>/<flow_dir>`; its default records
+live there under `.sf/runs`. `--runs-dir` can override the records directory.
+
+Git sources are backend-independent: specify `--backend` if more than one is
+configured. A single backend is selected automatically. `local_path` takes
+precedence over `url`; committed objects travel through the existing Git push
+mechanism into a source-specific backend mirror. URL sources use the configured
+deploy key, or HTTPS conversion for public Git SSH URLs. Postclone runs only for
+a newly created checkout. No result cache is used.
+
 ## Settings
 
 | Key | Default | Purpose |

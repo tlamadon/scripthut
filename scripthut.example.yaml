@@ -24,6 +24,9 @@ sources:
     url: https://example.edu/example.git
     branch: main
     clone_dir: /data/repos
+    # Default workdir: /data/repos/.worktrees/source-example
+    # workdir: /data/example
+    flow_dir: .
 
 settings:
   poll_interval: 60

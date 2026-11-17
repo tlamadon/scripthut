@@ -6,7 +6,7 @@ Runs started by hand work without ScriptHut, and disconnecting ScriptHut does no
 stop a controller.
 
 ScriptHut also provides Slurm/PBS connection status and read-only job listing,
-attachment to existing tmux sessions, git source synchronization/delivery helpers,
+attachment to existing tmux sessions, git source delivery into shared working directories,
 and a local server daemon. It does not execute its own workflows or tasks.
 
 ## Install and configure
@@ -41,6 +41,20 @@ scripthut scriptflow launch --config scripthut.yaml --backend cluster --workdir 
 Launch submits one controller batch job, starts detached tmux on the compute node,
 and waits for it. Repeated identical launches reconcile the saved request rather
 than creating another controller. ScriptFlow commands never run on the login node.
+
+Configured git sources can prepare and launch a fixed checkout:
+
+```sh
+scripthut scriptflow launch --config scripthut.yaml --source example --flow analysis --run-id source-example --json
+scripthut scriptflow flows --config scripthut.yaml --source example --json
+scripthut scriptflow discover --config scripthut.yaml --source example --register
+```
+
+The default checkout is `<clone_dir>/.worktrees/source-<name>`; `workdir` overrides
+it, and `flow_dir` selects a subdirectory containing `sflow.py`. Tracked changes,
+running runs (including stale ones), and non-fast-forward updates are refused.
+Untracked outputs stay in place. See [working from a project](docs/from-a-project.md)
+for the manual equivalent, revision selection and snapshot mode.
 
 Workflow outcome, controller state and observation freshness are separate.
 Unreachable or stale observations never mean success or failure. The server and

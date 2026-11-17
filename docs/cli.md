@@ -14,6 +14,9 @@ describes server startup. Every CLI leaf supports `--json`.
 | `logs REFERENCE TASK --tail 200` | Read an attempt log; task ID or unique name; `--attempt` is 1-based |
 | `unregister REFERENCE` | Remove local reference/cache only |
 | `launch --backend B --workdir /absolute/project --flow FLOW` | Submit one detached controller; supports `--run-id`, `--runs-dir`, resource overrides and `--force-pattern` |
+| `launch --source NAME --flow FLOW` | Prepare a fixed git checkout, then launch; `--branch`, `--commit`, `--snapshot`, optional `--backend` |
+| `flows --source NAME [--branch B \| --commit SHA]` | Read `flow_*` names from committed `sflow.py`, without importing it |
+| `discover --source NAME --register` | Discover under the fixed checkout's `flow_dir`; optionally register locally |
 | `discover --backend B --workdir /absolute/project --register` | List remote run directories; optionally register locally |
 | `cancel REFERENCE --wait` | Write cancellation request; optionally wait for terminal state and complete cleanup |
 | `cleanup REFERENCE` | Explicit compute cleanup job after controller ended |
@@ -34,6 +37,25 @@ outcomes are reported explicitly. Release of an ended controller reports
 Launch records persist before submission. Identical requests reuse acknowledged
 jobs; uncertain submission is reconciled by unique job name and receipt. An
 ambiguous request is not resubmitted without `--resubmit-ambiguous`.
+
+`--source` and `--workdir` are mutually exclusive. `--branch`, `--commit` and
+`--snapshot` require a source. Branch defaults to its configured branch; an
+explicit commit at that branch's tip remains on the branch, while an older commit
+is detached. Remote URL sources require a full 40-character commit SHA; local
+repositories also resolve abbreviated SHAs. A fixed checkout already at the
+commit stays as it is, including its current attachment/detachment.
+
+With no run ID, the same source/revision/flow reuses one request. A new revision
+creates a new default request. Reusing an explicit run ID with changed settings
+is refused; use a new ID to launch different code. Acknowledged repeats never
+prepare the checkout again. Source name, branch, commit and detached status are
+included in launch output and run list/view JSON and text.
+
+`flows` reads committed text from `local_path`, otherwise the existing fixed
+backend checkout. The latter must already contain the requested commit; a missing
+checkout, commit or `sflow.py` is an explicit error, not an empty flow list.
+It performs no clone, fetch, import or launch. The Sources page likewise reads
+local code or each connected backend's existing copy and displays errors.
 
 ## Other commands
 

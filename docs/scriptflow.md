@@ -75,3 +75,10 @@ confirmed ended reports `already_ended` and “nothing to release” without iss
 For older controllers, server accounting queries start at the launch date and
 queue queries use the unique controller name. Empty scheduler results or query
 failures remain unknown. Release persists a confirmed ended observation locally.
+
+Source launches carry a `source` object in list/view JSON: `name`, `branch`,
+`commit`, `short_commit`, repository `workdir`, `flow_dir`, `detached`, and
+`snapshot`. Both run pages display this metadata alongside the three independent
+states. `/sources` displays each source's working directory, flow directory and
+flow names from committed text, with explicit errors for unavailable copies.
+It has no launch action.

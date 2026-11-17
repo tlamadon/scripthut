@@ -45,7 +45,7 @@ def render_skill() -> str:
     return f"""---
 name: scripthut
 description: >-
-  Launch ScriptFlow controllers on Slurm and observe cluster runs, logs,
+  Deliver git sources, launch ScriptFlow controllers on Slurm and observe runs, logs,
   and cancellation with ScriptHut. Use for ScriptFlow or Slurm/PBS backend
   status; not for scheduling individual tasks or installing environments.
 ---
@@ -68,6 +68,9 @@ Commands use local configuration and the existing SSH command transport:
 - `scripthut scriptflow view REFERENCE --json`
 - `scripthut scriptflow logs REFERENCE TASK --tail 200`
 - `scripthut scriptflow launch --backend NAME --workdir /data/project --flow FLOW --run-id ID --json`
+- `scripthut scriptflow launch --source SOURCE --backend NAME --flow FLOW --run-id ID --json`
+- `scripthut scriptflow flows --source SOURCE --json`
+- `scripthut scriptflow discover --source SOURCE --backend NAME --register`
 - `scripthut scriptflow discover --backend NAME --workdir /data/project --register`
 - `scripthut scriptflow cancel REFERENCE --wait --json`
 - `scripthut scriptflow cleanup REFERENCE`
@@ -78,6 +81,15 @@ Configure `scriptflow.env_group` and a named backend `env_groups` entry before
 launching. Resource overrides and `--force-pattern PATTERN` apply to launch.
 Repeat the same launch to reconcile its durable request; never blindly resubmit
 an ambiguous request. ScriptFlow owns all task execution and retry decisions.
+
+Source launches use a fixed checkout, default `<clone_dir>/.worktrees/source-<name>`.
+Configure absolute `workdir` and relative `flow_dir` to change it. Use `--branch`
+or `--commit` to pin code; `--snapshot` selects the per-commit checkout. Source and
+explicit workdir are mutually exclusive. Backend may be omitted with one configured
+backend. Refuse dirty tracked files, live/stale runs, unknown run records and
+non-fast-forward updates; never reset, stash or clean a cluster checkout. Untracked
+outputs stay. `flows` reads committed text, using local_path or an existing backend
+copy. New commits need new explicit run IDs; identical requests never move code again.
 
 Keep workflow state, controller state and observation freshness separate.
 Stale, unreachable, malformed and unsupported-version are observation problems,
