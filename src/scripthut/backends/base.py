@@ -8,8 +8,6 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-if TYPE_CHECKING:
-    from scripthut.runs.models import TaskDefinition
 
 
 @dataclass
@@ -32,13 +30,6 @@ class JobStats:
 
 
 
-@dataclass
-class DiskInfo:
-    """Disk usage for a path on the backend filesystem."""
-
-    total_bytes: int
-    avail_bytes: int
-    path: str
 
 
 @dataclass
@@ -94,11 +85,7 @@ class QuotaInfo:
 
 @dataclass
 class ClusterInfo:
-    """Aggregate cluster resource snapshot.
-
-    Backends with no partition concept (Batch, EC2) return a single
-    pseudo-partition named ``"default"``.
-    """
+    """Cluster partitions, pending reasons and optional user quota."""
 
     partitions: list[PartitionInfo]
     pending_reasons: dict[str, int]  # squeue reason -> count of pending jobs
@@ -114,7 +101,7 @@ class ClusterInfo:
 
 
 class JobBackend(ABC):
-    """Abstract base class for job management backends (Slurm, PBS, ECS, etc.)."""
+    """Read-only scheduler observation interface."""
 
     @property
     @abstractmethod
@@ -139,46 +126,8 @@ class JobBackend(ABC):
         """Check if the backend is available and responding."""
         ...
 
-    @abstractmethod
-    async def submit_job(self, script: str) -> str:
-        """Submit a job script to the scheduler.
 
-        Args:
-            script: The full submission script content.
 
-        Returns:
-            The scheduler-assigned job ID.
-
-        Raises:
-            RuntimeError: If submission fails.
-        """
-        ...
-
-    async def submit_task(
-        self,
-        task: "TaskDefinition",
-        script: str,
-        env_vars: dict[str, str] | None = None,
-    ) -> SubmitResult:
-        """Submit a task with its full context.
-
-        Default implementation forwards to :meth:`submit_job`, which is
-        sufficient for shell-script-based schedulers (env vars are already
-        inlined as ``export`` lines in the script). API-based backends
-        (e.g. AWS Batch) override this to use structured task metadata and
-        pass ``env_vars`` through the API (e.g. ``containerOverrides.environment``)
-        so the container's entrypoint sees them before the script runs.
-
-        Returns a :class:`SubmitResult` so backends can additionally surface
-        raw stdout/stderr from the submission command for diagnostics.
-        """
-        job_id = await self.submit_job(script)
-        return SubmitResult(job_id=job_id)
-
-    @abstractmethod
-    async def cancel_job(self, job_id: str) -> None:
-        """Cancel a running or queued job."""
-        ...
 
     @abstractmethod
     async def get_job_stats(
@@ -217,13 +166,6 @@ class JobBackend(ABC):
         """
         ...
 
-    async def get_disk_info(self, path: str) -> DiskInfo | None:
-        """Fetch disk usage for a path on the backend filesystem.
-
-        Default implementation returns None; SSH-based backends override
-        this to run ``df`` over the connection.
-        """
-        return None
 
     async def fetch_log(
         self,
@@ -245,20 +187,6 @@ class JobBackend(ABC):
         """
         return None, "Log fetching not implemented for this backend"
 
-    @abstractmethod
-    def generate_script(
-        self,
-        task: TaskDefinition,
-        run_id: str,
-        log_dir: str,
-        account: str | None = None,
-        login_shell: bool = False,
-        env_vars: dict[str, str] | None = None,
-        extra_init: str = "",
-        interactive_wait: bool = False,
-    ) -> str:
-        """Generate a scheduler-specific submission script for a task."""
-        ...
 
     @property
     @abstractmethod

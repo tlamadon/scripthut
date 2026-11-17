@@ -8,15 +8,8 @@ from scripthut.backends.slurm import (
     SLURM_FAILURE_STATES,
     SlurmBackend,
 )
-from scripthut.runs.models import RunItem, RunItemStatus, TaskDefinition
 
 
-def _make_item(
-    status: RunItemStatus = RunItemStatus.COMPLETED,
-    job_id: str = "12345",
-) -> RunItem:
-    task = TaskDefinition(id="t1", name="test-task", command="echo hi")
-    return RunItem(task=task, status=status, job_id=job_id)
 
 
 class TestJobStatsState:
@@ -36,71 +29,6 @@ class TestJobStatsState:
         assert stats.state is None
 
 
-class TestFailureCorrection:
-    """Verify the correction logic that flips false completions to FAILED."""
-
-    @pytest.mark.parametrize("sacct_state,expected_reason", [
-        ("OUT_OF_MEMORY", "Out of memory (OOM killed)"),
-        ("TIMEOUT", "Exceeded walltime"),
-        ("FAILED", "Non-zero exit code"),
-        ("CANCELLED", "Cancelled"),
-        ("NODE_FAIL", "Node failure"),
-        ("PREEMPTED", "Preempted"),
-    ])
-    def test_failure_corrects_completed_item(self, sacct_state, expected_reason):
-        """A COMPLETED item should flip to FAILED when sacct reports a failure state."""
-        item = _make_item(status=RunItemStatus.COMPLETED)
-        stats = JobStats(
-            cpu_efficiency=0.0, max_rss="", total_cpu="0s", state=sacct_state
-        )
-
-        # Simulate the correction logic from poll_backend
-        if (
-            stats.state
-            and stats.state in SLURM_FAILURE_STATES
-            and item.status == RunItemStatus.COMPLETED
-        ):
-            reason = SLURM_FAILURE_STATES[stats.state]
-            item.status = RunItemStatus.FAILED
-            item.error = f"Slurm: {reason}"
-
-        assert item.status == RunItemStatus.FAILED
-        assert item.error == f"Slurm: {expected_reason}"
-
-    def test_completed_stays_completed_when_sacct_says_completed(self):
-        """A COMPLETED item should stay COMPLETED when sacct agrees."""
-        item = _make_item(status=RunItemStatus.COMPLETED)
-        stats = JobStats(
-            cpu_efficiency=95.0, max_rss="512M", total_cpu="100s", state="COMPLETED"
-        )
-
-        if (
-            stats.state
-            and stats.state in SLURM_FAILURE_STATES
-            and item.status == RunItemStatus.COMPLETED
-        ):
-            item.status = RunItemStatus.FAILED
-
-        assert item.status == RunItemStatus.COMPLETED
-
-    def test_already_failed_item_not_touched(self):
-        """An already-FAILED item should not be re-corrected."""
-        item = _make_item(status=RunItemStatus.FAILED)
-        item.error = "sbatch failed: something"
-        stats = JobStats(
-            cpu_efficiency=0.0, max_rss="", total_cpu="0s", state="OUT_OF_MEMORY"
-        )
-
-        if (
-            stats.state
-            and stats.state in SLURM_FAILURE_STATES
-            and item.status == RunItemStatus.COMPLETED
-        ):
-            item.status = RunItemStatus.FAILED
-            item.error = f"Slurm: {SLURM_FAILURE_STATES[stats.state]}"
-
-        # Original error should be preserved
-        assert item.error == "sbatch failed: something"
 
 
 # -- End-to-end sacct parsing tests ------------------------------------------
@@ -344,60 +272,3 @@ class TestExitcodeParser:
         assert _slurm_exitcode_indicates_failure("   ") is False
         assert _slurm_exitcode_indicates_failure("garbage") is False
         assert _slurm_exitcode_indicates_failure("1") is False  # missing colon
-
-
-class TestGeneratedScriptSetsPipefail:
-    """`set -o pipefail` must appear in every generated script body so
-    `solve | tee log.txt` doesn't silently swallow solve's failure.
-    Tested on the SlurmBackend wrapper — generate_script_body is the
-    shared helper used by every backend that runs bash, so this also
-    asserts the helper itself produces it.
-    """
-
-    def _backend(self) -> SlurmBackend:
-        return SlurmBackend(AsyncMock())
-
-    def test_pipefail_present_in_simple_command(self):
-        task = TaskDefinition(id="t", name="t", command="echo hi")
-        script = self._backend().generate_script(task, "r", "/logs")
-        assert "set -o pipefail" in script
-
-    def test_pipefail_present_with_extra_init(self):
-        from scripthut.backends.utils import generate_script_body
-        body = generate_script_body(
-            "task", "id", "echo hi", "/work", extra_init="module load python",
-        )
-        assert "set -o pipefail" in body
-        # pipefail must run before extra_init so init's own pipelines are
-        # also protected.
-        pf_idx = body.index("set -o pipefail")
-        init_idx = body.index("module load python")
-        assert pf_idx < init_idx, (
-            "pipefail should appear before extra_init so module-load "
-            "pipelines are also protected"
-        )
-
-
-class TestSlurmGenerateScriptGres:
-    def _backend(self) -> SlurmBackend:
-        return SlurmBackend(AsyncMock())
-
-    def test_gres_emitted(self):
-        task = TaskDefinition(
-            id="t1", name="test", command="pwd", gres="gpu:2",
-        )
-        script = self._backend().generate_script(task, "r1", "/logs")
-        assert "#SBATCH --gres=gpu:2" in script
-
-    def test_gres_typed_emitted(self):
-        task = TaskDefinition(
-            id="t1", name="test", command="pwd", gres="gpu:v100:1",
-        )
-        script = self._backend().generate_script(task, "r1", "/logs")
-        assert "#SBATCH --gres=gpu:v100:1" in script
-
-    def test_gres_absent_when_unset(self):
-        task = TaskDefinition(id="t1", name="test", command="pwd")
-        script = self._backend().generate_script(task, "r1", "/logs")
-        assert "--gres" not in script
-

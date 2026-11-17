@@ -129,52 +129,14 @@ class TestProjectLocalValidation:
 
 
 def _yaml_for_global() -> str:
-    return (
-        "backends: []\n"
-        "stacks:\n"
-        "  - name: shared\n"
-        "    prep: |\n"
-        "      echo global\n"
-        "  - name: tool\n"
-        "    prep: |\n"
-        "      echo from-global\n"
-        "env:\n"
-        '  - set: { GLOBAL_VAR: "1" }\n'
-        "env_groups:\n"
-        "  base: []\n"
-    )
+    return 'backends: []\nenv:\n  - set: { GLOBAL_VAR: "1" }\nenv_groups:\n  base: []\n'
 
 
 def _yaml_for_project() -> str:
-    return (
-        "stacks:\n"
-        "  - name: tool\n"
-        "    prep: |\n"
-        "      echo from-project\n"
-        "  - name: project-only\n"
-        "    prep: |\n"
-        "      echo new\n"
-        "env:\n"
-        '  - set: { PROJECT_VAR: "1" }\n'
-        "env_groups:\n"
-        "  extra: []\n"
-    )
+    return 'env:\n  - set: { PROJECT_VAR: "1" }\nenv_groups:\n  extra: []\n'
 
 
 class TestMerge:
-    def test_project_overrides_by_name_in_stacks(self, tmp_path: Path):
-        g = load_yaml_config(_write_yaml(tmp_path / "g.yaml", _yaml_for_global()))
-        p = load_yaml_config(_write_yaml(tmp_path / "p.yaml", _yaml_for_project()))
-        merged = _merge_configs(g, p)
-
-        names = {s.name for s in merged.stacks}
-        assert names == {"shared", "tool", "project-only"}
-
-        tool = next(s for s in merged.stacks if s.name == "tool")
-        assert "from-project" in tool.prep  # project wins
-
-        shared = next(s for s in merged.stacks if s.name == "shared")
-        assert "global" in shared.prep  # unchanged
 
     def test_env_concatenates_global_first(self, tmp_path: Path):
         g = load_yaml_config(_write_yaml(tmp_path / "g.yaml", _yaml_for_global()))
@@ -195,40 +157,6 @@ class TestMerge:
 # ---------- input_files resolution ---------------------------------------
 
 
-class TestInputFilesResolution:
-    def test_relative_paths_resolved_to_config_dir(self, tmp_path: Path):
-        project_dir = tmp_path / "repo"
-        project_dir.mkdir()
-        (project_dir / "requirements.txt").write_text("foo==1.0\n")
-        cfg_path = _write_yaml(
-            project_dir / "scripthut.yaml",
-            (
-                "stacks:\n"
-                "  - name: py\n"
-                "    prep: pip install -r requirements.txt\n"
-                "    input_files:\n"
-                "      - requirements.txt\n"
-            ),
-        )
-
-        cfg = load_yaml_config(cfg_path)
-        assert len(cfg.stacks) == 1
-        resolved = cfg.stacks[0].input_files[0]
-        assert resolved.is_absolute()
-        assert resolved == (project_dir / "requirements.txt").resolve()
-
-    def test_absolute_path_left_unchanged(self, tmp_path: Path):
-        (tmp_path / "abs.txt").write_text("hi\n")
-        cfg_path = _write_yaml(
-            tmp_path / "scripthut.yaml",
-            f"stacks:\n"
-            f"  - name: x\n"
-            f"    prep: echo hi\n"
-            f"    input_files:\n"
-            f"      - {tmp_path / 'abs.txt'}\n",
-        )
-        cfg = load_yaml_config(cfg_path)
-        assert cfg.stacks[0].input_files[0] == tmp_path / "abs.txt"
 
 
 # ---------- layered load end-to-end --------------------------------------
@@ -250,29 +178,29 @@ class TestLoadLayered:
         project_dir.mkdir()
         _write_yaml(
             project_dir / "scripthut.yaml",
-            "stacks:\n  - name: solo\n    prep: echo hi\n",
+            "env_groups: {solo: [{init: \"echo hi\"}]}\n",
         )
         with patch("scripthut.config.GLOBAL_CONFIG_PATHS", []):
             cfg = load_layered_config(cwd=project_dir)
         assert cfg is not None
-        assert [s.name for s in cfg.stacks] == ["solo"]
+        assert list(cfg.env_groups) == ["solo"]
 
     def test_both_merge(self, tmp_path: Path):
         g = _write_yaml(
             tmp_path / "global.yaml",
-            "backends: []\nstacks:\n  - name: shared\n    prep: echo g\n",
+            "backends: []\nenv_groups: {shared: [{init: \"echo g\"}]}\n",
         )
         project_dir = tmp_path / "repo"
         project_dir.mkdir()
         _write_yaml(
             project_dir / "scripthut.yaml",
-            "stacks:\n  - name: shared\n    prep: echo p\n",
+            "env_groups: {shared: [{init: \"echo p\"}]}\n",
         )
         with patch("scripthut.config.GLOBAL_CONFIG_PATHS", [g]):
             cfg = load_layered_config(cwd=project_dir)
         assert cfg is not None
         # project override wins
-        assert "p" in cfg.stacks[0].prep
+        assert "p" in cfg.env_groups["shared"][0].init
 
     def test_project_with_forbidden_field_raises(self, tmp_path: Path):
         g = _write_yaml(tmp_path / "global.yaml", "backends: []\n")
@@ -319,9 +247,9 @@ class TestLegacyProjectsRejection:
         with pytest.raises(Exception) as exc_info:
             load_yaml_config(yaml)
         msg = str(exc_info.value)
-        assert "projects:" in msg
-        assert "sources:" in msg
-        assert "0.6.0" in msg
+        assert "projects" in msg
+        assert "Obsolete configuration keys" in msg
+        assert "Remove them" in msg
 
     def test_yaml_with_only_sources_still_works(self, tmp_path: Path):
         yaml = _write_yaml(

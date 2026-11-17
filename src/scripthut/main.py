@@ -22,49 +22,14 @@ from fastapi.templating import Jinja2Templates
 from sse_starlette.sse import EventSourceResponse
 
 from scripthut import __version__
-from scripthut.backends.base import JobStats
 from scripthut.config import find_config_file, load_config, load_yaml_config, set_config
-from scripthut.config_schema import (
-    GitSourceConfig,
-    PathSourceConfig,
-    ScriptHutConfig,
-)
-from scripthut.disk.service import DiskScanService
+from scripthut.config_schema import GitSourceConfig, PathSourceConfig, ScriptHutConfig
 from scripthut.models import ConnectionStatus, HPCJob, JobState
-from scripthut.notifications import NotificationHub
-from scripthut.runs import Run, RunManager
-from scripthut.runs.manager import (
-    DISAPPEARED_BEFORE_RUNNING_MARKER,
-    SCHEDULER_NO_RECORD_MARKER,
-    SETTLING_NO_RECORD_TIMEOUT_SECONDS,
-    SETTLING_UNCONFIRMED_MARKER,
-    SUBMIT_TO_FAIL_GRACE_SECONDS,
-    SUBMITTED_NO_RECORD_TIMEOUT_SECONDS,
-)
-from scripthut.runs.activity import (
-    ACTIVITY_WINDOW_DAYS,
-    build_activity_grid,
-    build_hourly_usage,
-)
-from scripthut.runs.models import RunItemStatus, RunStatus
-from scripthut.runs.storage import RunStorageManager
-from scripthut.runs.usage import UsageLog, merged_records, window_start
-from scripthut.runtime import (
-    BackendState,
-    Runtime,
-    init_runtime,
-    shutdown_runtime,
-)
-from scripthut.sources.git import GitSourceManager, SourceStatus, SourceWorkflow
+from scripthut.runtime import BackendState, Runtime, init_runtime, shutdown_runtime
+from scripthut.sources.git import GitSourceManager, SourceStatus
 from scripthut.terminal import TerminalManager
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-)
 logger = logging.getLogger(__name__)
-
-
 @dataclass
 class AppState:
     """Application state container."""
@@ -75,14 +40,7 @@ class AppState:
     source_manager: GitSourceManager | None = None
     source_statuses: dict[str, SourceStatus] = field(default_factory=dict)
     path_sources: list[PathSourceConfig] = field(default_factory=list)
-    source_workflows: dict[str, list[SourceWorkflow]] = field(default_factory=dict)
-    run_manager: RunManager | None = None
-    run_storage: RunStorageManager | None = None
-    usage_log: UsageLog | None = None
     terminal_manager: TerminalManager = field(default_factory=TerminalManager)
-    disk_service: DiskScanService = field(default_factory=DiskScanService)
-    pricing_service: Any = None  # Optional PricingService instance
-    debug_job_ids: set[str] = field(default_factory=set)  # job IDs submitted via interactive debug
     disabled_sources: set[str] = field(default_factory=set)  # Source names toggled off
     filter_enabled: bool = False
     filter_user: str | None = None
@@ -145,15 +103,7 @@ class AppState:
 
 
 state = AppState()
-
-# Run lifecycle notifications + page-title progress stats. Fed by the
-# poll loop (scan/update_stats) and run-creation routes (run_scheduled);
-# streamed to browsers via /notifications/stream.
-notification_hub = NotificationHub()
-
-# CLI argument for config path (set by run())
 _config_path: Path | None = None
-
 
 async def poll_backend(backend_state: BackendState, filter_user: str | None = None) -> None:
     """Poll jobs for a single backend."""
@@ -198,390 +148,19 @@ async def poll_backend(backend_state: BackendState, filter_user: str | None = No
             )
             return
 
-    if state.config and not state.config.settings.legacy_runs_enabled:
-        backend_state.status.connected = bool(
-            backend_state.ssh_client and backend_state.ssh_client.is_connected
-        )
-        return
-
     start_time = time.perf_counter()
     try:
         jobs = await backend_state.backend.get_jobs(user=filter_user)
         cluster_info = await backend_state.backend.get_cluster_info(user=filter_user)
-        disk_info = await backend_state.backend.get_disk_info(backend_state.clone_dir)
-        duration_ms = int((time.perf_counter() - start_time) * 1000)
         backend_state.jobs = jobs
-
-        # "Your usage" jobs/cpus are computed from scripthut's own run items
-        # (see _backend_usage) rather than a live squeue tally, so nothing
-        # per-user needs deriving here. cluster_info still carries the Slurm
-        # quota (fair-share / limits / account) for display.
         backend_state.status = ConnectionStatus(
-            connected=True,
-            host=backend_state.status.host,
-            last_poll=datetime.now(UTC),
-            last_poll_duration_ms=duration_ms,
-            job_count=len(jobs),
-            cluster_info=cluster_info,
-            disk_clone_dir=backend_state.clone_dir,
-            disk_total_bytes=disk_info.total_bytes if disk_info else None,
-            disk_avail_bytes=disk_info.avail_bytes if disk_info else None,
+            connected=True, host=backend_state.status.host,
+            last_poll=datetime.now(UTC), job_count=len(jobs), cluster_info=cluster_info,
+            last_poll_duration_ms=int((time.perf_counter() - start_time) * 1000),
         )
-        logger.debug(f"Polled {len(jobs)} jobs from '{backend_state.name}' in {duration_ms}ms")
-
-        # Collect job_ids that need an accounting (sacct) lookup. Three
-        # phases share the same query so the SSH round-trip is shared:
-        #
-        #   A) Items already in a terminal state (COMPLETED/FAILED) whose
-        #      scheduler_state isn't confirmed yet — we want resource
-        #      stats and a chance to correct a false COMPLETED to FAILED.
-        #
-        #   B) Items still in SUBMITTED that have been missing from
-        #      squeue past the grace period — *evidence-based* resolution
-        #      of the "vanished" case (replaces the speculative FAILED-
-        #      with-marker pattern). sacct will tell us whether they
-        #      ran to completion, failed for a real reason, or were
-        #      dropped by the scheduler entirely.
-        #
-        #   C) Items in SETTLING (added in v0.10.0): the scheduler said
-        #      the job is done but accounting hasn't confirmed the real
-        #      outcome yet. Until sacct returns a row, the item stays
-        #      non-terminal so `run watch --exit-status` doesn't race
-        #      a transient COMPLETED → FAILED flip. Falls back to
-        #      COMPLETED (without a confirmed exit code) after a long
-        #      grace if accounting still hasn't surfaced — better than
-        #      a permanently stuck run.
-        sacct_ids: list[str] = []
-        live_job_ids: set[str] = {j.job_id for j in jobs if j.job_id}
-        now_utc = datetime.now(UTC)
-        if state.run_manager:
-            for run in state.run_manager.runs.values():
-                if run.backend_name != backend_state.name:
-                    continue
-                for item in run.items:
-                    if not item.job_id:
-                        continue
-                    # Phase A
-                    if (
-                        item.status in (RunItemStatus.COMPLETED, RunItemStatus.FAILED)
-                        and item.scheduler_state is None
-                    ):
-                        sacct_ids.append(item.job_id)
-                        continue
-                    # Phase B
-                    if (
-                        item.status == RunItemStatus.SUBMITTED
-                        and item.job_id not in live_job_ids
-                        and item.submitted_at is not None
-                    ):
-                        submit_age = (now_utc - item.submitted_at).total_seconds()
-                        if submit_age > SUBMIT_TO_FAIL_GRACE_SECONDS:
-                            sacct_ids.append(item.job_id)
-                        continue
-                    # Phase C
-                    if item.status == RunItemStatus.SETTLING:
-                        sacct_ids.append(item.job_id)
-
-        # Query accounting for resource utilization
-        job_stats: dict[str, JobStats] = {}
-        if sacct_ids:
-            logger.info(f"Fetching stats for {len(sacct_ids)} jobs on '{backend_state.name}': {sacct_ids}")
-            try:
-                job_stats = await backend_state.backend.get_job_stats(
-                    sacct_ids, user=filter_user,
-                )
-                logger.info(f"Got stats for {len(job_stats)}/{len(sacct_ids)} jobs on '{backend_state.name}'")
-            except Exception as e:
-                logger.warning(f"Stats fetch failed for '{backend_state.name}': {e}")
-
-        # Write stats back to RunItems and correct false completions
-        if state.run_manager and job_stats:
-            for run in state.run_manager.runs.values():
-                if run.backend_name != backend_state.name:
-                    continue
-                run_updated = False
-                # Set when a symmetric correction unwinds DEP_FAILED items
-                # to PENDING — the run needs another process_run pass for
-                # those newly-eligible items to actually get submitted.
-                needs_reprocess = False
-                for item in run.items:
-                    if item.job_id and item.job_id in job_stats:
-                        s = job_stats[item.job_id]
-                        item.cpu_efficiency = s.cpu_efficiency
-                        item.max_rss = s.max_rss
-                        if s.start_time:
-                            item.started_at = s.start_time
-                        if s.end_time:
-                            item.finished_at = s.end_time
-                        run_updated = True
-                        # Record confirmed scheduler state (stops re-querying)
-                        # Only lock on terminal states — accounting DB can return
-                        # RUNNING/PENDING when the DB hasn't caught up yet.
-                        if s.state and s.state in backend_state.backend.terminal_states:
-                            item.scheduler_state = s.state
-                        # Populate the numeric exit code on every sacct
-                        # observation — useful to consumers regardless of
-                        # which transition branch we end up in.
-                        if s.exit_code is not None:
-                            item.exit_code = s.exit_code
-                        # Correct false completions: accounting says failed but
-                        # item was marked COMPLETED because it vanished from queue
-                        if (
-                            s.state
-                            and s.state in backend_state.backend.failure_states
-                            and item.status == RunItemStatus.COMPLETED
-                        ):
-                            reason = backend_state.backend.failure_states[s.state]
-                            item.status = RunItemStatus.FAILED
-                            item.error = f"Scheduler: {reason}"
-                            logger.info(
-                                f"Corrected task '{item.task.id}' "
-                                f"(job {item.job_id}): {reason}"
-                            )
-                        # SETTLING resolution (v0.10.0): the scheduler said
-                        # the job left the queue but the verdict was unknown
-                        # until accounting returned a row. This is where the
-                        # state machine commits — COMPLETED or FAILED, with
-                        # the exit code as evidence. Same shape as the
-                        # SUBMITTED-past-grace branch below.
-                        elif item.status == RunItemStatus.SETTLING and s.state:
-                            if s.state == "COMPLETED":
-                                item.started_at = item.started_at or item.submitted_at
-                                item.status = RunItemStatus.COMPLETED
-                                item.finished_at = s.end_time or datetime.now(UTC)
-                                logger.info(
-                                    f"Task '{item.task.id}' (job {item.job_id}) "
-                                    f"resolved via sacct: COMPLETED "
-                                    f"(exit {s.exit_code})"
-                                )
-                                if state.run_manager:
-                                    await state.run_manager._after_item_completed(
-                                        run, item,
-                                    )
-                                needs_reprocess = True
-                            elif s.state in backend_state.backend.failure_states:
-                                reason = backend_state.backend.failure_states[s.state]
-                                item.started_at = item.started_at or item.submitted_at
-                                item.status = RunItemStatus.FAILED
-                                item.error = f"Scheduler: {reason}"
-                                item.finished_at = s.end_time or datetime.now(UTC)
-                                logger.info(
-                                    f"Task '{item.task.id}' (job {item.job_id}) "
-                                    f"resolved via sacct: {reason} "
-                                    f"(exit {s.exit_code})"
-                                )
-                                needs_reprocess = True
-                        # SUBMITTED-past-grace resolution: the item was
-                        # missing from squeue and we asked sacct what
-                        # actually happened. Move directly to the right
-                        # terminal state — no FAILED-then-correct dance.
-                        elif item.status == RunItemStatus.SUBMITTED and s.state:
-                            if s.state == "COMPLETED":
-                                item.started_at = item.started_at or item.submitted_at
-                                item.status = RunItemStatus.COMPLETED
-                                item.finished_at = s.end_time or datetime.now(UTC)
-                                logger.info(
-                                    f"Task '{item.task.id}' (job {item.job_id}) "
-                                    f"resolved via sacct: COMPLETED"
-                                )
-                                if state.run_manager:
-                                    await state.run_manager._after_item_completed(
-                                        run, item,
-                                    )
-                                needs_reprocess = True
-                            elif s.state in backend_state.backend.failure_states:
-                                reason = backend_state.backend.failure_states[s.state]
-                                item.started_at = item.started_at or item.submitted_at
-                                item.status = RunItemStatus.FAILED
-                                item.error = f"Scheduler: {reason}"
-                                item.finished_at = s.end_time or datetime.now(UTC)
-                                logger.info(
-                                    f"Task '{item.task.id}' (job {item.job_id}) "
-                                    f"resolved via sacct: {reason}"
-                                )
-                                needs_reprocess = True
-                        # Legacy symmetric correction kept as a backstop
-                        # for runs persisted before the evidence-based
-                        # path existed. New runs never reach this branch
-                        # because they never get FAILED-with-marker.
-                        elif (
-                            s.state == "COMPLETED"
-                            and item.status == RunItemStatus.FAILED
-                            and item.error == DISAPPEARED_BEFORE_RUNNING_MARKER
-                        ):
-                            item.status = RunItemStatus.COMPLETED
-                            item.error = None
-                            logger.info(
-                                f"Corrected legacy FAILED task '{item.task.id}' "
-                                f"(job {item.job_id}): sacct confirms COMPLETED"
-                            )
-                            reset = run.uncascade_dep_failures()
-                            for r in reset:
-                                logger.info(
-                                    f"Unwound DEP_FAILED on '{r.task.id}' "
-                                    f"(parent '{item.task.id}' was corrected)"
-                                )
-                            if reset:
-                                needs_reprocess = True
-                        elif s.state:
-                            logger.debug(
-                                f"sacct state for '{item.task.id}' "
-                                f"(job {item.job_id}): {s.state}"
-                            )
-                if run_updated:
-                    state.run_manager._persist_run(run)
-                    state.run_manager.notify_run(run.id)
-                    if needs_reprocess:
-                        # Newly-eligible items (parents un-failed, their
-                        # children no longer DEP_FAILED) won't get
-                        # submitted until process_run walks the items
-                        # again — without this the run gets stuck.
-                        await state.run_manager.process_run(run)
-
-        # "No record anywhere" timeout: an item still SUBMITTED whose
-        # job_id is in neither squeue nor sacct, well past the long
-        # timeout, was almost certainly dropped by the scheduler —
-        # sbatch returned an id but the scheduler never accepted it.
-        # This block runs unconditionally because, by definition, sacct
-        # returned nothing for these jobs (so they're absent from
-        # job_stats); we only care whether their age has exceeded the
-        # timeout. Mark FAILED with the evidence-based marker so the
-        # user gets an actionable message.
-        if state.run_manager:
-            for run in state.run_manager.runs.values():
-                if run.backend_name != backend_state.name:
-                    continue
-                dropped_any = False
-                for item in run.items:
-                    if (
-                        item.status == RunItemStatus.SUBMITTED
-                        and item.job_id
-                        and item.job_id not in live_job_ids
-                        and item.job_id not in job_stats
-                        and item.submitted_at is not None
-                    ):
-                        age = (now_utc - item.submitted_at).total_seconds()
-                        if age > SUBMITTED_NO_RECORD_TIMEOUT_SECONDS:
-                            item.started_at = item.submitted_at
-                            item.status = RunItemStatus.FAILED
-                            item.error = SCHEDULER_NO_RECORD_MARKER
-                            item.finished_at = now_utc
-                            dropped_any = True
-                            logger.warning(
-                                f"Task '{item.task.id}' (job {item.job_id}): "
-                                f"no record in squeue or sacct after "
-                                f"{age:.0f}s — marking FAILED "
-                                f"(scheduler dropped the job)"
-                            )
-                if dropped_any:
-                    state.run_manager._persist_run(run)
-                    state.run_manager.notify_run(run.id)
-
-        # SETTLING long-grace fallback: an item that's been waiting on
-        # accounting for too long should not block the run forever. If
-        # sacct still has no row well past the timeout, fall back to
-        # COMPLETED with a marker on item.error so consumers know the
-        # exit code wasn't accounting-confirmed. Marking FAILED here
-        # would invent a failure from an accounting-DB-availability
-        # issue, which is worse than reporting "ran but unverified".
-        if state.run_manager:
-            for run in state.run_manager.runs.values():
-                if run.backend_name != backend_state.name:
-                    continue
-                unresolved_any = False
-                for item in run.items:
-                    if (
-                        item.status == RunItemStatus.SETTLING
-                        and item.job_id
-                        and item.job_id not in job_stats
-                        and item.finished_at is not None
-                    ):
-                        age = (now_utc - item.finished_at).total_seconds()
-                        if age > SETTLING_NO_RECORD_TIMEOUT_SECONDS:
-                            item.status = RunItemStatus.COMPLETED
-                            item.error = SETTLING_UNCONFIRMED_MARKER
-                            # finished_at stays as the queue-vanish moment.
-                            unresolved_any = True
-                            logger.warning(
-                                f"Task '{item.task.id}' (job {item.job_id}): "
-                                f"SETTLING for {age:.0f}s without an sacct "
-                                f"row — marking COMPLETED (unconfirmed)"
-                            )
-                            if state.run_manager:
-                                await state.run_manager._after_item_completed(
-                                    run, item,
-                                )
-                if unresolved_any:
-                    state.run_manager._persist_run(run)
-                    state.run_manager.notify_run(run.id)
-                    await state.run_manager.process_run(run)
-
-        # Handle external jobs (not in any active run)
-        if state.run_manager and state.run_storage:
-            known_slurm_ids: set[str] = set()
-            for run in state.run_manager.runs.values():
-                for item in run.items:
-                    if item.job_id:
-                        known_slurm_ids.add(item.job_id)
-
-            slurm_state_to_run_status = {
-                # External jobs we observe in squeue PENDING are "queued"
-                # (the scheduler has them); we never have a "submitted but
-                # not yet observed" state for jobs we didn't sbatch.
-                JobState.PENDING: "queued",
-                JobState.RUNNING: "running",
-                JobState.COMPLETING: "running",
-                JobState.COMPLETED: "completed",
-                JobState.CANCELLED: "failed",
-                JobState.FAILED: "failed",
-                JobState.TIMEOUT: "failed",
-                JobState.NODE_FAIL: "failed",
-                JobState.PREEMPTED: "failed",
-                JobState.BOOT_FAIL: "failed",
-                JobState.DEADLINE: "failed",
-                JobState.OUT_OF_MEMORY: "failed",
-            }
-
-            for slurm_job in jobs:
-                if slurm_job.job_id not in known_slurm_ids:
-                    run_status = slurm_state_to_run_status.get(slurm_job.state, "running")
-                    stats = job_stats.get(slurm_job.job_id)
-                    state.run_storage.add_external_job(
-                        backend_name=backend_state.name,
-                        job_id=slurm_job.job_id,
-                        name=slurm_job.name,
-                        user=slurm_job.user,
-                        state=run_status,
-                        partition=slurm_job.partition,
-                        cpus=slurm_job.cpus,
-                        memory=slurm_job.memory,
-                        submit_time=slurm_job.submit_time,
-                        start_time=slurm_job.start_time,
-                        cpu_efficiency=stats.cpu_efficiency if stats else None,
-                        max_rss=stats.max_rss if stats else None,
-                        pending_reason=getattr(slurm_job, "reason", None),
-                    )
-
-            # Reconcile stale external jobs no longer in squeue
-            active_ids = {j.job_id for j in jobs}
-            reconciled = state.run_storage.reconcile_external_jobs(
-                backend_state.name, active_ids
-            )
-            if reconciled:
-                logger.info(
-                    f"Reconciled {reconciled} stale external jobs for '{backend_state.name}'"
-                )
-
-    except Exception as e:
-        duration_ms = int((time.perf_counter() - start_time) * 1000)
-        logger.error(f"Job polling failed for '{backend_state.name}': {e}")
-        backend_state.status = ConnectionStatus(
-            connected=False,
-            host=backend_state.status.host,
-            last_poll=backend_state.status.last_poll,
-            last_poll_duration_ms=duration_ms,
-            error=str(e),
-        )
+    except Exception as exc:
+        backend_state.status.connected = False
+        backend_state.status.error = str(exc)
 
 
 async def poll_jobs() -> None:
@@ -605,47 +184,15 @@ async def poll_jobs() -> None:
             total_jobs = sum(len(c.jobs) for c in state.backends.values())
             logger.info(f"Polled {total_jobs} jobs from {len(tasks)} backends (filter_user={filter_user})")
 
-        if state.config.settings.legacy_runs_enabled:
-            # Update run statuses based on polled jobs
-            if state.run_manager and state.run_manager.get_active_runs():
-                backend_jobs: dict[str, list[tuple]] = {}
-                for name, bs in state.backends.items():
-                    backend_jobs[name] = [
-                        (job.job_id, job.state, getattr(job, "reason", None))
-                        for job in bs.jobs
-                    ]
-                await state.run_manager.update_all_runs(backend_jobs)
-
-            # Save dirty runs
-            if state.run_manager:
-                state.run_manager.save_dirty()
-
-            # Emit run lifecycle notifications and refresh progress stats from
-            # the freshly-updated run statuses.
-            if state.run_manager:
-                runs = state.run_manager.runs.values()
-                notification_hub.scan(runs)
-                notification_hub.update_stats(runs)
-
         await scriptflow_service.poll()
 
         # Record poll time and notify SSE listeners
         state._last_poll_time = time.monotonic()
         state.notify_poll()
 
-        # Cleanup old runs once per hour
-        poll_count += 1
-        if state.config.settings.legacy_runs_enabled and poll_count >= 60 and state.run_storage:
-            # Flush to the usage ledger *first*: cleanup is about to delete
-            # the very runs the activity graph's history comes from.
-            if state.usage_log:
-                state.usage_log.record(state.run_manager.runs.values() if state.run_manager else [])
-            state.run_storage.cleanup_old_runs()
-            poll_count = 0
-
         try:
             # Sleep until next interval, but wake early on shutdown or force-poll
-            done, _ = await asyncio.wait(
+            done, pending = await asyncio.wait(
                 [
                     asyncio.ensure_future(state._shutdown_event.wait()),
                     asyncio.ensure_future(state._force_poll_event.wait()),
@@ -658,11 +205,10 @@ async def poll_jobs() -> None:
             # Reset force-poll flag for next cycle
             state._force_poll_event.clear()
             # Cancel any pending futures from the wait set
-            for f in done:
+            for f in done | pending:
                 f.cancel()
         except asyncio.CancelledError:
             break
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
@@ -677,10 +223,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     set_config(config)
     state.config = config
-    from scripthut.legacy import configure_routes
-    configure_routes(app, config.settings.legacy_runs_enabled)
-    templates.env.globals["legacy_runs_enabled"] = config.settings.legacy_runs_enabled
-
     logger.info(f"Loaded configuration with {len(config.backends)} backends, {len(config.sources)} sources")
 
     # Initialize filter settings
@@ -695,7 +237,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         elif isinstance(source, PathSourceConfig):
             state.path_sources.append(source)
 
-    # Everything slow — SSH connects, run restore, pricing — happens in a
+    # Everything slow — SSH connections — happens in a
     # background task so uvicorn binds the socket immediately. Until the
     # task clears state.startup_phase, the gate middleware answers with a
     # "starting…" page / 503 instead of connection-refused.
@@ -718,10 +260,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # Wake all SSE listeners so they can exit cleanly
     state.notify_poll()
-    if state.run_manager:
-        for run_id in list(state.run_manager._run_events.keys()):
-            state.run_manager.notify_run(run_id)
-
     if state._polling_task:
         state._polling_task.cancel()
         try:
@@ -729,72 +267,24 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         except asyncio.CancelledError:
             pass
 
-    # Persist any unsaved runs and disconnect SSH-based backends
-    if state.run_manager and state.run_storage:
-        await shutdown_runtime(
-            Runtime(
-                config=state.config,
-                backends=state.backends,
-                run_storage=state.run_storage,
-                run_manager=state.run_manager,
-            )
-        )
-        logger.info("Saved run data on shutdown")
-    elif state.config and not state.config.settings.legacy_runs_enabled:
+    if state.config:
         await shutdown_runtime(Runtime(config=state.config, backends=state.backends))
 
 
 async def _finish_startup(config: ScriptHutConfig) -> None:
-    """Background half of startup: backends, run restore, pricing, polling.
+    """Background half of startup: backends and polling.
 
     Runs after uvicorn is already accepting connections; progress is
     reported through ``state.startup_phase`` (shown by the gate middleware
     and ``/api/v1/health``) and cleared when the server is fully ready.
     """
     try:
-        # Initialize backends, storage, and run manager (shared with CLI)
+        # Initialize shared backend connections
         def on_phase(phase: str) -> None:
             state.startup_phase = phase
 
         runtime = await init_runtime(config, on_phase=on_phase)
         state.backends.update(runtime.backends)
-        state.run_storage = runtime.run_storage
-        state.run_manager = runtime.run_manager
-        state.usage_log = runtime.usage_log
-
-        # Backfill the usage ledger from whatever runs survived retention.
-        # On first upgrade this seeds the activity graph with the last 30
-        # days; afterwards it just catches anything the final hourly flush
-        # missed before the process last exited.
-        if state.usage_log and state.run_manager:
-            state.usage_log.record(state.run_manager.runs.values())
-
-        # Record existing runs/failures so we don't announce them as "new" —
-        # only transitions from here on generate notifications.
-        if state.run_manager:
-            notification_hub.prime(state.run_manager.runs.values())
-
-        # Sources sync after backends so path-source discovery (which needs
-        # a connected SSH client) doesn't race the connects.
-        if config.sources and config.settings.legacy_runs_enabled:
-            asyncio.create_task(sync_sources_background())
-
-        # Initialize pricing service (optional)
-        if config.pricing and config.pricing.partitions:
-            state.startup_phase = "loading pricing data"
-            try:
-                from scripthut.pricing import PricingService
-
-                pricing_service = PricingService(config.pricing, config.settings.data_dir_resolved)
-                await pricing_service.initialize()
-                if pricing_service.ready:
-                    state.pricing_service = pricing_service
-                    logger.info("Pricing service initialized")
-                else:
-                    logger.warning("Pricing service loaded but has no data")
-            except Exception as e:
-                logger.warning(f"Failed to initialize pricing service: {e}")
-
         # Start background polling
         state._polling_task = asyncio.create_task(poll_jobs())
         logger.info("Startup complete — server ready")
@@ -808,104 +298,6 @@ async def _finish_startup(config: ScriptHutConfig) -> None:
     finally:
         state.startup_phase = None
 
-
-async def sync_sources_background() -> None:
-    """Sync git sources and discover workflows."""
-    if state.source_manager is None:
-        return
-
-    logger.info("Syncing git sources...")
-    try:
-        state.source_statuses = await state.source_manager.sync_all()
-        synced = sum(1 for s in state.source_statuses.values() if s.cloned)
-        logger.info(f"Synced {synced}/{len(state.source_statuses)} sources")
-
-        # Discover workflows from git sources
-        for name in state.source_statuses:
-            try:
-                workflows = state.source_manager.discover_workflows(name)
-                state.source_workflows[name] = workflows
-            except Exception as e:
-                logger.warning(f"Failed to discover workflows for source {name}: {e}")
-
-        # Discover workflows from path sources via SSH
-        for path_source in state.path_sources:
-            try:
-                workflows = await _discover_path_source_workflows(path_source)
-                state.source_workflows[path_source.name] = workflows
-            except Exception as e:
-                logger.warning(f"Failed to discover workflows for path source {path_source.name}: {e}")
-
-    except Exception as e:
-        logger.error(f"Failed to sync sources: {e}")
-
-
-async def _discover_path_source_workflows(source: PathSourceConfig) -> list[SourceWorkflow]:
-    """Discover workflow JSON files from a path source on the backend via SSH."""
-    backend_state = state.backends.get(source.backend)
-    if backend_state is None or backend_state.ssh_client is None:
-        logger.warning(f"Backend '{source.backend}' not connected for path source '{source.name}'")
-        return []
-
-    # Use bash glob expansion on the remote to find matching workflow files
-    glob_pattern = f"{source.path}/{source.workflows_glob}"
-    stdout, stderr, exit_code = await backend_state.ssh_client.run_command(
-        f"python3 -c \"import glob, json; print(json.dumps(sorted(glob.glob('{glob_pattern}', recursive=True))))\" 2>/dev/null"
-    )
-
-    if exit_code != 0 or not stdout.strip():
-        # Fallback: try bash globstar (works if extglob/globstar enabled)
-        stdout, stderr, exit_code = await backend_state.ssh_client.run_command(
-            f"bash -c 'shopt -s globstar nullglob; for f in {glob_pattern}; do echo \"$f\"; done'"
-        )
-
-    if exit_code != 0 or not stdout.strip():
-        logger.debug(f"No workflow files matching '{glob_pattern}'")
-        return []
-
-    # Parse file list
-    try:
-        file_list = json.loads(stdout)
-    except (ValueError, TypeError):
-        file_list = [line.strip() for line in stdout.strip().splitlines() if line.strip()]
-
-    workflows: list[SourceWorkflow] = []
-    for filepath in file_list:
-        filepath = filepath.strip()
-        if not filepath:
-            continue
-
-        # Read the file content
-        content_stdout, _, content_exit = await backend_state.ssh_client.run_command(
-            f"cat {filepath}"
-        )
-        if content_exit != 0:
-            logger.warning(f"Failed to read {filepath}")
-            continue
-
-        try:
-            parsed = json.loads(content_stdout)
-        except ValueError:
-            logger.warning(f"Invalid JSON in {filepath}")
-            continue
-
-        title = parsed.get("title") if isinstance(parsed, dict) else None
-        filename = filepath.rsplit("/", 1)[-1]
-        stem = filename.removesuffix(".json")
-        workflows.append(
-            SourceWorkflow(
-                name=f"{source.name}/{stem}",
-                source_name=source.name,
-                filename=filename,
-                tasks_json=content_stdout,
-                title=title,
-            )
-        )
-
-    logger.info(f"Discovered {len(workflows)} workflows in path source '{source.name}'")
-    return workflows
-
-
 @dataclass
 class ReloadReport:
     """Summary of which config sections were hot-reloaded vs require a restart."""
@@ -914,7 +306,6 @@ class ReloadReport:
     requires_restart: list[str] = field(default_factory=list)
     counts: dict[str, int] = field(default_factory=dict)
     messages: list[str] = field(default_factory=list)
-
 
 def _diff_named(
     old_items: list[Any], new_items: list[Any]
@@ -926,7 +317,6 @@ def _diff_named(
     removed = set(old_map) - set(new_map)
     modified = {k for k in old_map.keys() & new_map.keys() if old_map[k] != new_map[k]}
     return added, removed, modified
-
 
 def reload_runtime_config(new_config: ScriptHutConfig) -> ReloadReport:
     """Apply a freshly parsed config to the running server, in-process.
@@ -947,9 +337,6 @@ def reload_runtime_config(new_config: ScriptHutConfig) -> ReloadReport:
         )
 
     old = state.config
-    if old.settings.legacy_runs_enabled != new_config.settings.legacy_runs_enabled:
-        raise RuntimeError("Changing legacy_runs_enabled requires a restart")
-
     added_b, removed_b, modified_b = _diff_named(old.backends, new_config.backends)
     if added_b or removed_b or modified_b:
         report.requires_restart.append("backends")
@@ -960,12 +347,6 @@ def reload_runtime_config(new_config: ScriptHutConfig) -> ReloadReport:
         if modified_b:
             report.messages.append(f"Backends modified (restart required): {sorted(modified_b)}")
 
-    old_pricing = old.pricing.model_dump() if old.pricing else None
-    new_pricing = new_config.pricing.model_dump() if new_config.pricing else None
-    if old_pricing != new_pricing:
-        report.requires_restart.append("pricing")
-        report.messages.append("Pricing config changed (restart required)")
-
     if old.settings.poll_interval != new_config.settings.poll_interval:
         report.messages.append(
             f"poll_interval changed ({old.settings.poll_interval} → "
@@ -974,8 +355,6 @@ def reload_runtime_config(new_config: ScriptHutConfig) -> ReloadReport:
 
     state.config = new_config
     set_config(new_config)
-    if state.run_manager is not None:
-        state.run_manager.config = new_config
 
     state.filter_user = new_config.settings.filter_user
     state.filter_enabled = new_config.settings.filter_user is not None
@@ -986,7 +365,6 @@ def reload_runtime_config(new_config: ScriptHutConfig) -> ReloadReport:
     previously_disabled = set(state.disabled_sources)
     state.source_manager = GitSourceManager(new_config.settings.sources_cache_dir_resolved)
     state.path_sources = []
-    state.source_workflows = {}
     state.source_statuses = {}
     new_source_names = {s.name for s in new_config.sources}
     state.disabled_sources = previously_disabled & new_source_names
@@ -995,19 +373,16 @@ def reload_runtime_config(new_config: ScriptHutConfig) -> ReloadReport:
             state.source_manager.add_source(source)
         elif isinstance(source, PathSourceConfig):
             state.path_sources.append(source)
-    if new_config.sources:
-        asyncio.create_task(sync_sources_background())
     report.reloaded.append("sources")
     report.counts["sources"] = len(new_config.sources)
 
     state.config_error = None
     return report
 
-
 # Create FastAPI app
 app = FastAPI(
     title="ScriptHut",
-    description="Remote job management for Slurm, ECS, and AWS Batch",
+    description="ScriptFlow controllers and cluster observation",
     version=__version__,
     lifespan=lifespan,
 )
@@ -1091,562 +466,16 @@ async def _startup_gate(request: Request, call_next):  # type: ignore[no-untyped
         content=_STARTING_PAGE.format(phase=phase),
     )
 
-
-def _format_disk_bytes(byte_val: int | None) -> str:
-    """Render a byte count as a compact disk size (e.g. '45G', '1.2T')."""
-    if byte_val is None or byte_val <= 0:
-        return ""
-    if byte_val >= 1024**4:
-        return f"{byte_val / 1024**4:.1f}T"
-    if byte_val >= 1024**3:
-        return f"{byte_val / 1024**3:.0f}G"
-    if byte_val >= 1024**2:
-        return f"{byte_val / 1024**2:.0f}M"
-    return f"{byte_val / 1024:.0f}K"
-
-
-templates.env.filters["disk_bytes"] = _format_disk_bytes
-
-
-def _format_age_filter(dt: datetime | None) -> str:
-    """Render a datetime as a relative age ('3h ago') for templates."""
-    if dt is None:
-        return "–"
-    seconds = max(0, int((datetime.now(UTC) - dt).total_seconds()))
-    if seconds < 60:
-        return f"{seconds}s ago"
-    if seconds < 3600:
-        return f"{seconds // 60}m ago"
-    if seconds < 86400:
-        return f"{seconds // 3600}h ago"
-    return f"{seconds // 86400}d ago"
-
-
-templates.env.filters["age"] = _format_age_filter
-
-
-def _backend_usage() -> dict[str, dict[str, int]]:
-    """Per-backend usage computed from scripthut's own run items.
-
-    Returns ``{backend_name: {...}}`` with:
-
-    ``jobs``
-        Active items (pending/submitted/queued/running/settling).
-    ``cpus``
-        CPU request summed over items scripthut has RUNNING.
-    ``cpus_queued``
-        CPU request summed over items waiting in the scheduler
-        (submitted or queued) — what we're about to occupy.
-    ``running`` / ``queued`` / ``pending``
-        Item counts behind those CPU figures. PENDING is scripthut-side
-        (deps or the concurrency cap), not the scheduler's queue, so it is
-        counted separately and contributes to neither CPU total.
-
-    We count from our own tracking rather than a live ``squeue`` query: the
-    scheduler's per-user filter can disagree with what we actually submitted
-    (e.g. ``squeue -u`` returning nothing for jobs we know are running), so
-    our own RunItem state is the reliable source for "what am I using here".
-    """
-    usage: dict[str, dict[str, int]] = {}
-    if state.run_manager:
-        for run in state.run_manager.runs.values():
-            for item in run.items:
-                if item.status in (RunItemStatus.COMPLETED, RunItemStatus.FAILED, RunItemStatus.DEP_FAILED):
-                    continue
-                u = usage.setdefault(
-                    run.backend_name,
-                    {"jobs": 0, "cpus": 0, "cpus_queued": 0,
-                     "running": 0, "queued": 0, "pending": 0},
-                )
-                u["jobs"] += 1
-                if item.status == RunItemStatus.RUNNING:
-                    u["cpus"] += item.task.cpus or 0
-                    u["running"] += 1
-                elif item.status in (RunItemStatus.SUBMITTED, RunItemStatus.QUEUED):
-                    u["cpus_queued"] += item.task.cpus or 0
-                    u["queued"] += 1
-                elif item.status == RunItemStatus.PENDING:
-                    u["pending"] += 1
-    return usage
-
-
-@dataclass
-class JobView:
-    """Lightweight view model for the jobs dashboard table."""
-    job_id: str | None
-    name: str
-    user: str
-    backend_name: str
-    state: str
-    source: str  # "run" or "external"
-    partition: str
-    cpus: int
-    memory: str
-    time_used: str
-    time_limit: str
-    submit_time: datetime | None
-    start_time: datetime | None
-    finish_time: datetime | None
-    run_id: str | None
-    task_id: str | None
-    error: str | None
-    cpu_efficiency: float | None
-    max_rss: str | None
-    workflow_name: str | None
-    # Scheduler's reason a queued job is waiting (squeue %R). Shown as a
-    # tooltip on the queued state pill; None unless the job is queued.
-    pending_reason: str | None = None
-
-    @property
-    def state_class(self) -> str:
-        """Return CSS class for state styling."""
-        state_classes = {
-            "running": "text-green-600",
-            "pending": "text-gray-500",
-            "submitted": "text-yellow-500",
-            "queued": "text-yellow-700",
-            "completed": "text-blue-600",
-            "failed": "text-red-600",
-            "dep_failed": "text-orange-600",
-        }
-        return state_classes.get(self.state, "text-gray-500")
-
-    @property
-    def is_terminal(self) -> bool:
-        """Check if job is in a terminal state."""
-        return self.state in ("completed", "failed", "dep_failed")
-
-    @property
-    def cpu_hours(self) -> float:
-        """CPU hours for this job."""
-        if self.start_time is None:
-            return 0.0
-        end = self.finish_time if self.finish_time else datetime.now(UTC)
-        elapsed = (end - self.start_time).total_seconds()
-        if elapsed > 0:
-            return elapsed * self.cpus / 3600.0
-        return 0.0
-
-
-# --- v0.11.0 task-outputs markdown rendering ---
-#
-# `markdown` and `bleach` are imported lazily inside the helper so the
-# server boots without them and only pays the import cost on the first
-# outputs request. If a deployment omits the deps entirely the helper
-# falls back to escaped plain text — still functional, just unstyled.
-
-# HTML tags + attributes the sanitizer accepts inside user-authored
-# markdown. The list is deliberately tight: enough for tables, code
-# blocks, lists, headings, images, and links; no ``<style>``, ``<form>``,
-# ``<iframe>``, or event handlers. We rewrite ``<img src>`` ourselves
-# (see ``_render_markdown_for_outputs``) so the allowlist on ``img``
-# accepts a controlled set of attributes only.
-_OUTPUTS_ALLOWED_TAGS = frozenset({
-    "p", "h1", "h2", "h3", "h4", "h5", "h6",
-    "a", "img", "ul", "ol", "li",
-    "table", "thead", "tbody", "tr", "td", "th",
-    "pre", "code", "blockquote",
-    "strong", "em", "br", "hr", "div", "span",
-})
-_OUTPUTS_ALLOWED_ATTRS = {
-    "a": ["href", "title"],
-    "img": ["src", "alt", "title"],
-    "code": ["class"],  # for syntax highlighting via class names
-    "pre": ["class"],
-    "th": ["align"],
-    "td": ["align"],
-}
-
-
-def _render_markdown_for_outputs(
-    source: str, file_endpoint_base: str,
-) -> str:
-    """Render a single markdown file from a task's output dir to HTML.
-
-    ``file_endpoint_base`` is the prefix that user-relative image refs
-    (e.g. ``![](plot.png)``) get rewritten to so the browser can fetch
-    them — e.g. ``/runs/<id>/tasks/<tid>/outputs/file``. Absolute URLs
-    (``http://`` / ``https://``) and same-origin paths (``/static/...``)
-    pass through unchanged.
-
-    Output passes through bleach with a tight allowlist. Sanitization
-    is the load-bearing security control here — anything a user can
-    write inside ``$SCRIPTHUT_TASK_SUMMARY`` ends up in this pipeline.
-    """
-    try:
-        import markdown
-        import bleach
-    except ImportError:
-        # Degrade gracefully: escape and wrap in <pre> so the content
-        # is still visible. Production installs should always have
-        # both deps; this is purely defensive for partial installs.
-        import html
-        return f"<pre>{html.escape(source)}</pre>"
-
-    raw_html = markdown.markdown(
-        source,
-        extensions=["tables", "fenced_code", "nl2br", "sane_lists"],
-    )
-
-    # Rewrite relative ``<img src="...">`` to point at the file
-    # endpoint. At this stage in the pipeline ``markdown`` has just
-    # emitted the HTML and the only tag that uses ``src=`` is ``<img>``,
-    # so blanket-matching ``src="..."`` is safe; bleach later strips
-    # any non-allowed tags that might have re-introduced one.
-    import re as _re
-
-    def _rewrite_src(match: _re.Match[str]) -> str:
-        src = match.group(1)
-        # Pass-through for absolute URLs, root-relative paths, and
-        # inline ``data:`` URIs. Only naked relative paths need to
-        # be re-anchored at the file endpoint.
-        if src.startswith(("http://", "https://", "/", "data:")):
-            return f'src="{src}"'
-        return f'src="{file_endpoint_base}/{src.lstrip("./")}"'
-
-    rewritten = _re.sub(r'src="([^"]+)"', _rewrite_src, raw_html)
-
-    return bleach.clean(
-        rewritten,
-        tags=_OUTPUTS_ALLOWED_TAGS,
-        attributes=_OUTPUTS_ALLOWED_ATTRS,
-        strip=True,
-    )
-
-
-def _get_job_nodes() -> dict[str, str]:
-    """Build a job_id -> node mapping from live scheduler data."""
-    result: dict[str, str] = {}
-    for bs in state.backends.values():
-        for job in bs.jobs:
-            if job.job_id and job.nodes and job.nodes != "-":
-                result[job.job_id] = job.nodes
-    return result
-
-
-def _collect_all_job_views() -> list[JobView]:
-    """Collect all RunItems from all runs into JobViews for the dashboard."""
-    views: list[JobView] = []
-    if state.run_manager is None:
-        return views
-
-    user = state.filter_user or "unknown"
-
-    # Active runs (managed by RunManager)
-    for run in state.run_manager.runs.values():
-        for item in run.items:
-            views.append(JobView(
-                job_id=item.job_id,
-                name=item.task.name,
-                # scripthut-submitted items have no scheduler-reported user;
-                # they belong to the configured user.
-                user=item.user or user,
-                backend_name=run.backend_name,
-                state=item.status.value,
-                source="run" if run.workflow_name != "_default" else "external",
-                partition=item.task.partition,
-                cpus=item.task.cpus,
-                memory=item.task.memory,
-                time_used="",
-                time_limit=item.task.time_limit,
-                submit_time=item.submitted_at,
-                start_time=item.started_at,
-                finish_time=item.finished_at,
-                run_id=run.id,
-                task_id=item.task.id,
-                error=item.error,
-                cpu_efficiency=item.cpu_efficiency,
-                max_rss=item.max_rss,
-                workflow_name=run.workflow_name,
-                pending_reason=item.pending_reason,
-            ))
-
-    # Weekly default runs (external jobs from storage)
-    if state.run_storage:
-        for wf_name in state.run_storage.list_workflows():
-            if not wf_name.startswith("_default_"):
-                continue
-            for run in state.run_storage.load_runs_for_workflow(wf_name):
-                for item in run.items:
-                    views.append(JobView(
-                        job_id=item.job_id,
-                        name=item.task.name,
-                        # External jobs carry their real owner (squeue %u /
-                        # qstat). Never fall back to the configured user —
-                        # that would mislabel other users' jobs as ours.
-                        user=item.user or "unknown",
-                        backend_name=run.backend_name,
-                        state=item.status.value,
-                        source="external",
-                        partition=item.task.partition,
-                        cpus=item.task.cpus,
-                        memory=item.task.memory,
-                        time_used="",
-                        time_limit=item.task.time_limit,
-                        submit_time=item.submitted_at,
-                        start_time=item.started_at,
-                        finish_time=item.finished_at,
-                        run_id=run.id,
-                        task_id=item.task.id,
-                        error=item.error,
-                        cpu_efficiency=item.cpu_efficiency,
-                        max_rss=item.max_rss,
-                        workflow_name="_default",
-                        pending_reason=item.pending_reason,
-                            ))
-
-    views.sort(key=lambda v: v.submit_time or datetime.min.replace(tzinfo=UTC), reverse=True)
-    return views
-
-
-def _apply_job_filters(job_views: list[JobView]) -> list[JobView]:
-    """Apply active filters (user filter, live view) to job views."""
-    if state.filter_enabled and state.filter_user:
-        job_views = [j for j in job_views if j.user == state.filter_user]
-    if state.live_view:
-        cutoff = datetime.now(UTC) - timedelta(hours=12)
-        job_views = [
-            j for j in job_views
-            if not (j.is_terminal and j.finish_time and j.finish_time < cutoff)
-        ]
-    return job_views
-
-
-# How many finished runs the landing page's "Recent runs" section shows.
-# Small on purpose — the full history lives on /runs.
-OVERVIEW_RECENT_LIMIT = 6
-
-
-def _overview_context(request: Request) -> dict[str, Any]:
-    """Context for the landing page and its SSE partial.
-
-    ``active_runs`` is never truncated — everything in flight is worth
-    seeing. ``recent_runs`` is its own section rather than a fallback, so
-    finished work stays visible while something is running; it is capped
-    because the full history lives on /runs.
-
-    ``_default``-named runs are the weekly bins holding *external* cluster
-    jobs (not submitted by scripthut). They have no source and no workflow,
-    so they belong on the backends dashboard, not here.
-    """
-    runs = [
-        r for r in (state.run_manager.get_all_runs() if state.run_manager else [])
-        if not r.workflow_name.startswith("_default")
-    ]
-    active = [r for r in runs if r.status in (RunStatus.PENDING, RunStatus.RUNNING)]
-    recent = [r for r in runs if r.status not in (RunStatus.PENDING, RunStatus.RUNNING)]
-    records = merged_records(
-        state.usage_log, runs, since=window_start(ACTIVITY_WINDOW_DAYS),
-    )
-
-    return {
-        "request": request,
-        "active_runs": active,
-        "recent_runs": recent[:OVERVIEW_RECENT_LIMIT],
-        # History from the ledger (which outlives run retention), overlaid
-        # with live runs so in-flight work shows on today's cell. Both
-        # charts read the same merged list — one pass, two summaries.
-        "activity": build_activity_grid(records),
-        "hourly": build_hourly_usage(records),
-        "backends": state.backends,
-        "backend_usage": _backend_usage(),
-    }
-
-
-@app.get("/", response_class=HTMLResponse)
-async def overview(request: Request) -> HTMLResponse:
-    """Landing page: what is running right now, and what the backends look like."""
-    if state.config_error:
-        return templates.TemplateResponse(
-            "config_error.html",
-            {"request": request, "config_error": state.config_error},
-        )
-
-    return templates.TemplateResponse("overview.html", _overview_context(request))
-
-
-@app.get("/overview/stream")
-async def overview_stream(request: Request) -> EventSourceResponse:
-    """SSE endpoint keeping the landing page's cards live."""
-
-    async def event_generator() -> AsyncGenerator[dict[str, Any], None]:
-        while True:
-            changed = await state.wait_for_poll()
-            if state._shutdown_event.is_set() or await request.is_disconnected():
-                break
-
-            if changed:
-                html = templates.get_template("overview_cards.html").render(
-                    _overview_context(request)
-                )
-                yield {"event": "overview-update", "data": html}
-            else:
-                yield {"comment": "keepalive"}
-
-    return EventSourceResponse(event_generator())
-
-
-@app.get("/backends", response_class=HTMLResponse)
-async def backends_page(request: Request) -> HTMLResponse:
-    """Backends dashboard: connection status, cluster detail, unified job list."""
-    if state.config_error:
-        return templates.TemplateResponse(
-            "config_error.html",
-            {"request": request, "config_error": state.config_error},
-        )
-
-    job_views = _apply_job_filters(_collect_all_job_views())
-
-    poll_interval = state.config.settings.poll_interval if state.config else 60
-
-    return templates.TemplateResponse(
-        "backends.html",
-        {
-            "request": request,
-            "job_views": job_views,
-            "backends": state.backends,
-            "backend_usage": _backend_usage(),
-            "status": ConnectionStatus(
-                connected=state.any_connected,
-                host=", ".join(c.status.host for c in state.backends.values() if c.status.connected),
-                last_poll=max(
-                    (c.status.last_poll for c in state.backends.values() if c.status.last_poll),
-                    default=None,
-                ),
-            ),
-            "poll_interval": poll_interval,
-            "poll_remaining": state.seconds_until_next_poll,
-            "filter_enabled": state.filter_enabled,
-            "filter_user": state.filter_user,
-            "live_view": state.live_view,
-        },
-    )
-
-
-@app.get("/jobs", response_class=HTMLResponse)
-async def jobs_partial(request: Request) -> HTMLResponse:
-    """HTMX partial for unified job table."""
-    job_views = _apply_job_filters(_collect_all_job_views())
-
-    return templates.TemplateResponse(
-        "jobs.html",
-        {
-            "request": request,
-            "job_views": job_views,
-            "backends": state.backends,
-            "status": ConnectionStatus(
-                connected=state.any_connected,
-                host=", ".join(c.status.host for c in state.backends.values() if c.status.connected),
-            ),
-            "filter_enabled": state.filter_enabled,
-            "filter_user": state.filter_user,
-            "live_view": state.live_view,
-        },
-    )
-
-
-@app.get("/jobs/stream")
-async def jobs_stream(request: Request) -> EventSourceResponse:
-    """SSE endpoint for live job updates on the dashboard."""
-
-    async def event_generator() -> AsyncGenerator[dict[str, Any], None]:
-        while True:
-            changed = await state.wait_for_poll()
-            if state._shutdown_event.is_set() or await request.is_disconnected():
-                break
-
-            if changed:
-                job_views = _apply_job_filters(_collect_all_job_views())
-
-                html = templates.get_template("jobs.html").render(
-                    {
-                        "request": request,
-                        "job_views": job_views,
-                        "backends": state.backends,
-                        "status": ConnectionStatus(
-                            connected=state.any_connected,
-                            host=", ".join(c.status.host for c in state.backends.values() if c.status.connected),
-                        ),
-                        "filter_enabled": state.filter_enabled,
-                        "filter_user": state.filter_user,
-                        "live_view": state.live_view,
-                    }
-                )
-                yield {"event": "jobs-update", "data": html}
-
-                backends_html = templates.get_template("backends_status.html").render(
-                    {"request": request, "backends": state.backends, "backend_usage": _backend_usage()}
-                )
-                yield {"event": "backends-update", "data": backends_html}
-            else:
-                yield {"comment": "keepalive"}
-
-    return EventSourceResponse(event_generator())
-
-
-@app.get("/runs/stream")
-async def runs_stream(request: Request) -> EventSourceResponse:
-    """SSE endpoint for live run list updates."""
-
-    async def event_generator() -> AsyncGenerator[dict[str, Any], None]:
-        while True:
-            changed = await state.wait_for_poll()
-            if state._shutdown_event.is_set() or await request.is_disconnected():
-                break
-
-            if changed:
-                runs = state.run_manager.get_all_runs() if state.run_manager else []
-                html = templates.get_template("runs_list.html").render(
-                    {"request": request, "runs": runs}
-                )
-                yield {"event": "runs-update", "data": html}
-            else:
-                yield {"comment": "keepalive"}
-
-    return EventSourceResponse(event_generator())
-
-
-@app.get("/notifications/stream")
-async def notifications_stream(request: Request) -> EventSourceResponse:
-    """SSE stream of run lifecycle notifications + compact progress stats.
-
-    Decoupled from the HTMX HTML-swapping streams: this carries structured
-    JSON the browser turns into desktop notifications / toasts (``notify``
-    events) and a live progress figure for the page title (``stats``).
-    """
-    queue = notification_hub.subscribe()
-
-    async def event_generator() -> AsyncGenerator[dict[str, Any], None]:
-        try:
-            # Prime the client with current progress so the title is right
-            # immediately, before the next poll cycle.
-            yield {"event": "stats", "data": json.dumps(notification_hub.stats)}
-            while True:
-                if state._shutdown_event.is_set() or await request.is_disconnected():
-                    break
-                try:
-                    msg = await asyncio.wait_for(queue.get(), timeout=15.0)
-                    yield msg
-                except (TimeoutError, asyncio.TimeoutError):
-                    yield {"comment": "keepalive"}
-        finally:
-            notification_hub.unsubscribe(queue)
-
-    return EventSourceResponse(event_generator())
-
-
 @app.post("/poll")
 async def force_poll() -> dict[str, str]:
     """Trigger an immediate poll of all backends."""
     state._force_poll_event.set()
     return {"status": "polling"}
 
-
 @app.get("/ping")
 async def ping() -> dict[str, Any]:
     """Simple ping endpoint - no dependencies. Used by the CLI daemon probe."""
     return {"status": "pong", "pid": os.getpid(), "version": __version__}
-
 
 @app.get("/health")
 async def health() -> dict[str, Any]:
@@ -1679,200 +508,6 @@ async def health() -> dict[str, Any]:
         "total_jobs": sum(len(c.jobs) for c in state.backends.values()),
     }
 
-
-@app.get("/api/sources")
-async def list_sources() -> dict[str, Any]:
-    """List all configured sources and their statuses."""
-    return {
-        name: {
-            "cloned": ss.cloned,
-            "path": str(ss.path),
-            "branch": ss.branch,
-            "last_commit": ss.last_commit,
-            "error": ss.error,
-        }
-        for name, ss in state.source_statuses.items()
-    }
-
-
-@app.post("/sources/{name}/toggle")
-async def toggle_source(name: str) -> dict[str, Any]:
-    """Enable or disable a source."""
-    if name in state.disabled_sources:
-        state.disabled_sources.discard(name)
-        enabled = True
-    else:
-        state.disabled_sources.add(name)
-        enabled = False
-    return {"name": name, "enabled": enabled}
-
-
-@app.post("/sources/{name}/sync")
-async def sync_source(name: str) -> dict[str, Any]:
-    """Trigger a sync for a specific source."""
-    if state.source_manager is None:
-        return {"error": "Source manager not initialized"}
-
-    try:
-        status = await state.source_manager.sync_source(name)
-        state.source_statuses[name] = status
-        return {
-            "name": name,
-            "cloned": status.cloned,
-            "last_commit": status.last_commit,
-            "error": status.error,
-        }
-    except ValueError as e:
-        return {"error": str(e)}
-    except Exception as e:
-        logger.exception(f"Unexpected error syncing source {name}")
-        return {"error": str(e)}
-
-
-@app.get("/sources/{name}/workflows")
-async def list_source_workflows(name: str) -> dict[str, Any]:
-    """List discovered workflows for a source."""
-    workflows = state.source_workflows.get(name, [])
-    return {
-        "source": name,
-        "workflows": [
-            {"name": wf.name, "filename": wf.filename}
-            for wf in workflows
-        ],
-    }
-
-
-async def _refresh_source_workflow(name: str, filename: str) -> SourceWorkflow | None:
-    """Sync a git source and return the freshly-read workflow file.
-
-    This ensures the local clone is up to date before reading the JSON,
-    so we never use stale cached tasks_json.
-    """
-    if state.source_manager and name in state.source_manager._sources:
-        try:
-            await state.source_manager.sync_source(name)
-            workflows = state.source_manager.discover_workflows(name)
-            state.source_workflows[name] = workflows
-        except Exception as e:
-            logger.warning(f"Failed to refresh source '{name}' before run: {e}")
-
-    workflows = state.source_workflows.get(name, [])
-    return next((w for w in workflows if w.filename == filename), None)
-
-
-@app.get("/sources/{name}/workflows/{filename}/dry-run", response_class=HTMLResponse)
-async def dry_run_source_workflow(request: Request, name: str, filename: str, backend: str = "") -> HTMLResponse:
-    """Preview tasks from a source workflow."""
-    if state.run_manager is None:
-        return templates.TemplateResponse(
-            "dry_run.html",
-            {"request": request, "error": "Run manager not initialized"},
-        )
-
-    if not backend:
-        return templates.TemplateResponse(
-            "dry_run.html",
-            {"request": request, "error": "No backend selected. Please select a backend on the Sources page."},
-        )
-
-    wf = await _refresh_source_workflow(name, filename)
-    if wf is None:
-        return templates.TemplateResponse(
-            "dry_run.html",
-            {"request": request, "error": f"Workflow '{filename}' not found in source '{name}'"},
-        )
-
-    try:
-        result = await state.run_manager.dry_run_source(name, filename, wf.tasks_json, backend=backend)
-        return templates.TemplateResponse(
-            "dry_run.html",
-            {"request": request, "result": result, "error": None},
-        )
-    except Exception as e:
-        logger.error(f"Dry run failed for source workflow {name}/{filename}: {e}")
-        return templates.TemplateResponse(
-            "dry_run.html",
-            {"request": request, "error": str(e)},
-        )
-
-
-@app.post("/sources/{name}/workflows/{filename}/run", response_model=None)
-async def run_source_workflow(name: str, filename: str, backend: str = ""):
-    """Trigger a run from a source workflow."""
-    if state.run_manager is None:
-        return JSONResponse(
-            status_code=500,
-            content={"error": "Run manager not initialized"},
-        )
-
-    if not backend:
-        return JSONResponse(
-            status_code=422,
-            content={"error": "No backend specified"},
-        )
-
-    wf = await _refresh_source_workflow(name, filename)
-    if wf is None:
-        return JSONResponse(
-            status_code=404,
-            content={"error": f"Workflow '{filename}' not found in source '{name}'"},
-        )
-
-    try:
-        run = await state.run_manager.create_run_from_source(name, filename, wf.tasks_json, backend=backend)
-        notification_hub.run_scheduled(run)
-        notification_hub.update_stats(state.run_manager.runs.values())
-        state.notify_poll()
-        return {
-            "run_id": run.id,
-            "workflow_name": run.workflow_name,
-            "task_count": len(run.items),
-            "status": run.status.value,
-        }
-    except Exception as e:
-        logger.error(f"Failed to create run for source workflow {name}/{filename}: {e}")
-        return JSONResponse(
-            status_code=422,
-            content={"error": str(e)},
-        )
-
-
-@app.post("/sources/{name}/agent", response_model=None)
-async def start_source_agent(
-    name: str, backend: str = "", mode: str = "remote", session_name: str = "",
-):
-    """Launch a Claude coding-agent run on a git source.
-
-    ``mode`` is ``remote`` (claude.ai-driven Remote Control session) or ``tui``
-    (interactive TUI attached via the browser terminal).
-    """
-    if state.run_manager is None:
-        return JSONResponse(
-            status_code=500,
-            content={"error": "Run manager not initialized"},
-        )
-    if not backend:
-        return JSONResponse(status_code=422, content={"error": "No backend specified"})
-
-    try:
-        run = await state.run_manager.create_agent_run(
-            name, backend, mode=mode, session_name=session_name or None,
-        )
-        notification_hub.run_scheduled(run)
-        notification_hub.update_stats(state.run_manager.runs.values())
-        state.notify_poll()
-        return {
-            "run_id": run.id,
-            "workflow_name": run.workflow_name,
-            "mode": run.agent_mode,
-            "session_name": run.agent_session_name,
-            "status": run.status.value,
-        }
-    except Exception as e:
-        logger.error(f"Failed to start coding agent for source {name}: {e}")
-        return JSONResponse(status_code=422, content={"error": str(e)})
-
-
 @app.post("/filter/toggle", response_class=HTMLResponse)
 async def toggle_filter(request: Request) -> HTMLResponse:
     """Toggle the user filter on/off and trigger immediate refresh."""
@@ -1888,13 +523,11 @@ async def toggle_filter(request: Request) -> HTMLResponse:
 
     return await jobs_partial(request)
 
-
 @app.post("/live-view/toggle", response_class=HTMLResponse)
 async def toggle_live_view(request: Request) -> HTMLResponse:
     """Toggle live view (hide old completed jobs)."""
     state.live_view = not state.live_view
     return await jobs_partial(request)
-
 
 @app.post("/backends/{name}/toggle")
 async def toggle_backend(name: str) -> dict[str, Any]:
@@ -1904,7 +537,6 @@ async def toggle_backend(name: str) -> dict[str, Any]:
         return {"error": f"Backend '{name}' not found"}
     backend_state.enabled = not backend_state.enabled
     return {"name": name, "enabled": backend_state.enabled}
-
 
 @app.get("/backends/{name}/log", response_class=HTMLResponse)
 async def backend_log_page(request: Request, name: str) -> HTMLResponse:
@@ -1919,7 +551,6 @@ async def backend_log_page(request: Request, name: str) -> HTMLResponse:
         "entries": backend_state.command_log.get_entries(),
     })
 
-
 @app.post("/backends/{name}/log/clear")
 async def clear_backend_log(name: str) -> dict[str, str]:
     """Clear the SSH command log for a backend."""
@@ -1929,7 +560,6 @@ async def clear_backend_log(name: str) -> dict[str, str]:
     backend_state.command_log.clear()
     return {"status": "cleared"}
 
-
 @app.get("/filter/status")
 async def filter_status() -> dict[str, Any]:
     """Get current filter status."""
@@ -1937,357 +567,6 @@ async def filter_status() -> dict[str, Any]:
         "enabled": state.filter_enabled,
         "user": state.filter_user,
     }
-
-
-@app.post("/jobs/{job_id}/cancel", response_class=HTMLResponse)
-async def cancel_external_job(request: Request, job_id: str) -> HTMLResponse:
-    """Cancel an external job via the scheduler."""
-    for bs in state.backends.values():
-        for job in bs.jobs:
-            if job.job_id == job_id:
-                if bs.backend:
-                    await bs.backend.cancel_job(job_id)
-                # Update in-memory state so the UI reflects the change immediately
-                job.state = JobState.CANCELLED
-                # Update storage
-                if state.run_storage:
-                    state.run_storage.add_external_job(
-                        backend_name=bs.name,
-                        job_id=job_id,
-                        name=job.name,
-                        user=job.user,
-                        state="failed",
-                        submit_time=job.submit_time,
-                        start_time=job.start_time,
-                        finish_time=datetime.now(UTC),
-                    )
-                    state.run_storage.save_if_dirty(
-                        state.run_manager.runs if state.run_manager else {}
-                    )
-                return await jobs_partial(request)
-    return await jobs_partial(request)
-
-
-@app.post("/jobs/clear-stale", response_class=HTMLResponse)
-async def clear_stale_external_jobs(request: Request) -> HTMLResponse:
-    """Remove all completed/failed external jobs from history."""
-    if state.run_storage:
-        removed = state.run_storage.clear_completed_external_jobs()
-        if removed:
-            logger.info(f"Cleared {removed} stale external jobs")
-    return await jobs_partial(request)
-
-
-@app.delete("/jobs/{job_id}", response_class=HTMLResponse)
-async def delete_external_job(request: Request, job_id: str) -> HTMLResponse:
-    """Remove a completed external job from history."""
-    if state.run_storage:
-        state.run_storage.remove_external_job(job_id)
-    return await jobs_partial(request)
-
-
-@app.get("/sources", response_class=HTMLResponse)
-async def sources_page(request: Request) -> HTMLResponse:
-    """Page listing configured sources and the workflows available to trigger."""
-    return templates.TemplateResponse(
-        "sources.html",
-        {
-            "request": request,
-            "source_workflows": state.source_workflows,
-            "source_configs": {s.name: s for s in state.config.sources} if state.config else {},
-            "source_statuses": state.source_statuses,
-            "disabled_sources": state.disabled_sources,
-            "backend_names": list(state.backends.keys()),
-        },
-    )
-
-
-@app.get("/runs", response_class=HTMLResponse)
-async def runs_page(request: Request) -> HTMLResponse:
-    """Page listing all runs."""
-    runs = state.run_manager.get_all_runs() if state.run_manager else []
-
-    return templates.TemplateResponse(
-        "runs.html",
-        {
-            "request": request,
-            "runs": runs,
-        },
-    )
-
-
-@app.post("/runs/delete", response_class=HTMLResponse)
-async def delete_runs(
-    request: Request, run_ids: Annotated[list[str], Form()] = [],
-) -> HTMLResponse:
-    """Delete the selected runs and return the refreshed list.
-
-    Deletion is per-run and best-effort: ``delete_run`` refuses runs that
-    are still PENDING/RUNNING, so a selection spanning active runs deletes
-    the finished ones and leaves the rest. The count of each is reported
-    back so the page can say what actually happened rather than implying
-    the whole selection went.
-    """
-    deleted, skipped = 0, 0
-    if state.run_manager:
-        for run_id in run_ids:
-            if state.run_manager.delete_run(run_id):
-                deleted += 1
-            else:
-                skipped += 1
-    if deleted:
-        logger.info(f"Bulk-deleted {deleted} run(s)")
-
-    runs = state.run_manager.get_all_runs() if state.run_manager else []
-    return templates.TemplateResponse(
-        "runs_list.html",
-        {
-            "request": request,
-            "runs": runs,
-            "deleted_count": deleted,
-            "skipped_count": skipped,
-        },
-    )
-
-
-def _disk_card_context(name: str) -> dict[str, Any] | None:
-    """Template context for one backend's disk card, or None if unknown."""
-    bs = state.backends.get(name)
-    if bs is None:
-        return None
-    return {
-        "name": name,
-        "type": bs.backend_type,
-        "ssh": bs.backend_type in ("slurm", "pbs"),
-        "scanning": state.disk_service.is_scanning(name),
-        "cleaning": state.disk_service.is_cleaning(name),
-        "result": state.disk_service.get_cached(name),
-        "report": state.disk_service.get_last_cleanup(name),
-    }
-
-
-def _cache_card_context() -> dict[str, Any]:
-    """Template context for the object-store cache panel.
-
-    Page-level, not per-backend: the store is shared global config, so the
-    only per-backend choice is which SSH host to list it from. Offers the
-    connected SSH backends as vantage points — caching is SSH-only, so an
-    API-only backend can never reach the store.
-    """
-    cache = state.config.cache if state.config else None
-    vantage = [
-        name for name, bs in state.backends.items()
-        if bs.backend_type in ("slurm", "pbs") and bs.enabled and bs.status.connected
-    ]
-    return {
-        "cache": cache,
-        "configured": bool(cache and cache.enabled and cache.store),
-        "vantage_backends": vantage,
-        "scanning": state.disk_service.is_cache_scanning(),
-        "status": state.disk_service.get_cache_status(),
-    }
-
-
-@app.get("/disk", response_class=HTMLResponse)
-async def disk_page(request: Request) -> HTMLResponse:
-    """Per-backend inventory of scripthut's remote disk footprint."""
-    cards = [_disk_card_context(name) for name in state.backends]
-    return templates.TemplateResponse(
-        "disk.html",
-        {"request": request, "disk_backends": cards, "c": _cache_card_context()},
-    )
-
-
-@app.get("/disk/cache/partial", response_class=HTMLResponse)
-async def disk_cache_partial(request: Request) -> HTMLResponse:
-    """The cache panel — polled by itself while a scan runs."""
-    return templates.TemplateResponse(
-        "disk_cache.html", {"request": request, "c": _cache_card_context()},
-    )
-
-
-@app.post("/disk/cache/scan", response_class=HTMLResponse)
-async def disk_cache_scan(request: Request, backend: str = "") -> HTMLResponse:
-    """Summarize the object store from ``backend`` and return the panel."""
-    from scripthut.disk.cache_store import scan_cache_store
-
-    ctx = _cache_card_context()
-    error: str | None = None
-
-    if not ctx["configured"]:
-        error = "No cache store configured"
-    elif state.run_manager is None:
-        error = "Server is not fully initialized yet"
-    else:
-        name = backend or (ctx["vantage_backends"][0] if ctx["vantage_backends"] else "")
-        ssh = state.run_manager.get_ssh_client(name) if name else None
-        if ssh is None:
-            error = (
-                "No connected SSH backend to reach the store from — the cache "
-                "is only reachable cluster-side"
-            )
-        elif not state.disk_service.start_cache_scan(
-            scan_cache_store(state.config.cache, backend_name=name, ssh=ssh)
-        ):
-            error = "A cache scan is already running"
-
-    ctx = _cache_card_context()
-    ctx["error"] = error
-    return templates.TemplateResponse(
-        "disk_cache.html", {"request": request, "c": ctx},
-    )
-
-
-@app.get("/disk/partial", response_class=HTMLResponse)
-async def disk_partial(request: Request, backend: str) -> HTMLResponse:
-    """One backend's disk card — polled by the card while a scan runs."""
-    card = _disk_card_context(backend)
-    if card is None:
-        return HTMLResponse(f"Unknown backend '{backend}'", status_code=404)
-    return templates.TemplateResponse(
-        "disk_backend.html", {"request": request, "b": card},
-    )
-
-
-@app.post("/disk/scan/{backend}", response_class=HTMLResponse)
-async def disk_scan_start(request: Request, backend: str) -> HTMLResponse:
-    """Kick off a background scan and return the card in its scanning state."""
-    from scripthut.disk.service import start_scan_for_backend
-
-    card = _disk_card_context(backend)
-    if card is None:
-        return HTMLResponse(f"Unknown backend '{backend}'", status_code=404)
-
-    error: str | None = None
-    if state.config is None or state.run_manager is None:
-        error = "Server is not fully initialized yet"
-    else:
-        ssh = state.run_manager.get_ssh_client(backend)
-        if ssh is None:
-            error = f"No SSH connection to '{backend}'"
-        else:
-            backend_state = state.backends[backend]
-            await start_scan_for_backend(
-                state.disk_service,
-                config=state.config,
-                backend_name=backend,
-                clone_dir=backend_state.clone_dir,
-                ssh=ssh,
-                run_manager=state.run_manager,
-                run_storage=state.run_storage,
-            )
-    card = _disk_card_context(backend) or card
-    card["start_error"] = error
-    return templates.TemplateResponse(
-        "disk_backend.html", {"request": request, "b": card},
-    )
-
-
-@app.post("/disk/clean/{backend}", response_class=HTMLResponse)
-async def disk_clean_start(request: Request, backend: str) -> HTMLResponse:
-    """Kick off a guardrailed cleanup of the form-selected paths.
-
-    The form carries the exact paths rendered on the card, so the user
-    confirms precisely what they saw; server-side re-classification can
-    only shrink that set, never grow it.
-    """
-    from scripthut.disk.service import start_clean_for_backend
-
-    card = _disk_card_context(backend)
-    if card is None:
-        return HTMLResponse(f"Unknown backend '{backend}'", status_code=404)
-    form = await request.form()
-    paths = [str(v) for v in form.getlist("path")]
-    allow = frozenset(str(v) for v in form.getlist("allow_referenced"))
-
-    error: str | None = None
-    if not paths:
-        error = "Nothing selected to clean"
-    elif state.config is None or state.run_manager is None:
-        error = "Server is not fully initialized yet"
-    else:
-        ssh = state.run_manager.get_ssh_client(backend)
-        if ssh is None:
-            error = f"No SSH connection to '{backend}'"
-        else:
-            backend_state = state.backends[backend]
-            status, plan = await start_clean_for_backend(
-                state.disk_service,
-                config=state.config,
-                backend_name=backend,
-                clone_dir=backend_state.clone_dir,
-                ssh=ssh,
-                run_manager=state.run_manager,
-                run_storage=state.run_storage,
-                paths=paths,
-                allow_referenced=allow,
-            )
-            if status == "no_scan":
-                error = "No scan cached for this backend — scan first"
-            elif status == "invalid":
-                error = "; ".join(plan.errors) if plan else "Invalid request"
-            elif status == "nothing_to_clean":
-                error = (
-                    "Nothing deletable in the selection — entries may have "
-                    "become referenced since the scan"
-                )
-            elif status == "already_running":
-                error = "A scan or cleanup is already running on this backend"
-    card = _disk_card_context(backend) or card
-    if error:
-        card["start_error"] = error
-    return templates.TemplateResponse(
-        "disk_backend.html", {"request": request, "b": card},
-    )
-
-
-@app.get("/terminals", response_class=HTMLResponse)
-async def terminals_page(request: Request) -> HTMLResponse:
-    """Page listing active terminal sessions and options to create new ones."""
-    sessions = list(state.terminal_manager.sessions.values())
-
-    # Build set of known debug job IDs from both in-memory tracking and storage
-    known_debug_ids = set(state.debug_job_ids)
-    if state.run_storage:
-        for item in state.run_storage.get_external_items_by_name_prefix("[debug]"):
-            known_debug_ids.add(item.job_id)
-
-    # Collect running jobs across all backends, separating debug from regular
-    running_jobs: list[dict[str, Any]] = []
-    debug_jobs: list[dict[str, Any]] = []
-    for backend_name, bs in state.backends.items():
-        for job in bs.jobs:
-            if job.state == JobState.RUNNING and job.nodes and job.nodes != "-":
-                entry = {
-                    "backend_name": backend_name,
-                    "job_id": job.job_id,
-                    "name": job.name,
-                    "user": job.user,
-                    "node": job.nodes,
-                    "partition": job.partition,
-                }
-                if job.job_id in known_debug_ids:
-                    debug_jobs.append(entry)
-                else:
-                    running_jobs.append(entry)
-
-    # Available backends for head node connections
-    backends_info = [
-        {"name": name, "host": bs.status.host, "connected": bs.status.connected}
-        for name, bs in state.backends.items()
-    ]
-
-    return templates.TemplateResponse(
-        "terminals.html",
-        {
-            "request": request,
-            "sessions": sessions,
-            "running_jobs": running_jobs,
-            "debug_jobs": debug_jobs,
-            "backends": backends_info,
-        },
-    )
-
 
 @app.get("/settings", response_class=HTMLResponse)
 async def settings_page(request: Request, message: str = "", message_type: str = "success") -> HTMLResponse:
@@ -2322,7 +601,6 @@ async def settings_page(request: Request, message: str = "", message_type: str =
         },
     )
 
-
 def _section_summary() -> dict[str, dict[str, Any]]:
     """Build a per-section summary of the loaded config for the settings page.
 
@@ -2348,15 +626,8 @@ def _section_summary() -> dict[str, dict[str, Any]]:
             "names": [b.name for b in cfg.backends],
             "hot_reload": False,
         },
-        "pricing": {
-            "label": "Pricing",
-            "names": (
-                [p.name for p in cfg.pricing.partitions] if cfg.pricing else []
-            ),
-            "hot_reload": False,
-        },
-    }
 
+    }
 
 @app.post("/settings", response_class=HTMLResponse)
 async def settings_save(request: Request) -> HTMLResponse:
@@ -2414,7 +685,6 @@ async def settings_save(request: Request) -> HTMLResponse:
 
     return await settings_page(request, message="Configuration saved successfully.", message_type="success")
 
-
 @app.post("/admin/reload")
 async def admin_reload() -> JSONResponse:
     """Re-read scripthut.yaml from disk and hot-reload safe sections.
@@ -2447,987 +717,10 @@ async def admin_reload() -> JSONResponse:
         }
     )
 
-
 def _restart_server() -> None:
     """Restart the server process by re-executing the current command."""
     import sys
     os.execv(sys.executable, [sys.executable] + sys.argv)
-
-
-@app.get("/runs/list")
-async def list_runs() -> dict[str, Any]:
-    """List all runs (JSON)."""
-    if state.run_manager is None:
-        return {"runs": []}
-
-    return {
-        "runs": [
-            {
-                "id": r.id,
-                "workflow_name": r.workflow_name,
-                "backend_name": r.backend_name,
-                "created_at": r.created_at.isoformat(),
-                "status": r.status.value,
-                "progress": r.progress,
-                "task_count": len(r.items),
-            }
-            for r in state.run_manager.get_all_runs()
-        ]
-    }
-
-
-def _compute_gantt_data(run: Run) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Compute layout data for Gantt chart bars."""
-    now = datetime.now(UTC)
-
-    time_origin = run.created_at
-
-    # Determine the end of the time axis:
-    # - If any task is still in-flight (submitted/queued/running/settling), use
-    #   `now` so the chart stays live and growing bars stay within bounds.
-    # - Otherwise, use the latest timestamp across all items so finished runs
-    #   don't show a long blank tail stretching to the current time.
-    active_statuses = (
-        RunItemStatus.SUBMITTED,
-        RunItemStatus.QUEUED,
-        RunItemStatus.RUNNING,
-        RunItemStatus.SETTLING,
-    )
-    has_active = any(item.status in active_statuses for item in run.items)
-    time_end = now if has_active else time_origin
-
-    for item in run.items:
-        for ts in (item.finished_at, item.started_at, item.submitted_at):
-            if ts and ts > time_end:
-                time_end = ts
-
-    # Also ensure time_end covers submitted_at-anchored durations.
-    # Sacct timestamps may be in the cluster's local timezone while
-    # submitted_at is in true UTC, so we compute run durations from
-    # sacct's own start/end (self-consistent) and anchor them at
-    # submitted_at for display.
-    for item in run.items:
-        if item.submitted_at and item.started_at:
-            wait_dur = max(0, (item.started_at - item.submitted_at).total_seconds())
-            end_ts = item.finished_at or now
-            run_dur = max(0, (end_ts - item.started_at).total_seconds())
-            visual_end = item.submitted_at + timedelta(seconds=wait_dur + run_dur)
-            if visual_end > time_end:
-                time_end = visual_end
-
-    total_span = (time_end - time_origin).total_seconds()
-    if total_span <= 0:
-        total_span = 1
-
-    markers: list[dict[str, Any]] = []
-    nice_intervals = [1, 5, 10, 30, 60, 120, 300, 600, 1800, 3600, 7200, 14400, 28800, 86400]
-    interval = nice_intervals[-1]
-    for ni in nice_intervals:
-        if total_span / ni <= 10:
-            interval = ni
-            break
-
-    t = 0.0
-    while t <= total_span:
-        pct = (t / total_span) * 100
-        if t < 60:
-            label = f"+{int(t)}s"
-        elif t < 3600:
-            label = f"+{int(t // 60)}m"
-        else:
-            h = int(t // 3600)
-            m = int((t % 3600) // 60)
-            label = f"+{h}h{m:02d}m" if m else f"+{h}h"
-        markers.append({"pct": pct, "label": label})
-        t += interval
-
-    gantt_items: list[dict[str, Any]] = []
-    for item in run.items:
-        entry: dict[str, Any] = {
-            "task_id": item.task.id,
-            "name": item.task.name,
-            "status": item.status.value,
-            "deps": item.task.dependencies,
-            "has_bar": False,
-            "wait_left": 0,
-            "wait_width": 0,
-            "run_left": 0,
-            "run_width": 0,
-            "bar_start": 0,
-            "bar_end": 0,
-        }
-
-        if item.submitted_at:
-            submitted_offset = max(0, (item.submitted_at - time_origin).total_seconds())
-
-            if item.started_at:
-                # Compute wait and run durations from their own timestamps
-                # (self-consistent even if sacct uses a different timezone).
-                # Anchor everything at submitted_at which is always local time.
-                wait_dur = max(0, (item.started_at - item.submitted_at).total_seconds())
-                end_ts = item.finished_at or now
-                run_dur = max(0, (end_ts - item.started_at).total_seconds())
-
-                visual_start = submitted_offset + wait_dur
-                entry["wait_left"] = (submitted_offset / total_span) * 100
-                entry["wait_width"] = (wait_dur / total_span) * 100
-                entry["run_left"] = (visual_start / total_span) * 100
-                entry["run_width"] = (run_dur / total_span) * 100
-                entry["has_bar"] = True
-                entry["bar_start"] = entry["wait_left"]
-                entry["bar_end"] = entry["run_left"] + entry["run_width"]
-            else:
-                wait_end_ts = item.finished_at or now
-                wait_dur = max(0, (wait_end_ts - item.submitted_at).total_seconds())
-                entry["wait_left"] = (submitted_offset / total_span) * 100
-                entry["wait_width"] = (wait_dur / total_span) * 100
-                entry["has_bar"] = True
-                entry["bar_start"] = entry["wait_left"]
-                entry["bar_end"] = entry["wait_left"] + entry["wait_width"]
-
-        gantt_items.append(entry)
-
-    return gantt_items, markers
-
-
-def _get_run_cost(run):
-    """Compute cost summary for a run if pricing is configured."""
-    if state.pricing_service and run:
-        return state.pricing_service.compute_run_cost(run)
-    return None
-
-
-@app.get("/runs/{run_id}", response_class=HTMLResponse)
-async def run_detail_page(request: Request, run_id: str) -> HTMLResponse:
-    """Page showing run detail."""
-    run = state.run_manager.get_run(run_id) if state.run_manager else None
-
-    if run is None:
-        return templates.TemplateResponse(
-            "run_detail.html",
-            {"request": request, "run": None, "error": "Run not found", "gantt_items": [], "markers": []},
-        )
-
-    gantt_items, markers = _compute_gantt_data(run)
-
-    return templates.TemplateResponse(
-        "run_detail.html",
-        {
-            "request": request,
-            "run": run,
-            "error": None,
-            "gantt_items": gantt_items,
-            "markers": markers,
-            "cost_summary": _get_run_cost(run),
-        },
-    )
-
-
-_CLAUDE_SESSION_URL_RE = re.compile(r"https://[^\s\"']*claude\.ai[^\s\"']*")
-
-
-@app.get("/runs/{run_id}/agent-link")
-async def run_agent_link(run_id: str) -> JSONResponse:
-    """Return the Remote Control session URL printed by a ``mode=remote`` agent.
-
-    Best-effort: server-mode ``claude remote-control`` prints the claude.ai
-    session URL to stdout. We scan the agent task's stdout for it; ``url`` is
-    null until it appears (or for non-remote runs).
-    """
-    if state.run_manager is None:
-        return JSONResponse(status_code=500, content={"error": "Run manager not initialized"})
-
-    run = state.run_manager.get_run(run_id)
-    if run is None or not run.agent_session or run.agent_mode != "remote":
-        return JSONResponse(content={"url": None})
-
-    content, _error = await state.run_manager.fetch_log_file(run_id, "agent", "output")
-    url = None
-    if content:
-        match = _CLAUDE_SESSION_URL_RE.search(content)
-        if match:
-            url = match.group(0)
-    return JSONResponse(content={"url": url})
-
-
-@app.get("/runs/{run_id}/info", response_class=HTMLResponse)
-async def run_info_partial(request: Request, run_id: str) -> HTMLResponse:
-    """HTMX partial for run info (progress bar, status, counts)."""
-    run = state.run_manager.get_run(run_id) if state.run_manager else None
-
-    return templates.TemplateResponse(
-        "run_info.html",
-        {"request": request, "run": run, "cost_summary": _get_run_cost(run)},
-    )
-
-
-@app.get("/runs/{run_id}/items", response_class=HTMLResponse)
-async def run_items_partial(request: Request, run_id: str) -> HTMLResponse:
-    """HTMX partial for run items table."""
-    run = state.run_manager.get_run(run_id) if state.run_manager else None
-
-    return templates.TemplateResponse(
-        "run_items.html",
-        {"request": request, "run": run},
-    )
-
-
-@app.get("/runs/{run_id}/gantt", response_class=HTMLResponse)
-async def run_gantt_partial(request: Request, run_id: str) -> HTMLResponse:
-    """HTMX partial for run Gantt chart."""
-    run = state.run_manager.get_run(run_id) if state.run_manager else None
-
-    gantt_items: list[dict[str, Any]] = []
-    markers: list[dict[str, Any]] = []
-    if run:
-        gantt_items, markers = _compute_gantt_data(run)
-
-    return templates.TemplateResponse(
-        "run_gantt.html",
-        {"request": request, "run": run, "gantt_items": gantt_items, "markers": markers},
-    )
-
-
-@app.get("/runs/{run_id}/events")
-async def run_events(request: Request, run_id: str) -> EventSourceResponse:
-    """SSE stream for real-time run updates."""
-
-    async def event_generator():
-        if not state.run_manager:
-            return
-
-        while True:
-            changed = await state.run_manager.wait_for_update(run_id)
-
-            if state._shutdown_event.is_set():
-                return
-
-            run = state.run_manager.get_run(run_id)
-            if run is None:
-                return
-
-            if changed:
-                info_html = templates.get_template("run_info.html").render(
-                    {"request": request, "run": run, "cost_summary": _get_run_cost(run)}
-                )
-                items_html = templates.get_template("run_items.html").render(
-                    {"request": request, "run": run}
-                )
-                gantt_items, markers = _compute_gantt_data(run)
-                gantt_html = templates.get_template("run_gantt.html").render(
-                    {"request": request, "run": run, "gantt_items": gantt_items, "markers": markers}
-                )
-                yield {"event": "info-update", "data": info_html}
-                yield {"event": "items-update", "data": items_html}
-                yield {"event": "gantt-update", "data": gantt_html}
-                sidebar_html = templates.get_template("run_sidebar.html").render(
-                    {"request": request, "run": run}
-                )
-                yield {"event": "sidebar-update", "data": sidebar_html}
-            else:
-                yield {"comment": "keepalive"}
-
-    return EventSourceResponse(event_generator())
-
-
-@app.post("/runs/{run_id}/cancel")
-async def cancel_run(run_id: str) -> dict[str, Any]:
-    """Cancel all pending and running items in a run."""
-    if state.run_manager is None:
-        return {"error": "Run manager not initialized"}
-
-    success = await state.run_manager.cancel_run(run_id)
-    if success:
-        return {"status": "cancelled", "run_id": run_id}
-    else:
-        return {"error": "Run not found"}
-
-
-@app.post("/runs/{run_id}/rerun")
-async def rerun_run(run_id: str, mode: str = "in_place") -> Response:
-    """Re-run by resetting an existing run and re-submitting it in place."""
-    if state.run_manager is None:
-        return JSONResponse(
-            status_code=500,
-            content={"error": "Run manager not initialized"},
-        )
-
-    try:
-        run = await state.run_manager.rerun_in_place(run_id)
-        notification_hub.run_scheduled(run)
-        notification_hub.update_stats(state.run_manager.runs.values())
-        state.notify_poll()
-        return JSONResponse(
-            content={
-                "run_id": run.id,
-                "workflow_name": run.workflow_name,
-                "backend_name": run.backend_name,
-                "task_count": len(run.items),
-                "status": run.status.value,
-            }
-        )
-    except Exception as e:
-        logger.error(f"Failed to rerun run '{run_id}': {e}")
-        return JSONResponse(
-            status_code=422,
-            content={"error": str(e)},
-        )
-
-
-@app.delete("/runs/{run_id}")
-async def delete_run(run_id: str) -> Response:
-    """Delete a terminal run (completed, failed, or cancelled)."""
-    if state.run_manager is None:
-        return Response(status_code=400)
-
-    success = state.run_manager.delete_run(run_id)
-    if success:
-        return Response(status_code=200)
-    else:
-        return Response(status_code=404)
-
-
-@app.get("/runs/{run_id}/tasks/{task_id}/script", response_class=HTMLResponse)
-async def view_task_script(request: Request, run_id: str, task_id: str) -> HTMLResponse:
-    """View the sbatch script used to submit a task."""
-    if state.run_manager is None:
-        return templates.TemplateResponse(
-            "log_viewer.html",
-            {"request": request, "title": "Script", "content": None, "error": "Run manager not initialized"},
-        )
-
-    run = state.run_manager.get_run(run_id)
-    if run is None:
-        return templates.TemplateResponse(
-            "log_viewer.html",
-            {"request": request, "title": "Script", "content": None, "error": f"Run '{run_id}' not found"},
-        )
-
-    item = run.get_item_by_task_id(task_id)
-    if item is None:
-        return templates.TemplateResponse(
-            "log_viewer.html",
-            {"request": request, "title": "Script", "content": None, "error": f"Task '{task_id}' not found"},
-        )
-
-    script = item.submit_script
-    if script is None:
-        log_dir = run.log_dir
-        backend_state = state.backends.get(run.backend_name)
-        if backend_state and backend_state.ssh_client and log_dir.startswith("~"):
-            try:
-                stdout, _, _ = await backend_state.ssh_client.run_command("echo $HOME")
-                log_dir = log_dir.replace("~", stdout.strip(), 1)
-            except Exception:
-                pass
-        env_vars, extra_init = state.run_manager._resolve_environment(run, item.task)
-        job_backend = state.run_manager.get_job_backend(run.backend_name)
-        if job_backend:
-            script = job_backend.generate_script(
-                item.task, run.id, log_dir, account=run.account,
-                login_shell=run.login_shell, env_vars=env_vars, extra_init=extra_init,
-            )
-        else:
-            script = item.task.to_sbatch_script(
-                run.id, log_dir, account=run.account, login_shell=run.login_shell,
-                env_vars=env_vars, extra_init=extra_init,
-            )
-
-    return templates.TemplateResponse(
-        "log_viewer.html",
-        {
-            "request": request,
-            "title": f"Script: {item.task.name}",
-            "content": script,
-            "error": None,
-            "run_id": run_id,
-            "task_id": task_id,
-            "task_name": item.task.name,
-            "content_type": "script",
-            "run_items": run.items,
-        },
-    )
-
-
-@app.get("/runs/{run_id}/tasks/{task_id}/env")
-async def get_task_env(run_id: str, task_id: str) -> JSONResponse:
-    """Return the resolved env for a task, with per-key provenance.
-
-    Each entry in ``vars`` includes the final value plus the ordered list of
-    operations (source, op, contribution) that produced it. ``extra_init`` is
-    the bash text concatenated from all init rules.
-    """
-    if state.run_manager is None:
-        return JSONResponse({"error": "Run manager not initialized"}, status_code=503)
-
-    run = state.run_manager.get_run(run_id)
-    if run is None:
-        return JSONResponse({"error": f"Run '{run_id}' not found"}, status_code=404)
-
-    item = run.get_item_by_task_id(task_id)
-    if item is None:
-        return JSONResponse({"error": f"Task '{task_id}' not found"}, status_code=404)
-
-    from scripthut.runs.env import resolve_for_task_detailed
-
-    git_repo = run.git_repo
-    git_branch = run.git_branch
-
-    env, extra_init, prov = resolve_for_task_detailed(
-        state.run_manager.config,
-        backend_name=run.backend_name,
-        workflow_name=run.workflow_name,
-        run_id=run.id,
-        created_at=run.created_at,
-        task=item.task,
-        git_repo=git_repo,
-        git_branch=git_branch,
-        git_sha=run.commit_hash,
-        doc_env=run.doc_env,
-        doc_env_groups=run.doc_env_groups,
-        doc_stacks=run.doc_stacks,
-    )
-
-    return JSONResponse(
-        {
-            "run_id": run_id,
-            "task_id": task_id,
-            "vars": {
-                k: {
-                    "value": p.value,
-                    "ops": [
-                        {"source": src, "op": op, "contribution": c}
-                        for (src, op, c) in p.ops
-                    ],
-                }
-                for k, p in prov.items()
-            },
-            "extra_init": extra_init,
-            # echo final env separately for convenience
-            "resolved": env,
-        }
-    )
-
-
-@app.get("/runs/{run_id}/tasks/{task_id}/detail/{detail_type}")
-async def get_task_detail(
-    run_id: str, task_id: str, detail_type: str, tail: int | None = None
-) -> JSONResponse:
-    """Get task detail content as JSON for inline display in the run detail page."""
-    if state.run_manager is None:
-        return JSONResponse({"error": "Run manager not initialized", "content": None, "task_name": "", "path": None})
-
-    run = state.run_manager.get_run(run_id)
-    if run is None:
-        return JSONResponse({"error": f"Run '{run_id}' not found", "content": None, "task_name": "", "path": None})
-
-    item = run.get_item_by_task_id(task_id)
-    if item is None:
-        return JSONResponse({"error": f"Task '{task_id}' not found", "content": None, "task_name": "", "path": None})
-
-    content: str | None = None
-    error: str | None = None
-    path: str | None = None
-
-    if detail_type in ("output", "error"):
-        content, error = await state.run_manager.fetch_log_file(
-            run_id, task_id, detail_type, tail_lines=tail
-        )
-        if detail_type == "output":
-            path = item.task.get_output_path(run.id, run.log_dir)
-        else:
-            path = item.task.get_error_path(run.id, run.log_dir)
-        # If no log file content and the task has an error (e.g. submission failure), show that
-        if not content and item.error:
-            content = item.error
-            error = None
-    elif detail_type == "script":
-        content = item.submit_script
-        if content is None:
-            log_dir = run.log_dir
-            backend_state = state.backends.get(run.backend_name)
-            if backend_state and backend_state.ssh_client and log_dir.startswith("~"):
-                try:
-                    stdout, _, _ = await backend_state.ssh_client.run_command("echo $HOME")
-                    log_dir = log_dir.replace("~", stdout.strip(), 1)
-                except Exception:
-                    pass
-            env_vars, extra_init = state.run_manager._resolve_environment(run, item.task)
-            job_backend = state.run_manager.get_job_backend(run.backend_name)
-            if job_backend:
-                content = job_backend.generate_script(
-                    item.task, run.id, log_dir, account=run.account,
-                    login_shell=run.login_shell, env_vars=env_vars, extra_init=extra_init,
-                )
-            else:
-                content = item.task.to_sbatch_script(
-                    run.id, log_dir, account=run.account, login_shell=run.login_shell,
-                    env_vars=env_vars, extra_init=extra_init,
-                )
-    elif detail_type == "generated":
-        gs_path = item.task.generates_source
-        if not gs_path:
-            error = "This task does not have generates_source set"
-        else:
-            # Resolve relative paths against the task's working_dir
-            if not gs_path.startswith("/") and not gs_path.startswith("~"):
-                gs_path = f"{item.task.working_dir}/{gs_path}"
-            path = gs_path
-            backend_state = state.backends.get(run.backend_name)
-            if backend_state and backend_state.ssh_client:
-                stdout, stderr, exit_code = await backend_state.ssh_client.run_command(
-                    f"cat {gs_path}"
-                )
-                if exit_code != 0:
-                    error = f"Failed to read generates_source file: {stderr}"
-                else:
-                    # Try to pretty-print if it's valid JSON
-                    try:
-                        parsed = json.loads(stdout)
-                        content = json.dumps(parsed, indent=2)
-                    except (json.JSONDecodeError, ValueError):
-                        content = stdout
-            else:
-                error = f"Backend '{run.backend_name}' not connected"
-    elif detail_type == "outputs":
-        # v0.11.0 outputs feature: fetch each file the task wrote under
-        # ``$SCRIPTHUT_OUTPUT_DIR`` and render markdown server-side with
-        # bleach sanitization. Images return only their URL — the UI
-        # embeds them via the file endpoint. The renderer also rewrites
-        # relative ``<img src="rel.png">`` references to point at the
-        # file endpoint so users can author markdown naturally.
-        if not item.outputs:
-            # No structured outputs collected. Either the task didn't
-            # emit anything, the backend has no SSH (Batch/EC2), or the
-            # ``_handle_task_outputs`` hook hasn't run yet (item still
-            # SETTLING). The UI uses ``len(outputs) == 0`` to keep the
-            # subtab hidden in those cases.
-            return JSONResponse({
-                "content": None,
-                "error": None,
-                "task_name": item.task.name,
-                "task_id": task_id,
-                "path": None,
-                "outputs": [],
-                "output_dir": item.task.get_output_dir(run.id, run.log_dir),
-                "node": None,
-                "backend_name": run.backend_name,
-                "status": item.status.value,
-                "generates_source": item.task.generates_source,
-                "has_outputs": False,
-            })
-        backend_state = state.backends.get(run.backend_name)
-        ssh_client = backend_state.ssh_client if backend_state else None
-        output_dir = item.task.get_output_dir(run.id, run.log_dir)
-        file_endpoint_base = f"/runs/{run.id}/tasks/{task_id}/outputs/file"
-        outputs_payload = []
-        for o in item.outputs:
-            entry = {
-                "path": o.path,
-                "size": o.size,
-                "kind": o.kind,
-                "url": f"{file_endpoint_base}/{o.path}",
-            }
-            if o.kind == "markdown" and ssh_client is not None:
-                # Render markdown server-side. Cap at 1 MB raw to avoid
-                # render-time blow-ups; oversize markdown surfaces as a
-                # download link via ``url`` instead. The output cap on
-                # the listing already drops >5 MB files, so this is a
-                # smaller "render-friendly" budget.
-                if o.size <= 1024 * 1024:
-                    md_path = f"{output_dir}/{o.path}"
-                    try:
-                        stdout, _, exit_code = await ssh_client.run_command(
-                            f"cat {md_path}"
-                        )
-                        if exit_code == 0:
-                            entry["rendered_html"] = _render_markdown_for_outputs(
-                                stdout, file_endpoint_base,
-                            )
-                    except Exception as e:
-                        logger.warning(
-                            f"Failed to render markdown '{o.path}' "
-                            f"for task '{task_id}': {e}"
-                        )
-            outputs_payload.append(entry)
-        # ``task-summary.md`` (if present) renders first; otherwise
-        # alphabetical. The UI can choose to show summary prominently.
-        outputs_payload.sort(key=lambda e: (
-            0 if e["path"] == "task-summary.md" else 1, e["path"],
-        ))
-        return JSONResponse({
-            "content": None,
-            "error": None,
-            "task_name": item.task.name,
-            "task_id": task_id,
-            "path": output_dir,
-            "outputs": outputs_payload,
-            "output_dir": output_dir,
-            "node": None,
-            "backend_name": run.backend_name,
-            "status": item.status.value,
-            "generates_source": item.task.generates_source,
-            "has_outputs": True,
-        })
-    elif detail_type == "json":
-        task_data: dict[str, Any] = {
-            "id": item.task.id,
-            "name": item.task.name,
-            "command": item.task.command,
-            "working_dir": item.task.working_dir,
-            "partition": item.task.partition,
-            "cpus": item.task.cpus,
-            "memory": item.task.memory,
-            "time_limit": item.task.time_limit,
-            "dependencies": item.task.dependencies,
-            "env": [r.model_dump(by_alias=True, exclude_defaults=True) for r in item.task.env],
-            "generates_source": item.task.generates_source,
-            "output_file": item.task.output_file,
-            "error_file": item.task.error_file,
-        }
-        item_data: dict[str, Any] = {
-            "task": task_data,
-            "status": item.status.value,
-            "job_id": item.job_id,
-            "submitted_at": item.submitted_at.isoformat() if item.submitted_at else None,
-            "started_at": item.started_at.isoformat() if item.started_at else None,
-            "finished_at": item.finished_at.isoformat() if item.finished_at else None,
-            "error": item.error,
-            "cpu_efficiency": item.cpu_efficiency,
-            "max_rss": item.max_rss,
-        }
-        content = json.dumps(item_data, indent=2)
-    else:
-        error = f"Unknown detail type: {detail_type}"
-
-    # Look up compute node from live scheduler data
-    job_nodes = _get_job_nodes()
-    node = job_nodes.get(item.job_id) if item.job_id else None
-
-    return JSONResponse({
-        "content": content,
-        "error": error,
-        "task_name": item.task.name,
-        "task_id": task_id,
-        "path": path,
-        "job_id": item.job_id,
-        "status": item.status.value,
-        "node": node,
-        "backend_name": run.backend_name,
-        "run_id": run_id,
-        "generates_source": item.task.generates_source,
-        # v0.11.0: every detail response carries the outputs count so
-        # the UI knows whether to reveal the Outputs subtab regardless
-        # of which detail_type the user clicked first. Same pattern as
-        # ``generates_source`` above.
-        "has_outputs": bool(item.outputs),
-    })
-
-
-@app.get("/runs/{run_id}/summary")
-async def get_run_summary(run_id: str) -> JSONResponse:
-    """Aggregated run-wide Summary panel content.
-
-    Concatenates each item's ``$SCRIPTHUT_RUN_SUMMARY`` contribution
-    in submission order (the order items appear in ``run.items``,
-    which preserves the order they were submitted). Each contribution
-    is rendered through the same markdown + bleach pipeline as the
-    per-task outputs panel, so the user can use markdown tables,
-    links, and (relative) images. Image references resolve against
-    the contributing task's output dir — same UX as the per-task
-    panel — so the user can ``![](plot.png)`` inside their
-    ``$SCRIPTHUT_RUN_SUMMARY`` and have it Just Work.
-
-    ``any_contributions`` lets the UI hide the panel entirely when
-    no task in the run wrote ``$SCRIPTHUT_RUN_SUMMARY``; that's
-    cheaper than rendering an empty card.
-    """
-    if state.run_manager is None:
-        return JSONResponse(
-            {"error": "Run manager not initialized"}, status_code=503,
-        )
-    run = state.run_manager.get_run(run_id)
-    if run is None:
-        return JSONResponse(
-            {"error": f"Run '{run_id}' not found"}, status_code=404,
-        )
-
-    backend_state = state.backends.get(run.backend_name)
-    ssh = backend_state.ssh_client if backend_state else None
-
-    sections: list[dict[str, Any]] = []
-    for item in run.items:
-        if not item.has_run_summary:
-            continue
-        summary_path = item.task.get_run_summary_path(run.id, run.log_dir)
-        rendered = ""
-        if ssh is not None:
-            try:
-                stdout, _, exit_code = await ssh.run_command(
-                    f"cat {summary_path}"
-                )
-                if exit_code == 0 and stdout.strip():
-                    file_endpoint_base = (
-                        f"/runs/{run.id}/tasks/{item.task.id}/outputs/file"
-                    )
-                    rendered = _render_markdown_for_outputs(
-                        stdout, file_endpoint_base,
-                    )
-            except Exception as e:
-                # Skip the section rather than 5xx the whole panel —
-                # one broken contribution shouldn't blank everything.
-                logger.warning(
-                    f"Failed to render run-summary for task "
-                    f"'{item.task.id}' in run '{run.id}': {e}"
-                )
-        if rendered:
-            sections.append({
-                "task_id": item.task.id,
-                "task_name": item.task.name,
-                "rendered_html": rendered,
-            })
-
-    return JSONResponse({
-        "run_id": run.id,
-        "sections": sections,
-        "any_contributions": bool(sections),
-    })
-
-
-# v0.11.0 task-outputs feature: stream a file the task wrote under
-# ``$SCRIPTHUT_OUTPUT_DIR``. The endpoint is referenced from inside
-# rendered markdown (``<img>``), from the per-task Outputs subtab as
-# download links, and from copy-pasteable URLs.
-
-_OUTPUTS_FILE_MAX_BYTES = 10 * 1024 * 1024
-
-# Coarse content-type guesser by suffix. Browsers don't strictly need
-# these for images (they sniff), but explicit types make the cache
-# behave predictably and let curl users save with the right extension.
-_OUTPUTS_MIME_TYPES = {
-    ".png": "image/png",
-    ".jpg": "image/jpeg",
-    ".jpeg": "image/jpeg",
-    ".gif": "image/gif",
-    ".svg": "image/svg+xml",
-    ".webp": "image/webp",
-    ".md": "text/markdown; charset=utf-8",
-    ".markdown": "text/markdown; charset=utf-8",
-    ".csv": "text/csv; charset=utf-8",
-    ".tsv": "text/tab-separated-values; charset=utf-8",
-    ".json": "application/json",
-    ".txt": "text/plain; charset=utf-8",
-    ".pdf": "application/pdf",
-}
-
-
-@app.get("/runs/{run_id}/tasks/{task_id}/outputs/file/{rel_path:path}")
-async def get_task_output_file(
-    run_id: str, task_id: str, rel_path: str,
-) -> Response:
-    """Stream a single file from a task's ``$SCRIPTHUT_OUTPUT_DIR``.
-
-    Security: the requested ``rel_path`` is joined onto the task's
-    output dir, both are passed through ``os.path.realpath``, and the
-    file must resolve under the directory. Symlink escapes, ``..``,
-    and absolute-path attempts all 404 (not 403 — same observable as
-    "this file doesn't exist", which leaks less information).
-
-    Reads via SSH from the backend (Slurm + PBS only in v0.11.0;
-    Batch / EC2 are v2). Capped at ``_OUTPUTS_FILE_MAX_BYTES``; the
-    listing already drops >5 MB files, so this is the belt-and-
-    suspenders limit if someone hits the endpoint directly.
-    """
-    import os
-    import posixpath
-
-    if state.run_manager is None:
-        return Response(status_code=503)
-    run = state.run_manager.get_run(run_id)
-    if run is None:
-        return Response(status_code=404)
-    item = run.get_item_by_task_id(task_id)
-    if item is None:
-        return Response(status_code=404)
-
-    output_dir = item.task.get_output_dir(run.id, run.log_dir)
-    # Containment check happens against the *normalized* joined path
-    # in POSIX form because the backend path will always be POSIX
-    # (Slurm/PBS run on Linux), even if scripthut itself is on macOS.
-    full_path = posixpath.normpath(posixpath.join(output_dir, rel_path))
-    norm_dir = posixpath.normpath(output_dir) + "/"
-    if not full_path.startswith(norm_dir):
-        return Response(status_code=404)
-    # Belt-and-suspenders against null bytes / control chars in the
-    # request path that could confuse the remote shell. These tokens
-    # never appear in legitimate filenames in this system.
-    if any(c in rel_path for c in ("\x00", "\n", "\r")):
-        return Response(status_code=404)
-
-    backend_state = state.backends.get(run.backend_name)
-    if backend_state is None or backend_state.ssh_client is None:
-        return Response(status_code=503)
-    ssh = backend_state.ssh_client
-
-    # Probe size before reading so an oversize file fails cleanly
-    # with 413 rather than hanging or OOM'ing on the read. ``stat -c %s``
-    # works on the Linux backends scripthut targets.
-    size_out, _, size_rc = await ssh.run_command(
-        f"stat -c %s {full_path} 2>/dev/null"
-    )
-    if size_rc != 0 or not size_out.strip():
-        return Response(status_code=404)
-    try:
-        size = int(size_out.strip())
-    except ValueError:
-        return Response(status_code=404)
-    if size > _OUTPUTS_FILE_MAX_BYTES:
-        return Response(status_code=413)
-
-    # Use base64 to survive binary content over the SSH stdout text
-    # channel. ``base64 -w0`` emits no line wrapping; the Python side
-    # decodes back to bytes.
-    import base64
-    b64_out, _, b64_rc = await ssh.run_command(
-        f"base64 -w0 {full_path}"
-    )
-    if b64_rc != 0:
-        return Response(status_code=404)
-    try:
-        content = base64.b64decode(b64_out.strip())
-    except Exception:
-        return Response(status_code=500)
-
-    _, ext = os.path.splitext(rel_path.lower())
-    media_type = _OUTPUTS_MIME_TYPES.get(ext, "application/octet-stream")
-    return Response(
-        content=content,
-        media_type=media_type,
-        headers={"Cache-Control": "private, max-age=60"},
-    )
-
-
-@app.get("/runs/{run_id}/tasks/{task_id}/json", response_class=HTMLResponse)
-async def view_task_json(request: Request, run_id: str, task_id: str) -> HTMLResponse:
-    """View the JSON definition of a task."""
-    if state.run_manager is None:
-        return templates.TemplateResponse(
-            "log_viewer.html",
-            {"request": request, "title": "JSON", "content": None, "error": "Run manager not initialized"},
-        )
-
-    run = state.run_manager.get_run(run_id)
-    if run is None:
-        return templates.TemplateResponse(
-            "log_viewer.html",
-            {"request": request, "title": "JSON", "content": None, "error": f"Run '{run_id}' not found"},
-        )
-
-    item = run.get_item_by_task_id(task_id)
-    if item is None:
-        return templates.TemplateResponse(
-            "log_viewer.html",
-            {"request": request, "title": "JSON", "content": None, "error": f"Task '{task_id}' not found"},
-        )
-
-    task_data: dict[str, Any] = {
-        "id": item.task.id,
-        "name": item.task.name,
-        "command": item.task.command,
-        "working_dir": item.task.working_dir,
-        "partition": item.task.partition,
-        "cpus": item.task.cpus,
-        "memory": item.task.memory,
-        "time_limit": item.task.time_limit,
-        "dependencies": item.task.dependencies,
-        "env": [r.model_dump(by_alias=True, exclude_defaults=True) for r in item.task.env],
-        "generates_source": item.task.generates_source,
-        "output_file": item.task.output_file,
-        "error_file": item.task.error_file,
-    }
-    item_data: dict[str, Any] = {
-        "task": task_data,
-        "status": item.status.value,
-        "job_id": item.job_id,
-        "submitted_at": item.submitted_at.isoformat() if item.submitted_at else None,
-        "started_at": item.started_at.isoformat() if item.started_at else None,
-        "finished_at": item.finished_at.isoformat() if item.finished_at else None,
-        "error": item.error,
-        "cpu_efficiency": item.cpu_efficiency,
-        "max_rss": item.max_rss,
-    }
-    content = json.dumps(item_data, indent=2)
-
-    return templates.TemplateResponse(
-        "log_viewer.html",
-        {
-            "request": request,
-            "title": f"JSON: {item.task.name}",
-            "content": content,
-            "error": None,
-            "run_id": run_id,
-            "task_id": task_id,
-            "task_name": item.task.name,
-            "content_type": "json",
-            "run_items": run.items,
-        },
-    )
-
-
-@app.get("/runs/{run_id}/tasks/{task_id}/logs/{log_type}", response_class=HTMLResponse)
-async def view_task_log(
-    request: Request,
-    run_id: str,
-    task_id: str,
-    log_type: str,
-    tail: int | None = None,
-) -> HTMLResponse:
-    """View a log file for a task (fetched over SSH)."""
-    if state.run_manager is None:
-        return templates.TemplateResponse(
-            "log_viewer.html",
-            {"request": request, "title": "Log", "content": None, "error": "Run manager not initialized"},
-        )
-
-    content, error = await state.run_manager.fetch_log_file(
-        run_id, task_id, log_type, tail_lines=tail
-    )
-
-    run = state.run_manager.get_run(run_id)
-    task_name = ""
-    log_path = ""
-    if run:
-        item = run.get_item_by_task_id(task_id)
-        if item:
-            task_name = item.task.name
-            if log_type == "output":
-                log_path = item.task.get_output_path(run.id, run.log_dir)
-            else:
-                log_path = item.task.get_error_path(run.id, run.log_dir)
-
-    title = f"{'Output' if log_type == 'output' else 'Error'} Log: {task_name}"
-
-    return templates.TemplateResponse(
-        "log_viewer.html",
-        {
-            "request": request,
-            "title": title,
-            "content": content,
-            "error": error,
-            "run_id": run_id,
-            "task_id": task_id,
-            "task_name": task_name,
-            "log_type": log_type,
-            "log_path": log_path,
-            "content_type": "log",
-            "tail": tail,
-            "run_items": run.items if run else [],
-        },
-    )
-
-
-# ── Terminal Routes ──────────────────────────────────────────────────────────
-
 
 @app.get("/terminal/{backend_name}", response_class=HTMLResponse)
 async def terminal_page(request: Request, backend_name: str) -> HTMLResponse:
@@ -3445,7 +738,6 @@ async def terminal_page(request: Request, backend_name: str) -> HTMLResponse:
             "host": backend_state.status.host,
         },
     )
-
 
 @app.websocket("/ws/terminal/{backend_name}")
 async def terminal_ws(websocket: WebSocket, backend_name: str) -> None:
@@ -3479,34 +771,18 @@ async def terminal_ws(websocket: WebSocket, backend_name: str) -> None:
     session_job_id: str | None = None
     session_label: str | None = None
 
-    if session_type == "attach":
-        # Direct SSH to a compute node (no tmux)
-        node = init_data.get("node", "")
-        if not node:
-            await websocket.send_json(
-                {"type": "error", "message": "Missing node for attach session"}
-            )
-            await websocket.close()
-            return
-        command = f"ssh -tt {node}"
-        session_node = node
-        session_label = f"{backend_name} - {node}"
-    elif session_type == "job":
-        node = init_data.get("node", "")
-        job_id = init_data.get("job_id", "")
-        if not node or not job_id:
-            await websocket.send_json(
-                {"type": "error", "message": "Missing node or job_id for job session"}
-            )
-            await websocket.close()
-            return
-        tmux_session = f"sh-{job_id}"
-        command = f'ssh -tt {node} "tmux attach -t {tmux_session}"'
-        session_node = node
-        session_job_id = job_id
-        session_label = f"{backend_name} - Job {job_id} on {node}"
-    else:
-        session_label = f"{backend_name} - Head node ({backend_state.status.host})"
+    node = init_data.get("node", "")
+    job_id = init_data.get("job_id", "")
+    tmux_session = init_data.get("session") or (f"sh-{job_id}" if job_id else "")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", node) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", tmux_session):
+        await websocket.send_json({"type": "error", "message": "An existing compute host and tmux session are required"})
+        await websocket.close()
+        return
+    command = f'ssh -tt {node} "tmux attach -t {tmux_session}"'
+    session_type = "job"
+    session_node = node
+    session_job_id = job_id or None
+    session_label = f"{backend_name} - {tmux_session} on {node}"
 
     session = state.terminal_manager.create_session(
         backend_name, session_type,
@@ -3580,7 +856,6 @@ async def terminal_ws(websocket: WebSocket, backend_name: str) -> None:
         state.terminal_manager.remove_session(session.id)
         logger.info(f"Terminal session {session.id} closed")
 
-
 @app.delete("/terminal/sessions/{session_id}")
 async def close_terminal_session(session_id: str) -> dict[str, str]:
     """Close a terminal session by closing its WebSocket connection."""
@@ -3588,136 +863,6 @@ async def close_terminal_session(session_id: str) -> dict[str, str]:
     if not closed:
         return JSONResponse(status_code=404, content={"error": "Session not found"})
     return {"status": "ok"}
-
-
-@app.post("/terminal/jobs/{backend_name}/{job_id}/continue")
-async def continue_job(backend_name: str, job_id: str) -> dict[str, Any]:
-    """Send the continue signal to a job's tmux wait, unblocking the main command."""
-    backend_state = state.backends.get(backend_name)
-    if not backend_state or not backend_state.ssh_client:
-        return {"error": "Backend not found or disconnected"}
-
-    # Find the node for this job
-    node = None
-    for job in backend_state.jobs:
-        if job.job_id == job_id and job.nodes and job.nodes != "-":
-            node = job.nodes
-            break
-
-    if not node:
-        return {"error": f"Cannot find running node for job {job_id}"}
-
-    tmux_session = f"sh-{job_id}"
-    cmd = f'ssh {node} "tmux wait-for -S continue-{tmux_session}"'
-    try:
-        stdout, stderr, exit_code = await backend_state.ssh_client.run_command(cmd, timeout=10)
-        if exit_code != 0:
-            return {"error": f"Signal failed: {stderr}"}
-        return {"status": "ok", "message": f"Continue signal sent to job {job_id}"}
-    except Exception as e:
-        return {"error": str(e)}
-
-
-@app.get("/terminal/jobs/{backend_name}/{job_id}/status")
-async def interactive_job_status(backend_name: str, job_id: str) -> dict[str, Any]:
-    """Poll whether an interactive job is running and return its node."""
-    backend_state = state.backends.get(backend_name)
-    if not backend_state:
-        return {"state": "error", "node": None, "error": "Backend not found"}
-
-    for job in backend_state.jobs:
-        if job.job_id == job_id:
-            node = job.nodes if job.nodes and job.nodes != "-" else None
-            return {
-                "state": job.state.value.lower(),
-                "node": node,
-            }
-
-    # Job not in current poll data yet — could still be queued
-    return {"state": "unknown", "node": None}
-
-
-@app.post("/terminal/interactive/{backend_name}/{run_id}/{task_id}")
-async def submit_interactive_task(
-    backend_name: str, run_id: str, task_id: str,
-) -> dict[str, Any]:
-    """Re-submit a task with interactive_wait=True and return the new job ID."""
-    if state.run_manager is None:
-        return JSONResponse(
-            status_code=500,
-            content={"error": "Run manager not initialized"},
-        )
-
-    run = state.run_manager.get_run(run_id)
-    if run is None:
-        return JSONResponse(status_code=404, content={"error": "Run not found"})
-
-    item = run.get_item_by_task_id(task_id)
-    if item is None:
-        return JSONResponse(status_code=404, content={"error": "Task not found"})
-
-    backend_state = state.backends.get(backend_name)
-    if not backend_state or not backend_state.ssh_client or not backend_state.backend:
-        return JSONResponse(
-            status_code=400,
-            content={"error": f"Backend '{backend_name}' not available"},
-        )
-
-    ssh_client = backend_state.ssh_client
-    job_backend = backend_state.backend
-
-    # Resolve log dir
-    log_dir = run.log_dir
-    if log_dir.startswith("~"):
-        try:
-            stdout, _, _ = await ssh_client.run_command("echo $HOME")
-            log_dir = log_dir.replace("~", stdout.strip(), 1)
-        except Exception:
-            pass
-
-    await ssh_client.run_command(f"mkdir -p {log_dir}")
-
-    # Build script with interactive_wait=True
-    merged_env, extra_init = state.run_manager._resolve_environment(run, item.task)
-    script = job_backend.generate_script(
-        item.task, run.id, log_dir,
-        account=run.account, login_shell=run.login_shell,
-        env_vars=merged_env, extra_init=extra_init,
-        interactive_wait=True,
-    )
-
-    try:
-        job_id = await job_backend.submit_job(script)
-        logger.info(
-            f"Submitted interactive job {job_id} for task '{task_id}' "
-            f"(run {run_id}) on backend '{backend_name}'"
-        )
-
-        # Register as external job so it appears in the jobs list immediately
-        if state.run_storage:
-            state.run_storage.add_external_job(
-                backend_name=backend_name,
-                job_id=job_id,
-                name=f"[debug] {item.task.name}",
-                user=state.filter_user or "unknown",
-                state="submitted",
-                partition=item.task.partition,
-                cpus=item.task.cpus,
-                memory=item.task.memory,
-                submit_time=datetime.now(UTC),
-            )
-
-        # Track as debug job so the terminals page can identify it
-        state.debug_job_ids.add(job_id)
-
-        return {
-            "job_id": job_id,
-            "backend_name": backend_name,
-        }
-    except RuntimeError as e:
-        logger.error(f"Interactive submit failed for task '{task_id}': {e}")
-        return JSONResponse(status_code=500, content={"error": str(e)})
-
 
 def parse_args() -> argparse.Namespace:
     """Parse command line arguments."""
@@ -3749,28 +894,11 @@ def parse_args() -> argparse.Namespace:
     )
     return parser.parse_args()
 
-
-# Kept as a literal (not introspected from scripthut.cli) so we don't pay the
-# import cost — and trigger asyncssh / runtime imports — just to start the web
-# server. Must stay in sync with the top-level parsers in cli.py.
-_CLI_SUBCOMMANDS = frozenset(
-    {
-        "workflow", "run", "backend", "source", "stack", "agent", "task",
-        "status", "daemon", "disk", "scriptflow",
-    }
-)
-_SUBCOMMANDS = _CLI_SUBCOMMANDS | {"setup-aws-ec2"}
-
-
 def _dispatch_subcommand(name: str, argv_rest: list[str]) -> int:
-    if name == "setup-aws-ec2":
-        from scripthut.setup.aws_ec2 import main as setup_main
-        return setup_main(argv_rest)
     if name in _CLI_SUBCOMMANDS:
         from scripthut.cli import main as cli_main
         return cli_main([name, *argv_rest])
     raise SystemExit(f"Unknown subcommand: {name}")
-
 
 def run() -> None:
     """Run the application with uvicorn (or dispatch to a subcommand)."""
@@ -3810,6 +938,49 @@ def run() -> None:
         port=port,
         reload=False,
     )
+
+
+_CLI_SUBCOMMANDS = frozenset({"backend", "source", "agent", "status", "daemon", "scriptflow"})
+_SUBCOMMANDS = _CLI_SUBCOMMANDS
+
+
+@app.get("/", response_class=HTMLResponse)
+async def overview(request: Request):
+    if state.config_error:
+        return templates.TemplateResponse("config_error.html", {"request": request, "config_error": state.config_error})
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse("/scriptflow")
+
+
+@app.get("/backends", response_class=HTMLResponse)
+async def backends_page(request: Request):
+    return templates.TemplateResponse("backends.html", {"request": request, "state": state})
+
+
+@app.get("/jobs", response_class=HTMLResponse)
+async def jobs_partial(request: Request):
+    return templates.TemplateResponse("jobs.html", {"request": request, "jobs": state.all_jobs})
+
+
+@app.get("/jobs/stream")
+async def jobs_stream(request: Request):
+    async def events():
+        while not state._shutdown_event.is_set():
+            if await request.is_disconnected():
+                break
+            if await state.wait_for_poll():
+                yield {"event": "jobs", "data": templates.get_template("jobs.html").render(jobs=state.all_jobs)}
+    return EventSourceResponse(events())
+
+
+@app.get("/sources", response_class=HTMLResponse)
+async def sources_page(request: Request):
+    return templates.TemplateResponse("sources.html", {"request": request, "sources": state.config.sources if state.config else []})
+
+
+@app.get("/terminals", response_class=HTMLResponse)
+async def terminals_page(request: Request):
+    return templates.TemplateResponse("terminals.html", {"request": request, "sessions": list(state.terminal_manager.sessions.values()), "backends": state.backends})
 
 
 if __name__ == "__main__":

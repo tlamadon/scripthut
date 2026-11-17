@@ -311,8 +311,8 @@ def cli_context(tmp_path, monkeypatch):
     def forbidden(*args, **kwargs):
         pytest.fail("Legacy runtime or run storage invoked")
 
-    from scripthut.runs.manager import RunManager
-    from scripthut.runs.storage import RunStorageManager
+    from tests.legacy_guards import RunManager
+    from tests.legacy_guards import RunStorageManager
 
     monkeypatch.setattr(cli, "init_runtime", forbidden)
     monkeypatch.setattr(cli, "_make_client", forbidden)

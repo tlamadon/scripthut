@@ -208,8 +208,8 @@ def test_not_started_template(web):
 
 
 async def test_launched_terminal_poll_policy(service, monkeypatch):
-    from scripthut.runs.manager import RunManager
-    from scripthut.runs.storage import RunStorageManager
+    from tests.legacy_guards import RunManager
+    from tests.legacy_guards import RunStorageManager
 
     service, transport = service
 

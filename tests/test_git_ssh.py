@@ -9,12 +9,12 @@ Nothing tested the flags at all.
 """
 
 from __future__ import annotations
+from scripthut.sources.delivery import SourceDelivery as RunManager
 
 from pathlib import Path
 
 import pytest
 
-from scripthut.runs.manager import RunManager
 from scripthut.sources.git import GitSourceManager
 from scripthut.ssh.git_ssh import (
     build_git_ssh_command,

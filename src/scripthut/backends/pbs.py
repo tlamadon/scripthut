@@ -10,26 +10,21 @@ from typing import TYPE_CHECKING
 
 from scripthut.backends.base import (
     ClusterInfo,
-    DiskInfo,
     JobBackend,
     JobStats,
     PartitionInfo,
     SubmitResult,
 )
 from scripthut.backends.utils import (
-    fetch_disk_info,
     fetch_log_via_ssh,
     format_bytes,
     format_submit_output,
-    generate_script_body,
     parse_duration_hms,
     parse_rss_to_bytes,
 )
 from scripthut.models import HPCJob, JobState
 from scripthut.ssh.client import SSHClient
 
-if TYPE_CHECKING:
-    from scripthut.runs.models import TaskDefinition
 
 logger = logging.getLogger(__name__)
 
@@ -67,45 +62,8 @@ _PBS_STATE_MAP: dict[str, JobState] = {
 }
 
 
-def _gres_to_pbs_gpus(gres: str) -> int | None:
-    """Translate a Slurm-style gres spec to a PBS GPU count.
-
-    Accepts forms like ``gpu:2``, ``gpu:v100:1``, or bare ``gpu`` (count 1).
-    Returns the integer count if the resource is ``gpu``, else None (and logs
-    a warning for non-GPU gres, which has no portable PBS equivalent).
-    """
-    spec = gres.strip()
-    if not spec:
-        return None
-    parts = spec.split(":")
-    if parts[0].lower() != "gpu":
-        logger.warning(
-            f"PBS backend only maps GPU gres; ignoring non-GPU gres '{gres}'"
-        )
-        return None
-    last = parts[-1]
-    if last.lower() == "gpu":
-        return 1
-    try:
-        return int(last)
-    except ValueError:
-        logger.warning(f"Could not parse GPU count from gres '{gres}'")
-        return None
 
 
-def _convert_memory_to_pbs(mem_str: str) -> str:
-    """Convert memory string from Slurm format to PBS format.
-
-    Slurm: 4G, 512M, 1024K
-    PBS:   4gb, 512mb, 1024kb
-    """
-    match = re.match(r"^(\d+)([KMGTP]?)$", mem_str.strip(), re.IGNORECASE)
-    if not match:
-        return mem_str.lower()
-    value = match.group(1)
-    unit = match.group(2).upper() if match.group(2) else ""
-    unit_map = {"K": "kb", "M": "mb", "G": "gb", "T": "tb", "P": "pb", "": "b"}
-    return f"{value}{unit_map.get(unit, 'b')}"
 
 
 def _strip_server_suffix(job_id: str) -> str:
@@ -231,7 +189,7 @@ def parse_qstat_queues(stdout: str) -> dict[str, dict]:
 
 
 class PBSBackend(JobBackend):
-    """PBS/Torque job backend using SSH to run qstat/qsub/qdel."""
+    """Read-only PBS/Torque scheduler observation over SSH."""
 
     def __init__(self, ssh_client: SSHClient, default_queue: str | None = None) -> None:
         """Initialize with an SSH client connected to the PBS head node."""
@@ -763,137 +721,13 @@ class PBSBackend(JobBackend):
         )
         return ClusterInfo(partitions=[partition], pending_reasons=pending_reasons)
 
-    async def get_disk_info(self, path: str) -> DiskInfo | None:
-        """Fetch disk usage for ``path`` on the backend via ``df -Pk``."""
-        return await fetch_disk_info(self._ssh, path)
 
-    async def fetch_log(
-        self,
-        job_id: str,
-        log_path: str,
-        log_type: str = "output",
-        tail_lines: int | None = None,
-    ) -> tuple[str | None, str | None]:
-        return await fetch_log_via_ssh(self._ssh, log_path, tail_lines)
 
-    async def submit_job(self, script: str) -> str:
-        """Submit a job script via qsub and return the parsed PBS job ID."""
-        result = await self._submit_and_verify(script)
-        return result.job_id
 
-    async def _submit_and_verify(self, script: str) -> SubmitResult:
-        """Run qsub, parse the job ID strictly, and verify PBS accepted it.
 
-        Captures stdout/stderr so users can inspect the raw qsub response
-        even when submission appeared successful.
-        """
-        # Quoted heredoc delimiter (<<'SCRIPTHUT_EOF') already passes the body
-        # through literally — no shell processing — so the script must NOT be
-        # quote-escaped. Escaping single quotes here would inject literal
-        # ``'\''`` sequences and corrupt any command containing a single quote.
-        submit_cmd = f"qsub <<'SCRIPTHUT_EOF'\n{script}\nSCRIPTHUT_EOF"
-        stdout, stderr, exit_code = await self._ssh.run_command(submit_cmd)
-        combined = format_submit_output(stdout, stderr)
 
-        if exit_code != 0:
-            raise RuntimeError(f"qsub failed (exit {exit_code}): {combined}")
 
-        # qsub output: "12345.pbs-server" or just "12345" — pick the first
-        # token that starts with digits.  Tolerates extra warnings before/after.
-        match = re.search(r"\b(\d+(?:\.\S+)?)\b", stdout)
-        if not match:
-            raise RuntimeError(
-                f"Could not parse job ID from qsub output: {combined}"
-            )
-        job_id = _strip_server_suffix(match.group(1))
 
-        verified = await self._verify_job_accepted(job_id)
-        if not verified:
-            raise RuntimeError(
-                f"qsub returned job ID {job_id} but PBS does not recognize it "
-                f"— the job likely never entered the queue. qsub output: {combined}"
-            )
-
-        return SubmitResult(job_id=job_id, submit_output=combined)
-
-    async def _verify_job_accepted(self, job_id: str) -> bool:
-        """Return True if PBS recognizes ``job_id`` (qstat or qstat -x)."""
-        # qstat -f returns 0 with details if job exists in the active queue;
-        # qstat -xf also includes recently completed jobs (PBS Pro).
-        for cmd in (f"qstat -f {job_id}", f"qstat -xf {job_id}"):
-            try:
-                stdout, _, exit_code = await self._ssh.run_command(cmd, timeout=15)
-            except Exception as e:
-                logger.warning(f"qstat verify failed for {job_id} via '{cmd}': {e}")
-                continue
-            if exit_code == 0 and stdout.strip():
-                return True
-        return False
-
-    async def submit_task(
-        self,
-        task: TaskDefinition,
-        script: str,
-        env_vars: dict[str, str] | None = None,
-    ) -> SubmitResult:
-        """Submit a PBS task, returning the captured qsub output."""
-        del task, env_vars  # script carries everything PBS needs
-        return await self._submit_and_verify(script)
-
-    async def cancel_job(self, job_id: str) -> None:
-        """Cancel a PBS job via qdel."""
-        await self._ssh.run_command(f"qdel {job_id}")
-
-    def generate_script(
-        self,
-        task: TaskDefinition,
-        run_id: str,
-        log_dir: str,
-        account: str | None = None,
-        login_shell: bool = False,
-        env_vars: dict[str, str] | None = None,
-        extra_init: str = "",
-        interactive_wait: bool = False,
-    ) -> str:
-        """Generate a PBS submission script for a task."""
-        output_path = task.get_output_path(run_id, log_dir)
-        error_path = task.get_error_path(run_id, log_dir)
-        # v0.11.0 task-outputs feature: see slurm.py for the rationale.
-        output_dir = task.get_output_dir(run_id, log_dir)
-        run_summary_path = task.get_run_summary_path(run_id, log_dir)
-        shebang = "#!/bin/bash -l" if login_shell else "#!/bin/bash"
-
-        queue = self._default_queue or task.partition
-        pbs_mem = _convert_memory_to_pbs(task.memory)
-
-        account_line = f"#PBS -A {account}\n" if account else ""
-
-        gpu_suffix = ""
-        if task.gres:
-            gpus = _gres_to_pbs_gpus(task.gres)
-            if gpus is not None:
-                gpu_suffix = f":gpus={gpus}"
-
-        header = f"""{shebang}
-#PBS -N {task.name}
-#PBS -q {queue}
-{account_line}#PBS -l nodes=1:ppn={task.cpus}{gpu_suffix},mem={pbs_mem},walltime={task.time_limit}
-#PBS -o {output_path}
-#PBS -e {error_path}
-#PBS -V
-"""
-        body = generate_script_body(
-            task_name=task.name,
-            task_id=task.id,
-            command=task.command,
-            working_dir=task.working_dir,
-            env_vars=env_vars,
-            extra_init=extra_init,
-            interactive_wait=interactive_wait,
-            output_dir=output_dir,
-            run_summary_path=run_summary_path,
-        )
-        return header + "\n" + body
 
     async def is_available(self) -> bool:
         """Check if PBS is available by running qstat --version."""

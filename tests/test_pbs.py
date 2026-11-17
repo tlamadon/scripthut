@@ -7,38 +7,17 @@ from scripthut.backends.pbs import (
     PBS_FAILURE_STATES,
     PBS_TERMINAL_STATES,
     PBSBackend,
-    _convert_memory_to_pbs,
-    _gres_to_pbs_gpus,
     _strip_server_suffix,
     parse_pbs_datetime,
     parse_qstat_line,
 )
 from scripthut.backends.base import JobStats
 from scripthut.models import HPCJob, JobState
-from scripthut.runs.models import TaskDefinition
 
 
 # -- Utility tests --
 
 
-class TestMemoryConversion:
-    def test_gigabytes(self):
-        assert _convert_memory_to_pbs("4G") == "4gb"
-
-    def test_megabytes(self):
-        assert _convert_memory_to_pbs("512M") == "512mb"
-
-    def test_kilobytes(self):
-        assert _convert_memory_to_pbs("1024K") == "1024kb"
-
-    def test_terabytes(self):
-        assert _convert_memory_to_pbs("1T") == "1tb"
-
-    def test_no_unit(self):
-        assert _convert_memory_to_pbs("1024") == "1024b"
-
-    def test_lowercase_passthrough(self):
-        assert _convert_memory_to_pbs("4gb") == "4gb"
 
 
 class TestStripServerSuffix:
@@ -113,174 +92,13 @@ class TestParseQstatLine:
 # -- Script generation --
 
 
-class TestGenerateScript:
-    def _make_backend(self) -> PBSBackend:
-        ssh = AsyncMock()
-        return PBSBackend(ssh)
-
-    def test_basic_script(self):
-        backend = self._make_backend()
-        task = TaskDefinition(
-            id="t1", name="test-task", command="echo hello",
-            partition="batch", cpus=2, memory="4G", time_limit="1:00:00",
-        )
-        script = backend.generate_script(task, "run123", "/tmp/logs")
-
-        assert "#!/bin/bash" in script
-        assert "#PBS -N test-task" in script
-        assert "#PBS -q batch" in script
-        assert "nodes=1:ppn=2,mem=4gb,walltime=1:00:00" in script
-        assert "#PBS -o /tmp/logs/scripthut_run123_t1.out" in script
-        assert "#PBS -e /tmp/logs/scripthut_run123_t1.err" in script
-        assert "echo hello" in script
-
-    def test_script_with_account(self):
-        backend = self._make_backend()
-        task = TaskDefinition(id="t1", name="test", command="pwd")
-        script = backend.generate_script(task, "r1", "/logs", account="myaccount")
-        assert "#PBS -A myaccount" in script
-
-    def test_script_no_account(self):
-        backend = self._make_backend()
-        task = TaskDefinition(id="t1", name="test", command="pwd")
-        script = backend.generate_script(task, "r1", "/logs")
-        assert "#PBS -A" not in script
-
-    def test_login_shell(self):
-        backend = self._make_backend()
-        task = TaskDefinition(id="t1", name="test", command="pwd")
-        script = backend.generate_script(task, "r1", "/logs", login_shell=True)
-        assert "#!/bin/bash -l" in script
-
-    def test_default_queue_override(self):
-        ssh = AsyncMock()
-        backend = PBSBackend(ssh, default_queue="priority")
-        task = TaskDefinition(id="t1", name="test", command="pwd", partition="batch")
-        script = backend.generate_script(task, "r1", "/logs")
-        assert "#PBS -q priority" in script
-
-    def test_env_vars(self):
-        backend = self._make_backend()
-        task = TaskDefinition(id="t1", name="test", command="pwd")
-        script = backend.generate_script(
-            task, "r1", "/logs", env_vars={"MY_VAR": "hello"}
-        )
-        assert 'export MY_VAR="hello"' in script
-
-    def test_extra_init(self):
-        backend = self._make_backend()
-        task = TaskDefinition(id="t1", name="test", command="pwd")
-        script = backend.generate_script(
-            task, "r1", "/logs", extra_init="module load python"
-        )
-        assert "module load python" in script
-
-    def test_extra_init_runs_before_env_exports(self):
-        """``module load`` must run before ``export`` so user vars override module env."""
-        backend = self._make_backend()
-        task = TaskDefinition(id="t1", name="test", command="pwd")
-        script = backend.generate_script(
-            task, "r1", "/logs",
-            env_vars={"JULIA_DEPOT_PATH": "/scratch/me"},
-            extra_init="module load julia/1.12",
-        )
-        init_pos = script.index("module load julia/1.12")
-        export_pos = script.index('export JULIA_DEPOT_PATH="/scratch/me"')
-        assert init_pos < export_pos, (
-            "extra_init must precede env exports so user overrides win "
-            "after module load resets the variable"
-        )
-
-    def test_gres_gpu_count(self):
-        backend = self._make_backend()
-        task = TaskDefinition(
-            id="t1", name="test", command="pwd", cpus=2, gres="gpu:2",
-        )
-        script = backend.generate_script(task, "r1", "/logs")
-        assert "nodes=1:ppn=2:gpus=2,mem=" in script
-
-    def test_gres_gpu_typed(self):
-        backend = self._make_backend()
-        task = TaskDefinition(
-            id="t1", name="test", command="pwd", cpus=4, gres="gpu:v100:3",
-        )
-        script = backend.generate_script(task, "r1", "/logs")
-        assert "nodes=1:ppn=4:gpus=3,mem=" in script
-
-    def test_gres_bare_gpu(self):
-        backend = self._make_backend()
-        task = TaskDefinition(
-            id="t1", name="test", command="pwd", cpus=1, gres="gpu",
-        )
-        script = backend.generate_script(task, "r1", "/logs")
-        assert "nodes=1:ppn=1:gpus=1,mem=" in script
-
-    def test_gres_none(self):
-        backend = self._make_backend()
-        task = TaskDefinition(id="t1", name="test", command="pwd", cpus=2)
-        script = backend.generate_script(task, "r1", "/logs")
-        assert ":gpus=" not in script
 
 
-class TestGresParsing:
-    def test_gpu_count(self):
-        assert _gres_to_pbs_gpus("gpu:4") == 4
-
-    def test_gpu_typed(self):
-        assert _gres_to_pbs_gpus("gpu:a100:2") == 2
-
-    def test_bare_gpu(self):
-        assert _gres_to_pbs_gpus("gpu") == 1
-
-    def test_non_gpu_returns_none(self):
-        assert _gres_to_pbs_gpus("mps:100") is None
-
-    def test_empty_returns_none(self):
-        assert _gres_to_pbs_gpus("") is None
-
-    def test_unparseable_count_returns_none(self):
-        assert _gres_to_pbs_gpus("gpu:v100:many") is None
 
 
 # -- Submit / Cancel --
 
 
-class TestSubmitCancel:
-    @pytest.mark.asyncio
-    async def test_submit_job(self):
-        ssh = AsyncMock()
-        ssh.run_command = AsyncMock(return_value=("12345.pbs-server\n", "", 0))
-        backend = PBSBackend(ssh)
-
-        job_id = await backend.submit_job("#!/bin/bash\necho hi")
-        assert job_id == "12345"
-
-    @pytest.mark.asyncio
-    async def test_submit_job_no_server_suffix(self):
-        ssh = AsyncMock()
-        ssh.run_command = AsyncMock(return_value=("99999\n", "", 0))
-        backend = PBSBackend(ssh)
-
-        job_id = await backend.submit_job("#!/bin/bash\necho hi")
-        assert job_id == "99999"
-
-    @pytest.mark.asyncio
-    async def test_submit_job_failure(self):
-        ssh = AsyncMock()
-        ssh.run_command = AsyncMock(return_value=("", "qsub: error\n", 1))
-        backend = PBSBackend(ssh)
-
-        with pytest.raises(RuntimeError, match="qsub failed"):
-            await backend.submit_job("bad script")
-
-    @pytest.mark.asyncio
-    async def test_cancel_job(self):
-        ssh = AsyncMock()
-        ssh.run_command = AsyncMock(return_value=("", "", 0))
-        backend = PBSBackend(ssh)
-
-        await backend.cancel_job("12345")
-        ssh.run_command.assert_called_once_with("qdel 12345")
 
 
 # -- get_jobs --

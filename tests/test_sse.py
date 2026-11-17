@@ -6,92 +6,16 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from scripthut.runs.manager import RunManager
-from scripthut.runs.models import Run, RunItem, RunItemStatus, TaskDefinition
 
 
 # -- Helpers ------------------------------------------------------------------
 
 
-def _make_manager(ssh_mock: AsyncMock | None = None) -> RunManager:
-    """Create a RunManager with a mocked SSH client."""
-    config = MagicMock()
-    config.backends = {"test-cluster": MagicMock()}
-    config.settings.poll_interval = 60
-    backends = {"test-cluster": ssh_mock or AsyncMock()}
-    return RunManager(config=config, backends=backends)
 
 
 # -- RunManager notify/wait tests ------------------------------------------
 
 
-class TestNotifyRun:
-    """Tests for the RunManager SSE notification mechanism."""
-
-    def test_notify_creates_new_event(self) -> None:
-        """notify_run rotates the event, leaving a fresh one for next waiters."""
-        mgr = _make_manager()
-        mgr.notify_run("q1")
-        # After notify, there should be a fresh (unset) event
-        assert "q1" in mgr._run_events
-        assert not mgr._run_events["q1"].is_set()
-
-    def test_notify_sets_old_event(self) -> None:
-        """notify_run sets the old event to wake waiters."""
-        mgr = _make_manager()
-        # Pre-create an event (simulates a waiter holding it)
-        old_event = asyncio.Event()
-        mgr._run_events["q1"] = old_event
-        mgr.notify_run("q1")
-        # Old event should be set
-        assert old_event.is_set()
-        # New event should not be the same object
-        assert mgr._run_events["q1"] is not old_event
-
-    def test_notify_increments_version(self) -> None:
-        """notify_run increments the version counter."""
-        mgr = _make_manager()
-        assert mgr._run_versions.get("q1", 0) == 0
-        mgr.notify_run("q1")
-        assert mgr._run_versions["q1"] == 1
-        mgr.notify_run("q1")
-        assert mgr._run_versions["q1"] == 2
-
-    @pytest.mark.asyncio
-    async def test_wait_returns_true_on_notify(self) -> None:
-        """wait_for_update returns True when notified."""
-        mgr = _make_manager()
-
-        async def notify_soon():
-            await asyncio.sleep(0.05)
-            mgr.notify_run("q1")
-
-        asyncio.create_task(notify_soon())
-        result = await mgr.wait_for_update("q1", timeout=2.0)
-        assert result is True
-
-    @pytest.mark.asyncio
-    async def test_wait_returns_false_on_timeout(self) -> None:
-        """wait_for_update returns False on timeout."""
-        mgr = _make_manager()
-        result = await mgr.wait_for_update("q1", timeout=0.05)
-        assert result is False
-
-    @pytest.mark.asyncio
-    async def test_multiple_waiters_all_wake(self) -> None:
-        """Multiple concurrent waiters all get woken by a single notify."""
-        mgr = _make_manager()
-
-        async def notify_soon():
-            await asyncio.sleep(0.05)
-            mgr.notify_run("q1")
-
-        asyncio.create_task(notify_soon())
-        results = await asyncio.gather(
-            mgr.wait_for_update("q1", timeout=2.0),
-            mgr.wait_for_update("q1", timeout=2.0),
-        )
-        assert all(results)
 
 
 # -- AppState poll event tests ------------------------------------------------

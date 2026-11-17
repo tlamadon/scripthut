@@ -131,7 +131,7 @@ def _friendly_validation_error(raw_config: dict, exc: ValidationError) -> str:
     """Turn a Pydantic ValidationError into a human-readable message."""
     # Map top-level list fields to their allowed type values
     DISCRIMINATED_FIELDS: dict[str, dict[str, str | list[str]]] = {
-        "backends": {"discriminator": "type", "allowed": ["slurm", "pbs", "ecs", "batch", "ec2"]},
+        "backends": {"discriminator": "type", "allowed": ["slurm", "pbs"]},
         "sources": {"discriminator": "type", "allowed": ["git", "path"]},
     }
 
@@ -202,28 +202,9 @@ def load_yaml_config(config_path: Path) -> ScriptHutConfig:
         friendly = _friendly_validation_error(raw_config, exc)
         raise ConfigError(friendly) from exc
 
-    _resolve_stack_input_files(cfg, config_path.resolve().parent)
     return cfg
 
 
-def _resolve_stack_input_files(cfg: ScriptHutConfig, base: Path) -> None:
-    """Rewrite each stack's ``input_files`` to be absolute paths.
-
-    Relative paths in a config file are resolved against the *directory
-    of that config file*, not the process CWD. This is the only thing
-    that makes ``input_files: [requirements.txt]`` in a project-local
-    config behave intuitively when the CLI is invoked from anywhere.
-    Absolute paths and ``~``-prefixed paths are kept as-is.
-    """
-    for stack in cfg.stacks:
-        resolved: list[Path] = []
-        for p in stack.input_files:
-            expanded = Path(str(p)).expanduser()
-            if expanded.is_absolute():
-                resolved.append(expanded)
-            else:
-                resolved.append((base / expanded).resolve())
-        stack.input_files = resolved
 
 
 def _validate_project_local_yaml(raw: dict, path: Path) -> None:
@@ -236,7 +217,7 @@ def _validate_project_local_yaml(raw: dict, path: Path) -> None:
         f"user-global config (~/.config/scripthut/scripthut.yaml): "
         f"{', '.join(bad)}.\n\n"
         f"Move those sections to the global file and keep only "
-        f"stacks / workflows / projects / env / env_groups in the "
+        f"env / env_groups in the "
         f"project file."
     )
 
@@ -253,17 +234,10 @@ def _merge_configs(
     Infrastructure fields (``backends``, ``sources``, ``settings``,
     ``pricing``) come strictly from the global config.
     """
-    def by_name(items):
-        return {i.name: i for i in items}
-
-    merged_stacks = list(
-        {**by_name(global_cfg.stacks), **by_name(project_cfg.stacks)}.values()
-    )
     merged_env_groups = {**global_cfg.env_groups, **project_cfg.env_groups}
     merged_env = list(global_cfg.env) + list(project_cfg.env)
 
     return global_cfg.model_copy(update={
-        "stacks": merged_stacks,
         "env_groups": merged_env_groups,
         "env": merged_env,
     })

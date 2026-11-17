@@ -2,7 +2,7 @@
 
 Two places shell out to the ``ssh`` binary: the local source cache
 (:mod:`scripthut.sources.git`) and the clones scripthut drives on a
-backend (:mod:`scripthut.runs.manager`). They need the same answer to
+backend (:mod:`scripthut.sources.delivery`). They need the same answer to
 the same two questions — which host-key policy this particular ssh
 understands, and where it should keep the keys it learns — so both go
 through here.

@@ -182,7 +182,6 @@ def environment(config: ScriptHutConfig, launch: Launch) -> str:
         flatten(
             [LabeledRule(rule, "scriptflow") for rule in rules],
             backend.env_groups,
-            {stack.name: stack for stack in config.stacks},
         ),
         {},
     )

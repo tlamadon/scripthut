@@ -1,5 +1,5 @@
-"""Source management for job repositories."""
+"""Git source management and delivery."""
 
-from scripthut.sources.git import GitSourceManager, SourceStatus, SourceWorkflow
+from scripthut.sources.git import GitSourceManager, SourceStatus
 
-__all__ = ["GitSourceManager", "SourceStatus", "SourceWorkflow"]
+__all__ = ["GitSourceManager", "SourceStatus"]

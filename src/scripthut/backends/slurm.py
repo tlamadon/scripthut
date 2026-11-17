@@ -10,7 +10,6 @@ from typing import TYPE_CHECKING
 
 from scripthut.backends.base import (
     ClusterInfo,
-    DiskInfo,
     JobBackend,
     JobStats,
     PartitionInfo,
@@ -18,19 +17,15 @@ from scripthut.backends.base import (
     SubmitResult,
 )
 from scripthut.backends.utils import (
-    fetch_disk_info,
     fetch_log_via_ssh,
     format_bytes,
     format_submit_output,
-    generate_script_body,
     parse_duration_hms,
     parse_rss_to_bytes,
 )
 from scripthut.models import JobState, SlurmJob
 from scripthut.ssh.client import SSHClient
 
-if TYPE_CHECKING:
-    from scripthut.runs.models import TaskDefinition
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +41,7 @@ SLURM_FAILURE_STATES: dict[str, str] = {
 }
 
 # All terminal sacct states (both success and failure)
-from scripthut.scheduler import SLURM_TERMINAL_STATES, SlurmControl
+from scripthut.scheduler import SLURM_TERMINAL_STATES
 
 
 # Re-export for backward compatibility
@@ -296,9 +291,17 @@ def parse_squeue_line(line: str) -> SlurmJob | None:
         return None
 
 
-class SlurmBackend(SlurmControl, JobBackend):
+class SlurmBackend(JobBackend):
     """Slurm job backend using SSH to run squeue."""
 
+
+    def __init__(self, ssh_client: SSHClient, account: str | None = None,
+                 partition_map: dict[str, str] | None = None,
+                 default_partition: str | None = None):
+        self._ssh = ssh_client
+        self._account = account
+        self._partition_map = partition_map or {}
+        self._default_partition = default_partition
 
     def _resolve_partition(self, task_partition: str) -> str:
         """Translate a task's logical partition to this cluster's name."""
@@ -938,18 +941,7 @@ class SlurmBackend(SlurmControl, JobBackend):
             reasons[reason] = reasons.get(reason, 0) + 1
         return reasons
 
-    async def get_disk_info(self, path: str) -> DiskInfo | None:
-        """Fetch disk usage for ``path`` on the backend via ``df -Pk``."""
-        return await fetch_disk_info(self._ssh, path)
 
-    async def fetch_log(
-        self,
-        job_id: str,
-        log_path: str,
-        log_type: str = "output",
-        tail_lines: int | None = None,
-    ) -> tuple[str | None, str | None]:
-        return await fetch_log_via_ssh(self._ssh, log_path, tail_lines)
 
     async def is_available(self) -> bool:
         """Check if Slurm is available by running squeue --version."""
@@ -963,66 +955,8 @@ class SlurmBackend(SlurmControl, JobBackend):
 
 
 
-    async def submit_task(
-        self,
-        task: "TaskDefinition",
-        script: str,
-        env_vars: dict[str, str] | None = None,
-    ) -> SubmitResult:
-        """Submit a Slurm task, returning the captured sbatch output.
-
-        ``env_vars`` are already inlined into the script body via
-        :func:`generate_script_body`, so they're not threaded through here.
-        """
-        del task, env_vars  # script carries everything Slurm needs
-        return await self._submit_and_verify(script)
 
 
-    def generate_script(
-        self,
-        task: "TaskDefinition",
-        run_id: str,
-        log_dir: str,
-        account: str | None = None,
-        login_shell: bool = False,
-        env_vars: dict[str, str] | None = None,
-        extra_init: str = "",
-        interactive_wait: bool = False,
-    ) -> str:
-        """Generate an sbatch submission script for a task."""
-        output_path = task.get_output_path(run_id, log_dir)
-        error_path = task.get_error_path(run_id, log_dir)
-        # v0.11.0 task-outputs feature: wire the contract paths into
-        # the script wrapper so user commands can write structured
-        # outputs without further configuration.
-        output_dir = task.get_output_dir(run_id, log_dir)
-        run_summary_path = task.get_run_summary_path(run_id, log_dir)
-        shebang = "#!/bin/bash -l" if login_shell else "#!/bin/bash"
-        account_line = f"#SBATCH --account={account}\n" if account else ""
-        gres_line = f"#SBATCH --gres={task.gres}\n" if task.gres else ""
-        partition = self._resolve_partition(task.partition)
-
-        header = f"""{shebang}
-#SBATCH --job-name="{task.name}"
-#SBATCH --partition={partition}
-{account_line}#SBATCH --cpus-per-task={task.cpus}
-#SBATCH --mem={task.memory}
-#SBATCH --time={task.time_limit}
-{gres_line}#SBATCH --output={output_path}
-#SBATCH --error={error_path}
-"""
-        body = generate_script_body(
-            task_name=task.name,
-            task_id=task.id,
-            command=task.command,
-            working_dir=task.working_dir,
-            env_vars=env_vars,
-            extra_init=extra_init,
-            interactive_wait=interactive_wait,
-            output_dir=output_dir,
-            run_summary_path=run_summary_path,
-        )
-        return header + "\n" + body
 
     @property
     def failure_states(self) -> dict[str, str]:

@@ -382,8 +382,8 @@ async def test_generated_script_runs_locally_with_fake_tmux(setup, tmp_path, exi
 
 def test_cli_launch_no_legacy(setup, monkeypatch, capsys):
     from scripthut import scriptflow_cli, scriptflow_launch
-    from scripthut.runs.manager import RunManager
-    from scripthut.runs.storage import RunStorageManager
+    from tests.legacy_guards import RunManager
+    from tests.legacy_guards import RunStorageManager
 
     config, _, launch, store = setup
     transport = Transport()

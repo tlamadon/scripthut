@@ -12,32 +12,10 @@ import pytest
 
 from scripthut import cli
 from scripthut.config_schema import GitSourceConfig, PathSourceConfig
-from scripthut.runs.models import Run, RunItem, RunItemStatus, TaskDefinition
 
 # -- helpers -----------------------------------------------------------------
 
 
-def _make_run(
-    run_id: str = "abc12345",
-    workflow_name: str = "demo",
-    statuses: list[RunItemStatus] | None = None,
-) -> Run:
-    statuses = statuses or [RunItemStatus.SUBMITTED, RunItemStatus.PENDING]
-    items = [
-        RunItem(
-            task=TaskDefinition(id=f"t{i}", name=f"task-{i}", command="true"),
-            status=s,
-        )
-        for i, s in enumerate(statuses)
-    ]
-    return Run(
-        id=run_id,
-        workflow_name=workflow_name,
-        backend_name="cluster",
-        created_at=datetime(2026, 5, 15, 12, 0, tzinfo=UTC),
-        items=items,
-        max_concurrent=2,
-    )
 
 
 def _ns(**kwargs) -> argparse.Namespace:
@@ -84,42 +62,12 @@ def test_main_dispatch_allowlist_covers_all_cli_subcommands():
     )
 
 
-def test_parser_workflow_run_requires_name():
-    parser = cli.build_parser()
-    with pytest.raises(SystemExit):
-        parser.parse_args(["workflow", "run"])
 
 
-def test_parser_workflow_run_accepts_source_and_server():
-    parser = cli.build_parser()
-    args = parser.parse_args(
-        ["workflow", "run", "wf-name", "--source", "src", "--server", "http://s"]
-    )
-    assert args.cmd == "workflow"
-    assert args.wf_cmd == "run"
-    assert args.name == "wf-name"
-    assert args.source == "src"
-    assert args.server == "http://s"
-    assert args.handler is cli._cmd_workflow_run
 
 
-def test_parser_run_view_dispatches_to_handler():
-    parser = cli.build_parser()
-    args = parser.parse_args(["run", "view", "abc123"])
-    assert args.handler is cli._cmd_run_view
-    assert args.id == "abc123"
 
 
-def test_parser_run_logs_flags():
-    parser = cli.build_parser()
-    args = parser.parse_args(
-        ["run", "logs", "abc", "task-1", "--error", "--follow", "--tail", "50"]
-    )
-    assert args.id == "abc"
-    assert args.task == "task-1"
-    assert args.error is True
-    assert args.follow is True
-    assert args.tail == 50
 
 
 def _leaf_parsers(
@@ -156,22 +104,6 @@ def test_every_subcommand_accepts_json():
     assert not missing, f"subcommands missing --json: {missing}"
 
 
-def test_every_handler_honours_json():
-    """Accepting --json and ignoring it is the same trap, one step later.
-
-    Smoke check: each handler's source must mention json. `run manifest` is
-    exempt in spirit only — its output is JSON unconditionally, and its
-    docstring says so, which satisfies the check.
-    """
-    import inspect
-
-    deaf = []
-    for path, sp in _leaf_parsers(cli.build_parser()):
-        handler = sp.get_default("handler")
-        assert handler is not None, f"{path} has no handler"
-        if "json" not in inspect.getsource(handler).lower():
-            deaf.append(path)
-    assert not deaf, f"handlers that ignore --json: {deaf}"
 
 
 # -- _resolve_server ---------------------------------------------------------
@@ -354,8 +286,8 @@ async def test_local_client_view_source_returns_metadata():
     assert data["type"] == "path"
     assert data["description"] == "My repo"
     # Local mode degrades workflow discovery — it carries a clear hint.
-    assert data["workflows"] == []
-    assert "--server" in (data["discover_error"] or "")
+    assert data["name"] == "src"
+    assert "discover_error" not in data
 
 
 @pytest.mark.asyncio
@@ -369,64 +301,12 @@ async def test_local_client_view_source_unknown_raises():
         await client.view_source("missing")
 
 
-@pytest.mark.asyncio
-async def test_local_client_run_source_workflow_is_unsupported():
-    """Local CLI mode can't fetch the workflow JSON, so this is degraded.
-
-    The error message must direct the user to ``--server <url>`` — that's
-    the supported path until source discovery is added to ``Runtime``.
-    """
-    client = cli.LocalClient.__new__(cli.LocalClient)
-    client._runtime = MagicMock()
-    with pytest.raises(RuntimeError, match="--server"):
-        await client.run_source_workflow("src", "wf.json")
 
 
-@pytest.mark.asyncio
-async def test_local_client_list_runs_filters_default_workflow():
-    """`_default` runs (external job bins) shouldn't appear in `list runs`."""
-    real_run = _make_run(run_id="real", workflow_name="alpha")
-    default_run = _make_run(run_id="def", workflow_name="_default")
-
-    runtime = MagicMock()
-    runtime.run_manager.storage.load_all_runs = MagicMock(
-        return_value={"real": real_run, "def": default_run}
-    )
-    client = cli.LocalClient.__new__(cli.LocalClient)
-    client._runtime = runtime
-
-    data = await client.list_runs()
-
-    ids = [r["id"] for r in data["runs"]]
-    assert ids == ["real"]
 
 
-@pytest.mark.asyncio
-async def test_local_client_view_run_loads_from_storage():
-    run = _make_run()
-    runtime = MagicMock()
-    runtime.run_manager.storage.load_all_runs = MagicMock(return_value={"abc12345": run})
-
-    client = cli.LocalClient.__new__(cli.LocalClient)
-    client._runtime = runtime
-
-    detail = await client.view_run("abc12345")
-
-    assert detail["id"] == "abc12345"
-    assert len(detail["items"]) == 2
-    assert detail["items"][0]["task"]["id"] == "t0"
 
 
-@pytest.mark.asyncio
-async def test_local_client_view_run_missing_raises():
-    runtime = MagicMock()
-    runtime.run_manager.storage.load_all_runs = MagicMock(return_value={})
-
-    client = cli.LocalClient.__new__(cli.LocalClient)
-    client._runtime = runtime
-
-    with pytest.raises(RuntimeError, match="not found"):
-        await client.view_run("missing")
 
 
 # -- RemoteClient ------------------------------------------------------------
@@ -442,159 +322,32 @@ def _mock_remote(handler) -> cli.RemoteClient:
     return client
 
 
-@pytest.mark.asyncio
-async def test_remote_client_run_source_passes_workflow_query():
-    received: dict = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        received["url"] = str(request.url)
-        return httpx.Response(200, json={"id": "x"})
-
-    client = _mock_remote(handler)
-    await client.run_source_workflow("src", "train.json")
-    await client._client.aclose()
-
-    assert "workflow=train.json" in received["url"]
-    assert "/api/v1/sources/src/run" in received["url"]
 
 
-@pytest.mark.asyncio
-async def test_remote_client_rerun_posts_to_endpoint():
-    received: dict = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        received["url"] = str(request.url)
-        received["method"] = request.method
-        return httpx.Response(200, json={"id": "y"})
-
-    client = _mock_remote(handler)
-    await client.rerun("abc")
-    await client._client.aclose()
-
-    assert received["method"] == "POST"
-    assert received["url"].endswith("/runs/abc/rerun")
 
 
-@pytest.mark.asyncio
-async def test_remote_client_fetch_logs_passes_type_and_tail():
-    received: dict = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        received["url"] = str(request.url)
-        return httpx.Response(
-            200,
-            json={"run_id": "r", "task_id": "t", "type": "error", "content": "boom"},
-        )
-
-    client = _mock_remote(handler)
-    data = await client.fetch_logs("r", "t", log_type="error", tail=50)
-    await client._client.aclose()
-
-    assert "type=error" in received["url"]
-    assert "tail=50" in received["url"]
-    assert data["content"] == "boom"
 
 
 @pytest.mark.asyncio
 async def test_remote_client_raises_runtime_error_on_4xx():
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(422, json={"detail": "Workflow not found"})
+        return httpx.Response(422, json={"detail": "Source not found"})
 
     client = _mock_remote(handler)
-    with pytest.raises(RuntimeError, match="HTTP 422.*Workflow not found"):
-        await client.run_source_workflow("src", "missing.json")
+    with pytest.raises(RuntimeError, match="HTTP 422.*Source not found"):
+        await client.view_source("missing")
     await client._client.aclose()
 
 
 # -- subcommand dispatchers --------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_workflow_run_forwards_backend_override():
-    run = _make_run(workflow_name="src/train", statuses=[RunItemStatus.SUBMITTED])
-    fake = _async_ctx(MagicMock())
-    fake.run_source_workflow = AsyncMock(return_value=cli._summary_from_run(run))
-
-    args = _ns(name="train.json", source="src", backend="cluster-b")
-    with patch.object(cli, "_make_client", return_value=fake):
-        with patch.object(cli, "_resolve_server", return_value=None):
-            await cli._cmd_workflow_run(args)
-
-    fake.run_source_workflow.assert_awaited_once_with(
-        "src", "train.json", backend="cluster-b", branch=None,
-    )
 
 
-@pytest.mark.asyncio
-async def test_workflow_run_with_source_calls_source_endpoint():
-    run = _make_run(workflow_name="src/train", statuses=[RunItemStatus.SUBMITTED])
-    fake = _async_ctx(MagicMock())
-    fake.run_source_workflow = AsyncMock(return_value=cli._summary_from_run(run))
-
-    args = _ns(name="train.json", source="src", backend=None)
-    with patch.object(cli, "_make_client", return_value=fake):
-        with patch.object(cli, "_resolve_server", return_value=None):
-            rc = await cli._cmd_workflow_run(args)
-
-    fake.run_source_workflow.assert_awaited_once_with(
-        "src", "train.json", backend=None, branch=None,
-    )
-    assert rc == 0
 
 
-@pytest.mark.asyncio
-async def test_workflow_run_watch_blocks_until_done():
-    """``workflow run --watch`` submits then re-enters run-watch polling, so
-    an agent can submit-and-be-notified in one background command."""
-    run = _make_run(workflow_name="src/train", statuses=[RunItemStatus.SUBMITTED])
-    fake = _async_ctx(MagicMock())
-    fake.run_source_workflow = AsyncMock(return_value=cli._summary_from_run(run))
-
-    watch_calls: list = []
-
-    async def fake_watch(watch_args):
-        watch_calls.append(watch_args)
-        return 0
-
-    args = _ns(
-        name="train.json", source="src", backend=None,
-        watch=True, interval=2.0,
-    )
-    with patch.object(cli, "_make_client", return_value=fake), \
-         patch.object(cli, "_cmd_run_watch", side_effect=fake_watch):
-        rc = await cli._cmd_workflow_run(args)
-
-    assert rc == 0
-    assert len(watch_calls) == 1
-    # The watch handler must see the submitted run's id and exit_status=True
-    # so a failed run propagates a non-zero exit to the agent's task.
-    assert watch_calls[0].id == "abc12345"
-    assert watch_calls[0].exit_status is True
 
 
-@pytest.mark.asyncio
-async def test_workflow_run_watch_json_suppresses_submission_blob(capsys):
-    """Under ``--watch --json`` the submission summary must not be printed —
-    the terminal run detail from the watch is the single document, and two
-    JSON blobs on stdout would break `jq`."""
-    run = _make_run(workflow_name="src/train", statuses=[RunItemStatus.SUBMITTED])
-    fake = _async_ctx(MagicMock())
-    fake.run_source_workflow = AsyncMock(return_value=cli._summary_from_run(run))
-
-    async def fake_watch(watch_args):
-        return 0
-
-    args = _ns(
-        name="train.json", source="src", backend=None,
-        watch=True, interval=2.0, json=True,
-    )
-    with patch.object(cli, "_make_client", return_value=fake), \
-         patch.object(cli, "_cmd_run_watch", side_effect=fake_watch):
-        rc = await cli._cmd_workflow_run(args)
-
-    assert rc == 0
-    # Nothing on stdout from the submit half — the watch owns the output.
-    assert capsys.readouterr().out == ""
 
 
 @pytest.mark.asyncio
@@ -620,45 +373,8 @@ async def test_source_list_prints_table(capsys):
     assert rc == 0
 
 
-@pytest.mark.asyncio
-async def test_source_view_lists_discovered_workflows(capsys):
-    fake = _async_ctx(MagicMock())
-    fake.view_source = AsyncMock(return_value={
-        "name": "src", "type": "path", "backend": "cluster", "path": "/r/src",
-        "description": "", "max_concurrent": 4,
-        "workflows": ["train.json", "eval.json"],
-        "discover_error": None,
-    })
-
-    args = _ns(name="src")
-    with patch.object(cli, "_make_client", return_value=fake):
-        rc = await cli._cmd_source_view(args)
-
-    out = capsys.readouterr().out
-    assert "src" in out
-    assert "train.json" in out
-    assert "eval.json" in out
-    assert "workflows (2)" in out
-    fake.view_source.assert_awaited_once_with("src")
-    assert rc == 0
 
 
-@pytest.mark.asyncio
-async def test_source_view_surfaces_discover_error(capsys):
-    fake = _async_ctx(MagicMock())
-    fake.view_source = AsyncMock(return_value={
-        "name": "src", "type": "git", "url": "git@h:o/r.git", "branch": "main",
-        "description": "", "max_concurrent": None,
-        "workflows": [],
-        "discover_error": "Source not synced",
-    })
-
-    args = _ns(name="src")
-    with patch.object(cli, "_make_client", return_value=fake):
-        await cli._cmd_source_view(args)
-
-    out = capsys.readouterr().out
-    assert "Source not synced" in out
 
 
 @pytest.mark.asyncio
@@ -677,7 +393,7 @@ async def test_source_sync_single_name_calls_sync_source(capsys):
     fake.sync_source.assert_awaited_once_with("src")
     out = capsys.readouterr().out
     assert "src" in out
-    assert "1 workflow" in out
+    assert "deadbeef" in out
     assert "deadbeef" in out
     assert rc == 0
 
@@ -786,167 +502,23 @@ def _fake_async_client_returning(resp: _MockResponse):
     return _AsyncClient
 
 
-@pytest.mark.asyncio
-async def test_overlay_source_stacks_noop_without_source_flag():
-    """Default (no --source) must not touch config and must not call any
-    server endpoint — otherwise the existing local-mode stack workflow
-    suddenly grows a server dependency.
-    """
-    from scripthut.config_schema import ScriptHutConfig, Stack
-    cfg = ScriptHutConfig(stacks=[Stack(name="local", prep="echo")])
-    args = _ns()  # no source attribute
-    out = await cli._overlay_source_stacks(args, cfg)
-    assert out is cfg
 
 
-@pytest.mark.asyncio
-async def test_overlay_source_stacks_requires_server():
-    """Setting --source without a resolvable server should fail loudly
-    rather than silently falling back to local mode.
-    """
-    from scripthut.config_schema import ScriptHutConfig
-    cfg = ScriptHutConfig()
-    args = _ns(source="balke-jmp")
-    with patch.object(cli, "_resolve_server", return_value=None):
-        with pytest.raises(RuntimeError, match="requires a server URL"):
-            await cli._overlay_source_stacks(args, cfg)
 
 
-@pytest.mark.asyncio
-async def test_overlay_source_stacks_fetches_and_merges():
-    """Happy path: stacks from /api/v1/sources/{name}/config land on
-    config.stacks alongside any local entries.
-    """
-    from scripthut.config_schema import ScriptHutConfig, Stack
-    cfg = ScriptHutConfig(stacks=[Stack(name="from-local", prep="echo")])
-    args = _ns(source="src")
-
-    resp = _MockResponse(200, json_body={
-        "source": "src", "config_present": True,
-        "env": [], "env_groups": {},
-        "stacks": [{"name": "from-repo", "prep": "echo repo"}],
-    })
-    fake_client = _fake_async_client_returning(resp)
-    with patch.object(cli, "_resolve_server", return_value="https://srv"), \
-         patch.object(cli, "_resolve_auth", return_value=None), \
-         patch("scripthut.cli.httpx.AsyncClient", fake_client):
-        out = await cli._overlay_source_stacks(args, cfg)
-
-    names = {s.name for s in out.stacks}
-    assert names == {"from-local", "from-repo"}
 
 
-@pytest.mark.asyncio
-async def test_overlay_source_stacks_source_wins_on_collision():
-    """Same stack name in both local config and the repo's project YAML
-    — repo wins, mirroring `_merge_configs`'s "project-local overrides".
-    """
-    from scripthut.config_schema import ScriptHutConfig, Stack
-    cfg = ScriptHutConfig(stacks=[
-        Stack(name="julia", prep="echo from-local"),
-    ])
-    args = _ns(source="src")
-
-    resp = _MockResponse(200, json_body={
-        "source": "src", "config_present": True,
-        "env": [], "env_groups": {},
-        "stacks": [{"name": "julia", "prep": "echo from-repo"}],
-    })
-    fake_client = _fake_async_client_returning(resp)
-    with patch.object(cli, "_resolve_server", return_value="https://srv"), \
-         patch.object(cli, "_resolve_auth", return_value=None), \
-         patch("scripthut.cli.httpx.AsyncClient", fake_client):
-        out = await cli._overlay_source_stacks(args, cfg)
-
-    by_name = {s.name: s for s in out.stacks}
-    assert "from-repo" in by_name["julia"].prep
 
 
-@pytest.mark.asyncio
-async def test_overlay_source_stacks_missing_config_is_noop():
-    """`config_present=False` on the server means there's no
-    scripthut.yaml in the repo — the CLI should leave local stacks alone.
-    """
-    from scripthut.config_schema import ScriptHutConfig, Stack
-    cfg = ScriptHutConfig(stacks=[Stack(name="local", prep="echo")])
-    args = _ns(source="src")
-
-    resp = _MockResponse(200, json_body={
-        "source": "src", "config_present": False,
-        "env": [], "env_groups": {}, "stacks": [],
-    })
-    fake_client = _fake_async_client_returning(resp)
-    with patch.object(cli, "_resolve_server", return_value="https://srv"), \
-         patch.object(cli, "_resolve_auth", return_value=None), \
-         patch("scripthut.cli.httpx.AsyncClient", fake_client):
-        out = await cli._overlay_source_stacks(args, cfg)
-
-    assert [s.name for s in out.stacks] == ["local"]
 
 
-@pytest.mark.asyncio
-async def test_overlay_source_stacks_unknown_source_raises():
-    """404 from the server should be a clear "unknown source" error,
-    not a generic HTTP error or silent skip.
-    """
-    from scripthut.config_schema import ScriptHutConfig
-    cfg = ScriptHutConfig()
-    args = _ns(source="missing")
-
-    resp = _MockResponse(404, text="Not found")
-    fake_client = _fake_async_client_returning(resp)
-    with patch.object(cli, "_resolve_server", return_value="https://srv"), \
-         patch.object(cli, "_resolve_auth", return_value=None), \
-         patch("scripthut.cli.httpx.AsyncClient", fake_client):
-        with pytest.raises(RuntimeError, match="not found on the server"):
-            await cli._overlay_source_stacks(args, cfg)
 
 
-@pytest.mark.asyncio
-async def test_overlay_source_stacks_broken_repo_yaml_raises():
-    """422 from the server (forbidden section, malformed YAML) must
-    surface the server's detail message so the operator can fix the repo.
-    """
-    from scripthut.config_schema import ScriptHutConfig
-    cfg = ScriptHutConfig()
-    args = _ns(source="src")
-
-    resp = _MockResponse(422, json_body={
-        "detail": "source 'src'/scripthut.yaml contains forbidden section: backends",
-    })
-    fake_client = _fake_async_client_returning(resp)
-    with patch.object(cli, "_resolve_server", return_value="https://srv"), \
-         patch.object(cli, "_resolve_auth", return_value=None), \
-         patch("scripthut.cli.httpx.AsyncClient", fake_client):
-        with pytest.raises(RuntimeError, match="backends"):
-            await cli._overlay_source_stacks(args, cfg)
 
 
 # -- stack list --source -----------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_stack_list_with_source_flag_overlays(capsys):
-    """End-to-end: `stack list --source <name>` overlays repo stacks
-    and prints them alongside local ones.
-    """
-    from scripthut.config_schema import ScriptHutConfig, Stack
-    local_cfg = ScriptHutConfig(stacks=[Stack(name="local", prep="echo")])
-    repo_cfg = ScriptHutConfig(stacks=[Stack(name="from-repo", prep="echo")])
-
-    args = _ns(source="src")
-    with patch.object(cli, "load_config", return_value=local_cfg), \
-         patch.object(cli, "_overlay_source_stacks",
-                      AsyncMock(return_value=repo_cfg.model_copy(
-                          update={"stacks": list(local_cfg.stacks)
-                                  + list(repo_cfg.stacks)},
-                      ))):
-        rc = await cli._cmd_stack_list(args)
-
-    out = capsys.readouterr().out
-    assert "from-repo" in out
-    assert "local" in out
-    assert rc == 0
 
 
 @pytest.mark.asyncio
@@ -985,333 +557,41 @@ async def test_backend_list_json_emits_raw():
     fake.list_backends.assert_awaited_once_with()
 
 
-@pytest.mark.asyncio
-async def test_run_view_prints_table(capsys):
-    fake = _async_ctx(MagicMock())
-    fake.view_run = AsyncMock(return_value={
-        "id": "abc12345", "workflow_name": "demo", "backend_name": "cluster",
-        "created_at": "2026-05-15T12:00:00+00:00", "status": "running",
-        "task_count": 2, "completed_count": 0, "submitted_count": 1,
-        "status_counts": {"submitted": 1, "pending": 1},
-        "items": [
-            {"task": {"id": "t0", "name": "n0"}, "status": "submitted",
-             "job_id": "12345", "cpu_efficiency": None, "max_rss": None},
-        ],
-    })
-
-    args = _ns(id="abc12345")
-    with patch.object(cli, "_make_client", return_value=fake):
-        rc = await cli._cmd_run_view(args)
-
-    out = capsys.readouterr().out
-    assert "Run abc12345" in out
-    assert "t0" in out
-    assert rc == 0
 
 
-@pytest.mark.asyncio
-async def test_run_watch_polls_until_terminal(capsys):
-    """Watch should keep polling until status hits a terminal state."""
-    statuses = ["running", "running", "completed"]
-    call_count = {"n": 0}
-
-    async def fake_view(run_id):
-        idx = min(call_count["n"], len(statuses) - 1)
-        call_count["n"] += 1
-        return {
-            "id": run_id, "workflow_name": "demo", "backend_name": "cluster",
-            "created_at": "2026-05-15T12:00:00+00:00",
-            "status": statuses[idx], "task_count": 1, "completed_count": 1,
-            "submitted_count": 1, "status_counts": {"completed": 1}, "items": [],
-        }
-
-    fake = _async_ctx(MagicMock())
-    fake.view_run = fake_view
-
-    args = _ns(id="abc", interval=0.0, exit_status=False)
-    with patch.object(cli, "_make_client", return_value=fake):
-        rc = await cli._cmd_run_watch(args)
-
-    assert call_count["n"] == 3
-    assert rc == 0
 
 
-@pytest.mark.asyncio
-async def test_run_watch_exit_status_returns_nonzero_on_failure():
-    fake = _async_ctx(MagicMock())
-    fake.view_run = AsyncMock(return_value={
-        "id": "abc", "workflow_name": "demo", "backend_name": "cluster",
-        "created_at": "2026-05-15T12:00:00+00:00",
-        "status": "failed", "task_count": 1, "completed_count": 1,
-        "submitted_count": 1, "status_counts": {"failed": 1}, "items": [],
-    })
-
-    args = _ns(id="abc", interval=0.0, exit_status=True)
-    with patch.object(cli, "_make_client", return_value=fake):
-        rc = await cli._cmd_run_watch(args)
-
-    assert rc == 1
 
 
-def test_format_run_summary_completed():
-    detail = {
-        "id": "r1", "workflow_name": "train.py", "backend_name": "greatlakes",
-        "status": "completed", "task_count": 8, "completed_count": 8,
-        "status_counts": {"completed": 8}, "items": [],
-    }
-    out = cli._format_run_summary(detail)
-    assert "Run r1 COMPLETED" in out
-    assert "8/8 tasks succeeded" in out
-    assert "train.py" in out and "greatlakes" in out
 
 
-def test_format_run_summary_failed_names_tasks_and_logs_hint():
-    detail = {
-        "id": "r2", "workflow_name": "sim", "backend_name": "cluster",
-        "status": "failed", "task_count": 3, "completed_count": 1,
-        "status_counts": {"completed": 1, "failed": 1, "dep_failed": 1},
-        "items": [
-            {"task": {"id": "sim-1"}, "status": "completed"},
-            {"task": {"id": "sim-2"}, "status": "failed"},
-            {"task": {"id": "sim-3"}, "status": "dep_failed"},
-        ],
-    }
-    out = cli._format_run_summary(detail)
-    assert "Run r2 FAILED" in out
-    assert "1/3 succeeded, 2 failed" in out
-    # Both offenders named, the skipped one annotated.
-    assert "sim-2" in out
-    assert "sim-3 (dep_failed)" in out
-    # Logs hint points at the real failure, not the dependency-skipped task.
-    assert "scripthut run logs r2 sim-2 --error" in out
 
 
-def test_format_run_summary_cancelled():
-    detail = {
-        "id": "r3", "workflow_name": "wf", "backend_name": "cluster",
-        "status": "cancelled", "task_count": 5, "completed_count": 2,
-        "status_counts": {"completed": 2}, "items": [],
-    }
-    out = cli._format_run_summary(detail)
-    assert "Run r3 CANCELLED" in out
-    assert "2/5 tasks completed before cancellation" in out
 
 
-@pytest.mark.asyncio
-async def test_run_watch_piped_suppresses_ansi_and_prints_summary(capsys):
-    """When stdout is not a TTY (an agent backgrounding the watch), the live
-    ANSI redraw must be suppressed and a single terminal summary printed —
-    that summary is the notification the agent acts on."""
-    fake = _async_ctx(MagicMock())
-    fake.view_run = AsyncMock(return_value={
-        "id": "bg1", "workflow_name": "train.py", "backend_name": "cluster",
-        "created_at": "2026-05-15T12:00:00+00:00",
-        "status": "completed", "task_count": 2, "completed_count": 2,
-        "submitted_count": 2, "status_counts": {"completed": 2}, "items": [],
-    })
-
-    args = _ns(id="bg1", interval=0.0, exit_status=False)
-    # capsys makes stdout a non-TTY; be explicit so intent survives refactors.
-    with patch.object(cli, "_make_client", return_value=fake), \
-         patch("sys.stdout.isatty", return_value=False):
-        rc = await cli._cmd_run_watch(args)
-
-    out = capsys.readouterr().out
-    assert rc == 0
-    assert "\033[" not in out  # no cursor-control escape codes
-    assert "Run bg1 COMPLETED — 2/2 tasks succeeded" in out
 
 
-@pytest.mark.asyncio
-async def test_run_cancel_calls_client(capsys):
-    fake = _async_ctx(MagicMock())
-    fake.cancel_run = AsyncMock(return_value={"run_id": "abc", "cancelled": True})
-
-    args = _ns(id="abc")
-    with patch.object(cli, "_make_client", return_value=fake):
-        rc = await cli._cmd_run_cancel(args)
-
-    fake.cancel_run.assert_awaited_once_with("abc")
-    assert "Cancelled run abc" in capsys.readouterr().out
-    assert rc == 0
 
 
-@pytest.mark.asyncio
-async def test_run_rerun_calls_client(capsys):
-    run = _make_run(statuses=[RunItemStatus.SUBMITTED])
-    fake = _async_ctx(MagicMock())
-    fake.rerun = AsyncMock(return_value=cli._summary_from_run(run))
-
-    args = _ns(id="old")
-    with patch.object(cli, "_make_client", return_value=fake):
-        with patch.object(cli, "_resolve_server", return_value=None):
-            rc = await cli._cmd_run_rerun(args)
-
-    fake.rerun.assert_awaited_once_with("old")
-    assert rc == 0
 
 
-@pytest.mark.asyncio
-async def test_run_logs_one_shot_writes_content(capsys):
-    fake = _async_ctx(MagicMock())
-    fake.fetch_logs = AsyncMock(
-        return_value={"run_id": "r", "task_id": "t", "type": "output", "content": "hello"}
-    )
-
-    args = _ns(id="r", task="t", error=False, tail=None, follow=False, interval=2.0)
-    with patch.object(cli, "_make_client", return_value=fake):
-        rc = await cli._cmd_run_logs(args)
-
-    fake.fetch_logs.assert_awaited_once_with("r", "t", log_type="output", tail=None)
-    out = capsys.readouterr().out
-    assert "hello" in out
-    assert rc == 0
 
 
-@pytest.mark.asyncio
-async def test_run_logs_error_flag_uses_stderr_type():
-    fake = _async_ctx(MagicMock())
-    fake.fetch_logs = AsyncMock(
-        return_value={"run_id": "r", "task_id": "t", "type": "error", "content": "oops"}
-    )
-
-    args = _ns(id="r", task="t", error=True, tail=10, follow=False, interval=2.0)
-    with patch.object(cli, "_make_client", return_value=fake):
-        await cli._cmd_run_logs(args)
-
-    fake.fetch_logs.assert_awaited_once_with("r", "t", log_type="error", tail=10)
 
 
-@pytest.mark.asyncio
-async def test_run_logs_follow_streams_until_task_terminal(capsys):
-    """--follow polls until the task status reaches a terminal state."""
-    contents = ["line1\n", "line1\nline2\n", "line1\nline2\nfinal\n"]
-    item_states = ["running", "running", "completed"]
-    n = {"i": 0}
-
-    async def fake_fetch(run_id, task_id, log_type="output", tail=None):
-        idx = min(n["i"], len(contents) - 1)
-        return {"run_id": run_id, "task_id": task_id, "type": log_type, "content": contents[idx]}
-
-    async def fake_view(run_id):
-        idx = min(n["i"], len(item_states) - 1)
-        n["i"] += 1
-        return {
-            "id": run_id, "workflow_name": "demo", "backend_name": "cluster",
-            "created_at": "2026-05-15T12:00:00+00:00", "status": "running",
-            "task_count": 1, "completed_count": 0, "submitted_count": 1,
-            "status_counts": {}, "items": [{"task": {"id": "t"}, "status": item_states[idx]}],
-        }
-
-    fake = _async_ctx(MagicMock())
-    fake.fetch_logs = fake_fetch
-    fake.view_run = fake_view
-
-    args = _ns(id="r", task="t", error=False, tail=None, follow=True, interval=0.0)
-    with patch.object(cli, "_make_client", return_value=fake):
-        rc = await cli._cmd_run_logs(args)
-
-    out = capsys.readouterr().out
-    assert "line1" in out
-    assert "line2" in out
-    assert "final" in out
-    assert rc == 0
 
 
 # -- --json output shapes ----------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_workflow_run_json_emits_run_summary(capsys):
-    """`workflow run --json | jq -r .id` is the documented submit-and-capture
-    recipe — the output must be a single parseable document."""
-    run = _make_run(statuses=[RunItemStatus.SUBMITTED])
-    fake = _async_ctx(MagicMock())
-    fake.run_source_workflow = AsyncMock(return_value=cli._summary_from_run(run))
-
-    args = _ns(name="train.json", source="src", backend=None, json=True)
-    with patch.object(cli, "_make_client", return_value=fake):
-        with patch.object(cli, "_resolve_server", return_value=None):
-            rc = await cli._cmd_workflow_run(args)
-
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["id"] == "abc12345"
-    assert payload["backend_name"] == "cluster"
-    assert rc == 0
 
 
-@pytest.mark.asyncio
-async def test_run_rerun_json_emits_run_summary(capsys):
-    run = _make_run(statuses=[RunItemStatus.SUBMITTED])
-    fake = _async_ctx(MagicMock())
-    fake.rerun = AsyncMock(return_value=cli._summary_from_run(run))
-
-    args = _ns(id="old", json=True)
-    with patch.object(cli, "_make_client", return_value=fake):
-        rc = await cli._cmd_run_rerun(args)
-
-    assert json.loads(capsys.readouterr().out)["id"] == "abc12345"
-    assert rc == 0
 
 
-@pytest.mark.asyncio
-async def test_run_cancel_json_emits_ack(capsys):
-    fake = _async_ctx(MagicMock())
-    fake.cancel_run = AsyncMock(return_value={"run_id": "abc", "cancelled": True})
-
-    args = _ns(id="abc", json=True)
-    with patch.object(cli, "_make_client", return_value=fake):
-        rc = await cli._cmd_run_cancel(args)
-
-    assert json.loads(capsys.readouterr().out) == {"id": "abc", "cancelled": True}
-    assert rc == 0
 
 
-@pytest.mark.asyncio
-async def test_run_logs_json_wraps_content(capsys):
-    fake = _async_ctx(MagicMock())
-    fake.fetch_logs = AsyncMock(
-        return_value={"run_id": "r", "task_id": "t", "type": "output", "content": "hello"}
-    )
-
-    args = _ns(id="r", task="t", error=False, tail=None, follow=False,
-               interval=2.0, json=True)
-    with patch.object(cli, "_make_client", return_value=fake):
-        rc = await cli._cmd_run_logs(args)
-
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["content"] == "hello"
-    assert payload["task"] == "t"
-    assert rc == 0
 
 
-@pytest.mark.asyncio
-async def test_run_watch_json_prints_only_final_state(capsys):
-    """The live redraw is ANSI cursor trickery — under --json it must be
-    suppressed so stdout holds exactly one JSON document."""
-    states = ["running", "completed"]
-    n = {"i": 0}
-
-    async def fake_view(run_id):
-        idx = min(n["i"], len(states) - 1)
-        n["i"] += 1
-        return {
-            "id": run_id, "workflow_name": "demo", "backend_name": "cluster",
-            "created_at": "2026-05-15T12:00:00+00:00", "status": states[idx],
-            "task_count": 1, "completed_count": idx, "submitted_count": 1,
-            "status_counts": {}, "items": [],
-        }
-
-    fake = _async_ctx(MagicMock())
-    fake.view_run = fake_view
-
-    args = _ns(id="abc", interval=0.0, exit_status=True, json=True)
-    with patch.object(cli, "_make_client", return_value=fake):
-        rc = await cli._cmd_run_watch(args)
-
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["status"] == "completed"
-    assert rc == 0
 
 
 # -- status command ----------------------------------------------------------
@@ -1652,218 +932,24 @@ async def test_cmd_status_json_includes_probe(monkeypatch, capsys):
 # -- stack remote routing -----------------------------------------------------
 
 
-def _stack_args(**kwargs) -> argparse.Namespace:
-    """Defaults for stack-command argparse namespaces."""
-    defaults = dict(
-        server=None, config=None, json=False,
-        source=None, backend=None, name=None, rebuild=False,
-        watch=False, interval=2.0,
-        cf_client_id=None, cf_client_secret=None,
-        cf_access_token=None, cloudflared_app=None,
-    )
-    defaults.update(kwargs)
-    return argparse.Namespace(**defaults)
 
 
-@pytest.mark.asyncio
-async def test_stack_install_remote_submits_run_and_prints_id(capsys):
-    """v0.9.0: ``stack install`` against a server submits a workflow
-    run and prints the run_id + a hint, returning 0 on submission.
-    """
-    call_log: dict = {}
-
-    async def fake_remote_call(args, server, method, path, *,
-                               params=None, timeout=60.0, use_auth=True):
-        call_log["method"] = method
-        call_log["path"] = path
-        call_log["params"] = params
-        return {
-            "id": "abc12345",
-            "workflow_name": "_stack/src/foo",
-            "backend_name": "cluster",
-            "created_at": "2026-01-01T00:00:00+00:00",
-            "status": "submitted",
-            "task_count": 1, "completed_count": 0, "submitted_count": 1,
-            "status_counts": {},
-        }
-
-    args = _stack_args(name="foo", backend="cluster", source="src", rebuild=True)
-    with patch.object(cli, "_resolve_server_with_source", return_value=("https://srv", "flag")), \
-         patch.object(cli, "_remote_stack_call", side_effect=fake_remote_call):
-        rc = await cli._cmd_stack_install(args)
-
-    assert call_log["method"] == "POST"
-    assert call_log["path"] == "/stacks/foo/install"
-    assert call_log["params"]["rebuild"] == "true"
-    out = capsys.readouterr().out
-    assert "abc12345" in out
-    # Default (no --watch) prints the hint to wait via run watch.
-    assert "scripthut run watch abc12345" in out
-    assert rc == 0
 
 
-@pytest.mark.asyncio
-async def test_stack_install_remote_watch_blocks_until_done(capsys):
-    """``--watch`` after submission should re-enter the existing run-watch
-    polling so the same UX as `run watch --exit-status` works.
-    """
-
-    async def fake_remote_call(*a, **kw):
-        return {
-            "id": "ready1", "workflow_name": "_stack/foo",
-            "backend_name": "cluster",
-            "created_at": "2026-01-01T00:00:00+00:00",
-            "status": "submitted",
-            "task_count": 1, "completed_count": 0, "submitted_count": 1,
-            "status_counts": {},
-        }
-
-    watch_calls: list = []
-
-    async def fake_watch(watch_args):
-        watch_calls.append(watch_args)
-        return 0
-
-    args = _stack_args(name="foo", backend="cluster", watch=True)
-    with patch.object(cli, "_resolve_server_with_source", return_value=("https://srv", "flag")), \
-         patch.object(cli, "_remote_stack_call", side_effect=fake_remote_call), \
-         patch.object(cli, "_cmd_run_watch", side_effect=fake_watch):
-        rc = await cli._cmd_stack_install(args)
-
-    assert rc == 0
-    assert len(watch_calls) == 1
-    # The watch handler must see the submitted run's id and
-    # exit_status=True so a failed install returns non-zero.
-    assert watch_calls[0].id == "ready1"
-    assert watch_calls[0].exit_status is True
 
 
-@pytest.mark.asyncio
-async def test_stack_install_remote_json_flag_prints_run_summary(capsys):
-    """``--json`` outputs the submitted-run summary verbatim so scripts
-    can `jq -r .id` to capture the run_id, matching `task run --json`.
-    """
-    async def fake_remote_call(*a, **kw):
-        return {
-            "id": "jsonok", "workflow_name": "_stack/foo",
-            "backend_name": "cluster",
-            "created_at": "2026-01-01T00:00:00+00:00",
-            "status": "submitted",
-            "task_count": 1, "completed_count": 0, "submitted_count": 1,
-            "status_counts": {},
-        }
-    args = _stack_args(name="foo", backend="cluster", json=True)
-    with patch.object(cli, "_resolve_server_with_source", return_value=("https://srv", "flag")), \
-         patch.object(cli, "_remote_stack_call", side_effect=fake_remote_call):
-        rc = await cli._cmd_stack_install(args)
-    out = capsys.readouterr().out
-    payload = __import__("json").loads(out)
-    assert payload["id"] == "jsonok"
-    assert rc == 0
 
 
-@pytest.mark.asyncio
-async def test_stack_check_remote_dispatches_to_api(capsys):
-    call_log: dict = {}
-
-    async def fake_remote_call(args, server, method, path, *,
-                               params=None, timeout=1800.0, use_auth=True):
-        call_log["path"] = path
-        return {"name": "foo", "backend": "cluster", "state": "ready",
-                "hash": "abc12345", "path": "/c/foo/abc12345",
-                "last_built": None, "size_bytes": None, "error": None}
-
-    args = _stack_args(name="foo", backend="cluster")
-    with patch.object(cli, "_resolve_server_with_source", return_value=("https://srv", "flag")), \
-         patch.object(cli, "_remote_stack_call", side_effect=fake_remote_call):
-        rc = await cli._cmd_stack_check(args)
-
-    assert call_log["path"] == "/stacks/foo/check"
-    assert rc == 0
 
 
-@pytest.mark.asyncio
-async def test_stack_check_remote_missing_state_returns_one():
-    """``state != "ready"`` translates to a non-zero exit code so CI
-    gates can rely on it.
-    """
-    async def fake_remote_call(*a, **kw):
-        return {"name": "foo", "backend": "cluster", "state": "missing",
-                "hash": "", "path": "", "last_built": None,
-                "size_bytes": None, "error": None}
-
-    args = _stack_args(name="foo", backend="cluster")
-    with patch.object(cli, "_resolve_server_with_source", return_value=("https://srv", "flag")), \
-         patch.object(cli, "_remote_stack_call", side_effect=fake_remote_call):
-        rc = await cli._cmd_stack_check(args)
-    assert rc == 1
 
 
-@pytest.mark.asyncio
-async def test_stack_delete_remote_dispatches_to_api(capsys):
-    call_log: dict = {}
-
-    async def fake_remote_call(args, server, method, path, *,
-                               params=None, timeout=1800.0, use_auth=True):
-        call_log["method"] = method
-        call_log["path"] = path
-        return {"name": "foo", "backend": "cluster", "deleted": True}
-
-    args = _stack_args(name="foo", backend="cluster")
-    with patch.object(cli, "_resolve_server_with_source", return_value=("https://srv", "flag")), \
-         patch.object(cli, "_remote_stack_call", side_effect=fake_remote_call):
-        rc = await cli._cmd_stack_delete(args)
-
-    assert call_log["method"] == "DELETE"
-    assert call_log["path"] == "/stacks/foo"
-    assert rc == 0
 
 
-@pytest.mark.asyncio
-async def test_stack_install_remote_requires_backend(capsys):
-    """``--backend`` is required when in server mode. v1 doesn't iterate
-    over backends across separate API calls — the operator picks one.
-    The error message must point at the right fix.
-    """
-    args = _stack_args(name="foo", backend=None)
-    with patch.object(cli, "_resolve_server_with_source", return_value=("https://srv", "flag")):
-        with pytest.raises(RuntimeError, match="--backend is required"):
-            await cli._cmd_stack_install(args)
 
 
-@pytest.mark.asyncio
-async def test_stack_check_remote_requires_name(capsys):
-    """``stack check`` without a name works locally (checks every stack)
-    but in server mode the URL needs a name — error rather than guess.
-    """
-    args = _stack_args(name=None, backend="cluster")
-    with patch.object(cli, "_resolve_server_with_source", return_value=("https://srv", "flag")):
-        rc = await cli._cmd_stack_check(args)
-    assert rc == 2
 
 
-@pytest.mark.asyncio
-async def test_stack_install_local_path_unchanged_when_no_server(monkeypatch):
-    """``--server local`` → the in-process local-SSH path, which is what
-    the existing tests already cover. This just confirms the dispatch
-    picks the right branch. (Without the local keyword, no-server now
-    routes through the local daemon — see the _ensure_local_server tests.)
-    """
-    monkeypatch.delenv("SCRIPTHUT_SERVER", raising=False)
-    args = _stack_args(name="foo", backend="cluster", server="local")
-    fake_cfg = MagicMock()
-    fake_cfg.get_stack.return_value = None  # short-circuits with "not found"
-    fake_cfg.settings.cli_server = None
-    remote_called = AsyncMock(side_effect=AssertionError("remote called!"))
-    with patch.object(cli, "load_config", return_value=fake_cfg), \
-         patch.object(cli, "_overlay_source_stacks",
-                      AsyncMock(return_value=fake_cfg)), \
-         patch.object(cli, "_remote_stack_call", remote_called):
-        rc = await cli._cmd_stack_install(args)
-    # Stack not in local config → 2; the important assertion is that
-    # _remote_stack_call was never invoked.
-    assert rc == 2
-    remote_called.assert_not_called()
 
 
 # -- local daemon autostart ---------------------------------------------------
@@ -2056,102 +1142,16 @@ def test_main_renders_connection_errors_cleanly(capsys):
 # -- disk subcommands --------------------------------------------------------
 
 
-def _disk_result_dict(**overrides):
-    base = {
-        "backend": "hpc",
-        "scanned_at": "2026-07-17T10:00:00+00:00",
-        "duration_ms": 1200,
-        "home_dir": "/home/alice",
-        "disk_total_bytes": 100 * 1024**3,
-        "disk_avail_bytes": 41 * 1024**3,
-        "total_bytes": 3 * 1024**3,
-        "totals_by_class": {"orphaned": [2, 2 * 1024**3], "active": [1, 1024**3]},
-        "totals_by_kind": {"clone": [3, 3 * 1024**3]},
-        "entries": [
-            {
-                "path": "/home/alice/scripthut-repos/a1b2c3d4e5f6",
-                "kind": "clone",
-                "size_bytes": 1024**3,
-                "mtime": "2026-07-17T08:00:00+00:00",
-                "classification": "active",
-                "run_ids": ["r1", "r2", "r3"],
-                "detail": None,
-                "ready": None,
-            },
-            {
-                "path": "/home/alice/scripthut-repos/ffffffffffff",
-                "kind": "clone",
-                "size_bytes": None,
-                "mtime": None,
-                "classification": "orphaned",
-                "run_ids": [],
-                "detail": None,
-                "ready": None,
-            },
-        ],
-        "errors": ["scan exited 1: boom"],
-    }
-    base.update(overrides)
-    return base
 
 
-def test_parser_disk_defaults_to_status():
-    parser = cli.build_parser()
-    args = parser.parse_args(["disk"])
-    assert args.handler is cli._cmd_disk_status
-    assert args.backend is None
-    assert args.json is False
 
 
-def test_parser_disk_scan_flags():
-    parser = cli.build_parser()
-    args = parser.parse_args(["disk", "scan", "--backend", "hpc", "--json"])
-    assert args.handler is cli._cmd_disk_scan
-    assert args.backend == "hpc"
-    assert args.json is True
 
 
-def test_print_disk_result_table(capsys):
-    cli._print_disk_result("hpc", _disk_result_dict())
-    captured = capsys.readouterr()
-    out = captured.out
-    assert "KIND" in out and "CLASS" in out
-    assert "a1b2c3d4e5f6" in out
-    assert "active" in out and "orphaned" in out
-    # three run ids truncate to two plus a count
-    assert "r1,r2 +1" in out
-    # unsized entry renders a dash
-    assert "ffffffffffff" in out
-    # summary line
-    assert "orphaned 2.0G in 2" in out
-    assert "disk 41.0G free" in out
-    # errors go to stderr
-    assert "scan exited 1" in captured.err
 
 
-def test_render_disk_response_states(capsys):
-    data = {
-        "backends": {
-            "a": {"scanning": True, "result": None},
-            "b": {"scanning": False, "result": None},
-            "c": {"scanning": False, "result": _disk_result_dict(backend="c")},
-        }
-    }
-    rc = cli._render_disk_response(data, as_json=False)
-    assert rc == 0
-    out = capsys.readouterr().out
-    assert "a: scan in progress" in out
-    assert "b: never scanned" in out
-    assert "c:" in out
 
 
-def test_render_disk_response_json(capsys):
-    import json as _json
-
-    data = {"backends": {"hpc": {"scanning": False, "result": None}}}
-    cli._render_disk_response(data, as_json=True)
-    parsed = _json.loads(capsys.readouterr().out)
-    assert parsed == data
 
 
 # -- disk clean --------------------------------------------------------------
@@ -2199,27 +1199,6 @@ CLEAN_REPORT = {
 }
 
 
-def _fake_disk_server():
-    """(calls, fake _remote_stack_call) recording every HTTP interaction."""
-    calls = []
-
-    async def fake(args, server, method, path, **kw):
-        calls.append((method, path, kw.get("json_body")))
-        if method == "GET" and path == "/disk":
-            return {"backends": {"hpc": {
-                "scanning": False, "cleaning": False,
-                "result": None, "last_cleanup": CLEAN_REPORT,
-            }}}
-        if path == "/disk/scan":
-            return {"backend": "hpc", "status": "started"}
-        if path == "/disk/clean":
-            body = kw.get("json_body") or {}
-            if body.get("dry_run"):
-                return {"backend": "hpc", "dry_run": True, "plan": CLEAN_PLAN}
-            return {"backend": "hpc", "status": "started"}
-        raise AssertionError(f"unexpected call {method} {path}")
-
-    return calls, fake
 
 
 def _clean_args(*extra):
@@ -2232,106 +1211,4 @@ def _exec_calls(calls):
     return [
         c for c in calls
         if c[1] == "/disk/clean" and not (c[2] or {}).get("dry_run")
-    ]
-
-
-def test_parser_disk_clean_flags():
-    args = cli.build_parser().parse_args(
-        ["disk", "clean", "--backend", "hpc", "--path", "/x", "--yes", "--dry-run"]
-    )
-    assert args.handler is cli._cmd_disk_clean
-    assert args.paths == ["/x"]
-    assert args.yes is True and args.dry_run is True
-
-
-async def test_disk_clean_path_requires_backend(capsys):
-    args = _clean_args("--path", "/x")
-    assert await cli._cmd_disk_clean(args) == 2
-    assert "--path requires --backend" in capsys.readouterr().err
-
-
-async def test_disk_clean_dry_run_never_execs(capsys):
-    calls, fake = _fake_disk_server()
-    with patch.object(cli, "_remote_stack_call", new=fake):
-        rc = await cli._cmd_disk_clean(_clean_args("--dry-run"))
-    assert rc == 0
-    assert _exec_calls(calls) == []
-    out = capsys.readouterr().out
-    assert "would delete 1 entries" in out
-    assert "uncommitted changes" in out  # skip reason shown in the plan
-
-
-async def test_disk_clean_declined_confirm_no_exec(capsys):
-    calls, fake = _fake_disk_server()
-    with patch.object(cli, "_remote_stack_call", new=fake), \
-         patch.object(cli, "_confirm_stderr", return_value=False):
-        rc = await cli._cmd_disk_clean(_clean_args())
-    assert rc == 0
-    assert _exec_calls(calls) == []
-    assert "not confirmed" in capsys.readouterr().err
-
-
-async def test_disk_clean_yes_sends_plan_paths(capsys):
-    calls, fake = _fake_disk_server()
-    with patch.object(cli, "_remote_stack_call", new=fake):
-        rc = await cli._cmd_disk_clean(_clean_args("--yes"))
-    assert rc == 0
-    execs = _exec_calls(calls)
-    assert len(execs) == 1
-    # exec sends exactly the non-skip paths the user was shown
-    assert execs[0][2]["paths"] == ["/h/r/aaaaaaaaaaaa"]
-    out = capsys.readouterr().out
-    assert "deleted 1" in out and "freed 1.0K" in out
-
-
-def test_print_cleanup_plan_table(capsys):
-    cli._print_cleanup_plan("hpc", CLEAN_PLAN)
-    out = capsys.readouterr().out
-    assert "ACTION" in out
-    assert "aaaaaaaaaaaa" in out and "delete" in out
-    assert "agent-11111111" in out and "skip" in out
-    assert "would delete 1 entries (~1.0K); 1 skipped" in out
-
-
-def test_print_cleanup_report_lines(capsys):
-    report = dict(CLEAN_REPORT)
-    report["errors"] = ["delete script failed: boom"]
-    report["freed_is_lower_bound"] = True
-    cli._print_cleanup_report("hpc", report)
-    captured = capsys.readouterr()
-    assert "✓ deleted" in captured.out
-    assert "- skipped" in captured.out
-    assert "freed at least 1.0K" in captured.out
-    assert "delete script failed: boom" in captured.err
-
-
-def test_status_lists_local_backends_from_real_config(monkeypatch):
-    """Regression: local_backends must read BackendConfig.type (the config
-    field), not .backend_type (a BackendState attribute) — a real config
-    object raises AttributeError on the latter, which MagicMock-based
-    tests silently tolerated."""
-    from scripthut.config_schema import (
-        LocalBackendConfig,
-        ScriptHutConfig,
-        SlurmBackendConfig,
-        SSHConfig,
-    )
-
-    monkeypatch.delenv("SCRIPTHUT_SERVER", raising=False)
-    monkeypatch.delenv("SCRIPTHUT_CF_ACCESS_TOKEN", raising=False)
-    monkeypatch.delenv("SCRIPTHUT_CLOUDFLARED_APP", raising=False)
-    real_cfg = ScriptHutConfig(backends=[
-        SlurmBackendConfig(
-            name="cluster", type="slurm", ssh=SSHConfig(host="h", user="u"),
-        ),
-        LocalBackendConfig(name="laptop"),
-    ])
-    with patch.object(cli, "load_config", return_value=real_cfg), \
-         patch("scripthut.config.discover_global_config", return_value=None), \
-         patch("scripthut.config.discover_project_config", return_value=None):
-        data = cli._gather_status(_status_ns())
-
-    assert data["local_backends"] == [
-        {"name": "cluster", "type": "slurm"},
-        {"name": "laptop", "type": "local"},
     ]

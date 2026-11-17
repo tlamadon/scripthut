@@ -36,14 +36,7 @@
             <span id="status-text" class="text-xs text-yellow-500">Connecting...</span>
         </div>
         <div class="flex items-center gap-2">
-            <!-- Job connect controls (hidden by default, shown when session_type=job) -->
-            <div id="job-controls" class="hidden flex items-center gap-2">
-                <button id="continue-btn" onclick="sendContinueSignal()"
-                    class="text-xs px-3 py-1.5 bg-orange-600 hover:bg-orange-500 rounded text-white font-medium"
-                    title="Send continue signal to unblock the job's main command">
-                    Continue Job
-                </button>
-            </div>
+
             <button onclick="window.close()"
                 class="text-xs px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-gray-300">
                 Close
@@ -59,30 +52,11 @@
 
         // Parse URL params for session config
         const params = new URLSearchParams(window.location.search);
-        const sessionType = params.get("session_type") || "headnode";
+        const sessionType = "job";
         let jobNode = params.get("node") || "";
         let jobId = params.get("job_id") || "";
 
-        // Interactive submit mode: submit task first, then wait for it
-        const submitRunId = params.get("run_id") || "";
-        const submitTaskId = params.get("task_id") || "";
-
-        // Show job controls for job sessions
-        if (sessionType === "job") {
-            document.getElementById("job-controls").classList.remove("hidden");
-            if (jobNode) {
-                document.getElementById("session-label").textContent =
-                    `${BACKEND_NAME} - Job ${jobId} on ${jobNode}`;
-            } else {
-                document.getElementById("session-label").textContent =
-                    `${BACKEND_NAME} - Interactive job (submitting...)`;
-            }
-        } else if (sessionType === "attach") {
-            if (jobNode) {
-                document.getElementById("session-label").textContent =
-                    `${BACKEND_NAME} - ${jobNode}`;
-            }
-        }
+        document.getElementById("session-label").textContent = `${BACKEND_NAME} — ${params.get("session") || jobId} on ${jobNode}`;
 
         // Create terminal
         const term = new Terminal({
@@ -139,6 +113,7 @@
                     cols: term.cols,
                     rows: term.rows,
                     session_type: sessionType,
+                    session: params.get("session") || ("sh-" + jobId),
                     node: jobNode,
                     job_id: jobId,
                 };
@@ -198,113 +173,7 @@
             fitAddon.fit();
         });
 
-        // Send continue signal to unblock the job
-        function sendContinueSignal() {
-            if (!jobId) return;
-            const btn = document.getElementById("continue-btn");
-            btn.textContent = "Sending...";
-            btn.disabled = true;
-
-            fetch(`/terminal/jobs/${BACKEND_NAME}/${jobId}/continue`, { method: "POST" })
-                .then(r => r.json())
-                .then(data => {
-                    if (data.error) {
-                        btn.textContent = "Failed";
-                        btn.classList.replace("bg-orange-600", "bg-red-600");
-                        term.write(`\r\n\x1b[31m[Continue failed: ${data.error}]\x1b[0m\r\n`);
-                    } else {
-                        btn.textContent = "Sent!";
-                        btn.classList.replace("bg-orange-600", "bg-green-600");
-                        term.write("\r\n\x1b[32m[Continue signal sent - job will proceed]\x1b[0m\r\n");
-                    }
-                    setTimeout(() => {
-                        btn.textContent = "Continue Job";
-                        btn.disabled = false;
-                        btn.className = "text-xs px-3 py-1.5 bg-orange-600 hover:bg-orange-500 rounded text-white font-medium";
-                    }, 3000);
-                })
-                .catch(() => {
-                    btn.textContent = "Continue Job";
-                    btn.disabled = false;
-                });
-        }
-
-        // ── Startup flow ───────────────────────────────────────────────
-        async function start() {
-            if (sessionType === "headnode" || sessionType === "attach") {
-                // Simple shell — connect immediately (attach sends node in init)
-                connect();
-                return;
-            }
-
-            // Job session: may need to submit first and/or wait for node
-            if (submitRunId && submitTaskId && !jobId) {
-                // Step 1: submit the task with interactive_wait
-                setStatus("yellow", "Submitting job...");
-                term.write("\x1b[33mSubmitting interactive job...\x1b[0m\r\n");
-                try {
-                    const resp = await fetch(
-                        `/terminal/interactive/${BACKEND_NAME}/${submitRunId}/${submitTaskId}`,
-                        { method: "POST" }
-                    );
-                    const data = await resp.json();
-                    if (data.error) {
-                        term.write(`\x1b[31mSubmit failed: ${data.error}\x1b[0m\r\n`);
-                        setStatus("red", "Submit failed");
-                        return;
-                    }
-                    jobId = data.job_id;
-                    term.write(`\x1b[32mJob submitted: ${jobId}\x1b[0m\r\n`);
-                    document.getElementById("session-label").textContent =
-                        `${BACKEND_NAME} - Job ${jobId} (waiting for node...)`;
-                } catch (e) {
-                    term.write(`\x1b[31mSubmit error: ${e}\x1b[0m\r\n`);
-                    setStatus("red", "Submit error");
-                    return;
-                }
-            }
-
-            if (jobId && !jobNode) {
-                // Step 2: poll until the job is running and we know the node
-                setStatus("yellow", "Waiting for job...");
-                term.write("\x1b[33mWaiting for job to start running...\x1b[0m\r\n");
-                const node = await waitForJobNode(jobId);
-                if (!node) {
-                    term.write("\x1b[31mTimed out waiting for job to start.\x1b[0m\r\n");
-                    setStatus("red", "Timeout");
-                    return;
-                }
-                jobNode = node;
-                document.getElementById("session-label").textContent =
-                    `${BACKEND_NAME} - Job ${jobId} on ${jobNode}`;
-                term.write(`\x1b[32mJob running on ${jobNode} — connecting to tmux...\x1b[0m\r\n\r\n`);
-
-                // Small delay to give tmux time to start inside the job
-                await new Promise(r => setTimeout(r, 2000));
-            }
-
-            // Step 3: connect WebSocket to the running job's tmux
-            connect();
-        }
-
-        async function waitForJobNode(id, maxAttempts = 60) {
-            for (let i = 0; i < maxAttempts; i++) {
-                try {
-                    const resp = await fetch(`/terminal/jobs/${BACKEND_NAME}/${id}/status`);
-                    const data = await resp.json();
-                    if (data.node) return data.node;
-                    if (data.state === "error") return null;
-                    // Show a dot for each poll
-                    term.write(".");
-                } catch (e) {
-                    // ignore transient errors
-                }
-                await new Promise(r => setTimeout(r, 5000));
-            }
-            return null;
-        }
-
-        start();
+        connect();
     </script>
 </body>
 

@@ -32,13 +32,8 @@ from scripthut.config_schema import (
     PathSourceConfig,
     ScriptHutConfig,
 )
-from scripthut.runs.manager import RunManager
-from scripthut.runs.models import Run, RunItem, RunItemStatus, TaskDefinition
-from scripthut.runs.storage import RunStorageManager
 from scripthut.sources.git import (
     GitSourceManager,
-    SourceWorkflow,
-    _match_workflows_glob,
     is_safe_branch_name,
 )
 
@@ -65,19 +60,6 @@ class TestIsSafeBranchName:
 # ---------------------------------------------------------------------------
 
 
-class TestMatchWorkflowsGlob:
-    def test_default_pattern_is_anchored(self):
-        pat = ".hut/workflows/*.json"
-        assert _match_workflows_glob(".hut/workflows/train.json", pat)
-        assert not _match_workflows_glob("sub/.hut/workflows/train.json", pat)
-        assert not _match_workflows_glob(".hut/workflows/sub/train.json", pat)
-        assert not _match_workflows_glob(".hut/workflows/train.yaml", pat)
-
-    def test_double_star_crosses_directories(self):
-        pat = "**/*.hut.json"
-        assert _match_workflows_glob("a/b/train.hut.json", pat)
-        assert _match_workflows_glob("train.hut.json", pat)
-        assert not _match_workflows_glob("a/b/train.json", pat)
 
 
 # ---------------------------------------------------------------------------
@@ -155,28 +137,6 @@ class TestFetchBranch:
         assert len(commit) == 40
 
 
-class TestDiscoverWorkflowsAt:
-    async def test_reads_files_at_branch_tip(self, manager: GitSourceManager):
-        commit = await manager.fetch_branch("src", "feature")
-        wfs = await manager.discover_workflows_at("src", commit)
-        by_file = {w.filename: w for w in wfs}
-        assert set(by_file) == {"train.json", "extra.json"}
-        assert by_file["train.json"].title == "feature-train"
-        assert by_file["extra.json"].source_name == "src"
-
-    async def test_default_branch_discovery_untouched(
-        self, manager: GitSourceManager,
-    ):
-        commit = await manager.fetch_branch("src", "feature")
-        await manager.discover_workflows_at("src", commit)
-        # The working-tree discovery still reflects the configured branch.
-        wfs = manager.discover_workflows("src")
-        assert [w.filename for w in wfs] == ["train.json"]
-        assert wfs[0].title == "main-train"
-
-    async def test_bad_ref_raises(self, manager: GitSourceManager):
-        with pytest.raises(ValueError, match="list tree"):
-            await manager.discover_workflows_at("src", "0" * 40)
 
 
 # ---------------------------------------------------------------------------
@@ -184,252 +144,16 @@ class TestDiscoverWorkflowsAt:
 # ---------------------------------------------------------------------------
 
 
-def _make_run(workflow_name: str = "src/train") -> Run:
-    return Run(
-        id="run123",
-        workflow_name=workflow_name,
-        backend_name="cluster",
-        created_at=datetime(2026, 7, 17, 12, 0, 0, tzinfo=UTC),
-        items=[RunItem(
-            task=TaskDefinition(id="t", name="t", command="true"),
-            status=RunItemStatus.SUBMITTED,
-        )],
-        max_concurrent=1,
-    )
 
 
-def _make_state(sources: list, source_manager=None, source_workflows=None):
-    state = MagicMock()
-    rm = MagicMock()
-    rm.create_run_from_source = AsyncMock(return_value=_make_run())
-    state.run_manager = rm
-    state.config_error = None
-    state.backends = {}
-    state.source_manager = source_manager
-    state.source_workflows = source_workflows or {}
-    state.config = MagicMock()
-    state.config.sources = sources
-    state.config.get_source = lambda name: next(
-        (s for s in sources if s.name == name), None,
-    )
-    state.notify_poll = MagicMock()
-    return state
 
 
-def _client(state) -> TestClient:
-    app = FastAPI()
-    app.include_router(make_api_router(state))
-    return TestClient(app)
 
 
-def _branch_source_manager(workflows: list[SourceWorkflow]):
-    sm = MagicMock()
-    sm._sources = {"src": MagicMock()}
-    sm.fetch_branch = AsyncMock(return_value="a" * 40)
-    sm.discover_workflows_at = AsyncMock(return_value=workflows)
-    return sm
 
 
-class TestRunEndpointBranchOverride:
-    def _git_source(self) -> GitSourceConfig:
-        return GitSourceConfig(name="src", url="git@h:o/r.git", branch="main")
-
-    def test_branch_threads_through_to_run_manager(self):
-        wf = SourceWorkflow(
-            name="src/train", source_name="src", filename="train.json",
-            tasks_json='{"tasks": []}',
-        )
-        sm = _branch_source_manager([wf])
-        state = _make_state([self._git_source()], source_manager=sm)
-
-        resp = _client(state).post(
-            "/api/v1/sources/src/run"
-            "?workflow=train.json&backend=cluster&branch=feature"
-        )
-
-        assert resp.status_code == 200
-        sm.fetch_branch.assert_awaited_once_with("src", "feature")
-        sm.discover_workflows_at.assert_awaited_once_with("src", "a" * 40)
-        state.run_manager.create_run_from_source.assert_awaited_once_with(
-            "src", "train.json", '{"tasks": []}', backend="cluster",
-            branch="feature",
-        )
-
-    def test_branch_equal_to_configured_uses_cached_path(self):
-        wf = SourceWorkflow(
-            name="src/train", source_name="src", filename="train.json",
-            tasks_json="[]",
-        )
-        sm = _branch_source_manager([])
-        sm.sync_source = AsyncMock()
-        sm.discover_workflows = MagicMock(return_value=[wf])
-        state = _make_state(
-            [self._git_source()], source_manager=sm,
-            source_workflows={"src": [wf]},
-        )
-
-        resp = _client(state).post(
-            "/api/v1/sources/src/run"
-            "?workflow=train.json&backend=cluster&branch=main"
-        )
-
-        assert resp.status_code == 200
-        sm.fetch_branch.assert_not_awaited()
-        state.run_manager.create_run_from_source.assert_awaited_once_with(
-            "src", "train.json", "[]", backend="cluster", branch=None,
-        )
-
-    def test_branch_on_path_source_is_422(self):
-        src = PathSourceConfig(name="src", backend="cluster", path="/r/s")
-        state = _make_state([src])
-
-        resp = _client(state).post(
-            "/api/v1/sources/src/run?workflow=train.json&branch=feature"
-        )
-
-        assert resp.status_code == 422
-        assert "git source" in resp.json()["detail"]
-
-    def test_invalid_branch_name_is_422(self):
-        state = _make_state(
-            [self._git_source()], source_manager=_branch_source_manager([]),
-        )
-
-        resp = _client(state).post(
-            "/api/v1/sources/src/run"
-            "?workflow=train.json&backend=cluster&branch=a%3Bb"
-        )
-
-        assert resp.status_code == 422
-        assert "Invalid branch name" in resp.json()["detail"]
-
-    def test_unknown_branch_is_422_with_git_error(self):
-        sm = _branch_source_manager([])
-        sm.fetch_branch = AsyncMock(
-            side_effect=ValueError("Failed to fetch branch 'nope'"),
-        )
-        state = _make_state([self._git_source()], source_manager=sm)
-
-        resp = _client(state).post(
-            "/api/v1/sources/src/run"
-            "?workflow=train.json&backend=cluster&branch=nope"
-        )
-
-        assert resp.status_code == 422
-        assert "Failed to fetch branch" in resp.json()["detail"]
-
-    def test_workflow_missing_on_branch_is_404(self):
-        sm = _branch_source_manager([])
-        state = _make_state([self._git_source()], source_manager=sm)
-
-        resp = _client(state).post(
-            "/api/v1/sources/src/run"
-            "?workflow=train.json&backend=cluster&branch=feature"
-        )
-
-        assert resp.status_code == 404
-        assert "on branch 'feature'" in resp.json()["detail"]
-
-    def test_no_source_manager_is_503(self):
-        state = _make_state([self._git_source()], source_manager=None)
-
-        resp = _client(state).post(
-            "/api/v1/sources/src/run"
-            "?workflow=train.json&backend=cluster&branch=feature"
-        )
-
-        assert resp.status_code == 503
 
 
 # ---------------------------------------------------------------------------
 # RunManager.create_run_from_source(branch=...)
 # ---------------------------------------------------------------------------
-
-
-def _run_manager(source, tmp_path: Path) -> RunManager:
-    config = ScriptHutConfig(
-        sources=[source],
-        settings=GlobalSettings(sources_cache_dir=tmp_path / "cache"),
-    )
-    return RunManager(
-        config=config,
-        backends={},
-        storage=RunStorageManager(tmp_path / "runs"),
-        job_backends={},
-    )
-
-
-class TestCreateRunFromSourceBranch:
-    async def test_branch_override_flows_to_clone_and_run(
-        self, tmp_path: Path,
-    ):
-        src = GitSourceConfig(name="demo", url="git@h:o/r.git", branch="main")
-        mgr = _run_manager(src, tmp_path)
-        captured: dict = {}
-
-        async def fake_build_run(
-            tasks, workflow_name, backend_name, max_concurrent, ssh_client,
-            *, git_repo=None, git_branch=None, commit_hash=None,
-            doc_env=None, doc_env_groups=None, doc_stacks=None,
-            source_name=None,
-        ):
-            captured["git_branch"] = git_branch
-            return _make_run(workflow_name)
-
-        ls_remote = AsyncMock(return_value="deadbeef0000")
-        with patch.object(mgr, "_build_run", side_effect=fake_build_run), \
-             patch.object(mgr, "_load_source_project_config",
-                          AsyncMock(return_value=None)), \
-             patch.object(mgr, "_ls_remote_commit", ls_remote), \
-             patch.object(mgr, "get_job_backend", return_value=MagicMock()):
-            await mgr.create_run_from_source(
-                "demo", "wf.json", '{"tasks": []}', "test-batch",
-                branch="feature",
-            )
-
-        ls_remote.assert_awaited_once_with("git@h:o/r.git", "feature")
-        assert captured["git_branch"] == "feature"
-
-    async def test_branch_on_path_source_raises(self, tmp_path: Path):
-        src = PathSourceConfig(name="demo", backend="b", path="/x")
-        mgr = _run_manager(src, tmp_path)
-        with pytest.raises(ValueError, match="git source"):
-            await mgr.create_run_from_source(
-                "demo", "wf.json", '{"tasks": []}', "b", branch="feature",
-            )
-
-    async def test_unsafe_branch_raises(self, tmp_path: Path):
-        src = GitSourceConfig(name="demo", url="git@h:o/r.git", branch="main")
-        mgr = _run_manager(src, tmp_path)
-        with pytest.raises(ValueError, match="Invalid branch name"):
-            await mgr.create_run_from_source(
-                "demo", "wf.json", '{"tasks": []}', "b", branch="a;b",
-            )
-
-    async def test_branch_equal_to_configured_is_noop(self, tmp_path: Path):
-        """Same-branch override must not copy the source or change flow."""
-        src = GitSourceConfig(name="demo", url="git@h:o/r.git", branch="main")
-        mgr = _run_manager(src, tmp_path)
-        captured: dict = {}
-
-        async def fake_build_run(
-            tasks, workflow_name, backend_name, max_concurrent, ssh_client,
-            *, git_repo=None, git_branch=None, commit_hash=None,
-            doc_env=None, doc_env_groups=None, doc_stacks=None,
-            source_name=None,
-        ):
-            captured["git_branch"] = git_branch
-            return _make_run(workflow_name)
-
-        with patch.object(mgr, "_build_run", side_effect=fake_build_run), \
-             patch.object(mgr, "_load_source_project_config",
-                          AsyncMock(return_value=None)), \
-             patch.object(mgr, "_ls_remote_commit",
-                          AsyncMock(return_value="deadbeef0000")), \
-             patch.object(mgr, "get_job_backend", return_value=MagicMock()):
-            await mgr.create_run_from_source(
-                "demo", "wf.json", '{"tasks": []}', "test-batch",
-                branch="main",
-            )
-
-        assert captured["git_branch"] == "main"

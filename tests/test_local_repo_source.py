@@ -17,6 +17,7 @@ need holding down:
 """
 
 from __future__ import annotations
+from scripthut.sources.delivery import SourceDelivery as RunManager
 
 import json
 import subprocess
@@ -27,17 +28,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from scripthut.config_schema import (
-    AWSBatchConfig,
-    BatchBackendConfig,
     GitSourceConfig,
     GlobalSettings,
-    LocalBackendConfig,
     ScriptHutConfig,
     SlurmBackendConfig,
     SSHConfig,
 )
-from scripthut.runs.manager import RunManager
-from scripthut.runs.storage import RunStorageManager
 from scripthut.sources.git import GitSourceManager
 
 # ---------------------------------------------------------------------------
@@ -108,12 +104,8 @@ def _run_manager(
         backends=backends,
         settings=GlobalSettings(sources_cache_dir=tmp_path / "cache"),
     )
-    return RunManager(
-        config=config,
-        backends={},
-        storage=RunStorageManager(tmp_path / "runs"),
-        job_backends={},
-    )
+    return RunManager(config)
+
 
 
 def _slurm(tmp_path: Path, port: int = 22) -> SlurmBackendConfig:
@@ -230,51 +222,9 @@ class TestDirtyTree:
         status = await mgr.sync_source("demo")
         assert status.dirty is False  # keep-me.txt is ignored
 
-    async def test_warning_survives_workflow_discovery(
-        self, repo: Path, tmp_path: Path,
-    ):
-        """discover_workflows rewrites `warnings` wholesale, and the server
-        calls it right after every sync — so the notice has to be re-seeded
-        there or it never reaches the UI."""
-        (repo / "code.py").write_text("print('edited')\n")
-        mgr = _manager(repo, tmp_path)
-        await mgr.sync_source("demo")
-        mgr.discover_workflows("demo")
-        status = mgr.get_status("demo")
-        assert status is not None
-        assert any("uncommitted changes" in w for w in status.warnings)
-
-    async def test_warning_survives_discovery_with_no_workflows(
-        self, repo: Path, tmp_path: Path,
-    ):
-        (repo / "code.py").write_text("print('edited')\n")
-        mgr = _manager(repo, tmp_path, workflows_glob="nothing/*.json")
-        await mgr.sync_source("demo")
-        mgr.discover_workflows("demo")
-        status = mgr.get_status("demo")
-        assert status is not None
-        assert any("uncommitted changes" in w for w in status.warnings)
 
 
-class TestWorkflowDiscovery:
-    async def test_reads_the_working_tree(self, repo: Path, tmp_path: Path):
-        mgr = _manager(repo, tmp_path)
-        await mgr.sync_source("demo")
-        wfs = mgr.discover_workflows("demo")
-        assert [w.filename for w in wfs] == ["train.json"]
 
-    async def test_uncommitted_workflow_file_is_visible(
-        self, repo: Path, tmp_path: Path,
-    ):
-        """A local source reads the tree, so a new workflow works before it is
-        committed — that is the iteration loop this feature is for."""
-        (repo / ".hut" / "workflows" / "draft.json").write_text(
-            json.dumps({"title": "draft", "tasks": []})
-        )
-        mgr = _manager(repo, tmp_path)
-        await mgr.sync_source("demo")
-        names = sorted(w.filename for w in mgr.discover_workflows("demo"))
-        assert names == ["draft.json", "train.json"]
 
 
 class TestFetchBranch:
@@ -337,7 +287,7 @@ class TestPushLocalRepo:
                 return (sha + "\n", "", 0)
             return ("", "", 0)
 
-        with patch("scripthut.runs.manager._run_local_shell", fake_shell):
+        with patch.object(RunManager, "_source_shell", staticmethod(fake_shell)):
             clone_path, got = await mgr._push_local_repo(ssh, src, "cluster")  # type: ignore[arg-type]
 
         assert (clone_path, got) == (f"~/scripthut-repos/{short}", short)
@@ -375,38 +325,13 @@ class TestPushLocalRepo:
         async def fake_shell(cmd: str, timeout: float = 60.0):
             return ((sha + "\n", "", 0) if "rev-parse" in cmd else ("", "", 0))
 
-        with patch("scripthut.runs.manager._run_local_shell", fake_shell):
+        with patch.object(RunManager, "_source_shell", staticmethod(fake_shell)):
             clone_path, short = await mgr._push_local_repo(ssh, src, "cluster")  # type: ignore[arg-type]
 
         assert clone_path == f"/repos/{sha[:12]}"
         assert not any("git clone" in c for c in ssh.commands)
         assert not any("uv sync" in c for c in ssh.commands)
 
-    async def test_local_backend_pushes_to_a_filesystem_path(
-        self, repo: Path, tmp_path: Path,
-    ):
-        """No ssh in the picture, and `~` has to be expanded here because git
-        hands a filesystem path to no shell."""
-        src = GitSourceConfig(
-            name="demo", local_path=repo, clone_dir="~/scripthut-repos",
-        )
-        mgr = _run_manager(src, tmp_path, [LocalBackendConfig(name="local")])
-        ssh = _ScriptedSSH()
-        sha = _git("rev-parse", "HEAD", cwd=repo)
-        pushed: list[str] = []
-
-        async def fake_shell(cmd: str, timeout: float = 60.0):
-            pushed.append(cmd)
-            return ((sha + "\n", "", 0) if "rev-parse" in cmd else ("", "", 0))
-
-        with patch("scripthut.runs.manager._run_local_shell", fake_shell):
-            await mgr._push_local_repo(ssh, src, "local")  # type: ignore[arg-type]
-
-        push = next(c for c in pushed if "push --force" in c)
-        assert "GIT_SSH_COMMAND" not in push
-        expected = str(Path.home() / "scripthut-repos" / ".mirror.git")
-        target = push.split("push --force")[1].split()[0].strip("'\"")
-        assert target == expected, target
 
     async def test_non_default_port_rides_in_the_ssh_command(
         self, repo: Path, tmp_path: Path,
@@ -422,7 +347,7 @@ class TestPushLocalRepo:
             pushed.append(cmd)
             return ((sha + "\n", "", 0) if "rev-parse" in cmd else ("", "", 0))
 
-        with patch("scripthut.runs.manager._run_local_shell", fake_shell):
+        with patch.object(RunManager, "_source_shell", staticmethod(fake_shell)):
             await mgr._push_local_repo(ssh, src, "cluster")  # type: ignore[arg-type]
 
         push = next(c for c in pushed if "push --force" in c)
@@ -440,7 +365,7 @@ class TestPushLocalRepo:
                 return (sha + "\n", "", 0)
             return ("", "Permission denied (publickey).", 128)
 
-        with patch("scripthut.runs.manager._run_local_shell", fake_shell):
+        with patch.object(RunManager, "_source_shell", staticmethod(fake_shell)):
             with pytest.raises(ValueError, match="Permission denied"):
                 await mgr._push_local_repo(ssh, src, "cluster")  # type: ignore[arg-type]
 
@@ -455,169 +380,3 @@ class TestPushLocalRepo:
         with pytest.raises(ValueError, match="Could not resolve"):
             await mgr._push_local_repo(ssh, src, "cluster")  # type: ignore[arg-type]
         assert ssh.commands == []
-
-    async def test_api_only_backend_is_refused_with_a_way_forward(
-        self, repo: Path, tmp_path: Path,
-    ):
-        """A Batch container clones a URL itself and cannot reach this disk."""
-        src = GitSourceConfig(name="demo", local_path=repo, clone_dir="/repos")
-        batch = BatchBackendConfig(
-            name="batch",
-            aws=AWSBatchConfig(region="us-east-1", job_queue="q"),
-        )
-        mgr = _run_manager(src, tmp_path, [batch])
-        with pytest.raises(ValueError, match="no filesystem to push a repo to"):
-            mgr._local_push_target(src, "batch")
-
-
-class TestRunCreation:
-    async def test_api_only_backend_run_is_refused(
-        self, repo: Path, tmp_path: Path,
-    ):
-        """The guard has to sit on the submit path too, not just the
-        transport — otherwise the run is built and fails later."""
-        src = GitSourceConfig(name="demo", local_path=repo, clone_dir="/repos")
-        batch = BatchBackendConfig(
-            name="batch",
-            aws=AWSBatchConfig(region="us-east-1", job_queue="q"),
-        )
-        mgr = _run_manager(src, tmp_path, [batch])
-        with patch.object(mgr, "get_job_backend", return_value=MagicMock()):
-            with pytest.raises(ValueError, match="only has local_path set"):
-                await mgr.create_run_from_source(
-                    "demo", "train.json", '{"tasks": []}', "batch",
-                )
-
-    async def test_source_with_both_keeps_the_url_path_on_batch(
-        self, repo: Path, tmp_path: Path,
-    ):
-        """A source carrying both still works on an API-only backend."""
-        src = GitSourceConfig(
-            name="demo", local_path=repo, url="git@h:o/r.git", clone_dir="/repos",
-        )
-        batch = BatchBackendConfig(
-            name="batch",
-            aws=AWSBatchConfig(region="us-east-1", job_queue="q"),
-        )
-        mgr = _run_manager(src, tmp_path, [batch])
-        ls_remote = AsyncMock(return_value="deadbeef0000")
-        captured: dict[str, Any] = {}
-
-        async def fake_build_run(
-            tasks, workflow_name, backend_name, max_concurrent, ssh_client,
-            *, git_repo=None, git_branch=None, commit_hash=None,
-            doc_env=None, doc_env_groups=None, doc_stacks=None, source_name=None,
-        ):
-            captured["commit_hash"] = commit_hash
-            captured["git_repo"] = git_repo
-            return MagicMock()
-
-        with patch.object(mgr, "_build_run", side_effect=fake_build_run), \
-             patch.object(mgr, "_ls_remote_commit", ls_remote), \
-             patch.object(mgr, "_load_source_project_config", AsyncMock(return_value=None)), \
-             patch.object(mgr, "get_job_backend", return_value=MagicMock()):
-            await mgr.create_run_from_source(
-                "demo", "train.json", '{"tasks": []}', "batch",
-            )
-
-        ls_remote.assert_awaited_once_with("git@h:o/r.git", "main")
-        assert captured["commit_hash"] == "deadbeef0000"
-        assert captured["git_repo"] == "git@h:o/r.git"
-
-    async def test_run_records_the_local_path_when_there_is_no_url(
-        self, repo: Path, tmp_path: Path,
-    ):
-        """`git_repo` is run metadata; for a local-only source the path is the
-        honest answer, and an empty string would be useless in the UI."""
-        src = GitSourceConfig(name="demo", local_path=repo, clone_dir="/repos")
-        mgr = _run_manager(src, tmp_path, [_slurm(tmp_path)])
-        captured: dict[str, Any] = {}
-
-        async def fake_build_run(
-            tasks, workflow_name, backend_name, max_concurrent, ssh_client,
-            *, git_repo=None, git_branch=None, commit_hash=None,
-            doc_env=None, doc_env_groups=None, doc_stacks=None, source_name=None,
-        ):
-            captured["git_repo"] = git_repo
-            captured["commit_hash"] = commit_hash
-            return MagicMock()
-
-        with patch.object(mgr, "_build_run", side_effect=fake_build_run), \
-             patch.object(
-                 mgr, "_clone_source_repo",
-                 AsyncMock(return_value=("/repos/abc123def456", "abc123def456")),
-             ), \
-             patch.object(mgr, "_load_source_project_config", AsyncMock(return_value=None)), \
-             patch.object(mgr, "get_ssh_client", return_value=MagicMock()), \
-             patch.object(mgr, "get_job_backend", return_value=MagicMock()):
-            await mgr.create_run_from_source(
-                "demo", "train.json", '{"tasks": []}', "cluster",
-            )
-
-        assert captured["git_repo"] == str(repo)
-        assert captured["commit_hash"] == "abc123def456"
-
-    async def test_clone_source_repo_routes_local_sources_to_the_push(
-        self, repo: Path, tmp_path: Path,
-    ):
-        src = GitSourceConfig(name="demo", local_path=repo, clone_dir="/repos")
-        mgr = _run_manager(src, tmp_path, [_slurm(tmp_path)])
-        push = AsyncMock(return_value=("/repos/abc", "abc"))
-        clone = AsyncMock(return_value=("/repos/xyz", "xyz"))
-        with patch.object(mgr, "_push_local_repo", push), \
-             patch.object(mgr, "_clone_git_repo", clone):
-            await mgr._clone_source_repo(MagicMock(), src, "cluster")
-        push.assert_awaited_once()
-        clone.assert_not_awaited()
-
-    async def test_clone_source_repo_still_clones_a_url_source(
-        self, tmp_path: Path,
-    ):
-        src = GitSourceConfig(name="demo", url="git@h:o/r.git", clone_dir="/repos")
-        mgr = _run_manager(src, tmp_path, [_slurm(tmp_path)])
-        push = AsyncMock(return_value=("/repos/abc", "abc"))
-        clone = AsyncMock(return_value=("/repos/xyz", "xyz"))
-        with patch.object(mgr, "_push_local_repo", push), \
-             patch.object(mgr, "_clone_git_repo", clone):
-            await mgr._clone_source_repo(MagicMock(), src, "cluster")
-        clone.assert_awaited_once()
-        push.assert_not_awaited()
-
-
-class TestAgentRuns:
-    async def test_local_only_source_is_refused(self, repo: Path, tmp_path: Path):
-        """An agent commits and pushes a branch; a mirror on the cluster is
-        not yet somewhere it can usefully push back to."""
-        src = GitSourceConfig(name="demo", local_path=repo, clone_dir="/repos")
-        mgr = _run_manager(src, tmp_path, [_slurm(tmp_path)])
-        with pytest.raises(ValueError, match="only has local_path set"):
-            await mgr.create_agent_run("demo", "cluster", mode="tui")
-
-
-class TestProjectConfigOverlay:
-    async def test_read_from_the_working_tree(self, repo: Path, tmp_path: Path):
-        """Uncommitted, so this also proves it is not going through
-        `git show <sha>:scripthut.yaml`."""
-        (repo / "scripthut.yaml").write_text(
-            "env_groups:\n  julia:\n    - init: 'module load julia'\n"
-        )
-        src = GitSourceConfig(name="demo", local_path=repo)
-        mgr = _run_manager(src, tmp_path, [_slurm(tmp_path)])
-        cfg = await mgr._load_source_project_config(src)
-        assert cfg is not None
-        assert "julia" in cfg.env_groups
-
-    async def test_absent_overlay_is_not_an_error(self, repo: Path, tmp_path: Path):
-        src = GitSourceConfig(name="demo", local_path=repo)
-        mgr = _run_manager(src, tmp_path, [_slurm(tmp_path)])
-        assert await mgr._load_source_project_config(src) is None
-
-    async def test_forbidden_sections_still_raise(self, repo: Path, tmp_path: Path):
-        """A repo-local file must not be able to declare infrastructure."""
-        (repo / "scripthut.yaml").write_text(
-            "backends:\n  - name: sneaky\n    type: local\n"
-        )
-        src = GitSourceConfig(name="demo", local_path=repo)
-        mgr = _run_manager(src, tmp_path, [_slurm(tmp_path)])
-        with pytest.raises(ValueError, match="backends"):
-            await mgr._load_source_project_config(src)

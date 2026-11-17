@@ -5,7 +5,7 @@
 - ``.claude/skills/scripthut/SKILL.md`` — a *thin* skill: the frontmatter
   description is what triggers on-demand loading, and the body's first
   instruction is to run ``scripthut agent prompt`` for the full, live,
-  config-aware briefing. The inventory (backends, stacks, sources) is
+  config-aware briefing. The inventory (backends and sources) is
   deliberately NOT baked in — it would go stale on every config edit;
   the CLI stays the single source of truth.
 - ``.claude/commands/scripthut/debug.md`` — a ``/scripthut:debug [run-id]``
@@ -41,186 +41,83 @@ def _marker_line() -> str:
 
 
 def render_skill() -> str:
-    """The ``scripthut`` skill: trigger description + condensed core loop."""
-    return f"""\
----
+    """Agent guidance for the retained CLI."""
+    return f"""---
 name: scripthut
 description: >-
-  Submit and monitor compute workflows with the ScriptHut CLI — HPC
-  clusters (Slurm, PBS/Torque) over SSH, AWS Batch, AWS EC2, or the
-  local machine (local backend). Use when the user wants to run or
-  submit a workflow, job, or compute task; check run, job, or cluster
-  status; tail or inspect job logs; debug a failed run; manage software
-  stacks (venv, Conda, Julia); probe the result cache (would this task
-  be a cache hit?); fetch a task's provenance manifest (input/output
-  hashes); observe or request cancellation of independently started ScriptFlow
-  runs; launch their Slurm controllers; discover runs; request explicit cleanup
-  or controller release; or estimate compute costs.
+  Launch ScriptFlow controllers on Slurm and observe cluster runs, logs,
+  and cancellation with ScriptHut. Use for ScriptFlow or Slurm/PBS backend
+  status; not for scheduling individual tasks or installing environments.
 ---
 
 {_marker_line()}
 
-# ScriptHut
+# ScriptHut Agent Brief
 
-ScriptHut runs declarative workflows (GitHub Actions-style, defined in a
-git repo) on the user's own infrastructure — remote clusters, AWS, or
-the scripthut host itself via a `local` backend. Everything is driven
-through the `scripthut` CLI; every command supports `--json`.
+Read `scripthut agent prompt` for configured backend and source names.
+Use `scripthut status` and `scripthut backend list --json` to check connectivity.
+Use `scripthut source list --json`, `source view NAME`, and `source sync NAME`
+for configured repository metadata and synchronization.
 
-## First step — always
+## ScriptFlow
 
-Run this before anything else, and re-read it whenever the project's
-`scripthut.yaml` changes (new backend, source, or stack):
+Commands use local configuration and the existing SSH command transport:
 
-```bash
-scripthut agent prompt
-```
+- `scripthut scriptflow register --backend NAME --run-dir /data/project/.sf/runs/ID --json`
+- `scripthut scriptflow list --json`
+- `scripthut scriptflow view REFERENCE --json`
+- `scripthut scriptflow logs REFERENCE TASK --tail 200`
+- `scripthut scriptflow launch --backend NAME --workdir /data/project --flow FLOW --run-id ID --json`
+- `scripthut scriptflow discover --backend NAME --workdir /data/project --register`
+- `scripthut scriptflow cancel REFERENCE --wait --json`
+- `scripthut scriptflow cleanup REFERENCE`
+- `scripthut scriptflow release REFERENCE`
+- `scripthut scriptflow unregister REFERENCE`
 
-It prints the full CLI reference **plus a live inventory** of the
-backends, sources, and stacks configured for this project. Everything
-below is a condensed reminder, not a substitute.
+Configure `scriptflow.env_group` and a named backend `env_groups` entry before
+launching. Resource overrides and `--force-pattern PATTERN` apply to launch.
+Repeat the same launch to reconcile its durable request; never blindly resubmit
+an ambiguous request. ScriptFlow owns all task execution and retry decisions.
 
-## Standalone ScriptFlow observation
+Keep workflow state, controller state and observation freshness separate.
+Stale, unreachable, malformed and unsupported-version are observation problems,
+not outcomes. Logs accept a task ID or unique name; IDs win. Use `--verbose`
+for transport detail. `list` exits 0 when listing succeeds even if a reference
+is unreachable; `view` and `logs` exit nonzero for unreadable records.
 
-For a run started with ScriptFlow, use `scripthut scriptflow register --backend <name>
---run-dir <absolute-run-dir> --json`, then `scripthut scriptflow view <reference-id> --json`
-or `scripthut scriptflow logs <reference-id> <task-id> --tail 50`. Registration returns the
-reference ID. These commands use local configuration and file transport, not the daemon
-or API. Preserve the distinction between workflow outcome and stale/unreachable observation.
-Use `scripthut scriptflow cancel <reference-id> --wait --json` to request cancellation
-through its file protocol; only terminal state with cleanup complete confirms it.
-For owned controllers confirmed ended, `scripthut scriptflow cleanup <reference-id>`
-explicitly submits a compute cleanup job; cleanup is never automatic.
-Use `scripthut scriptflow unregister <reference-id>` to remove only the local cache.
-Logs accept a unique task name or ID (IDs win); list exits 0 with per-reference problems.
-Use `--verbose` for SSH detail. Do not submit, retry or cancel ScriptFlow tasks through
-the legacy commands below.
+Cancel writes the cancellation request; completion requires terminal workflow
+state and cleanup_pending false. Cleanup is explicit and runs in a compute job
+only after the controller has ended. Release cancels only the owned controller;
+terminal workflow and finished cleanup are required unless force is explicit.
+Controller expiry leaves task jobs running. Unregister removes only local state.
 
-Launch with `scripthut scriptflow launch --backend <name> --workdir <path> --flow <flow>
---run-id <id> --json` after configuring `scriptflow.env_group` on that backend. Repeated
-options reuse a durable request. Reconcile ambiguous submissions; do not blindly resubmit.
-Discover with `scripthut scriptflow discover --backend <name> --workdir <path> --register`.
-`scripthut scriptflow release <reference-id>` targets only the owned controller, gated on
-terminal workflow and complete cleanup unless `--force` is explicit. Controller expiry
-leaves task jobs running; controller state, workflow state and freshness stay separate.
+## Server
 
-Launch accepts `--force-pattern PATTERN` for ScriptFlow's own force selection. The server
-shows these references at `/scriptflow`; `/api/v1/scriptflow/runs` supports cached reads,
-explicit refresh, bounded attempt logs and non-waiting cancellation. There are no API
-launch, cleanup or release actions. Refreshing a view never changes remote execution.
-
-## Core loop — verify, then submit
-
-Verify (cheap, read-only):
-
-1. `scripthut status` — server reachable, auth working. If this fails,
-   stop and report the diagnostic.
-2. `scripthut backend list --json` — confirm targets are connected.
-3. Prefer an existing source workflow over ad-hoc submission:
-   `scripthut source list --json`, then `scripthut source view <name> --json`.
-4. If a stack is involved: `scripthut stack check <name> --json`;
-   `scripthut stack install <name>` if not ready.
-5. `scripthut task run ... --dry-run` to preview the assembled
-   TaskDefinition before submitting anything non-trivial.
-6. For tasks that declare `inputs`/`outputs` (result caching):
-   `scripthut task probe --from-file tasks.json --backend <b> --json`
-   answers hit/miss per task **without executing or writing anything**
-   — know what the cache will skip before submitting expensive work.
-
-Submit and track:
-
-7. Submit with `--json` and capture the run id:
-
-   ```bash
-   RUN_ID=$(scripthut workflow run train.json \\
-     --source <name> --backend <backend> --json | jq -r .id)
-   ```
-
-   Runs execute against latest HEAD on the source's configured branch;
-   add `--branch <name>` to run from a different branch of a git source
-   (the workflow file and repo config are read at that branch's tip).
-   Ad-hoc tasks use `scripthut task run` with the same `--json` shape.
-8. **Get notified — don't poll.** Against a running server (the local
-   daemon counts), `scripthut run watch $RUN_ID --exit-status` blocks
-   until the run is terminal, prints a one-line verdict (`Run … COMPLETED`
-   / `Run … FAILED` with the failed task ids and a `run logs` hint), and
-   exits non-zero on failure. **Launch it as a background task** so you
-   keep working and are handed that summary the instant the run finishes —
-   this is how you stop missing completions. Submit and watch in one shot
-   with `scripthut workflow run <file> --source <name> --backend <b>
-   --watch` (also backgrounded). Fall back to re-polling
-   `scripthut run view $RUN_ID --json` only when you can't background a
-   task.
-9. Logs: `scripthut run logs $RUN_ID <task_id> -f` to tail live;
-   `--error --tail 200` first when a task ends in FAILED.
-10. Provenance: `scripthut run manifest $RUN_ID <task_id>` prints the
-    task's versioned manifest — input hashes as used, output paths +
-    content hashes, executor, timing — for anything downstream that
-    needs to verify or adopt the results.
-
-## Failure diagnosis
-
-Use the `/scripthut:debug [run-id]` command, or manually: read stderr,
-then check stack readiness (`stack check`), resource limits (OOM/TIMEOUT
-in stderr or scheduler state), and only then the workflow content. Fix
-and resubmit a **new** run rather than rerunning the failed one.
-
-## Gotchas
-
-- `working_dir` and paths in TaskDefinitions are on the **backend**, not
-  the local filesystem (a `local`-type backend runs on the scripthut
-  host, so local paths are correct there).
-- Partition names are logical (per `partition_map`); use the names from
-  `scripthut agent prompt`, not raw cluster names.
-- Result caching needs declared `outputs` (and a server-side cache
-  store); `cache_scope: "inputs"` reuses across commits but is only
-  safe when `inputs` covers everything the command reads. Never add
-  make-style freshness checks inside task commands — declare
-  `inputs`/`outputs` and let the cache decide.
-- In local mode (no server), statuses only refresh when you re-run
-  `run view`.
+Run `scripthut --config scripthut.yaml`, or use `scripthut daemon start`, `status`,
+`logs`, and `stop`. Open `/scriptflow` for runs, `/backends` for read-only job
+listing, and `/terminals` to attach to an existing tmux session. The versioned
+ScriptFlow API offers list/view, refresh, bounded attempt logs and non-waiting
+cancel; there is no API launch, cleanup or release operation. Viewing or
+refreshing never changes remote execution. Do not log into hosts directly or
+issue scheduler task submission/cancellation commands.
 """
 
 
 def render_debug_command() -> str:
-    """The ``/scripthut:debug`` slash command body."""
-    return f"""\
----
-description: >-
-  Diagnose a failed ScriptHut run — fetch statuses and stderr, classify
-  the failure, propose a fix
-argument-hint: [run-id]
+    """Diagnose an observed ScriptFlow run."""
+    return f"""---
+description: Diagnose ScriptFlow state and attempt logs without changing execution
+argument-hint: [reference-id]
 ---
 
 {_marker_line()}
 
-Diagnose ScriptHut run `$ARGUMENTS`. If no run id was given, find the most
-recent failed run with `scripthut run list --json`.
-
-1. `scripthut run view <run-id> --json` — list the FAILED items and note
-   any scheduler state (OOM, TIMEOUT, NODE_FAIL, CANCELLED).
-2. For each failed task:
-   `scripthut run logs <run-id> <task-id> --error --tail 200`
-   (fall back to stdout via `--tail 200` if stderr is empty).
-3. Classify the root cause:
-   - **Stack not ready** — `scripthut stack check <name> --json`; offer
-     `scripthut stack install <name>`.
-   - **Resource limit** — OOM/TIMEOUT in stderr or scheduler state; name
-     the TaskDefinition field to bump (memory, time, cpus).
-   - **Stale or unexpected cache hit** — the item shows `cache_hit: true`
-     / scheduler state `CACHED` but the results look wrong. Inspect
-     `scripthut run manifest <run-id> <task-id>`: if the task reads
-     files its declared `inputs` don't cover (a real risk with
-     `cache_scope: "inputs"`), fix the `inputs` list — or set
-     `cache: false` on the task — and resubmit.
-   - **Code/workflow bug** — quote the failing lines from stderr and
-     point at the source file if it's in this repo.
-4. Report the root cause and the concrete fix. Only resubmit (as a NEW
-   run — never rerun the failed one) if the user asks. If the fix lives
-   on an unmerged branch of the workflow's git source, test it with
-   `scripthut workflow run <file> --source <name> --branch <fix-branch>
-   --watch` (run in the background to be notified of the result) before
-   merging.
+Inspect `$ARGUMENTS` with `scripthut scriptflow view REFERENCE --json`.
+If no reference was given, use `scripthut scriptflow list --json`.
+Read failed attempts with `scripthut scriptflow logs REFERENCE TASK --tail 200`.
+Report workflow outcome separately from observation and controller state.
+Name the relevant code or resource error. Propose a fix; launch or request
+cancellation only when asked. Never submit or cancel individual task jobs.
 """
 
 

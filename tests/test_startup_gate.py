@@ -48,7 +48,7 @@ class TestStartupGateMiddleware:
         assert 'http-equiv="refresh"' in resp.text
 
     def test_api_route_gets_structured_503(self, starting_client):
-        resp = starting_client.get("/api/v1/runs")
+        resp = starting_client.get("/api/v1/scriptflow/runs")
         assert resp.status_code == 503
         body = resp.json()
         assert body["starting"] == "connecting backends"
@@ -104,6 +104,6 @@ class TestInitRuntimePhases:
         ) as init_mock:
             runtime = await init_runtime(config, on_phase=phases.append)
 
-        assert phases == ["connecting backends", "restoring runs"]
+        assert phases == ["connecting backends"]
         assert list(runtime.backends) == ["a", "b"]
         assert init_mock.await_count == 2

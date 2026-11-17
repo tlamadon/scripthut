@@ -239,31 +239,13 @@ class SourceDelivery:
     def _local_push_target(
         self, source: GitSourceConfig, backend_name: str,
     ) -> tuple[str, str]:
-        """Where to push a local repo for ``backend_name``, and how.
-
-        Returns ``(push_url, env_prefix)``. The whole local-vs-SSH
-        difference lives here: a local backend is a filesystem path with
-        no ssh in the picture, an SSH backend is an scp-style URL plus a
-        ``GIT_SSH_COMMAND``. Every other step runs through
-        ``ssh_client.run_command``, which ``LocalExecClient`` already
-        makes transport-transparent.
-
-        Raises:
-            ValueError: the backend has no filesystem to push to (the
-                API-only backends), or is unknown.
-        """
-        from scripthut.config_schema import LocalBackendConfig
+        """Return the SSH git push URL and environment for a configured backend."""
 
         backend_cfg = self.config.get_backend(backend_name)
         if backend_cfg is None:
             raise ValueError(f"Unknown backend: {backend_name}")
 
         mirror = f"{source.clone_dir}/{_MIRROR_DIRNAME}"
-
-        if isinstance(backend_cfg, LocalBackendConfig):
-            # Pushing to a path, not a host: git hands it to no shell, so
-            # `~` has to be expanded here rather than left for the far end.
-            return str(Path(mirror).expanduser()), ""
 
         ssh_cfg = getattr(backend_cfg, "ssh", None)
         if ssh_cfg is None:

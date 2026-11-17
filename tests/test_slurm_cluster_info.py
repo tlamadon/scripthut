@@ -13,7 +13,6 @@ from scripthut.backends.slurm import (
     parse_squeue_line,
 )
 from scripthut.models import JobState
-from scripthut.runs.models import TaskDefinition
 
 
 class TestParseSqueueReason:
@@ -621,56 +620,3 @@ class TestUserQuota:
         info = await backend.get_cluster_info(user="alice")
         assert info is not None
         assert info.user_quota is None
-
-
-def _make_task(partition: str = "standard") -> TaskDefinition:
-    return TaskDefinition(
-        id="t1",
-        name="example",
-        command="echo hello",
-        partition=partition,
-    )
-
-
-class TestPartitionMapping:
-    def test_passthrough_when_no_config(self):
-        backend = SlurmBackend(AsyncMock())
-        script = backend.generate_script(_make_task("standard"), "run1", "/tmp/log")
-        assert "#SBATCH --partition=standard" in script
-
-    def test_partition_map_rewrites(self):
-        backend = SlurmBackend(
-            AsyncMock(),
-            partition_map={"standard": "cpu", "gpu": "gpu-a100"},
-        )
-        cpu_script = backend.generate_script(_make_task("standard"), "r", "/tmp/log")
-        gpu_script = backend.generate_script(_make_task("gpu"), "r", "/tmp/log")
-        assert "#SBATCH --partition=cpu" in cpu_script
-        assert "#SBATCH --partition=gpu-a100" in gpu_script
-
-    def test_default_partition_fallback_when_unmapped(self):
-        backend = SlurmBackend(
-            AsyncMock(),
-            partition_map={"gpu": "gpu-a100"},
-            default_partition="cpu",
-        )
-        script = backend.generate_script(_make_task("standard"), "r", "/tmp/log")
-        assert "#SBATCH --partition=cpu" in script
-
-    def test_map_takes_precedence_over_default(self):
-        backend = SlurmBackend(
-            AsyncMock(),
-            partition_map={"standard": "cpu"},
-            default_partition="fallback",
-        )
-        script = backend.generate_script(_make_task("standard"), "r", "/tmp/log")
-        assert "#SBATCH --partition=cpu" in script
-        assert "fallback" not in script
-
-    def test_no_default_passthrough_when_unmapped(self):
-        backend = SlurmBackend(
-            AsyncMock(),
-            partition_map={"gpu": "gpu-a100"},
-        )
-        script = backend.generate_script(_make_task("weird-name"), "r", "/tmp/log")
-        assert "#SBATCH --partition=weird-name" in script
