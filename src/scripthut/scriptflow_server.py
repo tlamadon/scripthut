@@ -10,7 +10,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any, cast
 
-from scripthut.backends.slurm import SLURM_TERMINAL_STATES
+from scripthut.scheduler import SLURM_TERMINAL_STATES
 from scripthut.scriptflow import (
     TERMINAL_STATES,
     CachedRun,

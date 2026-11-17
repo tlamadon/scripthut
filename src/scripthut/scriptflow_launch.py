@@ -19,7 +19,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from scripthut.backends.slurm import SLURM_TERMINAL_STATES, SlurmBackend
+from scripthut.scheduler import SLURM_TERMINAL_STATES, SlurmControl
 from scripthut.config_schema import ScriptFlowConfig, ScriptHutConfig, SlurmBackendConfig
 from scripthut.environment import LabeledRule, flatten, resolve
 from scripthut.scriptflow import (
@@ -117,7 +117,7 @@ class LaunchStore:
         await asyncio.to_thread(write)
 
 
-class ControllerBackend(SlurmBackend):
+class ControllerBackend(SlurmControl):
     async def _verify_job_accepted(self, job_id: str) -> bool:
         # Acknowledged sbatch IDs survive delayed queue/accounting visibility.
         return True

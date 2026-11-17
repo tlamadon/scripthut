@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from scripthut.scheduler import SubmitResult
 from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
@@ -29,19 +30,6 @@ class JobStats:
     exit_code: int | None = None
 
 
-@dataclass
-class SubmitResult:
-    """Outcome of a task submission to a backend.
-
-    ``submit_output`` carries the raw stdout/stderr from the submission
-    command (sbatch/qsub/AWS API response).  Stored on the run item so the
-    user can inspect what the scheduler actually said even on apparent
-    success — useful when the parsed job ID looks fine but the job never
-    enters the queue.
-    """
-
-    job_id: str
-    submit_output: str = ""
 
 
 @dataclass
