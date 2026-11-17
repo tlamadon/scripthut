@@ -24,10 +24,11 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from scripthut.config_schema import EnvRule, ScriptHutConfig, Stack
-from typing import TYPE_CHECKING
+from typing import Protocol
 
-if TYPE_CHECKING:
-    from scripthut.runs.models import TaskDefinition
+
+class EnvironmentTarget(Protocol):
+    env: list[EnvRule]
 
 logger = logging.getLogger(__name__)
 
@@ -187,7 +188,7 @@ def collect_rules(
     *,
     backend_name: str,
     workflow_name: str,
-    task: TaskDefinition,
+    task: EnvironmentTarget,
     doc_env: list[EnvRule] | None = None,
 ) -> list[LabeledRule]:
     """Concatenate rules from every layer in fixed order, with source labels.
@@ -340,7 +341,7 @@ def resolve_for_task(
     workflow_name: str,
     run_id: str,
     created_at: datetime,
-    task: TaskDefinition,
+    task: EnvironmentTarget,
     git_repo: str | None = None,
     git_branch: str | None = None,
     git_sha: str | None = None,
@@ -386,7 +387,7 @@ def resolve_for_task_detailed(
     workflow_name: str,
     run_id: str,
     created_at: datetime,
-    task: TaskDefinition,
+    task: EnvironmentTarget,
     git_repo: str | None = None,
     git_branch: str | None = None,
     git_sha: str | None = None,
