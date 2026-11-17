@@ -328,6 +328,7 @@ async def test_generated_script_runs_locally_with_fake_tmux(setup, tmp_path, exi
     workdir.mkdir()
     args.workdir = str(workdir)
     args.flow = "analysis 'quoted'"
+    args.force_pattern = "task*'; echo BAD"
     launch = make_launch(config, args)
     Path(launch.runs_dir).mkdir(parents=True)
     bins = tmp_path / "bin"
@@ -362,6 +363,8 @@ async def test_generated_script_runs_locally_with_fake_tmux(setup, tmp_path, exi
     assert (tmp_path / "args").read_text().splitlines() == [
         "run",
         "analysis 'quoted'",
+        "-f",
+        "task*'; echo BAD",
         "--run-id",
         "example",
         "--runs-dir",
@@ -454,3 +457,41 @@ async def test_cleanup_unknown_refused_and_release_terminal(setup):
     transport.raw = fresh_record("completed")
     await control(config, cached, store, backend, RecordReader(transport), "release")
     assert backend.cancelled == ["1234"] and not backend.scripts
+
+
+async def test_release_ended_no_cancel(setup):
+    config, _, launch, store = setup
+    launch.job_id = "1234"
+    await LaunchStore(store.directory).save(launch)
+    cached = await register_launch(store, launch)
+    backend = Backend(store, launch)
+    backend.jobs = {"1234": "COMPLETED"}
+    result = await control(config, cached, store, backend, RecordReader(Transport()), "release")
+    assert result["status"] == "already_ended" and not backend.cancelled
+
+
+def test_force_pattern_stored_and_quoted(setup):
+    config, args, _, _ = setup
+    args.force_pattern = "task*'; echo BAD"
+    launch = make_launch(config, args)
+    assert launch.force_pattern == args.force_pattern
+    script = job_script(config, launch)
+    assert "-f" in script and "task*" in script
+    assert "set +u\n" in script
+    assert script.index("set +u") < script.index("source /data") < script.index("set -eu")
+
+
+async def test_activation_unset_allowed_failure_stops(setup, tmp_path):
+    config, _, launch, _ = setup
+    for init, expected in [
+        ('echo "$UNDEFINED_ACTIVATION_VARIABLE"\nexit 0', 0),
+        ("false\necho should-not-run", 1),
+    ]:
+        config.backends[0].env_groups["workflow"] = [EnvRule(init=init)]
+        path = tmp_path / "job.sh"
+        path.write_text(job_script(config, launch))
+        process = await asyncio.create_subprocess_exec(
+            "bash", str(path), stdout=asyncio.subprocess.PIPE
+        )
+        stdout, _ = await process.communicate()
+        assert process.returncode == expected and b"should-not-run" not in stdout

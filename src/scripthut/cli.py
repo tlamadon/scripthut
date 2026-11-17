@@ -1866,7 +1866,10 @@ def _render_agent_prompt(config: ScriptHutConfig | None) -> str:
         "`scripthut scriptflow cleanup <reference-id>` runs cleanup in a compute job only after the "
         "owned controller is confirmed ended. `scripthut scriptflow release <reference-id>` cancels "
         "only that controller, gated on workflow cleanup unless --force is explicit. "
-        "Controller expiry leaves task jobs running. Keep controller/workflow/freshness separate.\n"
+        "Controller expiry leaves task jobs running. Keep controller/workflow/freshness separate. "
+        "Launch accepts --force-pattern PATTERN for ScriptFlow run -f. The server exposes cached "
+        "views at /scriptflow and /api/v1/scriptflow/runs, with explicit refresh, attempt logs "
+        "and non-waiting cancel routes. No launch/cleanup/release API is exposed.\n"
     )
 
     out.append("## Typical agent loop — verify, then submit\n")

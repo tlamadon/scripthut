@@ -253,7 +253,13 @@ class RecordReader:
         self.transport = transport
 
     async def read(
-        self, reference: Reference, path: str, tail: int | None = None, *, record: bool = False
+        self,
+        reference: Reference,
+        path: str,
+        tail: int | None = None,
+        *,
+        record: bool = False,
+        max_bytes: int | None = None,
     ) -> str:
         root = absolute_path(reference.run_directory)
         path = absolute_path(path)
@@ -277,7 +283,8 @@ class RecordReader:
                     if record
                     else []
                 ),
-                'cat -- "$target"' if tail is None else f'tail -n {tail} -- "$target"',
+                ('cat -- "$target"' if tail is None else f'tail -n {tail} -- "$target"')
+                + (f" | head -c {max_bytes}" if max_bytes is not None else ""),
             ]
         )
         command = shlex.join(["sh", "-c", script, "scripthut-read", root, path])
@@ -375,6 +382,7 @@ class RecordReader:
         task_id: str,
         attempt_number: int | None = None,
         tail: int | None = None,
+        max_bytes: int | None = None,
     ) -> tuple[str, int]:
         if cached.last_fetch_failed or cached.snapshot is None:
             raise ObservationError("unavailable", "Fetch a readable current record before logs")
@@ -386,4 +394,4 @@ class RecordReader:
         path = task.attempts[number - 1].log
         if not path:
             raise ObservationError("not_found", "Attempt has no log path")
-        return await self.read(cached.reference, path, tail), number
+        return await self.read(cached.reference, path, tail, max_bytes=max_bytes), number

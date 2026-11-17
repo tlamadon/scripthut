@@ -55,6 +55,7 @@ def add_parser(
             parser.add_argument("--runs-dir")
         if verb == "launch":
             parser.add_argument("--flow", required=True)
+            parser.add_argument("--force-pattern", help="ScriptFlow task force pattern")
             parser.add_argument("--run-id")
             parser.add_argument("--cpus", type=int)
             for resource in ("memory", "time-limit", "partition"):

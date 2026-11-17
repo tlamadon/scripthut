@@ -104,6 +104,11 @@ Discover with `scripthut scriptflow discover --backend <name> --workdir <path> -
 terminal workflow and complete cleanup unless `--force` is explicit. Controller expiry
 leaves task jobs running; controller state, workflow state and freshness stay separate.
 
+Launch accepts `--force-pattern PATTERN` for ScriptFlow's own force selection. The server
+shows these references at `/scriptflow`; `/api/v1/scriptflow/runs` supports cached reads,
+explicit refresh, bounded attempt logs and non-waiting cancellation. There are no API
+launch, cleanup or release actions. Refreshing a view never changes remote execution.
+
 ## Core loop — verify, then submit
 
 Verify (cheap, read-only):

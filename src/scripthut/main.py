@@ -620,6 +620,8 @@ async def poll_jobs() -> None:
             notification_hub.scan(runs)
             notification_hub.update_stats(runs)
 
+        await scriptflow_service.poll()
+
         # Record poll time and notify SSE listeners
         state._last_poll_time = time.monotonic()
         state.notify_poll()
@@ -1004,6 +1006,12 @@ app.include_router(make_api_router(state))
 templates_path = Path(__file__).parent / "templates"
 templates = Jinja2Templates(directory=str(templates_path))
 templates.env.globals["scripthut_version"] = __version__
+
+from scripthut.scriptflow_routes import make_scriptflow_router  # noqa: E402
+from scripthut.scriptflow_server import ScriptFlowService  # noqa: E402
+
+scriptflow_service = ScriptFlowService(state)
+app.include_router(make_scriptflow_router(scriptflow_service, templates))
 
 
 _STARTING_PAGE = """\

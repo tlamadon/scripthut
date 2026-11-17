@@ -55,6 +55,7 @@ class Launch(BaseModel):
     stage: str = "prepared"
     created_at: str = Field(default_factory=now)
     updated_at: str = Field(default_factory=now)
+    force_pattern: str | None = None
     job_id: str | None = None
     cleanup_job_id: str | None = None
     cleanup_stage: str | None = None
@@ -233,6 +234,7 @@ def make_launch(config: ScriptHutConfig, args: Any) -> Launch:
         job_name="sf-" + request,
         session="sf-" + request,
     )
+    launch.force_pattern = getattr(args, "force_pattern", None)
     environment(config, launch)
     return launch
 
@@ -262,8 +264,10 @@ def job_script(config: ScriptHutConfig, launch: Launch, cleanup: bool = False) -
     lines = [
         "#!/bin/bash" + (" -l" if backend.login_shell else ""),
         *(f"#SBATCH --{key}={q(value)}" for key, value in directives.items() if value),
-        "set -eu",
+        "set -e",
+        "set +u",
         environment(config, launch),
+        "set -eu",
         "cd -- " + q(launch.workdir),
     ]
     command = (
@@ -274,6 +278,7 @@ def job_script(config: ScriptHutConfig, launch: Launch, cleanup: bool = False) -
                 "scriptflow",
                 "run",
                 launch.flow,
+                *(["-f", launch.force_pattern] if launch.force_pattern is not None else []),
                 "--run-id",
                 launch.run_id,
                 "--runs-dir",
@@ -370,6 +375,7 @@ async def launch_run(
             launch.flow != proposed.flow
             or launch.workdir != proposed.workdir
             or launch.resources != proposed.resources
+            or launch.force_pattern != proposed.force_pattern
         ):
             raise ValueError("Existing launch uses different settings; use a new --run-id")
         if launch.job_id:
@@ -476,6 +482,12 @@ async def control(
             raise ValueError("No acknowledged controller job")
         observation = await controller_observation(backend, reader, launch)
         if action == "release":
+            if observation["state"] == "ended":
+                return {
+                    "status": "already_ended",
+                    "job_id": launch.job_id,
+                    "message": "Controller already ended; nothing to release.",
+                }
             await reader.fetch(cached)
             await store.save(cached)
             workflow = cached.projection()["workflow"]

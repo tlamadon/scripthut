@@ -579,3 +579,19 @@ returns an empty list (exit 0); a missing runs directory returns an error (exit 
 cache/ownership information. Discovery does not adopt controller ownership from receipts.
 GNU-compatible `find -printf`, `sort -z`, `realpath`, and Bash are required on the login host;
 Bash, tmux and the configured ScriptFlow environment are required on compute nodes.
+
+
+### Server views and launch options
+
+The same registered references are available in the server at `/scriptflow` and through
+`/api/v1/scriptflow/runs`; see [API and web views](scriptflow.md). The CLI continues to
+use its local config/store and direct transport. Select the server's data directory to
+share references.
+
+Pass `--force-pattern 'task_*'` to launch to supply ScriptFlow's `run -f PATTERN` on the
+compute node. The pattern is persisted and quoted. A saved request cannot change its force
+pattern; use a new run ID. Environment activation tolerates unset variables but failures
+still abort the job; strict unset checking resumes afterward.
+
+Release of a controller already confirmed ended returns `already_ended` (exit 0), without
+issuing a cancellation command. Other release guards are unchanged.

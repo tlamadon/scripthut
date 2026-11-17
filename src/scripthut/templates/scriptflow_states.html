@@ -1,0 +1,5 @@
+<p>Workflow: <strong>{{ run.workflow_status }}</strong></p>
+<p>Observation: <strong class="{% if run.observation.status != 'fresh' %}text-amber-800{% endif %}">{{ run.observation.status }}</strong></p>
+<p>Last successful read: {{ run.observation.last_successful_fetch or 'never' }}</p>
+{% if run.observation.error %}<p class="text-amber-800">{{ run.observation.error }}</p>{% endif %}
+<p>Controller: <strong>{{ run.controller.state if run.controller else 'unknown / not managed' }}</strong>{% if run.controller %} (observed {{ run.controller.observed_at }}){% endif %}</p>

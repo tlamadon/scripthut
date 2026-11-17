@@ -53,6 +53,10 @@ job; `release` targets only the owned controller, never task jobs. Workflow stat
 freshness are reported separately. See [ScriptFlow CLI](docs/cli.md#scriptflow--observe-existing-runs)
 for caching, attempt selection, path restrictions and exit codes.
 
+The server navigation includes **ScriptFlow** at `/scriptflow`, with separate workflow,
+observation and controller states, attempt logs and cancellation. See the
+[ScriptFlow API and web guide](docs/scriptflow.md) for routes and polling behavior.
+
 ## Installation
 
 ```bash
