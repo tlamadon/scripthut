@@ -49,6 +49,7 @@ from scripthut.config_schema import (
 )
 from scripthut.runs.models import Run, RunItemStatus, RunStatus
 from scripthut.runtime import Runtime, init_runtime, shutdown_runtime
+from scripthut.ssh.config import _ssh_client_for
 from scripthut.ssh.client import SSHClient
 from scripthut.stacks import StackManager, StackState, StackStatus
 
@@ -1034,16 +1035,6 @@ def _select_ssh_backends(
     return [b for b in config.backends if isinstance(b, ssh_types)]
 
 
-def _ssh_client_for(backend_cfg: SlurmBackendConfig | PBSBackendConfig) -> SSHClient:
-    """Build an SSHClient from a backend's SSH config (CLI-only; no shared pool)."""
-    return SSHClient(
-        host=backend_cfg.ssh.host,
-        user=backend_cfg.ssh.user,
-        key_path=backend_cfg.ssh.key_path_resolved,
-        port=backend_cfg.ssh.port,
-        cert_path=backend_cfg.ssh.cert_path_resolved,
-        known_hosts=backend_cfg.ssh.known_hosts_resolved,
-    )
 
 
 def _format_size(n: int | None) -> str:

@@ -306,7 +306,7 @@ def cli_context(tmp_path, monkeypatch):
     )
     transport = FakeTransport(json.dumps(record()))
     monkeypatch.setattr(scriptflow_cli, "load_config", lambda _: config)
-    monkeypatch.setattr(cli, "_ssh_client_for", lambda _: transport)
+    monkeypatch.setattr("scripthut.ssh.config._ssh_client_for", lambda _: transport)
 
     def forbidden(*args, **kwargs):
         pytest.fail("Legacy runtime or run storage invoked")
@@ -594,7 +594,7 @@ def test_cli_cancel_no_legacy_and_default_wait(cli_context, capsys, monkeypatch)
     )
     reference = json.loads(capsys.readouterr().out)["reference_id"]
     transport = CancelTransport([fresh_record()])
-    monkeypatch.setattr(cli, "_ssh_client_for", lambda _: transport)
+    monkeypatch.setattr("scripthut.ssh.config._ssh_client_for", lambda _: transport)
     assert cli.main(["scriptflow", "cancel", reference, "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["cancel_result"]["status"] == "requested"
     args = cli.build_parser().parse_args(["scriptflow", "cancel", reference, "--wait"])

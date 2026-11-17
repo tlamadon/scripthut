@@ -139,7 +139,7 @@ async def observe(
     store: ReferenceStore,
     args: argparse.Namespace,
 ) -> tuple[dict[str, Any], bool]:
-    from scripthut.cli import _ssh_client_for
+    from scripthut.ssh.config import _ssh_client_for
 
     backend = config.get_backend(cached.reference.backend)
     client = None
@@ -364,7 +364,7 @@ async def handle(args: argparse.Namespace) -> int:
 async def handle_controller(
     config: ScriptHutConfig, store: ReferenceStore, args: argparse.Namespace
 ) -> Any:
-    from scripthut.cli import _ssh_client_for
+    from scripthut.ssh.config import _ssh_client_for
     from scripthut.scriptflow_launch import (
         ControllerBackend,
         backend_config,

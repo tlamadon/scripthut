@@ -395,7 +395,7 @@ def test_cli_launch_no_legacy(setup, monkeypatch, capsys):
 
     backend.submit_job = submit
     monkeypatch.setattr(scriptflow_cli, "load_config", lambda _: config)
-    monkeypatch.setattr(cli, "_ssh_client_for", lambda _: transport)
+    monkeypatch.setattr("scripthut.ssh.config._ssh_client_for", lambda _: transport)
     monkeypatch.setattr(scriptflow_launch, "ControllerBackend", lambda _: backend)
 
     def forbidden(*args, **kwargs):
