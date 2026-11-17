@@ -61,3 +61,45 @@ The explicit existing-directory form also remains available:
 scripthut scriptflow launch --backend cluster --workdir /data/project --flow analysis --run-id manual-project --json
 scripthut scriptflow discover --backend cluster --workdir /data/project --register
 ```
+
+## Images in flows and manual runs
+
+Declare the image on the source, then read its exported path in `sflow.py`:
+
+```python
+import os
+import scriptflow as sf
+
+sf.init({})
+
+async def flow_smoke():
+    await sf.Task(
+        cmd="cat /etc/os-release > result.txt",
+        outputs="result.txt",
+        name="smoke",
+        container={"image": os.environ["SCRIPTHUT_IMAGE_APP"]},
+    )
+```
+
+From the local machine:
+
+```sh
+scripthut scriptflow images --source example --backend cluster --json
+scripthut scriptflow launch --source example --backend cluster --flow smoke --run-id image-check --json
+```
+
+Once a controller has prepared the images, a person on a compute node can use the
+same directory and image assignments:
+
+```sh
+cd /data/example/analysis
+source /data/venv/bin/activate
+source .sf/images.sh
+scriptflow run smoke --run-id manual-image-check
+```
+
+The shell file contains only image-path exports. It follows the last successfully
+prepared launch; sourcing it does not pull anything. A first manual run needs the
+images prepared already. ScriptFlow owns the containerized task, its binds and its
+output skip rule. The example uses ScriptFlow's local executor inside the compute
+controller; flows can instead configure ScriptFlow's own scheduler executor.

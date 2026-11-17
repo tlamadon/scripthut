@@ -51,6 +51,67 @@ mechanism into a source-specific backend mirror. URL sources use the configured
 deploy key, or HTTPS conversion for public Git SSH URLs. Postclone runs only for
 a newly created checkout. No result cache is used.
 
+## Source container images
+
+```yaml
+backends:
+  - name: cluster
+    type: slurm
+    ssh:
+      host: hpc-cluster.example.edu
+      user: alice
+    clone_dir: /data/repos
+    image_dir: /data/images        # optional; default <backend clone_dir>/images
+    # For private pulls, configure both:
+    # registry_user: alice
+    # registry_token_file: /data/local-secrets/registry-token
+    env_groups:
+      scriptflow:
+        - init: module load apptainer; source /data/venv/bin/activate
+sources:
+  - name: example
+    type: git
+    local_path: /data/local-example
+    images:
+      - name: app
+        ref_file: image.ref
+      - name: tools
+        ref: registry.example/org/tools@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+```
+
+Each image requires exactly one of `ref` and `ref_file`. Names contain letters,
+digits or underscores, and must be unique after upper-casing. `ref_file` is relative
+to the repository root and read from the selected commit, never the dirty working
+tree. References are Docker/OCI registry references with optional `docker://`
+prefix and must end in `@sha256:` plus 64 hexadecimal digits. A tag-only reference
+requires explicit `allow_tag: true`. That opt-out uses a hash of the reference as
+its filename and reuses the first pulled file; tags are not refreshed automatically.
+
+Digest files are shared by sources/runs on the backend as
+`<image_dir>/sha256-<digest>.sif`. Only the controller compute job pulls, using
+Apptainer from the configured environment group. It locks each target, pulls to a
+private temporary directory inside the image directory and publishes by rename.
+Existing images are never overwritten or deleted. Partial images, temporary runtime
+directories and lock files are retained; there is no image cleanup command.
+The shared filesystem must support `flock`; compute nodes also need Bash and GNU
+file utilities. Runtime configuration and temporary files stay in the image directory.
+
+Registry tokens are read from a **local** file only when an image is missing, sent
+through SSH stdin into a mode-0600 backend file, and read via Apptainer's credential
+environment variables inside the pull subprocess. Tokens are not arguments, job
+script literals, launch-record data or log text. Runtime stdout/stderr is redacted
+before being saved. The controller removes its token file on success or failure;
+SIGKILL, node loss or a controller that never starts can prevent this cleanup.
+Apptainer's [credential and runtime environment variables](https://apptainer.org/docs/user/latest/appendix.html)
+are used without a registry-login command. Public pulls work without credential settings.
+The backend's single credential pair
+applies to its declared missing images.
+
+The controller exports `SCRIPTHUT_IMAGE_<UPPERCASE_NAME>` and atomically writes
+`<flow directory>/.sf/images.sh`. See [working from a project](../from-a-project.md)
+for flow code and manual use. No bind-mount settings are added: binds belong to the
+flow, and module loads/runtime setup belong to `env_groups`.
+
 ## Settings
 
 | Key | Default | Purpose |

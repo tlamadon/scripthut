@@ -70,6 +70,7 @@ Commands use local configuration and the existing SSH command transport:
 - `scripthut scriptflow launch --backend NAME --workdir /data/project --flow FLOW --run-id ID --json`
 - `scripthut scriptflow launch --source SOURCE --backend NAME --flow FLOW --run-id ID --json`
 - `scripthut scriptflow flows --source SOURCE --json`
+- `scripthut scriptflow images --source SOURCE --backend NAME --json`
 - `scripthut scriptflow discover --source SOURCE --backend NAME --register`
 - `scripthut scriptflow discover --backend NAME --workdir /data/project --register`
 - `scripthut scriptflow cancel REFERENCE --wait --json`
@@ -90,6 +91,15 @@ backend. Refuse dirty tracked files, live/stale runs, unknown run records and
 non-fast-forward updates; never reset, stash or clean a cluster checkout. Untracked
 outputs stay. `flows` reads committed text, using local_path or an existing backend
 copy. New commits need new explicit run IDs; identical requests never move code again.
+
+Source images require digest-pinned `ref` or a committed `ref_file`; `allow_tag`
+is an explicit opt-out. `images` only checks presence. Missing images are pulled
+inside the controller compute job, never on the login node. The flow reads
+`SCRIPTHUT_IMAGE_<NAME>`; manual users source `.sf/images.sh` after preparation.
+Registry credentials come from the backend's local token file, never from command
+arguments. Do not print tokens or delete image files. A failed image preparation
+is a launch problem with workflow `not started`; use a new run ID after fixing it.
+Binds belong to the flow and runtime activation belongs to the environment group.
 
 Keep workflow state, controller state and observation freshness separate.
 Stale, unreachable, malformed and unsupported-version are observation problems,

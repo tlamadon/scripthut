@@ -82,3 +82,10 @@ Source launches carry a `source` object in list/view JSON: `name`, `branch`,
 states. `/sources` displays each source's working directory, flow directory and
 flow names from committed text, with explicit errors for unavailable copies.
 It has no launch action.
+
+Image declarations appear in `images` on launch and run projections, with `name`,
+`ref` and `path`. `image_preparation` is null or has `status` (`preparing`, `ready`,
+`failed`) and `error`. A pull error is a launch problem, never a workflow failure.
+The run page and list show the images and error separately from workflow,
+controller and observation states. Server polling reads image status in the same
+remote command as the workflow record and controller queries.

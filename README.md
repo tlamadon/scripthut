@@ -56,6 +56,11 @@ running runs (including stale ones), and non-fast-forward updates are refused.
 Untracked outputs stay in place. See [working from a project](docs/from-a-project.md)
 for the manual equivalent, revision selection and snapshot mode.
 
+Sources can also declare digest-pinned container images. The controller pulls
+missing images on the compute node, exports `SCRIPTHUT_IMAGE_<NAME>`, and writes
+`.sf/images.sh` for manual runs. `scripthut scriptflow images --source example
+--json` checks presence without pulling. See [image configuration](docs/configuration/index.md#source-container-images).
+
 Workflow outcome, controller state and observation freshness are separate.
 Unreachable or stale observations never mean success or failure. The server and
 CLI must use the same data directory to share references.

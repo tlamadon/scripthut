@@ -8,6 +8,9 @@ backends:
       key_path: ~/.ssh/id_ed25519
       known_hosts: ~/.ssh/known_hosts
     clone_dir: /data/repos
+    # image_dir: /data/images  # default: <backend clone_dir>/images
+    # registry_user: alice
+    # registry_token_file: /data/local-secrets/registry-token
     env_groups:
       scriptflow:
         - init: source /data/venv/bin/activate
@@ -27,6 +30,9 @@ sources:
     # Default workdir: /data/repos/.worktrees/source-example
     # workdir: /data/example
     flow_dir: .
+    # images:
+    #   - name: app
+    #     ref_file: image.ref  # committed registry reference pinned by sha256 digest
 
 settings:
   poll_interval: 60

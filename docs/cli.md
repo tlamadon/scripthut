@@ -15,6 +15,7 @@ describes server startup. Every CLI leaf supports `--json`.
 | `unregister REFERENCE` | Remove local reference/cache only |
 | `launch --backend B --workdir /absolute/project --flow FLOW` | Submit one detached controller; supports `--run-id`, `--runs-dir`, resource overrides and `--force-pattern` |
 | `launch --source NAME --flow FLOW` | Prepare a fixed git checkout, then launch; `--branch`, `--commit`, `--snapshot`, optional `--backend` |
+| `images --source NAME [--branch B \| --commit SHA] [--backend B]` | List declared image references, target paths and remote file presence; no pull |
 | `flows --source NAME [--branch B \| --commit SHA]` | Read `flow_*` names from committed `sflow.py`, without importing it |
 | `discover --source NAME --register` | Discover under the fixed checkout's `flow_dir`; optionally register locally |
 | `discover --backend B --workdir /absolute/project --register` | List remote run directories; optionally register locally |
@@ -56,6 +57,15 @@ backend checkout. The latter must already contain the requested commit; a missin
 checkout, commit or `sflow.py` is an explicit error, not an empty flow list.
 It performs no clone, fetch, import or launch. The Sources page likewise reads
 local code or each connected backend's existing copy and displays errors.
+
+For source launches with `images`, references resolve before backend preparation
+and are saved in the launch record without credentials. Pulling happens inside the
+controller before ScriptFlow starts. A failure is reported by `view`, `list` and
+the API as `image_preparation.status: failed`, with error text, while the workflow
+remains `not started`. Runtime diagnostics are redacted and retained under the flow
+folder's `.sf`; view exposes up to 64 KiB of error text. Retry with a **new run ID**
+after resolving the image problem; an acknowledged launch is never resubmitted.
+`launch --workdir` has no image preparation behavior.
 
 ## Other commands
 
