@@ -85,7 +85,11 @@ It has no launch action.
 
 Image declarations appear in `images` on launch and run projections, with `name`,
 `ref` and `path`. `image_preparation` is null or has `status` (`preparing`, `ready`,
-`failed`) and `error`. A pull error is a launch problem, never a workflow failure.
+`failed`) and `error`. New preparation records include `started_at` (Unix seconds).
+While preparing, the projection includes `elapsed_seconds` and `log_tail` (last
+20 redacted lines, at most 16 KiB). An observed ended controller turns an unfinished
+preparation into a launch problem: "Controller ended during image preparation".
+The workflow remains `not started` when its record is absent. A pull error is a launch problem, never a workflow failure.
 The run page and list show the images and error separately from workflow,
 controller and observation states. Server polling reads image status in the same
 remote command as the workflow record and controller queries.

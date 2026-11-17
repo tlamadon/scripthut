@@ -10,6 +10,8 @@ backends:
     clone_dir: /data/repos
     # image_dir: /data/images  # default: <backend clone_dir>/images
     # registry_user: alice
+    # image_scratch_dir: /tmp  # node-local override; otherwise SLURM_TMPDIR, TMPDIR, /tmp
+    # image_pull_timeout_seconds: 600
     # registry_token_file: /data/local-secrets/registry-token
     env_groups:
       scriptflow:

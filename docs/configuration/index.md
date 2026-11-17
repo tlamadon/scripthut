@@ -62,6 +62,8 @@ backends:
       user: alice
     clone_dir: /data/repos
     image_dir: /data/images        # optional; default <backend clone_dir>/images
+    image_pull_timeout_seconds: 600
+    # image_scratch_dir: /tmp      # optional node-local override
     # For private pulls, configure both:
     # registry_user: alice
     # registry_token_file: /data/local-secrets/registry-token
@@ -89,19 +91,34 @@ its filename and reuses the first pulled file; tags are not refreshed automatica
 
 Digest files are shared by sources/runs on the backend as
 `<image_dir>/sha256-<digest>.sif`. Only the controller compute job pulls, using
-Apptainer from the configured environment group. It locks each target, pulls to a
-private temporary directory inside the image directory and publishes by rename.
-Existing images are never overwritten or deleted. Partial images, temporary runtime
-directories and lock files are retained; there is no image cleanup command.
-The shared filesystem must support `flock`; compute nodes also need Bash and GNU
-file utilities. Runtime configuration and temporary files stay in the image directory.
+Apptainer from the configured environment group. Each target is locked while a
+missing image is built in a private node-local directory. Scratch selection uses
+`image_scratch_dir` when configured, otherwise writable `$SLURM_TMPDIR`, then
+writable `$TMPDIR`, then `/tmp`. An override must be an absolute, writable directory
+on the compute node. Runtime temporary, build, configuration and cache files all
+stay there. Only the completed image is copied into a temporary file in `image_dir`
+and published by rename. Existing images are never overwritten or deleted.
 
-Registry tokens are read from a **local** file only when an image is missing, sent
-through SSH stdin into a mode-0600 backend file, and read via Apptainer's credential
-environment variables inside the pull subprocess. Tokens are not arguments, job
-script literals, launch-record data or log text. Runtime stdout/stderr is redacted
-before being saved. The controller removes its token file on success or failure;
-SIGKILL, node loss or a controller that never starts can prevent this cleanup.
+`image_pull_timeout_seconds` is a positive integer, default **600**. It bounds the
+whole preparation worker, including lock waits and copying. Set the controller
+walltime long enough for preparation plus the workflow. Timeout or a termination
+signal stops the worker, records a launch error, and prevents ScriptFlow from
+starting. Cleanup removes only this job's temporary copy and scratch directory;
+finished images and lock files remain. Uncatchable SIGKILL or node loss can still
+leave temporary files. Old partial files from earlier launches are not removed.
+The shared filesystem must support `flock`; compute nodes need Bash and GNU file
+utilities, including `timeout`.
+
+Registry tokens are read from a **local** file only when an image is missing and
+sent through SSH stdin into a mode-0600 file under the flow directory's `.sf`.
+At controller startup, before environment activation, the file is opened, unlinked,
+and read through the open descriptor.
+Only the pull worker receives the token through its environment. Tokens are not
+arguments, job script literals, launch-record data or log text. Runtime output is
+redacted line by line before being saved. A job killed after startup leaves no token
+file; a job that never starts or dies before reading it can still leave the upload.
+Configure both `registry_user` and `registry_token_file`; unknown `registry_*` keys
+are configuration errors naming these expected keys, without a CLI traceback.
 Apptainer's [credential and runtime environment variables](https://apptainer.org/docs/user/latest/appendix.html)
 are used without a registry-login command. Public pulls work without credential settings.
 The backend's single credential pair

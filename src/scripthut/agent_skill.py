@@ -97,7 +97,10 @@ is an explicit opt-out. `images` only checks presence. Missing images are pulled
 inside the controller compute job, never on the login node. The flow reads
 `SCRIPTHUT_IMAGE_<NAME>`; manual users source `.sf/images.sh` after preparation.
 Registry credentials come from the backend's local token file, never from command
-arguments. Do not print tokens or delete image files. A failed image preparation
+arguments. The controller consumes and deletes its token file before activation.
+Pulls use node-local scratch and `image_pull_timeout_seconds` (default 600).
+Use `view` for elapsed time and redacted progress; an ended controller during
+preparation is a launch problem. Do not print tokens or delete image files. A failed image preparation
 is a launch problem with workflow `not started`; use a new run ID after fixing it.
 Binds belong to the flow and runtime activation belongs to the environment group.
 

@@ -58,7 +58,8 @@ for the manual equivalent, revision selection and snapshot mode.
 
 Sources can also declare digest-pinned container images. The controller pulls
 missing images on the compute node, exports `SCRIPTHUT_IMAGE_<NAME>`, and writes
-`.sf/images.sh` for manual runs. `scripthut scriptflow images --source example
+`.sf/images.sh` for manual runs. Pulls use node-local scratch with a separate
+timeout; `scriptflow view` shows redacted progress and elapsed time. `scripthut scriptflow images --source example
 --json` checks presence without pulling. See [image configuration](docs/configuration/index.md#source-container-images).
 
 Workflow outcome, controller state and observation freshness are separate.

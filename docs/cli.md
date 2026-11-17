@@ -63,7 +63,10 @@ and are saved in the launch record without credentials. Pulling happens inside t
 controller before ScriptFlow starts. A failure is reported by `view`, `list` and
 the API as `image_preparation.status: failed`, with error text, while the workflow
 remains `not started`. Runtime diagnostics are redacted and retained under the flow
-folder's `.sf`; view exposes up to 64 KiB of error text. Retry with a **new run ID**
+folder's `.sf`; view exposes up to 64 KiB of error text. While preparing, `view`
+and the run page show elapsed seconds and the last 20 redacted log lines (capped at
+16 KiB). An ended controller with unfinished preparation reports
+"Controller ended during image preparation", with workflow `not started`. Retry with a **new run ID**
 after resolving the image problem; an acknowledged launch is never resubmitted.
 `launch --workdir` has no image preparation behavior.
 
