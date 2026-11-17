@@ -357,3 +357,68 @@ Setting `SCRIPTHUT_SERVER` once at the top means the rest of the script reads na
 | `3` | (`daemon status` only) No local daemon is running |
 
 Without `--exit-status`, `run watch` always returns 0 once the run reaches a terminal state — the watch itself succeeded, even if the work didn't.
+
+## `scriptflow` — observe existing runs
+
+These commands only observe ScriptFlow runs already started independently. They use
+local configuration and command transport directly, without initializing the legacy
+run manager or starting a daemon. They do not use the API, web UI, or background polling.
+The configured backend must be Slurm or PBS with SSH file access.
+
+```bash
+scripthut scriptflow register --backend hpc --run-dir /data/project/.sf/runs/example-run --json
+scripthut scriptflow list --json
+scripthut scriptflow view <reference-id> --json
+scripthut scriptflow logs <reference-id> <task-id>
+scripthut scriptflow logs <reference-id> <task-id> --attempt 1 --tail 50 --json
+```
+
+All four commands accept `--config <file>` and `--json`. They intentionally have no
+`--server` or HTTP-auth options; `SCRIPTHUT_SERVER` and `settings.cli_server` do not
+select their transport. The machine running the CLI needs the selected backend's
+SSH credentials. No Python or ScriptFlow command is executed on the login node.
+
+Registration stores the backend name and absolute run directory and fetches its
+`run.json`. The deterministic `reference_id` identifies that pair; it is distinct from
+the remote ScriptFlow `run_id`. Registering the same pair again preserves the existing
+reference and refreshes it. If the initial fetch fails, the reference remains registered
+for a later retry. `list` fetches every registered run; `view` fetches one. There is no
+watching loop. Registration does not start or adopt execution of the workflow.
+
+References and last successful raw snapshots live in
+`<settings.data_dir>/scriptflow/<reference-id>.json`, separate from legacy run storage.
+A failed fetch preserves the last successful snapshot and its fetch timestamp. It records
+an observation problem instead of changing the workflow state. Local filesystem errors
+are reported; the remote record remains authoritative.
+
+JSON `view`/`register` results have `reference_id`, `backend`, `run_directory`, `workflow`,
+and `observation`. `list --json` returns an array of the same shape.
+
+- `workflow`: schema-1 projection with run ID, flow, state, error, cleanup flag, timestamps,
+  host, working directory, and task/attempt records. It is null until the first successful
+  fetch. Attempt exit codes and errors can be null if absent from the remote record.
+- `observation`: `status`, `heartbeat_age_seconds`, `stale`, `last_successful_fetch`,
+  `last_fetch_at`, `last_fetch_failed`, and `error`. Status is `fresh` or `stale` after a
+  successful fetch, or an observation problem such as `unreachable`, `missing`, `malformed`,
+  `unsupported_version`, or `unsafe_path`. Heartbeat age is clamped to zero for future
+  timestamps. Stale means a nonterminal heartbeat older than 30 seconds; terminal runs
+  are never heartbeat-stale, even if cleanup is pending. Fetch failures remain separate.
+
+Logs default to the last attempt in the task's `attempts` array. `--attempt` selects its
+1-based position; `--tail N` returns the final N lines (zero returns none). Without `--tail`,
+the entire log is read. `logs --json` adds `task_id`, `attempt`, and `content` to the view
+shape. A log error is separate (`log_error`) and does not change a successful record fetch.
+Log retrieval refreshes the record first and refuses to use cached paths after a failed
+refresh. A task without attempts or a log path returns an error.
+
+Only absolute paths inside the registered directory are readable. Both record and log
+reads check remote canonical paths with `realpath -e` before using `cat` or `tail`, so a
+symlink to a file outside the directory is refused. The remote host must provide these
+basic utilities. Use the canonical run directory if symlink aliases would make absolute
+log paths appear outside it. Output paths are displayed in JSON but never fetched.
+
+Exit codes: 0 means the observation/read succeeded (including a stale heartbeat or a
+workflow that reported failure); 1 means an observation, reference, configuration, cache,
+or log error; 2 is argument-parser usage failure. Thus observation exit status is not a
+workflow completion verdict. On errors, JSON output includes cached workflow evidence
+when available; command-level errors instead return `error` and `kind`.

@@ -53,7 +53,7 @@ description: >-
   status; tail or inspect job logs; debug a failed run; manage software
   stacks (venv, Conda, Julia); probe the result cache (would this task
   be a cache hit?); fetch a task's provenance manifest (input/output
-  hashes); or estimate compute costs.
+  hashes); observe independently started ScriptFlow runs; or estimate compute costs.
 ---
 
 {_marker_line()}
@@ -77,6 +77,15 @@ scripthut agent prompt
 It prints the full CLI reference **plus a live inventory** of the
 backends, sources, and stacks configured for this project. Everything
 below is a condensed reminder, not a substitute.
+
+## Standalone ScriptFlow observation
+
+For a run started with ScriptFlow, use `scripthut scriptflow register --backend <name>
+--run-dir <absolute-run-dir> --json`, then `scripthut scriptflow view <reference-id> --json`
+or `scripthut scriptflow logs <reference-id> <task-id> --tail 50`. Registration returns the
+reference ID. These commands use local configuration and file transport, not the daemon
+or API. Preserve the distinction between workflow outcome and stale/unreachable observation.
+Do not submit, retry or cancel ScriptFlow tasks through the legacy commands below.
 
 ## Core loop — verify, then submit
 

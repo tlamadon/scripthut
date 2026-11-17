@@ -28,6 +28,24 @@ ScriptHut runs your compute workflows the way GitHub Actions runs CI — declara
 
 See [scripthut-examples](https://github.com/thomaswiemann/scripthut-examples) for complete, self-contained workflow examples in R, Python, Julia, and Apptainer.
 
+## Observe an existing ScriptFlow run
+
+ScriptFlow workflows started by hand can be registered and inspected without giving
+ScriptHut ownership of their tasks:
+
+```bash
+scripthut scriptflow register --backend hpc --run-dir /data/project/.sf/runs/example-run --json
+scripthut scriptflow list
+scripthut scriptflow view <reference-id> --json
+scripthut scriptflow logs <reference-id> <task-id> --tail 50
+```
+
+Use the reference ID returned by registration. These commands use local backend
+configuration and read remote files through the existing SSH transport; they do not
+use the web API, start a daemon, or launch/cancel jobs. Workflow state and observation
+freshness are reported separately. See [ScriptFlow CLI](docs/cli.md#scriptflow--observe-existing-runs)
+for caching, attempt selection, path restrictions and exit codes.
+
 ## Installation
 
 ```bash

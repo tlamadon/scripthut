@@ -1841,6 +1841,20 @@ def _render_agent_prompt(config: ScriptHutConfig | None) -> str:
         "(`SCRIPTHUT_SERVER` set), live tracking works.\n"
     )
 
+    out.append("## Observing standalone ScriptFlow runs\n")
+    out.append(
+        "Use `scripthut scriptflow register --backend <name> --run-dir <absolute-run-dir> --json`, "
+        "then `scripthut scriptflow list`, `scripthut scriptflow view <reference-id> --json`, or "
+        "`scripthut scriptflow logs <reference-id> <task-id> --attempt 1 --tail 50`. "
+        "The register result supplies the reference ID; it differs from the ScriptFlow run ID. "
+        "These commands read files via the local backend configuration, without the server, "
+        "daemon, or legacy run manager. They accept --config and --json, not --server. "
+        "Keep workflow state separate from observation freshness; a fetch failure preserves "
+        "cached state. Exit 1 reports an observation/log error, not a workflow failure. "
+        "Do not route ScriptFlow tasks through task run, run cancel, or run rerun; "
+        "ScriptFlow owns execution.\n"
+    )
+
     out.append("## Typical agent loop — verify, then submit\n")
     out.append(
         "Always do the verify phase first; submitting blind to a backend "
@@ -3950,6 +3964,10 @@ def build_parser() -> argparse.ArgumentParser:
         description="ScriptHut CLI — manage workflows and runs",
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
+
+    from scripthut.scriptflow_cli import add_parser as add_scriptflow_parser
+
+    add_scriptflow_parser(sub, _add_daemon_common)
 
     # ----- workflow ---------------------------------------------------------
     p_wf = sub.add_parser("workflow", help="Run source workflows")
