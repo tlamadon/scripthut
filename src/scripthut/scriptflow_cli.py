@@ -34,15 +34,45 @@ def add_parser(
 ) -> None:
     group = sub.add_parser("scriptflow", help="Observe ScriptFlow runs and request cancellation")
     verbs = group.add_subparsers(dest="scriptflow_cmd", required=True)
-    for verb in ("register", "list", "view", "logs", "unregister", "cancel"):
+    for verb in (
+        "register",
+        "list",
+        "view",
+        "logs",
+        "unregister",
+        "cancel",
+        "launch",
+        "cleanup",
+        "release",
+        "discover",
+    ):
         parser = verbs.add_parser(verb)
         add_common(parser)
         parser.add_argument("--verbose", action="store_true", help="Show transport logging")
+        if verb in ("launch", "discover"):
+            parser.add_argument("--backend", required=True)
+            parser.add_argument("--workdir", required=True)
+            parser.add_argument("--runs-dir")
+        if verb == "launch":
+            parser.add_argument("--flow", required=True)
+            parser.add_argument("--run-id")
+            parser.add_argument("--cpus", type=int)
+            for resource in ("memory", "time-limit", "partition"):
+                parser.add_argument("--" + resource)
+            parser.add_argument("--resubmit-ambiguous", action="store_true")
+        if verb == "discover":
+            parser.add_argument("--register", action="store_true")
+        if verb == "release":
+            parser.add_argument("--force", action="store_true")
         if verb == "register":
             parser.add_argument("--backend", required=True)
             parser.add_argument("--run-dir", required=True, help="Absolute remote run directory")
-        elif verb in ("view", "logs", "unregister", "cancel"):
+        elif verb in ("view", "logs", "unregister", "cancel", "cleanup", "release"):
             parser.add_argument("reference", help="Reference ID printed by register or list")
+        if verb == "cleanup":
+            parser.add_argument(
+                "--wait", type=int, default=180, help="Result wait seconds (default 180)"
+            )
         if verb == "cancel":
             parser.add_argument(
                 "--wait", nargs="?", type=int, const=180, help="Wait up to SECONDS (default 180)"
@@ -59,15 +89,23 @@ def add_parser(
 def format_view(data: dict[str, Any]) -> str:
     workflow = data["workflow"]
     observation = data["observation"]
+    state = workflow["state"] if workflow else data.get("workflow_status", "unavailable")
     lines = [
         f"Reference {data['reference_id']} ({data['backend']})",
         f"  directory: {data['run_directory']}",
-        f"  workflow: {workflow['state'] if workflow else 'unavailable'}",
+        f"  workflow: {state}",
         f"  observation: {observation['status']}",
         f"  cancellation requested: {data['cancellation']['requested']}",
         f"  last successful fetch: {observation['last_successful_fetch'] or 'never'}",
         f"  heartbeat age: {observation['heartbeat_age_seconds']} seconds",
     ]
+    if data.get("controller"):
+        lines.append(
+            f"  controller: {data['controller']['state']} "
+            f"(observed {data['controller']['observed_at']})"
+        )
+        if data.get("controller_notice"):
+            lines.append("  " + data["controller_notice"])
     if observation["error"]:
         lines.append(f"  observation error: {observation['error']}")
     if workflow:
@@ -111,6 +149,18 @@ async def observe(
         client = _ssh_client_for(backend)
         reader = RecordReader(client)
         await reader.fetch(cached)
+        if cached.launch_key:
+            from scripthut.scriptflow_launch import (
+                ControllerBackend,
+                LaunchStore,
+                controller_observation,
+            )
+
+            launch = await LaunchStore(store.directory).get(cached.launch_key)
+            if launch:
+                cached.controller = await controller_observation(
+                    ControllerBackend(client), reader, launch
+                )
         await store.save(cached)
         fetched = True
         data = cached.projection()
@@ -128,6 +178,12 @@ async def observe(
             data = cached.projection()
             data["log_error"] = {"kind": exc.kind, "message": str(exc)}
             return data, True
+        if cached.launch_key:
+            cached.controller = {
+                "state": "unknown",
+                "observed_at": datetime.now(UTC).isoformat(),
+                "error": str(exc),
+            }
         cached.last_fetch_failed = True
         cached.last_fetch_at = datetime.now(UTC)
         cached.problem = exc.kind
@@ -211,7 +267,7 @@ async def handle(args: argparse.Namespace) -> int:
     for name in names:
         logging.getLogger(name).setLevel(logging.DEBUG if args.verbose else logging.WARNING)
     try:
-        if args.scriptflow_cmd == "cancel" and args.wait is not None and args.wait < 0:
+        if args.scriptflow_cmd in ("cancel", "cleanup") and args.wait is not None and args.wait < 0:
             raise ObservationError("invalid_wait", "Wait must be nonnegative")
         if args.scriptflow_cmd == "logs":
             if args.attempt is not None and args.attempt < 1:
@@ -220,6 +276,26 @@ async def handle(args: argparse.Namespace) -> int:
                 raise ObservationError("invalid_tail", "Tail must be nonnegative")
         config = load_config(args.config)
         store = ReferenceStore(config.settings.data_dir_resolved / "scriptflow")
+        if args.scriptflow_cmd in ("launch", "cleanup", "release", "discover"):
+            data = await handle_controller(config, store, args)
+            if args.json:
+                print(json.dumps(data, indent=2))
+            elif isinstance(data, list):
+                for item in data:
+                    workflow = item["workflow"] or {}
+                    print(
+                        item["run_id"],
+                        workflow.get("state", "unavailable"),
+                        workflow.get("flow", "-"),
+                        item["observation"]["status"],
+                    )
+            else:
+                for key, value in data.items():
+                    print(f"{key}: {value}")
+            return int(
+                isinstance(data, dict)
+                and data.get("status") in ("ambiguous", "unknown", "failed", "pending")
+            )
         if args.scriptflow_cmd == "unregister":
             await store.unregister(args.reference)
             if args.json:
@@ -249,16 +325,21 @@ async def handle(args: argparse.Namespace) -> int:
         elif args.scriptflow_cmd == "list":
             print(
                 "REFERENCE                         BACKEND          WORKFLOW       "
-                "OBSERVATION       CANCEL REQUESTED"
+                "OBSERVATION       CANCEL REQUESTED  CONTROLLER"
             )
             for data, _ in results:
                 workflow = data["workflow"]
-                state = workflow["state"] if workflow else "unavailable"
+                state = (
+                    workflow["state"] if workflow else data.get("workflow_status", "unavailable")
+                )
                 print(
                     f"{data['reference_id']}  {data['backend']:<15}  "
                     f"{state:<13}  {data['observation']['status']:<16}  "
-                    f"{data['cancellation']['requested']}"
+                    f"{data['cancellation']['requested']}  "
+                    f"{(data.get('controller') or {}).get('state', '-')}"
                 )
+                if data.get("controller_notice"):
+                    print("  " + data["controller_notice"])
         elif args.scriptflow_cmd == "logs" and not failed:
             sys.stdout.write(results[0][0]["content"])
         else:
@@ -277,3 +358,62 @@ async def handle(args: argparse.Namespace) -> int:
     finally:
         for name, level in levels.items():
             logging.getLogger(name).setLevel(level)
+
+
+async def handle_controller(
+    config: ScriptHutConfig, store: ReferenceStore, args: argparse.Namespace
+) -> Any:
+    from scripthut.cli import _ssh_client_for
+    from scripthut.scriptflow_launch import (
+        ControllerBackend,
+        backend_config,
+        control,
+        discover,
+        launch_run,
+        make_launch,
+    )
+
+    cached = None
+    proposed = None
+    if args.scriptflow_cmd == "launch":
+        proposed = make_launch(config, args)
+        name = proposed.backend
+    elif args.scriptflow_cmd == "discover":
+        name = args.backend
+    else:
+        cached = await store.get(args.reference)
+        name = cached.reference.backend
+    settings = backend_config(config, name)
+    client = _ssh_client_for(settings)
+    backend = ControllerBackend(client)
+    reader = RecordReader(client)
+    try:
+        if proposed:
+            return await launch_run(
+                config, proposed, store, backend, reader, args.resubmit_ambiguous
+            )
+        if args.scriptflow_cmd == "discover":
+            return await discover(reader, store, name, args.workdir, args.runs_dir, args.register)
+        assert cached is not None
+        deadline = time.monotonic() + getattr(args, "wait", 0)
+        result = await control(
+            config,
+            cached,
+            store,
+            backend,
+            reader,
+            args.scriptflow_cmd,
+            getattr(args, "force", False),
+        )
+        while args.scriptflow_cmd == "cleanup" and result["status"] == "pending":
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            await asyncio.sleep(min(2, remaining))
+            result = await control(config, cached, store, backend, reader, "cleanup")
+        return result
+    finally:
+        try:
+            await client.disconnect()
+        except Exception:
+            logger.warning("ScriptFlow controller channel did not close cleanly")

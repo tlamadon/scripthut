@@ -148,3 +148,34 @@ workflows:
 ```
 
 The same workflow definition, ported to a different backend (e.g. by adding a second `train-anvil` workflow that points to `anvil`), gets the right module loads automatically — no per-backend duplication of the workflow.
+
+
+## ScriptFlow controllers
+
+The top-level `scriptflow:` section supplies Slurm controller defaults. Its `env_group`
+must exist on the selected backend; a missing group is rejected before any remote effect.
+Backend environment rules are resolved first, followed by the selected group's rules,
+using the existing environment resolver. Activation is configuration, not application code.
+
+```yaml
+backends:
+  - name: hpc
+    type: slurm
+    ssh:
+      host: hpc-cluster.example.edu
+      user: alice
+    env_groups:
+      scriptflow-runtime:
+        - init: source /data/venv/bin/activate
+scriptflow:
+  env_group: scriptflow-runtime
+  cpus: 1
+  memory: 2G
+  time_limit: "01:00:00"
+  partition: null
+```
+
+`cpus` must be positive; memory and time use scheduler resource syntax. Resource fields
+can be overridden by `scriptflow launch`. An omitted section leaves observation usable;
+launch requires an explicit environment group. The working directory must already exist,
+and the workflow's own task-job resource settings remain exclusively ScriptFlow's concern.

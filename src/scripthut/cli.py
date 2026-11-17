@@ -1855,9 +1855,18 @@ def _render_agent_prompt(config: ScriptHutConfig | None) -> str:
         "ScriptFlow owns execution. Use `scripthut scriptflow cancel <reference-id> --wait --json` "
         "to write its cancellation request and wait up to 180 seconds. Only terminal state with "
         "cleanup_pending false confirms completion; stale/unreachable is an observation problem. "
-        "No cleanup or scheduler cancellation is performed. Use `scripthut scriptflow unregister "
+        "Cancel performs no cleanup or scheduler cancellation. Use `scripthut scriptflow unregister "
         "<reference-id>` to remove only local cache. Logs also accept a unique task name; IDs win. "
-        "List exits 0 despite individual observation errors. Use --verbose for SSH detail.\n"
+        "List exits 0 despite individual observation errors. Use --verbose for SSH detail. "
+        "Launch via `scripthut scriptflow launch --backend <name> --workdir <absolute-path> "
+        "--flow <flow> --run-id <id> --json`; configure scriptflow.env_group on the backend. "
+        "Repeated options reuse the durable launch record; unknown/ambiguous submission must "
+        "be reconciled, never blindly retried. --resubmit-ambiguous is an explicit override. "
+        "`scripthut scriptflow discover --backend <name> --workdir <path> --register` imports references. "
+        "`scripthut scriptflow cleanup <reference-id>` runs cleanup in a compute job only after the "
+        "owned controller is confirmed ended. `scripthut scriptflow release <reference-id>` cancels "
+        "only that controller, gated on workflow cleanup unless --force is explicit. "
+        "Controller expiry leaves task jobs running. Keep controller/workflow/freshness separate.\n"
     )
 
     out.append("## Typical agent loop — verify, then submit\n")

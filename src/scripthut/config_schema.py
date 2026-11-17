@@ -581,6 +581,16 @@ SourceConfig = Annotated[
 ]
 
 
+class ScriptFlowConfig(BaseModel):
+    """Compute-job defaults for standalone ScriptFlow controllers."""
+
+    env_group: str | None = Field(default=None, min_length=1)
+    cpus: int = Field(default=1, ge=1)
+    memory: str = Field(default="2G", pattern=r"^[1-9][0-9]*[KMGTP]?$")
+    time_limit: str = Field(default="01:00:00", pattern=r"^[0-9]+(?:-[0-9]+)?(?::[0-9]+){0,2}$")
+    partition: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_.-]+$")
+
+
 class AgentConfig(BaseModel):
     """Defaults for launching a Claude Code coding-agent job on a git source.
 
@@ -920,6 +930,7 @@ class ScriptHutConfig(BaseModel):
         default_factory=list,
         description="Reusable software stacks (Python venv, Julia depot, etc.) installed once per backend",
     )
+    scriptflow: ScriptFlowConfig = Field(default_factory=ScriptFlowConfig)
     agent: AgentConfig = Field(
         default_factory=AgentConfig,
         description="Defaults for launching Claude coding-agent jobs on git sources",

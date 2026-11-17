@@ -360,8 +360,8 @@ Without `--exit-status`, `run watch` always returns 0 once the run reaches a ter
 
 ## `scriptflow` — observe existing runs
 
-These commands observe ScriptFlow runs already started independently and can request
-cancellation through ScriptFlow’s file protocol. They use
+ScriptFlow commands observe independently started runs, launch Slurm controllers, and
+request cancellation through ScriptFlow’s file protocol. They use
 local configuration and command transport directly, without initializing the legacy
 run manager or starting a daemon. They do not use the API, web UI, or background polling.
 The configured backend must be Slurm or PBS with SSH file access.
@@ -479,8 +479,8 @@ JSON includes `cancel_result.status` and `cancel_result.message` alongside the n
 | `unreachable` | Record unreadable or request acknowledgement unavailable | 1 |
 
 For a stale controller, the message asks the user to run `scriptflow cleanup <run-id>`
-on the cluster in the appropriate environment. ScriptHut performs no cleanup or allocation
-release. Observation errors are never converted into workflow outcomes.
+on the cluster in the appropriate environment. The cancel command performs no cleanup or
+controller release; explicit controller commands are described below. Observation errors are never converted into workflow outcomes.
 
 View and list report `cancellation.requested` (the last observed existence of `cancel.json`,
 or null before a successful read). Existence is fetched in the same command as `run.json`.
@@ -488,3 +488,94 @@ or null before a successful read). Existence is fetched in the same command as `
 request, not the original timestamp of a request created elsewhere; it is null if this
 client has only observed it. Both fields are cached evidence on fetch failure; consult
 `observation` for freshness. Unregistering discards this local history.
+
+
+### Automated Slurm launch
+
+Configure a backend-local environment group and controller defaults (see
+[`scriptflow` configuration](configuration/environments.md#scriptflow-controllers)):
+
+```bash
+scripthut scriptflow launch --backend hpc --workdir /data/project --flow analysis --run-id example-run --json
+```
+
+Options: `--runs-dir /absolute/path` (default `<workdir>/.sf/runs`), `--cpus`, `--memory`,
+`--time-limit`, `--partition`. `--run-id` is optional. Backend-local `env_group` comes
+from `scriptflow:` configuration; environment rules execute only in the compute job.
+Automated launch/cleanup/release currently require Slurm. Existing read/cancel support
+for PBS is unchanged. The project and environment must already exist on shared storage.
+
+Before any remote operation, ScriptHut saves a durable launch record under
+`<settings.data_dir>/scriptflow/launches/`. The batch script applies the environment,
+changes directory, refuses an existing run directory, writes a receipt outside that
+directory, starts detached tmux on a private socket, and waits until the session exits.
+The receipt records controller job ID, host, session, start time and ScriptFlow exit code.
+The batch job exits when ScriptFlow exits; it does not leave an interactive fallback shell.
+
+Launch output contains `status`, `request_id`, `reference_id`, `run_id`, `job_id` and
+`attach_hint`. An acknowledged launch exits 0. The attach hint applies on the compute
+node. ScriptHut disconnecting does not terminate the batch job or tmux session.
+
+Repeating the same default-ID invocation reuses its saved request. To start another
+workflow, pass a new explicit `--run-id`. Repeating an explicit ID also reuses the saved
+request; conflicting flow, working directory or resources are refused. Keep the local
+store: it contains the submission/reconciliation history. A local lock prevents concurrent
+launch commands from submitting the same request twice.
+
+A lost submission acknowledgement is `ambiguous` (exit 1). Repeat the original launch
+command to reconcile its unique controller name against checked queue/accounting listings
+and its receipt. Exactly one matching ID is adopted. Multiple IDs or failed queries are
+errors; an empty successful listing remains ambiguous, never proof of nonexistence.
+`--resubmit-ambiguous` explicitly permits another submission after empty reconciliation.
+It never overrides a failed query or multiple matches. A persistent per-run claim outside
+the run directory prevents two controller scripts from executing the same run, including
+a late original submission. Claim removal/recovery is not automated.
+
+View/list add controller state (`queued`, `running`, `ended`, `unknown`) and observation
+time independently of workflow state and record freshness. Missing run.json before first
+observation is displayed as `not started`, with the file observation problem still visible.
+An absent scheduler entry is unknown. If a controller ends while the workflow remains
+running with a stale heartbeat, `controller_notice` names explicit cleanup as the next step.
+Task jobs are left running. No failure/success is invented from stale or unreachable data.
+
+### Explicit cleanup and controller release
+
+```bash
+scripthut scriptflow cleanup <reference-id> --json
+scripthut scriptflow cleanup <reference-id> --wait 0 --json
+scripthut scriptflow release <reference-id> --json
+scripthut scriptflow release <reference-id> --force --json
+```
+
+Cleanup requires a locally owned controller confirmed ended, and refuses queued, running
+or unknown controller state. It submits a five-minute batch job with the saved environment
+group/resources that runs `scriptflow cleanup <run-id> --runs-dir <runs-dir>` on a compute
+node. It waits up to 180 seconds by default for a receipt; `--wait N` changes that budget.
+Result status is `completed` (exit 0), `failed` (exit 1), or `pending` (exit 1). Repeat the
+command to observe an existing cleanup job; uncertain submissions are never automatically
+retried. After a failed cleanup result has been reported, a subsequent explicit cleanup
+invocation submits a fresh attempt. A failed cleanup may leave unconfirmed task jobs; no scheduler operations are
+performed on their IDs by ScriptHut. Cleanup of manually registered runs is refused because
+controller ownership is unknown. No cleanup is automatic.
+
+Release cancels only the saved controller job ID. It requires a freshly read terminal
+workflow with `cleanup_pending: false`, unless `--force` explicitly overrides that gate.
+The scheduler cancellation exit status is checked. `release_requested` confirms that
+command succeeded, not that task cleanup happened. Normally release is unnecessary because
+the controller job ends by itself. Neither release nor expiry cancels ScriptFlow task jobs.
+
+### Discover existing runs
+
+```bash
+scripthut scriptflow discover --backend hpc --workdir /data/project --json
+scripthut scriptflow discover --backend hpc --workdir /data/project --runs-dir /data/runs --register --json
+```
+
+Remote discovery is read-only: plain shell lists non-hidden run directories by directory
+modification time, newest first, and the record reader parses their run.json locally.
+Unreadable or unsupported records remain listed with their problem. An empty directory
+returns an empty list (exit 0); a missing runs directory returns an error (exit 1).
+`--register` saves only previously unregistered references and snapshots, preserving existing
+cache/ownership information. Discovery does not adopt controller ownership from receipts.
+GNU-compatible `find -printf`, `sort -z`, `realpath`, and Bash are required on the login host;
+Bash, tmux and the configured ScriptFlow environment are required on compute nodes.

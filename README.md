@@ -28,12 +28,14 @@ ScriptHut runs your compute workflows the way GitHub Actions runs CI — declara
 
 See [scripthut-examples](https://github.com/thomaswiemann/scripthut-examples) for complete, self-contained workflow examples in R, Python, Julia, and Apptainer.
 
-## Observe an existing ScriptFlow run
+## ScriptFlow runs
 
-ScriptFlow workflows started by hand can be registered and inspected without giving
-ScriptHut ownership of their tasks:
+ScriptFlow workflows started by hand can be registered and inspected. ScriptHut can
+also launch a controller in a Slurm batch job; ScriptFlow owns all workflow tasks.
+Configure `scriptflow.env_group` on the selected backend before launching:
 
 ```bash
+scripthut scriptflow launch --backend hpc --workdir /data/project --flow analysis --run-id example-run --json
 scripthut scriptflow register --backend hpc --run-dir /data/project/.sf/runs/example-run --json
 scripthut scriptflow list
 scripthut scriptflow view <reference-id> --json
@@ -45,7 +47,9 @@ scripthut scriptflow unregister <reference-id>
 Use the reference ID returned by registration. These commands use local backend
 configuration and read remote files through the existing SSH transport; they do not
 use the web API, start a daemon, or directly control task jobs. Cancellation writes a
-request file for ScriptFlow to process; unregister removes only the local cache. Workflow state and observation
+request file for ScriptFlow to process; unregister removes only the local cache.
+`scriptflow discover` finds existing runs. Explicit `cleanup` runs in a short compute
+job; `release` targets only the owned controller, never task jobs. Workflow state and observation
 freshness are reported separately. See [ScriptFlow CLI](docs/cli.md#scriptflow--observe-existing-runs)
 for caching, attempt selection, path restrictions and exit codes.
 

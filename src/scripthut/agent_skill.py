@@ -54,7 +54,8 @@ description: >-
   stacks (venv, Conda, Julia); probe the result cache (would this task
   be a cache hit?); fetch a task's provenance manifest (input/output
   hashes); observe or request cancellation of independently started ScriptFlow
-  runs; or estimate compute costs.
+  runs; launch their Slurm controllers; discover runs; request explicit cleanup
+  or controller release; or estimate compute costs.
 ---
 
 {_marker_line()}
@@ -88,11 +89,20 @@ reference ID. These commands use local configuration and file transport, not the
 or API. Preserve the distinction between workflow outcome and stale/unreachable observation.
 Use `scripthut scriptflow cancel <reference-id> --wait --json` to request cancellation
 through its file protocol; only terminal state with cleanup complete confirms it.
-A stale controller requires user-run cleanup on the cluster; no cleanup is automated.
+For owned controllers confirmed ended, `scripthut scriptflow cleanup <reference-id>`
+explicitly submits a compute cleanup job; cleanup is never automatic.
 Use `scripthut scriptflow unregister <reference-id>` to remove only the local cache.
 Logs accept a unique task name or ID (IDs win); list exits 0 with per-reference problems.
 Use `--verbose` for SSH detail. Do not submit, retry or cancel ScriptFlow tasks through
 the legacy commands below.
+
+Launch with `scripthut scriptflow launch --backend <name> --workdir <path> --flow <flow>
+--run-id <id> --json` after configuring `scriptflow.env_group` on that backend. Repeated
+options reuse a durable request. Reconcile ambiguous submissions; do not blindly resubmit.
+Discover with `scripthut scriptflow discover --backend <name> --workdir <path> --register`.
+`scripthut scriptflow release <reference-id>` targets only the owned controller, gated on
+terminal workflow and complete cleanup unless `--force` is explicit. Controller expiry
+leaves task jobs running; controller state, workflow state and freshness stay separate.
 
 ## Core loop — verify, then submit
 

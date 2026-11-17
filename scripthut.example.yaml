@@ -330,3 +330,14 @@ settings:
 #     "outputs": ["models/model.pt"],                   # restored on a hit
 #     "cache":   true                                   # default; false opts out
 #   }
+
+# Standalone ScriptFlow controller jobs (Slurm).
+# Define this group on the chosen backend under env_groups:
+#   scriptflow-runtime:
+#     - init: source /data/venv/bin/activate
+scriptflow:
+  env_group: scriptflow-runtime
+  cpus: 1
+  memory: 2G
+  time_limit: "01:00:00"
+  partition: null
