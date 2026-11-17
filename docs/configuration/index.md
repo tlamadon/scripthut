@@ -1,201 +1,59 @@
-# YAML Configuration
+# Configuration
 
-ScriptHut is configured via one or two `scripthut.yaml` files. The simplest setup is a single file in the current directory; the recommended setup for day-to-day use is **two layers**: a user-global file for your infrastructure and a project-local file for each repo's workflows and stacks. See [From a project](../from-a-project.md) for the layered model end-to-end.
+Use `scripthut --config scripthut.yaml` or pass `--config` after a CLI subcommand.
+Without an explicit path, ScriptHut discovers the user-global file
+`~/.config/scripthut/scripthut.yaml` (or `~/.scripthut.yaml`) and a project
+`scripthut.yaml` by walking up from the working directory. When both exist,
+project `env` rules append to global rules and project `env_groups` override
+names. Infrastructure belongs in the global file. The deprecated `.env` fallback
+still supports a single SSH backend when no YAML exists.
 
-The configuration file has the following top-level sections:
+## Sections
 
-```yaml
-backends: [...]       # Remote compute backends (Slurm, PBS, AWS Batch, AWS EC2)
-sources: [...]        # Git remotes, local git repos, or backend paths carrying workflow JSON
-workflows: [...]      # Task generators (SSH commands returning JSON)
-stacks: [...]         # Reusable software environments installed once per backend
-env: [...]            # Server-level env rules (see Environments)
-env_groups: {...}     # Named, reusable rule lists
-pricing: {...}        # EC2-equivalent cost estimation
-settings: {...}       # Global application settings
-```
+| Section | Purpose |
+|---|---|
+| `backends` | Named Slurm or PBS SSH connections; see [backends](backends.md) |
+| `sources` | Git remote/local repository metadata, deploy keys, clone directory and postclone; path sources describe an existing backend directory |
+| `env`, `env_groups` | Environment rules and reusable groups; see [environments](environments.md) |
+| `scriptflow` | Controller `env_group`, `cpus`, `memory`, `time_limit`, optional `partition` |
+| `settings` | Server, polling, local state and CLI connection defaults |
 
-Both `env:` and `env_groups:` can also appear inside individual backend and workflow entries — see [Environments](environments.md).
-
-All sections are optional and default to empty lists or sensible defaults.
-
-This page covers the small top-level concerns — file lookup, pricing, settings, and a complete example. The substantial sections each have their own page:
-
-- [Backends](backends.md) — Slurm, PBS, AWS Batch, AWS EC2, SSH config
-- [Workflows](workflows.md) — workflows (incl. git) and sources
-- [Environments](environments.md) — the env-rule resolver and `env_groups`
-- [Stacks](stacks.md) — reusable software environments (Python/Julia/Conda…)
-
----
-
-## Configuration File Lookup
-
-ScriptHut supports a layered model: a user-global file for infrastructure and an optional project-local file at the repo root. Both are optional; if only one exists, behavior matches the single-file setup.
-
-Resolution order:
-
-1. **Explicit path** via `--config <path>` — loads exactly that file with no merging.
-2. **User-global config** at `~/.config/scripthut/scripthut.yaml` (or the legacy `~/.scripthut.yaml`).
-3. **Project-local config** found by walking up from the current working directory until a `scripthut.yaml` (or `.yml`) is hit.
-4. **Merge** when both 2 and 3 exist: project-local overrides global by name in `stacks` / `workflows`, env lists concatenate (global first), and `env_groups` dict-merge. Infrastructure fields (`backends`, `sources`, `settings`, `pricing`) come strictly from the global file and are **rejected** in a project-local file.
-5. **Legacy `.env`** fallback if no YAML is found anywhere (deprecated).
-
-All path fields (e.g., `key_path`, `data_dir`, `deploy_key`, `input_files`) support `~` expansion. Relative paths inside a YAML are resolved against **that file's directory**, not the process CWD — so a project-local `input_files: [requirements.txt]` always refers to the project's `requirements.txt`, regardless of where the CLI was invoked from.
-
-See [From a project](../from-a-project.md) for a full walkthrough of how the two layers compose in practice.
-
----
-
-## Pricing
-
-Optional EC2-equivalent cost estimation. Maps scheduler partitions to EC2 instance types and fetches pricing data from `instances.vantage.sh`.
-
-```yaml
-pricing:
-  region: us-east-1
-  price_type: spot_avg
-  partitions:
-    standard: c5.xlarge
-    gpu: p3.2xlarge
-    highmem: r5.4xlarge
-```
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `region` | string | `"us-east-1"` | AWS region for pricing lookup. |
-| `price_type` | string | `"ondemand"` | Pricing type. One of: `ondemand`, `spot_avg`, `spot_min`, `spot_max`. |
-| `partitions` | object | `{}` | Mapping of scheduler partition names to EC2 instance types. |
-
-Cost estimates appear in the UI when tasks specify a `partition` that has a mapping defined here.
-
----
+`scriptflow.env_group` must name an environment group on the selected backend.
+Launch options can override resources. Configuration does not install ScriptFlow.
 
 ## Settings
 
-Global application settings that control server behavior and data storage.
+| Key | Default | Purpose |
+|---|---|---|
+| `poll_interval` | 60 | Single polling loop interval in seconds, minimum 5 |
+| `server_host` | `127.0.0.1` | Bind address |
+| `server_port` | 8000 | Bind port |
+| `data_dir` | `~/.cache/scripthut` | ScriptFlow references, cached observations and launch records |
+| `sources_cache_dir` | `<data_dir>/sources` | Local git source clones |
+| `filter_user` | unset | Scheduler job listing filter |
+| `cli_server` | unset | Default API server; command flag and environment take precedence |
+| `cli_auth` | unset | Cloudflare Access service-token/JWT credentials |
+| `cli_autostart` | `ask` | Local daemon startup policy: ask, always or never |
 
-```yaml
-settings:
-  poll_interval: 60
-  server_host: 127.0.0.1
-  server_port: 8000
-  data_dir: ~/.cache/scripthut
-  sources_cache_dir: ~/.cache/scripthut/sources
-  filter_user: your_username
-```
+See the repository's `scripthut.example.yaml` for a complete placeholder config.
+Backend changes require server restart. Settings/environment/source metadata can
+be reloaded through the settings page; no reload submits tasks.
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `legacy_runs_enabled` | boolean | `true` | Enable legacy run storage, execution and routes. Restart required when changing. |
-| `poll_interval` | integer | `60` | Interval in seconds between job status polls. Minimum: 5. |
-| `server_host` | string | `"127.0.0.1"` | Host to bind the web server to. Use `0.0.0.0` to listen on all interfaces. |
-| `server_port` | integer | `8000` | Port to bind the web server to. |
-| `data_dir` | path | `~/.cache/scripthut` | Base directory for all stored data (run history, logs, `usage.jsonl`). |
-| `sources_cache_dir` | path | `<data_dir>/sources` | Directory to cache cloned repositories. Unused by sources with `local_path` — those are read in place. |
-| `filter_user` | string | `null` | Default username for the "My Jobs" filter in the UI. If `null`, all users' jobs are shown. |
-| `cli_server` | string | `null` | Default URL of a running scripthut server for the CLI. Overridden by `--server` and `SCRIPTHUT_SERVER`. See [CLI](../cli.md). |
-| `cli_autostart` | `ask` / `always` / `never` | `"ask"` | What the CLI does when no server is configured and no local daemon is running: prompt on a TTY, start one without asking, or fail with guidance. See [CLI § Local daemon](../cli.md#local-daemon). |
+## Obsolete keys: errors, never ignored
 
----
+Every detected obsolete key causes a validation error. One message lists all
+detected keys, with indexed paths for nested settings. Remove them and retry;
+there is no compatibility mode or `legacy_runs_enabled` switch.
 
-## Complete Example
+- Top-level: `cache`, `stacks`, `agent`, `pricing`, `projects`, `workflows`,
+  `notifications`, `disk`.
+- Settings: `legacy_runs_enabled`.
+- Backend entries: `max_concurrent`; backend types other than `slurm` and `pbs`
+  are errors, including removed `batch`, `ecs`, `ec2`, `local` and unknown types.
+- Source entries: `workflows_glob`, `max_concurrent`, `workflows`, and the obsolete git-source
+  `backend` selector.
+- Environment rules/groups: `stacks` references. Replace needed activation with
+  an environment group's `init`/`include` rules; ScriptHut does not install stacks.
 
-```yaml
-backends:
-  - name: hpc-cluster
-    type: slurm
-    ssh:
-      host: slurm-login.cluster.edu
-      port: 22
-      user: researcher
-      key_path: ~/.ssh/id_rsa
-    account: pi-faculty
-    login_shell: true
-    max_concurrent: 50
-
-  - name: pbs-cluster
-    type: pbs
-    ssh:
-      host: pbs-login.cluster.edu
-      user: researcher
-      key_path: ~/.ssh/id_rsa
-    queue: batch
-
-sources:
-  - name: ml-jobs
-    type: git
-    url: git@github.com:my-org/ml-pipelines.git
-    branch: main
-    deploy_key: ~/.ssh/ml-deploy-key
-    backend: hpc-cluster
-
-  # Same thing, but the repo is already on this machine: read from the working
-  # tree and pushed to the backend over SSH. No deploy key, no git remote.
-  - name: my-project
-    type: git
-    local_path: ~/git/my-project
-    branch: main
-
-workflows:
-  - name: simple-tasks
-    backend: hpc-cluster
-    command: "python /shared/scripts/generate_tasks.py --count 10"
-    max_concurrent: 5
-    description: "Simple test tasks"
-
-  - name: ml-training
-    backend: hpc-cluster
-    git:
-      repo: git@github.com:my-org/ml-pipelines.git
-      branch: main
-      deploy_key: ~/.ssh/ml-deploy-key
-      clone_dir: ~/scripthut-repos
-    command: "python generate_tasks.py"
-    max_concurrent: 3
-    description: "ML training pipeline from git"
-
-env_groups:
-  julia-env:
-    - set:
-        JULIA_DEPOT_PATH: "/scratch/researcher/julia_depot"
-        JULIA_NUM_THREADS: "8"
-    - init: "module load julia/1.10"
-
-env:
-  - set:
-      LOG_LEVEL: info
-
-pricing:
-  region: us-east-1
-  price_type: spot_avg
-  partitions:
-    normal: c5.xlarge
-    gpu: p3.2xlarge
-
-settings:
-  poll_interval: 30
-  server_host: 127.0.0.1
-  server_port: 8000
-  data_dir: ~/.cache/scripthut
-  filter_user: researcher
-```
-
-
-### ScriptFlow-only server mode
-
-```yaml
-settings:
-  legacy_runs_enabled: false
-```
-
-Start with `scripthut --config scripthut.yaml`, retaining the configured bind address
-and port, then open `/scriptflow`. This mode does not construct or restore legacy run
-storage/management and skips legacy reconciliation/admission/completion. Existing legacy
-run files are left untouched. Legacy run/task/workflow execution routes and the Runs
-navigation link are absent. Legacy disk tools and task-install routes are also unavailable.
-Only SSH backend connections are initialized; generic scheduler/job polling is skipped,
-while ScriptFlow's own observation cycle remains active. Legacy local CLI execution and
-disk operations refuse this setting; ScriptFlow commands remain available.
-
-The default is `true`, preserving all existing behavior. Switching modes requires a server
-restart, not hot reload. This setting does not cancel existing work on any backend.
+Old legacy run records and usage ledgers remain on disk untouched. ScriptHut no
+longer loads or cleans them. The disk inspection/deletion tools themselves are removed.

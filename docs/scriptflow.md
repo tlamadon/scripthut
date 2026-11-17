@@ -2,7 +2,7 @@
 
 The server displays the same ScriptFlow references and cached projections as the CLI,
 using `<settings.data_dir>/scriptflow/`. Use the same config/data directory when registering
-or launching runs with the CLI. These runs never become legacy ScriptHut Run objects.
+or launching runs with the CLI. ScriptFlow remains the execution owner.
 
 Start the server with its existing configuration:
 
@@ -11,7 +11,7 @@ scripthut --config scripthut.yaml
 ```
 
 No bind settings are changed. Use the configured `settings.server_host` and
-`settings.server_port` (defaults `127.0.0.1:8000`). Open `/scriptflow` via the new navigation
+`settings.server_port` (defaults `127.0.0.1:8000`). Open `/scriptflow` via the navigation
 link, then choose a run at `/scriptflow/<reference-id>`.
 
 The list and detail page separate workflow state, observation status and controller state.
@@ -34,8 +34,7 @@ There is no independent polling timer or automatic cleanup/release.
 
 ## JSON API
 
-These routes share the existing API's server/reverse-proxy authentication boundary; this
-phase adds no separate authentication scheme or bind address. Errors use FastAPI's existing
+These routes share the existing API's server/reverse-proxy authentication boundary; ScriptHut adds no separate authentication scheme or bind address. Errors use FastAPI's existing
 `{"detail": ...}` shape. Missing references return 404; unavailable transports/logs return
 503; invalid parameters and unsafe log paths return 422.
 
@@ -57,7 +56,7 @@ and cap remote output and response content at 256 KiB (one extra byte detects tr
 `attempt` is 1-based; `tail` defaults to 200 and accepts 0–10000 lines. Response fields:
 `content`, `attempt`, `truncated`, `max_bytes`. A clipped UTF-8 boundary is omitted.
 
-Cancellation uses H3's file protocol, fetching first and refusing writes on unreadable
+Cancellation uses ScriptFlow's file protocol, fetching first and refusing writes on unreadable
 records. `cancel_result.status` is `requested`, `terminal`, or `unreachable`, with a message.
 These outcomes return HTTP 200; delivery does not imply cleanup is finished. Clients read
 or refresh the run to observe eventual terminal state and `cleanup_pending: false`.
@@ -72,3 +71,7 @@ with a different pattern is refused; use a new run ID.
 Environment activation runs with unset-variable checking disabled, while failure remains
 fatal. Strict `set -eu` resumes after activation. `scriptflow release` on a controller
 confirmed ended reports `already_ended` and “nothing to release” without issuing scancel.
+
+For older controllers, server accounting queries start at the launch date and
+queue queries use the unique controller name. Empty scheduler results or query
+failures remain unknown. Release persists a confirmed ended observation locally.

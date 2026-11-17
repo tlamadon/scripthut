@@ -1,6 +1,6 @@
 site_name: ScriptHut
 site_url: https://tlamadon.github.io/scripthut/
-site_description: Web interface to start and track jobs on remote systems (Slurm, ECS, AWS Batch)
+site_description: ScriptFlow controller launch and observation
 repo_url: https://github.com/tlamadon/scripthut
 repo_name: tlamadon/scripthut
 
@@ -36,7 +36,6 @@ plugins:
       redirect_maps:
         # Old monolithic pages → new sections (after the split)
         'configuration.md': 'configuration/index.md'
-        'task-json.md': 'task-json/index.md'
 
 markdown_extensions:
   - admonition
@@ -61,14 +60,7 @@ nav:
   - Configuration:
       - Overview: configuration/index.md
       - Backends: configuration/backends.md
-      - Workflows: configuration/workflows.md
       - Environments: configuration/environments.md
-      - Stacks: configuration/stacks.md
-  - Task JSON:
-      - Overview: task-json/index.md
-      - Environment Variables: task-json/environments.md
-      - Result Caching: task-json/caching.md
-      - Task Manifests: task-json/manifests.md
-      - Writing a Generator: task-json/generators.md
+  - ScriptFlow: scriptflow.md
   - CLI: cli.md
   - Coding agents: coding-agents.md
