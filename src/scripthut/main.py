@@ -861,7 +861,8 @@ async def close_terminal_session(session_id: str) -> dict[str, str]:
 def parse_args() -> argparse.Namespace:
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
-        description="ScriptHut - Remote job management",
+        description="ScriptHut - ScriptFlow and cluster observation",
+        epilog="Commands: " + ", ".join(sorted(_CLI_SUBCOMMANDS)) + ". Use COMMAND --help for details.",
     )
     parser.add_argument(
         "--version",

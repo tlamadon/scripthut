@@ -43,3 +43,12 @@ def test_removed_modules_and_commands_are_absent():
     assert set(commands) == {"scriptflow", "source", "backend", "agent", "status", "daemon"}
     paths = [getattr(route, "path", "") for route in main.app.routes]
     assert not any(path.startswith(("/runs", "/disk", "/api/v1/runs", "/api/v1/tasks", "/api/v1/stacks", "/terminal/interactive")) for path in paths)
+
+
+def test_public_help_lists_retained_commands():
+    import subprocess
+    import sys
+    result = subprocess.run([sys.executable, "-m", "scripthut", "--help"], capture_output=True, text=True)
+    assert result.returncode == 0
+    assert "Commands: agent, backend, daemon, scriptflow, source, status" in result.stdout
+    assert "setup-aws" not in result.stdout and "workflow" not in result.stdout
