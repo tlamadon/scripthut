@@ -481,6 +481,8 @@ async def control(
             raise ValueError("No acknowledged controller job")
         observation = await controller_observation(backend, reader, launch)
         if action == "release":
+            cached.controller = observation
+            await store.save(cached)
             if observation["state"] == "ended":
                 return {
                     "status": "already_ended",

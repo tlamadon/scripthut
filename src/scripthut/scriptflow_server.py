@@ -27,9 +27,12 @@ logger = logging.getLogger(__name__)
 class CombinedRead:
     """Fetch record and controller evidence in one SSH command."""
 
-    def __init__(self, transport: CommandTransport, job_id: str | None):
+    def __init__(self, transport: CommandTransport, job_id: str | None, *,
+                 job_name: str | None = None, since: str | None = None):
         self.transport = transport
         self.job_id = job_id
+        self.job_name = job_name
+        self.since = since
         self.controller: dict[str, Any] | None = None
 
     async def run_command(self, command: str, timeout: int = 30) -> tuple[str, str, int]:
@@ -38,8 +41,13 @@ class CombinedRead:
         if not re.fullmatch(r"[0-9]+", self.job_id):
             raise ObservationError("unknown", "Invalid controller ID")
         marker = "\nSF_" + uuid.uuid4().hex + "\n"
-        query = shlex.join(["sacct", "-n", "-P", "-X", "--jobs", self.job_id, "--format=State"])
-        queue = shlex.join(["squeue", "--noheader", "--jobs", self.job_id, "--format=%T"])
+        accounting_args = ["sacct", "-n", "-P", "-X", "--jobs", self.job_id, "--format=State"]
+        if self.since:
+            accounting_args += ["--starttime", self.since[:10]]
+        query = shlex.join(accounting_args)
+        # Name queries succeed with an empty queue after a job has ended.
+        selector = ["--name", self.job_name] if self.job_name else ["--jobs", self.job_id]
+        queue = shlex.join(["squeue", "--noheader", *selector, "--format=%T"])
         script = command + "\nrc=$?\nprintf %s " + shlex.quote(marker) + '\nprintf "%s\\n" "$rc"\n'
         script += query + "\nqr=$?\nprintf %s " + shlex.quote(marker) + '\nprintf "%s\\n" "$qr"\n'
         script += queue + "\nqr=$?\nprintf %s " + shlex.quote(marker) + '\nprintf "%s\\n" "$qr"'
@@ -107,10 +115,15 @@ class ScriptFlowService:
     async def fetch(self, cached: CachedRun) -> None:
         try:
             job_id = None
+            launch = None
             if cached.launch_key:
                 launch = await LaunchStore(self.store.directory).get(cached.launch_key)
                 job_id = launch.job_id if launch else None
-            combined = CombinedRead(self.transport(cached), job_id)
+            combined = CombinedRead(
+                self.transport(cached), job_id,
+                job_name=launch.job_name if launch else None,
+                since=launch.created_at if launch else None,
+            )
             await RecordReader(combined).fetch(cached)
             if not cached.last_fetch_failed and combined.controller is not None:
                 cached.controller = combined.controller
