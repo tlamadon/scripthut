@@ -129,8 +129,25 @@ class SourceImage(BaseModel):
 
 class ImageBackendConfig(BaseModel):
     image_dir: str | None = None
+    image_scratch_dir: str | None = None
+    image_pull_timeout_seconds: int = Field(default=600, ge=1)
     registry_user: str | None = None
     registry_token_file: Path | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _registry_keys(cls, value: Any) -> Any:
+        if isinstance(value, dict):
+            unknown = sorted(
+                k for k in value if isinstance(k, str) and k.startswith("registry_")
+                and k not in {"registry_user", "registry_token_file"}
+            )
+            if unknown:
+                raise ValueError(
+                    "Unknown registry key(s): " + ", ".join(unknown)
+                    + "; expected registry_user and registry_token_file"
+                )
+        return value
 
     @model_validator(mode="after")
     def _validate_images(self) -> "ImageBackendConfig":
@@ -139,6 +156,12 @@ class ImageBackendConfig(BaseModel):
             or any(c in self.image_dir for c in "\0\r\n")
         ):
             raise ValueError("image_dir must be an absolute backend path")
+        if self.image_scratch_dir is not None and (
+            not self.image_scratch_dir.startswith("/")
+            or ".." in PurePosixPath(self.image_scratch_dir).parts
+            or any(c in self.image_scratch_dir for c in "\0\r\n")
+        ):
+            raise ValueError("image_scratch_dir must be an absolute node-local path")
         if bool(self.registry_user) != (self.registry_token_file is not None):
             raise ValueError("registry_user and registry_token_file must be configured together")
         if self.registry_user and any(c in self.registry_user for c in "\0\r\n"):

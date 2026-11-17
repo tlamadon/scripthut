@@ -31,7 +31,7 @@ class CombinedRead:
                  job_name: str | None = None, since: str | None = None,
                  image_command: str | None = None):
         self.image_command = image_command
-        self.image_preparation: dict[str, str] | None = None
+        self.image_preparation: dict[str, Any] | None = None
         self.transport = transport
         self.job_id = job_id
         self.job_name = job_name

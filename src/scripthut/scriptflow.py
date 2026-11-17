@@ -126,7 +126,7 @@ class CachedRun(BaseModel):
     fetch_error: str | None = None
     launch_key: str | None = None
     images: list[dict[str, str]] = Field(default_factory=list)
-    image_preparation: dict[str, str] | None = None
+    image_preparation: dict[str, Any] | None = None
     source: dict[str, Any] | None = None
     controller: dict[str, Any] | None = None
     cancel_present: bool | None = None
@@ -143,6 +143,15 @@ class CachedRun(BaseModel):
             age = max(0.0, (now - parsed.heartbeat).total_seconds())
             stale = parsed.state not in TERMINAL_STATES and age > 30
         status = self.problem or ("stale" if stale else "fresh" if snapshot else "unfetched")
+        preparation = dict(self.image_preparation) if self.image_preparation else None
+        if preparation and preparation["status"] == "preparing":
+            if preparation.get("started_at") is not None:
+                preparation["elapsed_seconds"] = max(
+                    0, int(now.timestamp()) - preparation["started_at"]
+                )
+            if self.controller and self.controller.get("state") == "ended":
+                preparation["status"] = "failed"
+                preparation["error"] = "Controller ended during image preparation."
         return {
             "reference_id": self.reference.id,
             "backend": self.reference.backend,
@@ -154,7 +163,7 @@ class CachedRun(BaseModel):
                 "not started" if self.launch_key and self.problem == "missing" else "unavailable"
             ),
             "images": self.images,
-            "image_preparation": self.image_preparation,
+            "image_preparation": preparation,
             "source": self.source,
             "controller": self.controller,
             "controller_notice": (

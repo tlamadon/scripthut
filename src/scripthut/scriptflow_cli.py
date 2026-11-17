@@ -119,6 +119,10 @@ def format_view(data: dict[str, Any]) -> str:
     if data.get("image_preparation"):
         preparation = data["image_preparation"]
         lines.append(f"  image preparation: {preparation['status']} {preparation['error']}")
+        if preparation.get("elapsed_seconds") is not None:
+            lines.append(f"  image preparation elapsed: {preparation['elapsed_seconds']} seconds")
+        if preparation.get("log_tail"):
+            lines.append(preparation["log_tail"])
     if data.get("source"):
         source = data["source"]
         lines.append(

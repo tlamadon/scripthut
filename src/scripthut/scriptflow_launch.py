@@ -292,9 +292,9 @@ def job_script(config: ScriptHutConfig, launch: Launch, cleanup: bool = False) -
         "cd -- " + q(launch.workdir),
     ]
     if launch.images and not cleanup:
-        from scripthut.scriptflow_images import token_cleanup
+        from scripthut.scriptflow_images import token_start
 
-        lines.insert(lines.index("set -e"), "trap " + q(token_cleanup(launch)) + " EXIT")
+        lines.insert(lines.index("set -e"), token_start(launch))
     command = (
         shlex.join(["scriptflow", "cleanup", launch.run_id, "--runs-dir", launch.runs_dir])
         if cleanup
