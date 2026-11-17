@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from scripthut.backends.base import SubmitResult
+from scripthut.scheduler import SubmitResult
 from scripthut.backends.pbs import PBSBackend
 from scripthut.scheduler import SlurmControl as SlurmBackend
 from scripthut.models import JobState

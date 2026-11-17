@@ -1,8 +1,6 @@
 """Git repository management with deploy key support."""
 
 import asyncio
-import fnmatch
-import json
 import logging
 import re
 import shutil

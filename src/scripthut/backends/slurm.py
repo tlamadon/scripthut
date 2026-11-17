@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import logging
-import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
 
 from scripthut.backends.base import (
     ClusterInfo,
@@ -14,12 +12,9 @@ from scripthut.backends.base import (
     JobStats,
     PartitionInfo,
     QuotaInfo,
-    SubmitResult,
 )
 from scripthut.backends.utils import (
-    fetch_log_via_ssh,
     format_bytes,
-    format_submit_output,
     parse_duration_hms,
     parse_rss_to_bytes,
 )
@@ -303,13 +298,6 @@ class SlurmBackend(JobBackend):
         self._partition_map = partition_map or {}
         self._default_partition = default_partition
 
-    def _resolve_partition(self, task_partition: str) -> str:
-        """Translate a task's logical partition to this cluster's name."""
-        if task_partition in self._partition_map:
-            return self._partition_map[task_partition]
-        if self._default_partition:
-            return self._default_partition
-        return task_partition
 
     @property
     def name(self) -> str:

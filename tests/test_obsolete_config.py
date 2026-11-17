@@ -28,3 +28,17 @@ def test_unsupported_backend_is_error(tmp_path, kind):
     path.write_text(yaml.safe_dump({"backends": [{"name": "example", "type": kind}]}))
     with pytest.raises(ConfigError, match="unsupported backend type"):
         load_yaml_config(path)
+
+
+def test_environment_names_are_not_obsolete_keys(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump({"env_groups": {"stacks": [{"if": {"stacks": "ready"}, "set": {"stacks": "value"}}]}}))
+    config = load_yaml_config(path)
+    assert config.env_groups["stacks"][0].set == {"stacks": "value"}
+
+
+def test_backend_rule_obsolete_reference(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump({"backends": [{"type": "slurm", "name": "cluster", "ssh": {"host": "hpc-cluster.example.edu", "user": "alice"}, "env_groups": {"base": [{"stacks": ["old"]}]}}]}))
+    with pytest.raises(ConfigError, match=r"backends\[0\].env_groups.base\[0\].stacks"):
+        load_yaml_config(path)

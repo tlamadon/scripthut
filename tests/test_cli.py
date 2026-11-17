@@ -1125,90 +1125,15 @@ def test_main_renders_connection_errors_cleanly(capsys):
     async def boom(args):
         raise httpx.ConnectError(
             "[Errno 61] Connection refused",
-            request=httpx.Request("GET", "http://127.0.0.1:8123/api/v1/runs"),
+            request=httpx.Request("GET", "http://127.0.0.1:8123/api/v1/sources"),
         )
 
     fake_parser = MagicMock()
     fake_parser.parse_args.return_value = argparse.Namespace(handler=boom)
     with patch.object(cli, "build_parser", return_value=fake_parser):
-        rc = cli.main(["run", "list"])
+        rc = cli.main(["source", "list"])
     assert rc == 1
     err = capsys.readouterr().err
     assert "could not reach the server" in err
-    assert "http://127.0.0.1:8123/api/v1/runs" in err
+    assert "http://127.0.0.1:8123/api/v1/sources" in err
     assert "daemon status" in err
-
-
-# -- disk subcommands --------------------------------------------------------
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# -- disk clean --------------------------------------------------------------
-
-CLEAN_PLAN = {
-    "backend": "hpc",
-    "planned_at": "2026-07-17T12:00:00+00:00",
-    "entries": [
-        {
-            "entry": {
-                "path": "/h/r/aaaaaaaaaaaa", "kind": "clone", "size_bytes": 1024,
-                "mtime": None, "classification": "orphaned", "run_ids": [],
-                "detail": None, "ready": None,
-            },
-            "action": "delete", "reason": None,
-            "warnings": ["may contain logs of forgotten runs (not archived)"],
-        },
-        {
-            "entry": {
-                "path": "/h/r/agent-11111111", "kind": "agent", "size_bytes": 512,
-                "mtime": None, "classification": "orphaned", "run_ids": [],
-                "detail": None, "ready": None,
-            },
-            "action": "skip", "reason": "workspace has uncommitted changes",
-            "warnings": [],
-        },
-    ],
-    "counts": {"delete": 1, "check": 0, "skip": 1},
-    "delete_bytes": 1024,
-    "errors": [],
-}
-
-CLEAN_REPORT = {
-    "backend": "hpc",
-    "outcomes": [
-        {"path": "/h/r/aaaaaaaaaaaa", "kind": "clone", "size_bytes": 1024,
-         "outcome": "deleted", "reason": None},
-        {"path": "/h/r/agent-11111111", "kind": "agent", "size_bytes": 512,
-         "outcome": "skipped", "reason": "workspace has uncommitted changes"},
-    ],
-    "errors": [],
-    "counts": {"deleted": 1, "skipped": 1, "failed": 0},
-    "freed_bytes": 1024,
-    "freed_is_lower_bound": False,
-}
-
-
-
-
-def _clean_args(*extra):
-    return cli.build_parser().parse_args(
-        ["disk", "clean", "--server", "http://x", "--interval", "0.01", *extra]
-    )
-
-
-def _exec_calls(calls):
-    return [
-        c for c in calls
-        if c[1] == "/disk/clean" and not (c[2] or {}).get("dry_run")
-    ]

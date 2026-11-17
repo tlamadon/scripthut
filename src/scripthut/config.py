@@ -227,12 +227,11 @@ def _merge_configs(
 ) -> ScriptHutConfig:
     """Overlay project-local entries on top of global.
 
-    By-name overrides for: ``stacks``, ``workflows``, ``projects``. The
-    ``env_groups`` mapping is dict-merged (project keys win). The ``env``
+    The ``env_groups`` mapping is dict-merged (project keys win). The ``env``
     list is concatenated (global first, then project) so project rules
     run *after* global rules and can react to the env they set up.
     Infrastructure fields (``backends``, ``sources``, ``settings``,
-    ``pricing``) come strictly from the global config.
+    ``scriptflow``) come strictly from the global config.
     """
     merged_env_groups = {**global_cfg.env_groups, **project_cfg.env_groups}
     merged_env = list(global_cfg.env) + list(project_cfg.env)
@@ -281,9 +280,8 @@ def load_layered_config(cwd: Path | None = None) -> ScriptHutConfig | None:
     # message names the offending field directly from the user's source.
     with open(project_path) as f:
         raw = yaml.safe_load(f) or {}
-    _validate_project_local_yaml(raw, project_path)
-
     project_cfg = load_yaml_config(project_path)
+    _validate_project_local_yaml(raw, project_path)
     merged = _merge_configs(global_cfg, project_cfg)
     logger.info(
         f"Loaded layered config: global={global_path}, project={project_path}"
@@ -348,10 +346,10 @@ def load_config(config_path: Path | None = None) -> ScriptHutConfig:
     config and a project-local one:
 
     1. User-global at ``~/.config/scripthut/scripthut.yaml`` carries
-       backends, settings, pricing, and remote sources.
+       backends, settings, controller resources, and remote sources.
     2. Project-local ``scripthut.yaml`` found by walking up from CWD
-       carries the project's own stacks, workflows, and env rules.
-       It may **not** define backends/sources/settings/pricing.
+       carries the project's environment rules and groups.
+       It may **not** define infrastructure sections.
     3. When both exist, they're merged (project overrides by name).
     4. When neither exists, falls back to the legacy ``.env`` loader.
     """

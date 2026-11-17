@@ -6,19 +6,15 @@ import logging
 import re
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
 
 from scripthut.backends.base import (
     ClusterInfo,
     JobBackend,
     JobStats,
     PartitionInfo,
-    SubmitResult,
 )
 from scripthut.backends.utils import (
-    fetch_log_via_ssh,
     format_bytes,
-    format_submit_output,
     parse_duration_hms,
     parse_rss_to_bytes,
 )

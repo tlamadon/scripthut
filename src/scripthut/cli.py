@@ -1129,12 +1129,10 @@ async def _cmd_backend_list(args: argparse.Namespace) -> int:
     if not backends:
         print("No backends configured.")
         return 0
-    print(f"{'NAME':<20} {'TYPE':<8} {'STATUS':<10} MAX_CONCURRENT")
+    print(f"{'NAME':<20} {'TYPE':<8} {'STATUS':<10}")
     for b in backends:
         status = "connected" if b.get("connected") else "down"
-        max_c = b.get("max_concurrent")
-        max_str = str(max_c) if max_c is not None else "-"
-        print(f"{b['name'][:20]:<20} {b['type']:<8} {status:<10} {max_str}")
+        print(f"{b['name'][:20]:<20} {b['type']:<8} {status:<10}")
     return 0
 
 def _add_common(parser: argparse.ArgumentParser) -> None:

@@ -2,14 +2,9 @@
 
 from __future__ import annotations
 
-from scripthut.scheduler import format_submit_output
 
 import logging
 import re
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-        from scripthut.ssh.client import SSHClient
 
 logger = logging.getLogger(__name__)
 
@@ -86,22 +81,3 @@ def shell_quote_path(path: str) -> str:
     if path.startswith("~"):
         path = "$HOME" + path[1:]
     return f'"{path}"'
-
-
-
-
-async def fetch_log_via_ssh(
-    ssh: SSHClient,
-    log_path: str,
-    tail_lines: int | None = None,
-) -> tuple[str | None, str | None]:
-    """Read a log file over SSH with ``tail`` or ``cat``. Returns ``(content, error)``."""
-    if tail_lines:
-        cmd = f"tail -n {tail_lines} {log_path} 2>/dev/null || echo '[File not found or empty]'"
-    else:
-        cmd = f"cat {log_path} 2>/dev/null || echo '[File not found or empty]'"
-    try:
-        stdout, _, _ = await ssh.run_command(cmd)
-    except Exception as e:
-        return None, f"SSH error fetching log: {e}"
-    return stdout, None

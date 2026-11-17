@@ -91,7 +91,7 @@ def make_api_router(state: AppState) -> APIRouter:
 
     async def _sync_one_source(name: str) -> dict[str, Any]:
         """Synchronize one configured git repository."""
-        from scripthut.config_schema import GitSourceConfig, PathSourceConfig
+        from scripthut.config_schema import GitSourceConfig
         if state.config is None:
             raise HTTPException(status_code=503, detail="Config not loaded")
         source = state.config.get_source(name)

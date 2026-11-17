@@ -16,11 +16,7 @@ logger = logging.getLogger(__name__)
 _MIRROR_DIRNAME = ".mirror.git"
 
 async def _run_local_shell(command: str, timeout: float = 60.0) -> tuple[str, str, int]:
-    """Run ``command`` locally (``sh -c``) and return ``(stdout, stderr, exit_code)``.
-
-    Used for workflows whose backend has no SSH connection (e.g. AWS Batch) —
-    the command runs on the scripthut host instead of a remote login node.
-    """
+    """Run a local git-delivery shell command with a timeout."""
     proc = await asyncio.create_subprocess_shell(
         command,
         stdout=asyncio.subprocess.PIPE,

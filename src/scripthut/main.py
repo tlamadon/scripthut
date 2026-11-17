@@ -10,21 +10,21 @@ import time
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Any
 
 import asyncssh
 import uvicorn
-from fastapi import FastAPI, Form, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from sse_starlette.sse import EventSourceResponse
 
 from scripthut import __version__
 from scripthut.config import find_config_file, load_config, load_yaml_config, set_config
 from scripthut.config_schema import GitSourceConfig, PathSourceConfig, ScriptHutConfig
-from scripthut.models import ConnectionStatus, HPCJob, JobState
+from scripthut.models import ConnectionStatus, HPCJob
 from scripthut.runtime import BackendState, Runtime, init_runtime, shutdown_runtime
 from scripthut.sources.git import GitSourceManager, SourceStatus
 from scripthut.terminal import TerminalManager
@@ -321,7 +321,7 @@ def _diff_named(
 def reload_runtime_config(new_config: ScriptHutConfig) -> ReloadReport:
     """Apply a freshly parsed config to the running server, in-process.
 
-    Hot-reloadable: environments, workflows, sources, most settings.
+    Hot-reloadable: environments, sources, most settings.
     Backend changes are detected and reported but NOT applied (SSH connections
     and the polling task are kept as-is to avoid losing in-flight job state).
     Pricing service changes also require a restart.
@@ -689,7 +689,7 @@ async def settings_save(request: Request) -> HTMLResponse:
 async def admin_reload() -> JSONResponse:
     """Re-read scripthut.yaml from disk and hot-reload safe sections.
 
-    Reloads environments, workflows, sources, and most settings
+    Reloads environments, sources, and most settings
     in-process. Backend connection changes still require a server restart.
     """
     try:
@@ -792,12 +792,6 @@ async def terminal_ws(websocket: WebSocket, backend_name: str) -> None:
     logger.info(f"Terminal session {session.id} ({session_type}) for backend '{backend_name}'")
 
     try:
-        # Re-inject the init message since handle_terminal_websocket reads it
-        # We put the data back by overriding the first receive
-        # Actually, handle_terminal_websocket expects to read init itself,
-        # so we need to send a synthetic init. Instead, let's restructure:
-        # We already consumed the init, so create the process directly here
-        # and run the relay ourselves.
         cols = init_data.get("cols", 80)
         rows = init_data.get("rows", 24)
 

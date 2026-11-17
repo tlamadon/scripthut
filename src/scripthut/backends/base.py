@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from scripthut.scheduler import SubmitResult
 from dataclasses import dataclass
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 
 
@@ -167,25 +166,6 @@ class JobBackend(ABC):
         ...
 
 
-    async def fetch_log(
-        self,
-        job_id: str,
-        log_path: str,
-        log_type: str = "output",
-        tail_lines: int | None = None,
-    ) -> tuple[str | None, str | None]:
-        """Fetch stdout/stderr log contents for a submitted job.
-
-        Args:
-            job_id: Scheduler-assigned job ID (needed by API-based backends).
-            log_path: Filesystem path to the log file (used by SSH backends).
-            log_type: ``"output"`` or ``"error"``.
-            tail_lines: If set, return only the last N lines.
-
-        Returns:
-            ``(content, error)`` — exactly one of the two will be set.
-        """
-        return None, "Log fetching not implemented for this backend"
 
 
     @property

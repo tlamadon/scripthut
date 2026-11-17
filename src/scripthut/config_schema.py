@@ -118,7 +118,7 @@ class SlurmBackendConfig(BaseModel):
     )
     clone_dir: str = Field(
         default="~/scripthut-repos",
-        description="Path on the backend whose disk usage is reported in the backend status panel (typically the parent directory where source repos are cloned)",
+        description="Parent directory for backend source checkouts",
     )
     env: list[EnvRule] = Field(
         default_factory=list,
@@ -150,7 +150,7 @@ class PBSBackendConfig(BaseModel):
     )
     clone_dir: str = Field(
         default="~/scripthut-repos",
-        description="Path on the backend whose disk usage is reported in the backend status panel (typically the parent directory where source repos are cloned)",
+        description="Parent directory for backend source checkouts",
     )
     env: list[EnvRule] = Field(
         default_factory=list,
@@ -182,7 +182,7 @@ class GitSourceConfig(BaseModel):
     Two ways to say where the code lives, and they compose:
 
     - ``url`` — a git remote. The server keeps a cache clone under
-      ``settings.sources_cache_dir`` to read workflows from, and the
+      ``settings.sources_cache_dir`` for repository inspection, and the
       backend clones the remote itself (needing ``deploy_key`` for a
       private repo).
     - ``local_path`` — a git repo on the machine running scripthut. The
@@ -191,8 +191,7 @@ class GitSourceConfig(BaseModel):
       already holds. No deploy key, no network, no git remote at all.
 
     With ``local_path`` set it wins for both reading and materialising;
-    ``url`` then stays as metadata and as the remote coding-agent runs
-    push branches to.
+    ``url`` then stays as metadata for repository identification.
     """
 
     name: str = Field(description="Unique identifier for this source")
@@ -207,7 +206,7 @@ class GitSourceConfig(BaseModel):
     local_path: Path | None = Field(
         default=None,
         description=(
-            "Path to a git repo on the scripthut host. When set, workflows "
+            "Path to a git repo on the scripthut host. When set, files "
             "are read from this working tree and the resolved commit is "
             "pushed to the backend instead of cloned from 'url'"
         ),
@@ -257,7 +256,7 @@ class PathSourceConfig(BaseModel):
     type: Literal["path"] = "path"
     path: str = Field(description="Path to directory on the backend filesystem")
     backend: str = Field(
-        description="Name of the backend where this path exists and where tasks are submitted",
+        description="Name of the backend where this path exists",
     )
     description: str = Field(
         default="",
@@ -337,7 +336,7 @@ class GlobalSettings(BaseModel):
     )
     data_dir: Path = Field(
         default=Path("~/.cache/scripthut"),
-        description="Base directory for all stored data (workflows, logs, sources)",
+        description="Base directory for ScriptFlow records, observations and source clones",
     )
     sources_cache_dir: Path | None = Field(
         default=None,
@@ -417,40 +416,46 @@ class ScriptHutConfig(BaseModel):
                 for key in ("workflows_glob", "max_concurrent", "workflows"):
                     if key in source:
                         obsolete.append(f"sources[{index}].{key}")
-        def env_keys(value: Any, prefix: str) -> None:
-            if isinstance(value, dict):
-                for key, child in value.items():
-                    path = f"{prefix}.{key}" if prefix else key
-                    if key == "stacks" and prefix:
-                        obsolete.append(path)
-                    elif key not in ("set", "append"):
-                        env_keys(child, path)
-            elif isinstance(value, list):
-                for index, child in enumerate(value):
-                    env_keys(child, f"{prefix}[{index}]")
+                if source.get("type") == "git" and "backend" in source:
+                    obsolete.append(f"sources[{index}].backend")
+        def env_keys(container: Any, prefix: str) -> None:
+            if not isinstance(container, dict):
+                return
+            def rules(value: Any, path: str) -> None:
+                if isinstance(value, list):
+                    for index, rule in enumerate(value):
+                        if isinstance(rule, dict) and "stacks" in rule:
+                            obsolete.append(f"{path}[{index}].stacks")
+            rules(container.get("env"), prefix + "env")
+            groups = container.get("env_groups", {})
+            if isinstance(groups, dict):
+                for name, value in groups.items():
+                    rules(value, prefix + f"env_groups.{name}")
         env_keys(data, "")
+        for index, backend in enumerate(data.get("backends", []) or []):
+            env_keys(backend, f"backends[{index}].")
         if obsolete:
             raise ValueError("Obsolete configuration keys: " + ", ".join(sorted(set(obsolete))) + ". Remove them; ScriptHut no longer schedules tasks.")
         return data
 
     backends: list[BackendConfig] = Field(
         default_factory=list,
-        description="List of remote backends (Slurm, ECS)",
+        description="List of remote backends (Slurm, PBS)",
     )
     sources: list[SourceConfig] = Field(
         default_factory=list,
         description=(
             "List of sources (git remotes, local git repos, or backend "
-            "paths) with workflow definitions"
+            "paths)"
         ),
     )
     env: list[EnvRule] = Field(
         default_factory=list,
-        description="Server-level env rules applied to every task on every backend",
+        description="Server-level environment rules",
     )
     env_groups: dict[str, list[EnvRule]] = Field(
         default_factory=dict,
-        description="Named, reusable rule lists. Visible to server env: and to all workflows / tasks.",
+        description="Named, reusable rule lists. Visible to server environment resolution.",
     )
     scriptflow: ScriptFlowConfig = Field(default_factory=ScriptFlowConfig)
     settings: GlobalSettings = Field(

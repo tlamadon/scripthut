@@ -18,7 +18,6 @@ from scripthut.config_schema import GitSourceConfig, PathSourceConfig
 
 
 def _make_state(
-    run_manager: MagicMock | None = None,
     sources: list | None = None,
     source_workflows: dict | None = None,
 ):
@@ -30,7 +29,6 @@ def _make_state(
     source name; defaults to empty dict.
     """
     state = MagicMock()
-    state.run_manager = run_manager
     state.config_error = None
     state.backends = {}
     state.source_manager = None
@@ -59,7 +57,7 @@ def test_list_sources_returns_configured_sources():
         PathSourceConfig(name="local", backend="cluster", path="/r/s", description="d"),
         GitSourceConfig(name="git", url="git@h:o/r.git", branch="main"),
     ]
-    state = _make_state(run_manager=MagicMock(), sources=sources)
+    state = _make_state(sources=sources)
 
     resp = _client(state).get("/api/v1/sources")
 
@@ -79,7 +77,7 @@ def test_list_sources_returns_configured_sources():
 
 
 def test_view_source_unknown_returns_404():
-    state = _make_state(run_manager=MagicMock(), sources=[])
+    state = _make_state(sources=[])
 
     resp = _client(state).get("/api/v1/sources/missing")
 
@@ -97,7 +95,7 @@ def test_list_backends_returns_configured_with_status():
         ssh=SSHConfig(host="login.example.com", user="me"),
         max_concurrent=100,
     )
-    state = _make_state(run_manager=MagicMock())
+    state = _make_state()
     state.config = MagicMock()
     state.config.backends = [slurm]
     bs = MagicMock()
@@ -153,7 +151,7 @@ def test_list_backends_no_config_returns_empty():
 
 
 def test_sync_unknown_source_returns_404():
-    state = _make_state(run_manager=MagicMock(), sources=[])
+    state = _make_state(sources=[])
     resp = _client(state).post("/api/v1/sources/missing/sync")
     assert resp.status_code == 404
 
@@ -167,7 +165,7 @@ def test_sync_git_source_failure_returns_200_with_error_field():
     sources = [GitSourceConfig(name="git", url="git@h:o/r.git", branch="main")]
     sm = MagicMock()
     sm.sync_source = AsyncMock(side_effect=RuntimeError("clone failed"))
-    state = _make_state(run_manager=MagicMock(), sources=sources)
+    state = _make_state(sources=sources)
     state.source_manager = sm
     state.source_statuses = {}
 
@@ -196,7 +194,7 @@ def test_sync_all_sources_iterates_every_configured_source():
         )
 
     sm.sync_source = AsyncMock(side_effect=fake_sync)
-    state = _make_state(run_manager=MagicMock(), sources=sources)
+    state = _make_state(sources=sources)
     state.source_manager = sm
     state.source_statuses = {}
 
@@ -209,7 +207,7 @@ def test_sync_all_sources_iterates_every_configured_source():
 
 
 def test_sync_all_sources_empty_config_returns_empty_list():
-    state = _make_state(run_manager=MagicMock())
+    state = _make_state()
     state.config = None
     resp = _client(state).post("/api/v1/sources/sync")
     assert resp.status_code == 200
@@ -286,7 +284,7 @@ def test_sync_all_sources_empty_config_returns_empty_list():
 
 
 def test_health_reports_state():
-    state = _make_state(run_manager=MagicMock())
+    state = _make_state()
     resp = _client(state).get("/api/v1/health")
     assert resp.status_code == 200
     body = resp.json()
