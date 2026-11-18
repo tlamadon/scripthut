@@ -588,10 +588,8 @@ def _section_summary() -> dict[str, dict[str, Any]]:
     return {
         "env_rules": {
             "label": "Env rules",
-            "names": [f"rule #{i}" for i, _ in enumerate(
-                rule for backend in cfg.backends for rule in getattr(backend, "env", [])
-            )],
-            "hot_reload": False,
+            "names": [],
+            "hot_reload": True,
         },
         "sources": {
             "label": "Sources",

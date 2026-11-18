@@ -218,7 +218,7 @@ class PBSBackendConfig(BaseModel):
     ssh: SSHConfig = Field(description="SSH connection settings")
     queue: str | None = Field(
         default=None,
-        description="Display queue when a PBS job has no queue field",
+        description="Default queue for the cluster availability display",
     )
     clone_dir: str = Field(
         default="~/scripthut-repos",
