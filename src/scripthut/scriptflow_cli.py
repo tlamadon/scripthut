@@ -48,6 +48,7 @@ def add_parser(
         "discover",
         "flows",
         "images",
+        "fetch",
     ):
         parser = verbs.add_parser(verb)
         add_common(parser)
@@ -82,8 +83,16 @@ def add_parser(
         if verb == "register":
             parser.add_argument("--backend", required=True)
             parser.add_argument("--run-dir", required=True, help="Absolute remote run directory")
-        elif verb in ("view", "logs", "unregister", "cancel", "cleanup", "release"):
+        elif verb in ("view", "logs", "unregister", "cancel", "cleanup", "release", "fetch"):
             parser.add_argument("reference", help="Reference ID printed by register or list")
+        if verb == "fetch":
+            parser.add_argument("--to", required=True)
+            selection = parser.add_mutually_exclusive_group()
+            selection.add_argument("--task", action="append", default=[])
+            selection.add_argument("--path", action="append", default=[])
+            parser.add_argument("--strip", default=".")
+            parser.add_argument("--overwrite", action="store_true")
+            parser.add_argument("--dry-run", action="store_true")
         if verb == "cleanup":
             parser.add_argument(
                 "--wait", type=int, default=180, help="Result wait seconds (default 180)"
@@ -309,6 +318,17 @@ async def handle(args: argparse.Namespace) -> int:
                 raise ObservationError("invalid_tail", "Tail must be nonnegative")
         config = load_config(args.config)
         store = ReferenceStore(config.settings.data_dir_resolved / "scriptflow")
+        if args.scriptflow_cmd == "fetch":
+            from scripthut.scriptflow_fetch import handle_fetch
+
+            data = await handle_fetch(config, store, args)
+            if args.json:
+                print(json.dumps(data, indent=2))
+            else:
+                for item in data["files"]:
+                    print(f"{item['status']}: {item['path']} ({item['size']} bytes) "
+                          f"{item.get('destination', '')} {item['reason']}")
+            return 0 if data["ok"] else 1
         if args.scriptflow_cmd in ("launch", "cleanup", "release", "discover", "flows", "images"):
             data = await handle_controller(config, store, args)
             if args.json:

@@ -430,6 +430,8 @@ class CliAuthConfig(BaseModel):
 class GlobalSettings(BaseModel):
     """Global application settings."""
 
+    fetch_max_file_bytes: int = Field(default=1024**3, ge=1)
+    fetch_max_total_bytes: int = Field(default=10 * 1024**3, ge=1)
 
     poll_interval: int = Field(
         default=60,

@@ -6,7 +6,7 @@ import asyncio
 import logging
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, BinaryIO
 
 import asyncssh
 
@@ -213,6 +213,36 @@ class SSHClient:
             # Try to reconnect on next attempt
             self._connection = None
             raise
+
+    async def read_binary(self, command: str, destination: BinaryIO, max_bytes: int) -> None:
+        """Stream bounded stdout over the existing connection without payload logging."""
+        if not self.is_connected:
+            await self.connect()
+        if self._connection is None:
+            raise RuntimeError("Failed to establish download channel")
+        process = None
+        try:
+            async with asyncio.timeout(600):
+                process = await self._connection.create_process(
+                    command, encoding=None, stderr=asyncssh.DEVNULL,
+                )
+                received = 0
+                while chunk := await process.stdout.read(min(65536, max_bytes - received + 1)):
+                    received += len(chunk)
+                    if received > max_bytes:
+                        raise RuntimeError("Download size changed or exceeded the size cap")
+                    destination.write(chunk)
+                await process.wait_closed()
+                if process.exit_status != 0:
+                    raise RuntimeError("Remote file could not be read")
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            raise RuntimeError("Binary download failed: " + type(exc).__name__) from None
+        finally:
+            if process is not None:
+                process.close()
+                await process.wait_closed()
 
     async def write_private_file(self, command: str, content: str) -> None:
         """Send a secret through stdin without logging payloads or remote diagnostics."""
