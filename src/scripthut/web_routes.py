@@ -46,7 +46,8 @@ def make_web_router(state: Any, service: Any, templates: Any) -> APIRouter:
                 workdir=getattr(s, "working_directory", None),
                 flow_dir=getattr(s, "flow_dir", "."),
                 flows=[],
-                error="Awaiting source observation",
+                error=None,
+                notice="Awaiting source observation",
             )
             for s in configs.values()
         ]

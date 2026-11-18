@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from typing import Any
 from urllib.parse import quote, urlencode
 
@@ -12,8 +13,13 @@ from sse_starlette.sse import EventSourceResponse
 from scripthut.scriptflow import CachedRun, ObservationError, RecordReader, Snapshot
 from scripthut.scriptflow_cli import cancel
 from scripthut.scriptflow_server import ScriptFlowService
-
-from scripthut.scriptflow_web import configure_templates, runs_context, timeline
+from scripthut.scriptflow_web import (
+    cached_view,
+    configure_templates,
+    runs_context,
+    task_page,
+    timeline,
+)
 
 LOG_CAP = 262144
 
@@ -31,15 +37,23 @@ def make_scriptflow_router(service: ScriptFlowService, templates: Any) -> APIRou
                 404 if exc.kind in ("not_found", "invalid_reference") else 503, str(exc)
             ) from exc
 
-    async def listing() -> list[dict[str, Any]]:
+    async def listing(summary: bool) -> list[dict[str, Any]]:
         try:
-            return [cached.projection() for cached in await service.store.list()]
+            result = []
+            for cached in await service.store.list():
+                data = cached.projection()
+                if summary and data["workflow"] is not None:
+                    tasks = data["workflow"].pop("tasks")
+                    data["task_counts"] = dict(Counter(task["state"] for task in tasks.values()))
+                    data["task_count"] = len(tasks)
+                result.append(data)
+            return result
         except (ObservationError, OSError) as exc:
             raise HTTPException(503, str(exc)) from exc
 
     @router.get(api)
-    async def list_runs() -> list[dict[str, Any]]:
-        return await listing()
+    async def list_runs(summary: bool = True) -> list[dict[str, Any]]:
+        return await listing(summary)
 
     @router.get(api + "/{reference}")
     async def view(reference: str) -> dict[str, Any]:
@@ -132,11 +146,12 @@ def make_scriptflow_router(service: ScriptFlowService, templates: Any) -> APIRou
         ]
         return dict(data, filters=filters, filter_query=urlencode(filters))
 
-    async def detail(reference: str) -> dict[str, Any]:
-        await get(reference)
-        data = await runs_context(service)
-        run = next(r for r in data["runs"] if r.id == reference)
-        return dict(run=run, urlquote=quote, **timeline(run))
+    async def detail(
+        reference: str, page: int = 1, task_state: str = "", search: str = ""
+    ) -> dict[str, Any]:
+        run = await cached_view(await get(reference), service)
+        paging = task_page(run, page, task_state, search)
+        return dict(run=run, urlquote=quote, **paging, **timeline(run))
 
     @router.get("/runs/stream")
     async def runs_stream(request: Request) -> EventSourceResponse:
@@ -161,21 +176,36 @@ def make_scriptflow_router(service: ScriptFlowService, templates: Any) -> APIRou
 
     @router.get("/runs/{reference}", response_class=HTMLResponse)
     @router.get("/scriptflow/{reference}", response_class=HTMLResponse)
-    async def run_page(request: Request, reference: str) -> Any:
+    async def run_page(
+        request: Request,
+        reference: str,
+        page: int = Query(1, ge=1),
+        task_state: str = "",
+        search: str = Query("", max_length=200),
+    ) -> Any:
         return templates.TemplateResponse(
-            request=request, name="run_detail.html", context=await detail(reference)
+            request=request,
+            name="run_detail.html",
+            context=await detail(reference, page, task_state, search),
         )
 
     @router.get("/runs/{reference}/events")
-    async def run_events(request: Request, reference: str) -> EventSourceResponse:
+    async def run_events(
+        request: Request,
+        reference: str,
+        page: int = Query(1, ge=1),
+        task_state: str = "",
+        search: str = Query("", max_length=200),
+    ) -> EventSourceResponse:
         await get(reference)
 
         async def events() -> Any:
             while not await request.is_disconnected():
                 if await service.state.wait_for_poll():
-                    data = await detail(reference)
+                    data = await detail(reference, page, task_state, search)
                     for event, name in [
                         ("info", "run_info"),
+                        ("paging", "run_task_paging"),
                         ("items", "run_items"),
                         ("gantt", "run_gantt"),
                         ("sidebar", "run_sidebar"),
@@ -193,8 +223,8 @@ def make_scriptflow_router(service: ScriptFlowService, templates: Any) -> APIRou
     async def log_page(
         request: Request, reference: str, task: str, attempt: int = Query(1, ge=1)
     ) -> Any:
-        data = await detail(reference)
-        record = (await get(reference)).snapshot
+        cached = await get(reference)
+        record = cached.snapshot
         try:
             snapshot = Snapshot.model_validate(record)
             task_id = RecordReader.select_task(snapshot, task)
@@ -202,6 +232,9 @@ def make_scriptflow_router(service: ScriptFlowService, templates: Any) -> APIRou
                 raise HTTPException(404, "Attempt not found")
         except (ObservationError, ValueError, AttributeError, TypeError):
             raise HTTPException(404, "Task not found")
+        run = await cached_view(cached, service)
+        run.items = [item for item in run.items if item.task.id == task_id]
+        data = dict(run=run)
         data.update(
             title=f"{task} · Attempt {attempt}",
             task_name=task,

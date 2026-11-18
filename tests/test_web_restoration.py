@@ -288,6 +288,10 @@ async def test_disk_poll_is_read_only(checkout):  # noqa: F811
         status=ConnectionStatus(True, "cluster.example.edu"),
     )
     service = ScriptFlowService(state)
+    cached = await service.store.register(Reference.create("cluster", str(root / ".sf/runs/example")))
+    cached.snapshot = fresh_record()
+    cached.snapshot["tasks"]["first"]["outputs"] = [str(root / "results/output.dat")]
+    await service.store.save(cached)
     before = tree(root.parent)
     await refresh_web_cache(state, service)
     assert tree(root.parent) == before
@@ -297,7 +301,7 @@ async def test_disk_poll_is_read_only(checkout):  # noqa: F811
     }
     assert all(row["size"] is not None for row in rows)
     for command in c.shell.commands:
-        assert shlex.split(command)[0] in ("git", "find", "du")
+        assert shlex.split(command)[0] in ("git", "find", "du", "sh")
         assert not any(
             word in shlex.split(command) for word in ("rm", "delete", "cleanup", "mkdir", "touch")
         )

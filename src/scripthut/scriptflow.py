@@ -171,6 +171,7 @@ class CachedRun(BaseModel):
             "image_preparation": preparation,
             "source": self.source,
             "controller": self.controller,
+            "controller_managed": bool(self.launch_key),
             "controller_notice": (
                 "Controller ended; workflow heartbeat is stale. Task jobs were left running. "
                 "Next: scripthut scriptflow cleanup " + self.reference.id

@@ -380,41 +380,73 @@ async def list_flows(
     return flow_names(text)
 
 
+async def directory_present(reader: RecordReader, directory: str) -> bool:
+    script = """if [ -d "$1" ]; then exit 0; fi
+if [ -e "$1" ] || [ -L "$1" ]; then echo "Not a directory: $1" >&2; exit 1; fi
+parent=$(dirname -- "$1")
+while [ ! -e "$parent" ] && [ "$parent" != / ]; do parent=$(dirname -- "$parent"); done
+[ -d "$parent" ] && [ -x "$parent" ] || { echo "Cannot access: $1" >&2; exit 1; }
+exit 3
+"""
+    _, error, code = await reader.transport.run_command(
+        shlex.join(["sh", "-c", script, "source-directory", directory])
+    )
+    if code not in (0, 3):
+        raise ValueError(error.strip() or f"Cannot observe directory: {directory}")
+    return code == 0
+
+
 async def source_rows(config: ScriptHutConfig, backends: dict[str, Any]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for source in config.sources:
         if not isinstance(source, GitSourceConfig):
             rows.append({"config": source})
             continue
-        targets = list(backends) if source.local_path is None else [None]
-        for name in targets or [None]:
+        manager = GitSourceManager(config.settings.sources_cache_dir_resolved)
+        manager.add_source(source)
+        local_path = manager._get_source_path(source.name)
+        local_source = source.model_copy(update={"local_path": local_path})
+        has_local = source.local_path is not None or local_path.is_dir()
+        local_flows = []
+        local_error = None
+        if has_local:
+            try:
+                revision = await resolve_revision(config, local_source, None, None)
+                local_flows = await list_flows(config, revision)
+            except (ValueError, OSError, RuntimeError) as exc:
+                local_error = str(exc)
+        for name in list(backends) or [None]:
             row: dict[str, Any] = {
                 "config": source,
                 "backend": name,
                 "workdir": source.working_directory,
                 "flow_dir": source.flow_dir,
-                "flows": [],
-                "error": None,
+                "flows": local_flows,
+                "error": local_error,
+                "status": "available",
             }
             try:
-                if source.local_path is not None:
-                    revision = await resolve_revision(config, source, None, None)
-                    row["flows"] = await list_flows(config, revision)
-                else:
-                    connection = backends.get(name) if name else None
-                    if (
-                        not connection or not connection.ssh_client or not connection.enabled
-                        or (getattr(connection, "status", None) is not None
-                            and not connection.status.connected)
-                    ):
-                        raise ValueError("Backend copy unavailable; select a connected backend")
-                    reader = RecordReader(connection.ssh_client)
-                    directory = await workdir_for(reader, source)
-                    row["workdir"] = directory
+                if name is None and has_local:
+                    rows.append(row)
+                    continue
+                connection = backends.get(name) if name else None
+                if (
+                    not connection or not connection.ssh_client or not connection.enabled
+                    or (
+                        getattr(connection, "status", None) is not None
+                        and not connection.status.connected
+                    )
+                ):
+                    raise ValueError("Backend copy unavailable; select a connected backend")
+                reader = RecordReader(connection.ssh_client)
+                directory = await workdir_for(reader, source)
+                row["workdir"] = directory
+                if not await directory_present(reader, directory):
+                    row["status"] = "not_delivered"
+                elif not has_local:
                     commit = (
                         await SourceCheckout(config).checked(
-                            reader,
-                            f"git -C {q(directory)} rev-parse --verify "
+                            reader, f"git -C {q(directory)} rev-parse --verify "
                             f"{q('refs/heads/' + source.branch + '^{commit}')}",
                         )
                     ).strip()

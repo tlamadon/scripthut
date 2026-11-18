@@ -7,7 +7,7 @@ from typing import Any
 
 from scripthut.config_schema import GitSourceConfig
 from scripthut.scriptflow import RecordReader
-from scripthut.scriptflow_sources import remote_path, source_rows, workdir_for
+from scripthut.scriptflow_sources import directory_present, remote_path, source_rows, workdir_for
 
 
 async def refresh_web_cache(state: Any, service: Any) -> None:
@@ -30,12 +30,16 @@ async def refresh_web_cache(state: Any, service: Any) -> None:
         try:
             reader = RecordReader(connection.ssh_client)
             locations = {}
+            missing = set()
             for source in state.config.sources:
                 if not isinstance(source, GitSourceConfig):
                     continue
                 root = await workdir_for(reader, source)
                 flow = str(PurePosixPath(root) / source.flow_dir)
                 locations[root] = (source.name, "working directory")
+                if not await directory_present(reader, root):
+                    missing.add(root)
+                    continue
                 locations[str(PurePosixPath(flow) / ".sf/runs")] = (source.name, "run records")
                 # Immediate directories include staging/results folders without guessing names.
                 command = shlex.join(
@@ -45,7 +49,16 @@ async def refresh_web_cache(state: Any, service: Any) -> None:
                 if code == 0:
                     for child in stdout.split("\0"):
                         if child and PurePosixPath(child).name not in (".git", ".sf"):
-                            locations.setdefault(child, (source.name, "results folder"))
+                            is_result = any(
+                                output == child or output.startswith(child + "/")
+                                for run in runs
+                                if run.reference.backend == name
+                                for task in (run.snapshot or {}).get("tasks", {}).values()
+                                for output in task.get("outputs", [])
+                            )
+                            locations.setdefault(
+                                child, (source.name, "results folder" if is_result else "folder")
+                            )
             for path, (source_name, kind) in list(locations.items()):
                 if kind != "run records":
                     continue
@@ -68,6 +81,17 @@ async def refresh_web_cache(state: Any, service: Any) -> None:
             locations[images] = ("shared", "images")
             rows = []
             for path, (source_name, kind) in locations.items():
+                if path in missing or not await directory_present(reader, path):
+                    rows.append(
+                        dict(
+                            path=path,
+                            source=source_name,
+                            kind=kind,
+                            size=None,
+                            error="not present on this backend",
+                        )
+                    )
+                    continue
                 stdout, stderr, code = await connection.ssh_client.run_command(
                     shlex.join(["du", "-sb", "--", path])
                 )

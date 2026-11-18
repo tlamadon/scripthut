@@ -32,8 +32,11 @@
             {% endif %}
         </div>
 
-        <div hx-ext="sse" sse-connect="/runs/{{ run.id }}/events">
+        <div hx-ext="sse" sse-connect="/runs/{{ run.id }}/events?{{ task_query }}">
             <div class="bg-white rounded-lg shadow-md p-6 mb-6" id="run-info" sse-swap="info-update" hx-swap="innerHTML">{% include "run_info.html" %}</div>
+            <div id="task-paging" sse-swap="paging-update" hx-swap="innerHTML">
+                {% include 'run_task_paging.html' %}
+            </div>
             <!-- View Tabs -->
             <div class="flex gap-1 mb-4 text-sm font-medium">
                 <button id="tab-table" onclick="switchTab('table')"

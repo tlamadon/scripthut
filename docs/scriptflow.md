@@ -43,15 +43,16 @@ These routes share the existing API's server/reverse-proxy authentication bounda
 
 | Method | Route | Result |
 | --- | --- | --- |
-| GET | `/api/v1/scriptflow/runs` | Cached projections for registered references |
+| GET | `/api/v1/scriptflow/runs` | Cached summaries with task counts, without tasks; `?summary=false` opts into full projections |
 | GET | `/api/v1/scriptflow/runs/{reference}` | Full cached CLI-compatible projection |
 | POST | `/api/v1/scriptflow/runs/{reference}/refresh` | Fetch evidence and return projection |
 | GET | `/api/v1/scriptflow/runs/{reference}/logs?task=ID&attempt=1&tail=200` | Attempt log content, truncation flag and cap |
 | POST | `/api/v1/scriptflow/runs/{reference}/cancel` | Non-waiting cancellation result plus projection |
 
 Projection fields include reference/backend, workflow, workflow_status, observation,
-cancellation, controller and controller_notice. List responses include the full projections,
-so clients can select summaries without another fetch. Refresh observation failures return
+cancellation, controller and controller_notice. List responses omit `workflow.tasks` by default and add `task_count` and `task_counts`
+by state. Use `?summary=false` only when full task records are needed. Single-run
+responses still contain the full projection. Refresh observation failures return
 HTTP 200 with an explicit observation problem and retained last-known workflow evidence.
 
 Logs refresh the record before reading the selected attempt, enforce canonical containment,
@@ -88,7 +89,9 @@ Source launches carry a `source` object in list/view JSON: `name`, `branch`,
 `commit`, `short_commit`, repository `workdir`, `flow_dir`, `detached`, and
 `snapshot`. Both run pages display this metadata alongside the three independent
 states. `/sources` displays each source's working directory, flow directory and
-flow names from committed text, with explicit errors for unavailable copies.
+flow names from committed text. An absent checkout is shown as “Not delivered to
+<backend> yet”; flows from a configured local repository or an existing local source
+clone remain available. Connection and Git failures are still shown as errors.
 It offers the controller Launch action described above.
 
 Image declarations appear in `images` on launch and run projections, with `name`,
@@ -127,12 +130,32 @@ or cost data is displayed.
 
 Source inspection and read-only disk sizing run in the same polling cycle using
 existing backend connections. Disk uses plain `find` and `du`; it has no deletion,
-classification or cleanup operation. A failed disk read is shown explicitly, with
+classification or cleanup operation. Absent directories show “not present on this backend”; failed disk reads are shown explicitly, with
 the last observation retained on transport failure. Folder sizes overlap their
 parent totals and are not added together. Hidden `.git` and `.sf` directories are
-excluded from the immediate result/other folder rows; `.sf/runs` has separate rows.
+excluded from the immediate folder rows; `.sf/runs` has separate rows. Only folders
+containing paths declared as task outputs in cached records are labelled “results
+folder”; other directories, including logs, are simply labelled “folder”.
 
 The log page opens the existing bounded log API on demand. It does not load logs
 while rendering the page. Cancellation writes the existing request file only;
 ScriptFlow still owns every task job. Legacy workflow/task APIs, retry/delete-run
 routes, disk cleanup routes and interactive task submission remain absent.
+
+## Large runs and missing fields
+
+Run details show 20 tasks per page, shared by the table, timeline and sidebar.
+The state selector includes counts for the whole run; name/ID search narrows the
+page. Previous/Next links fetch another page on demand. Query parameters are
+`page`, `task_state` and `search`, and passive SSE updates preserve that selection.
+The attempt log page renders only the selected task in its sidebar, with a link
+back to browse all tasks. Pages do not request the full JSON list.
+
+The 3,000-task regression fixture's first page and each SSE update cycle must stay
+below 256 KiB; its log page must stay below 32 KiB and JSON list summary below
+8 KiB. These bounds describe the fixture, not a cap on arbitrary task/error text.
+
+Missing resources display a dash; CPU estimates still use the documented fallback.
+“CPU time” shows minutes below one hour and hours otherwise. Runs registered by
+hand show “not managed by ScriptHut” for the controller; “unknown” is reserved for
+a managed controller without a readable state.

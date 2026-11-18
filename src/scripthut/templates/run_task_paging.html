@@ -1,0 +1,19 @@
+<div class="bg-white rounded-lg shadow-md p-4 mb-4 text-sm">
+    <form method="get" action="/runs/{{ run.id }}" class="flex flex-wrap items-center gap-3">
+        <label>State
+            <select name="task_state" class="border border-gray-300 rounded px-2 py-1">
+                <option value="">All ({{ run.progress[1] }})</option>
+                {% for state, count in run.status_counts.items() %}
+                <option value="{{ state }}" {% if state == task_state %}selected{% endif %}>{{ state }} ({{ count }})</option>
+                {% endfor %}
+            </select>
+        </label>
+        <label>Name or ID <input name="search" value="{{ task_search }}" maxlength="200" class="border border-gray-300 rounded px-2 py-1"></label>
+        <button class="px-3 py-1.5 rounded-md bg-blue-100 text-blue-700">Filter tasks</button>
+    </form>
+    <div class="flex flex-wrap items-center gap-3 mt-3 text-gray-600">
+        <span>Tasks {{ task_first }}–{{ task_last }} of {{ task_match_count }} matching · Page {{ task_page }} of {{ task_pages }}</span>
+        {% if previous_page %}<a class="text-blue-600 hover:text-blue-800" href="{{ previous_page }}">Previous</a>{% endif %}
+        {% if next_page %}<a class="text-blue-600 hover:text-blue-800" href="{{ next_page }}">Next</a>{% endif %}
+    </div>
+</div>

@@ -17,11 +17,6 @@
             {% include "nav.html" %}
         </header>
 
-        <!-- Error banner (hidden by default) -->
-        <div id="run-error" class="hidden bg-red-100 border border-red-300 text-red-700 px-4 py-3 rounded mb-6">
-            <span class="font-medium">Error:</span> <span id="run-error-msg"></span>
-        </div>
-
         <!-- Sources -->
         {% if source_workflows %}
         {% for source_name, wfs in source_workflows.items() %}
@@ -42,7 +37,7 @@
                     {% set src_status = source_statuses.get(source_name) %}
                     <p class="text-sm text-gray-500">
                         {% if src_disabled %}Disabled
-                        {% elif wfs %}{{ wfs | length }} workflow{{ 's' if wfs | length != 1 }}{% endif %}
+                        {% elif wfs %}{{ wfs | length }} flow{{ 's' if wfs | length != 1 }}{% endif %}
                         {% if src_cfg and src_cfg.type == 'git' and src_status and not src_disabled %}
                         {% set repo_url_sub = (src_cfg.url or '').replace('git@github.com:', 'https://github.com/').replace('git@gitlab.com:', 'https://gitlab.com/').removesuffix('.git') %}
                         <span class="mx-1 text-gray-300">&middot;</span>
@@ -63,14 +58,18 @@
                     {% endif %}
                 </div>
             </div>
-            {% for row in source_rows if row.config.name == source_name %}
             <div class="text-sm text-gray-500 mb-4">
-                <p>Working directory: {{ row.workdir or row.config.path or 'unknown' }}{% if row.backend %} · {{ row.backend }}{% endif %}</p>
-                <p>Flow directory: {{ row.flow_dir or '.' }}</p>
-                {% for image in row.config.images|default([]) %}<p>Image {{ image.name }}: {{ image.ref or image.ref_file }}</p>{% endfor %}
-                {% if row.error %}<p class="text-amber-700">{{ row.error }}</p>{% endif %}
+                <p>Working directory: {{ src_cfg.working_directory or src_cfg.path or '—' }}</p>
+                <p>Flow directory: {{ src_cfg.flow_dir or '.' }}</p>
+                {% for image in src_cfg.images|default([]) %}<p>Image {{ image.name }}: {{ image.ref or image.ref_file }}</p>{% endfor %}
+                {% set rows = source_rows|selectattr('config.name', 'equalto', source_name)|list %}
+                {% set missing = rows|selectattr('status', 'defined')|selectattr('status', 'equalto', 'not_delivered')|map(attribute='backend')|list %}
+                {% if missing %}<p>Not delivered to {{ missing|join(', ') }} yet</p>{% endif %}
+                {% for row in rows %}
+                {% if row.notice %}<p>{{ row.notice }}</p>{% endif %}
+                {% if row.error %}<p class="text-amber-700">{% if row.backend %}{{ row.backend }}: {% endif %}{{ row.error }}</p>{% endif %}
+                {% endfor %}
             </div>
-            {% endfor %}
             {% if not src_disabled %}
             {% if wfs %}
             <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">

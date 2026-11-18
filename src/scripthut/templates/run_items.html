@@ -2,7 +2,7 @@
 {% if run and run.items %}
 <div class="px-6 py-4 bg-gray-50 border-b flex justify-between items-center">
     <h2 class="text-xl font-semibold text-gray-800">Tasks</h2>
-    <span class="text-sm text-gray-600">{{ run.items|length }} total</span>
+    <span class="text-sm text-gray-600">{{ task_match_count }} matching / {{ run.progress[1] }} total</span>
 </div>
 <!-- Tasks Table (desktop) -->
 <div class="hidden md:block overflow-x-auto">
@@ -80,9 +80,9 @@
                 <td class="px-4 py-3 whitespace-nowrap text-sm font-mono text-gray-600">
                     {{ item.job_id or '-' }}
                 </td>
-                <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-600">{{ item.task.partition }}</td>
+                <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-600">{{ item.task.partition or '—' }}</td>
                 <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-600">
-                    {{ item.task.cpus or 1 }} CPU, {{ item.task.memory if item.task.memory is not none else 'unknown' }}, {{ item.task.walltime or 'unknown' }}
+                    {{ item.task.cpus if item.task.cpus is not none else '—' }} CPU, {{ item.task.memory if item.task.memory is not none else '—' }}, {{ item.task.walltime if item.task.walltime is not none else '—' }}
                 </td>
                 <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
                     {% if item.submitted_at %}
@@ -192,8 +192,8 @@
             {% if item.job_id %}
             <span class="font-mono">{{ item.job_id }}</span>
             {% endif %}
-            <span>{{ item.task.partition }}</span>
-            <span>{{ item.task.cpus or 1 }} CPU, {{ item.task.memory if item.task.memory is not none else 'unknown' }}, {{ item.task.walltime or 'unknown' }}</span>
+            <span>{{ item.task.partition or '—' }}</span>
+            <span>{{ item.task.cpus if item.task.cpus is not none else '—' }} CPU, {{ item.task.memory if item.task.memory is not none else '—' }}, {{ item.task.walltime if item.task.walltime is not none else '—' }}</span>
         </div>
         <!-- Row 3: Utilization + timestamps -->
         <div class="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-gray-500">

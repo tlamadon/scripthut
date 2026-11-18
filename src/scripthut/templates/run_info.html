@@ -19,12 +19,12 @@
         <p class="text-lg font-semibold text-gray-800">{{ run.progress[0] }} / {{ run.progress[1] }}</p>
     </div>
     <div>
-        <p class="text-sm text-gray-500">CPU Hours</p>
+        <p class="text-sm text-gray-500">CPU time</p>
         <p class="text-lg font-semibold text-gray-800 font-mono">
             {% if run.total_cpu_hours >= 1 %}
-                {{ "%.1f"|format(run.total_cpu_hours) }}h
+                {{ "%.1f"|format(run.total_cpu_hours) }} hours
             {% elif run.total_cpu_hours > 0 %}
-                {{ "%.1f"|format(run.total_cpu_hours * 60) }}m
+                {{ "%.1f"|format(run.total_cpu_hours * 60) }} min
             {% else %}
                 —
             {% endif %}
@@ -56,7 +56,7 @@
 {% if run.approximate %}<p class="mt-2 text-xs text-amber-700">Approximate CPU-hours: missing CPUs/start timestamps or stale observation.</p>{% endif %}
 {% include 'scriptflow_states.html' %}
 {% if run.workflow and run.workflow.error %}<pre class="text-red-700 whitespace-pre-wrap">{{ run.workflow.error }}</pre>{% endif %}
-<p class="text-sm text-gray-600">Cleanup pending: {{ run.workflow.cleanup_pending if run.workflow else 'unknown' }} · Cancel requested: {{ run.cancellation.requested }}</p>
+<p class="text-sm text-gray-600">Cleanup pending: {{ run.workflow.cleanup_pending if run.workflow else 'unknown' }} · Cancel requested: {{ run.cancellation.requested if run.cancellation.requested is not none else '—' }}</p>
 <div class="mt-4 flex gap-2">
     <button onclick="cancelRun(this)" data-reference="{{ run.id }}"
         {% if run.status.value != 'running' %}disabled{% endif %}

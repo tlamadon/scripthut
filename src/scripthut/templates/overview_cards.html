@@ -223,7 +223,7 @@
                 {{ run.display_name }}
             </h3>
 
-            <p class="text-xs text-gray-500">Controller: {{ run.controller.state if run.controller else "unknown" }} · Observation: {{ run.observation.status }}</p>
+            <p class="text-xs text-gray-500">Controller: {{ run.controller.state if run.controller else ('unknown' if run.controller_managed else 'not managed by ScriptHut') }} · Observation: {{ run.observation.status }}</p>
             <!-- Progress -->
             <div class="mt-3 flex items-center gap-2">
                 {{ status_bar(run.status_counts, 'flex-1 h-2') }}

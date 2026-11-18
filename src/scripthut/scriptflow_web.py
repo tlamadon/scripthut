@@ -109,6 +109,58 @@ def run_view(cached: CachedRun, now: datetime | None = None) -> View:
     )
 
 
+async def cached_view(entry: CachedRun, service: Any, now: datetime | None = None) -> View:
+    now = now or datetime.now(UTC)
+    launch = None
+    if entry.launch_key:
+        launch = await LaunchStore(service.store.directory).get(entry.launch_key)
+        if launch:
+            entry.source = launch.source_metadata()
+    run = run_view(entry, now)
+    if launch and not entry.snapshot:
+        run.workflow_name = run.display_name = launch.flow
+        run.created_at = stamp(launch.created_at)
+        run.elapsed = max(0, (now - run.created_at).total_seconds())
+    return run
+
+
+TASK_PAGE_SIZE = 20
+
+
+def task_page(run: View, page: int, task_state: str, search: str) -> dict[str, Any]:
+    from urllib.parse import urlencode
+
+    selected = [
+        item
+        for item in run.items
+        if (not task_state or item.status.value == task_state)
+        and (
+            not search
+            or search.casefold() in item.task.name.casefold()
+            or search.casefold() in item.task.id.casefold()
+        )
+    ]
+    count = len(selected)
+    pages = max(1, (count + TASK_PAGE_SIZE - 1) // TASK_PAGE_SIZE)
+    page = min(page, pages)
+    offset = (page - 1) * TASK_PAGE_SIZE
+    run.items = selected[offset : offset + TASK_PAGE_SIZE]
+    query = dict(task_state=task_state, search=search)
+    base = "/runs/" + run.id + "?"
+    return dict(
+        task_page=page,
+        task_pages=pages,
+        task_match_count=count,
+        task_first=offset + 1 if count else 0,
+        task_last=min(offset + TASK_PAGE_SIZE, count),
+        task_state=task_state,
+        task_search=search,
+        task_query=urlencode(dict(query, page=page)),
+        previous_page=base + urlencode(dict(query, page=page - 1)) if page > 1 else None,
+        next_page=base + urlencode(dict(query, page=page + 1)) if page < pages else None,
+    )
+
+
 async def runs_context(service: Any, now: datetime | None = None) -> dict[str, Any]:
     now = now or datetime.now(UTC)
     if service.state.config is None:
@@ -117,17 +169,7 @@ async def runs_context(service: Any, now: datetime | None = None) -> dict[str, A
         cached = await service.store.list()
     runs = []
     for entry in cached:
-        launch = None
-        if entry.launch_key:
-            launch = await LaunchStore(service.store.directory).get(entry.launch_key)
-            if launch:
-                entry.source = launch.source_metadata()
-        run = run_view(entry, now)
-        if launch and not entry.snapshot:
-            run.workflow_name = run.display_name = launch.flow
-            run.created_at = stamp(launch.created_at)
-            run.elapsed = max(0, (now - run.created_at).total_seconds())
-        runs.append(run)
+        runs.append(await cached_view(entry, service, now))
     runs.sort(key=lambda run: run.created_at, reverse=True)
     intervals = [interval for run in runs for interval in run.intervals]
     return dict(

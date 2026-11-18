@@ -2,8 +2,8 @@
 <p>Observation: <strong class="{% if run.observation.status != 'fresh' %}text-amber-800{% endif %}">{{ run.observation.status }}</strong></p>
 <p>Last successful read: {{ run.observation.last_successful_fetch or 'never' }}</p>
 {% if run.observation.error %}<p class="text-amber-800">{{ run.observation.error }}</p>{% endif %}
-<p>Controller: <strong>{{ run.controller.state if run.controller else 'unknown / not managed' }}</strong>{% if run.controller %} (observed {{ run.controller.observed_at }}){% endif %}</p>
-{% if run.source %}<p>Source: {{ run.source.name }} · Branch: {{ run.source.branch }} · Commit: {{ run.source.short_commit }} · Detached: {{ run.source.detached }}</p>{% endif %}
+<p>Controller: <strong>{{ run.controller.state if run.controller else ('unknown' if run.controller_managed else 'not managed by ScriptHut') }}</strong>{% if run.controller %} (observed {{ run.controller.observed_at or '—' }}){% endif %}</p>
+{% if run.source %}<p>Source: {{ run.source.name }} · Branch: {{ run.source.branch or '—' }} · Commit: {{ run.source.short_commit or '—' }} · Detached: {{ run.source.detached }}</p>{% endif %}
 {% for image in run.images %}<p>Image {{ image.name }}: {{ image.ref }} · {{ image.path }}</p>{% endfor %}
 {% if run.image_preparation %}
 <p>Image preparation: {{ run.image_preparation.status }}{% if run.image_preparation.elapsed_seconds is defined %} · {{ run.image_preparation.elapsed_seconds }} seconds elapsed{% endif %}</p>
