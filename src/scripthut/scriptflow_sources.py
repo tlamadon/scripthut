@@ -369,14 +369,22 @@ async def list_flows(
             ["show", f"{revision.commit}:{path}"], cwd=source.local_path_resolved
         )
         if code:
-            raise ValueError(f"{source.name}: missing or unreadable {path}: {error}")
+            if f"path '{path}' does not exist in" in error or f"path '{path}' exists on disk, but not in" in error:
+                raise ValueError("no sflow.py in this source")
+            raise ValueError(f"{source.name}: cannot read {path}: {error}")
     else:
         if reader is None:
             raise ValueError("Backend connection is unavailable")
         directory = await workdir_for(reader, source)
-        text = await SourceCheckout(config).checked(
-            reader, f"git -C {q(directory)} show {q(revision.commit + ':' + path)}"
-        )
+        try:
+            text = await SourceCheckout(config).checked(
+                reader, f"git -C {q(directory)} show {q(revision.commit + ':' + path)}"
+            )
+        except ValueError as exc:
+            message = str(exc)
+            if f"path '{path}' does not exist in" in message or f"path '{path}' exists on disk, but not in" in message:
+                raise ValueError("no sflow.py in this source") from exc
+            raise
     return flow_names(text)
 
 

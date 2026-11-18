@@ -40,6 +40,8 @@ scripthut.yaml
 
 # Discussion notes (private)
 .discussion/
+discussions/
+node_modules/
 
 # Type checking
 .mypy_cache/

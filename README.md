@@ -6,7 +6,7 @@ Runs started by hand work without ScriptHut, and disconnecting ScriptHut does no
 stop a controller.
 
 ScriptHut also provides Slurm/PBS connection status and read-only job listing,
-attachment to existing tmux sessions, git source delivery into shared working directories,
+attachment to tmux sessions, git source delivery into shared working directories,
 and a local server daemon. It does not execute its own workflows or tasks.
 
 ## Install and configure
@@ -24,13 +24,12 @@ observation and backend job listing.
 scripthut --config scripthut.yaml
 ```
 
-The default address remains `http://127.0.0.1:8000`; configuration or existing
-`--host`/`--port` overrides control binding. `/` shows the overview: CPU-hour
+The default address is `http://127.0.0.1:8000`; configuration or `--host`/`--port` overrides control binding. `/` shows the overview: CPU-hour
 activity, active/recent ScriptFlow runs and backend status. Runs are at `/runs`
-(`/scriptflow` remains an alias). Other pages are `/backends`, `/sources`,
+(`/scriptflow` is an alias). Other pages are `/backends`, `/sources`,
 `/terminals`, `/disk` (read-only sizes) and `/settings`. Sources offers a Launch
 action per flow through the same repeat-safe controller launch path as the CLI.
-Pages render cached observations; the existing polling loop updates them over SSE.
+Pages render cached observations; the polling loop updates them over SSE.
 
 ## Observe or launch
 
@@ -89,9 +88,7 @@ normally it exits by itself. Controller expiry leaves task jobs running.
 - [Environment groups](docs/configuration/environments.md)
 - [Coding-agent guidance](docs/coding-agents.md)
 
-Removed features include legacy scheduling, disk deletion/cleanup tools, result caching, software
-stacks, coding-agent jobs, cloud/local execution, pricing and run notifications.
-Their existing data files are left untouched and are no longer read.
+See [migration](docs/configuration/index.md#migration) for unsupported configuration and commands.
 
 ## Development
 

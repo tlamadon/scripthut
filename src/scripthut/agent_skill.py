@@ -2,12 +2,8 @@
 
 ``scripthut agent install`` writes two managed files:
 
-- ``.claude/skills/scripthut/SKILL.md`` — a *thin* skill: the frontmatter
-  description is what triggers on-demand loading, and the body's first
-  instruction is to run ``scripthut agent prompt`` for the full, live,
-  config-aware briefing. The inventory (backends and sources) is
-  deliberately NOT baked in — it would go stale on every config edit;
-  the CLI stays the single source of truth.
+- ``.claude/skills/scripthut/SKILL.md`` — the command and execution-boundary
+  briefing. ``scripthut agent prompt`` adds the configured inventory.
 - ``.claude/commands/scripthut/debug.md`` — a ``/scripthut:debug [run-id]``
   slash command that walks the failure-diagnosis flow (statuses → stderr →
   classification → proposed fix).
@@ -61,7 +57,7 @@ for configured repository metadata and synchronization.
 
 ## ScriptFlow
 
-Commands use local configuration and the existing SSH command transport:
+Commands use local configuration and the SSH command transport:
 
 - `scripthut scriptflow register --backend NAME --run-dir /data/project/.sf/runs/ID --json`
 - `scripthut scriptflow list --json`
@@ -89,7 +85,7 @@ or `--commit` to pin code; `--snapshot` selects the per-commit checkout. Source 
 explicit workdir are mutually exclusive. Backend may be omitted with one configured
 backend. Refuse dirty tracked files, live/stale runs, unknown run records and
 non-fast-forward updates; never reset, stash or clean a cluster checkout. Untracked
-outputs stay. `flows` reads committed text, using local_path or an existing backend
+outputs stay. `flows` reads committed text, using local_path or a backend
 copy. New commits need new explicit run IDs; identical requests never move code again.
 
 Source images require digest-pinned `ref` or a committed `ref_file`; `allow_tag`
@@ -107,7 +103,7 @@ Binds belong to the flow and runtime activation belongs to the environment group
 Fetch declared outputs with `scriptflow fetch REFERENCE --to LOCAL_DIR`.
 Use repeatable `--task NAME_OR_ID` or `--path PATH`, not both; `--strip PREFIX`
 removes a relative staging prefix. Inspect `--dry-run --json` before copying.
-Existing local files require `--overwrite`. Fetch stays inside the source checkout
+Files already at the destination require `--overwrite`. Fetch stays inside the source checkout
 (or launch/record workdir), rejects escaping symlinks, verifies size/SHA-256 and
 never writes remotely. Missing/skipped files yield exit 1 while other files proceed.
 Raise `settings.fetch_max_file_bytes` / `fetch_max_total_bytes` for larger outputs
@@ -129,7 +125,7 @@ Controller expiry leaves task jobs running. Unregister removes only local state.
 
 Run `scripthut --config scripthut.yaml`, or use `scripthut daemon start`, `status`,
 `logs`, and `stop`. Open `/` for the overview, `/runs` (also `/scriptflow`) for
-runs, `/backends` for read-only job listing, and `/terminals` to attach to an existing tmux session. The versioned
+runs, `/backends` for read-only job listing, and `/terminals` to attach to a tmux session. The versioned
 ScriptFlow API offers list/view, refresh, bounded attempt logs and non-waiting
 cancel; there is no cleanup or release endpoint. Viewing or
 refreshing never changes remote execution. Do not log into hosts directly or

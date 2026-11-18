@@ -3,10 +3,9 @@
 `scripthut agent prompt` prints current supported commands and configured backend
 and source names. `scripthut agent install` installs the local skill and diagnostic
 command; `--user` targets the user's agent directory, otherwise the current project.
-Existing unmanaged files are preserved unless `--force` is explicit.
+unmanaged files are preserved unless `--force` is explicit.
 
-This installer does not start a coding-agent job. ScriptHut no longer schedules
-coding-agent jobs or arbitrary tasks. Agents should use ScriptFlow launch, view,
+Agents use ScriptFlow launch, view,
 logs and cancellation, respecting the separation between workflow outcome and
 observation freshness. Never use direct remote login as a fallback.
 

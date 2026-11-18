@@ -8,7 +8,7 @@ describes server startup. Every CLI leaf supports `--json`.
 
 | Command | Behavior |
 |---|---|
-| `register --backend B --run-dir /absolute/run` | Register an existing run directory |
+| `register --backend B --run-dir /absolute/run` | Register a run directory |
 | `list` | Fetch references on demand; include per-reference observation problems |
 | `view REFERENCE` | Show workflow, controller, freshness, tasks and attempts |
 | `logs REFERENCE TASK --tail 200` | Read an attempt log; task ID or unique name; `--attempt` is 1-based |
@@ -42,7 +42,7 @@ ambiguous request is not resubmitted without `--resubmit-ambiguous`.
 
 `--source` and `--workdir` are mutually exclusive. `--branch`, `--commit` and
 `--snapshot` require a source. Branch defaults to its configured branch; an
-explicit commit at that branch's tip remains on the branch, while an older commit
+explicit commit at that branch's tip stays on the branch, while an older commit
 is detached. Remote URL sources require a full 40-character commit SHA; local
 repositories also resolve abbreviated SHAs. A fixed checkout already at the
 commit stays as it is, including its current attachment/detachment.
@@ -53,10 +53,10 @@ is refused; use a new ID to launch different code. Acknowledged repeats never
 prepare the checkout again. Source name, branch, commit and detached status are
 included in launch output and run list/view JSON and text.
 
-`flows` reads committed text from `local_path`, otherwise the existing fixed
+`flows` reads committed text from `local_path`, otherwise the fixed
 backend checkout. The latter must already contain the requested commit; a missing
 checkout, commit or `sflow.py` is an explicit error, not an empty flow list.
-It performs no clone, fetch, import or launch. The polling loop observes local code or each connected backend's existing copy.
+It performs no clone, fetch, import or launch. The polling loop observes local code or each connected backend's copy.
 The Sources page renders those cached flow names and errors; its Launch action
 uses the same controller launch handler as this CLI.
 
@@ -64,7 +64,7 @@ For source launches with `images`, references resolve before backend preparation
 and are saved in the launch record without credentials. Pulling happens inside the
 controller before ScriptFlow starts. A failure is reported by `view`, `list` and
 the API as `image_preparation.status: failed`, with error text, while the workflow
-remains `not started`. Runtime diagnostics are redacted and retained under the flow
+is `not started`. Runtime diagnostics are redacted and retained under the flow
 folder's `.sf`; view exposes up to 64 KiB of error text. While preparing, `view`
 and the run page show elapsed seconds and the last 20 redacted log lines (capped at
 16 KiB). An ended controller with unfinished preparation reports
@@ -97,14 +97,13 @@ unreadable directory enumeration are reported as errors.
 Local paths preserve their path relative to that working directory. `--strip`
 removes a relative leading prefix: `staging/tables/result.csv` becomes
 `tables/result.csv` with `--strip staging`. Files outside that prefix are skipped
-with an error. Local symlinks, including destination parents, are refused. Existing
-files require `--overwrite`; directories can already exist.
+with an error. Local symlinks, including destination parents, are refused. Files already at the destination require `--overwrite`; directories can already exist.
 
-Transfers stream binary bytes over the existing SSH connection. Size and SHA-256
+Transfers stream binary bytes over the SSH connection. Size and SHA-256
 must match the plan before publication. A temporary local file is atomically
 published without clobbering concurrent writers (hard link, then removal of the
 temporary name); `--overwrite` uses atomic replacement. A failed transfer never
-publishes partial contents or replaces an existing file. Local filesystem support
+publishes partial contents or replaces a destination file. Local filesystem support
 for POSIX directory descriptors, no-follow opens and hard links is required.
 Remote files are only read; no archive or other backend file is created. Bash and
 GNU `find`, `realpath`, `stat`, `sha256sum` and `head` are used on the backend.
@@ -129,7 +128,7 @@ remote metadata and checksums. JSON contains `ok`, `dry_run`, `working_directory
 available, `kind`, `sha256`, `destination`. Status is `fetched`, `would_fetch` or
 `skipped`. Exit 0 means every selected entry was fetched (or would be fetched);
 exit 1 means something requested could not be fetched, including missing outputs,
-existing local files or failed verification. Successful files are retained.
+occupied destinations or failed verification. Successful files are retained.
 
 ## Other commands
 
@@ -146,5 +145,5 @@ Shared API commands resolve `--server`, then `SCRIPTHUT_SERVER`, then
 metadata inspection; source synchronization needs the server. Cloudflare Access
 credentials can come from CLI flags, environment or `settings.cli_auth`.
 
-The removed `run`, `workflow`, `task`, `stack`, `disk` and AWS setup commands are
-not available. ScriptFlow owns task execution; there is no replacement task API.
+ScriptFlow owns task execution. See [migration](configuration/index.md#migration)
+for unsupported commands.

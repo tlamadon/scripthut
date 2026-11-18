@@ -1,12 +1,6 @@
 <script>
-// SSE connection hygiene (loaded on every page via nav.html, before htmx wires
-// up its sse-connect streams). Wraps EventSource so every stream — htmx's
-// page-level streams — is tracked and
-// force-closed on navigation. Without this, streams from the page being left
-// linger through the navigation overlap and pile up against the browser's
-// ~6-connections-per-host limit, deadlocking the next document load (the "page
-// hangs when clicking between tabs" symptom). pagehide (not beforeunload) keeps
-// the back/forward cache eligible.
+// Close page event streams on navigation to release browser connection slots.
+// pagehide preserves back/forward cache eligibility.
 (function () {
     if (window.__sseHygiene || !window.EventSource) return;
     window.__sseHygiene = true;
@@ -28,13 +22,7 @@
     });
 })();
 </script>
-{#
-  Active-tab state. Computed once here (Jinja `set` at template scope is
-  visible to both the desktop and mobile menus below) and as an explicit
-  match per page — an earlier negative-match chain ("not /runs and not
-  /settings and …") silently gave the wrong tab its highlight every time a
-  new page was added.
-#}
+{# Share explicit active-tab matches between desktop and mobile navigation. #}
 {% set path = request.url.path if request is defined else '' %}
 {% set is_detail = path.startswith('/runs/') or path.startswith('/scriptflow/') %}
 {% set is_settings = path.startswith('/settings') %}

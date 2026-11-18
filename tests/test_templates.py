@@ -1,19 +1,10 @@
-"""Every template compiles, and the disk card renders.
-
-These exist because a Jinja `{# #}` comment placed *inside* a `{% for %}`
-tag's expression shipped to production: nothing imports a template at
-import time, no unit test rendered one, so a TemplateSyntaxError only
-surfaced as a 500 on the live page. Compiling is cheap — there is no
-reason for a broken template to reach a release again.
-"""
+"""Compile every page template."""
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
-
 
 
 def _env():

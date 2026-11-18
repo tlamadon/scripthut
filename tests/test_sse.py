@@ -2,20 +2,9 @@
 
 import asyncio
 import time
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
-
-
-
-# -- Helpers ------------------------------------------------------------------
-
-
-
-
-# -- RunManager notify/wait tests ------------------------------------------
-
-
 
 
 # -- AppState poll event tests ------------------------------------------------
@@ -77,7 +66,7 @@ class TestAppStatePollEvent:
         s.config = MagicMock()
         s.config.settings.poll_interval = 60
         s._last_poll_time = time.monotonic()
-        # Should be close to 60 (within a second of recording)
+        # Allow one second of elapsed test time.
         remaining = s.seconds_until_next_poll
         assert 58 <= remaining <= 60
 

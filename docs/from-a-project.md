@@ -31,7 +31,7 @@ fast-forward, with upstream tracking so a manual `git pull --ff-only` works.
 For local sources the upstream is the backend mirror of delivered commits; pulling
 there does not fetch new changes from the local machine until ScriptHut delivers
 them. Private URL sources may require the user's own Git credentials for manual
-pulls: the temporary deployment key is removed after delivery.
+pulls: the temporary deployment key is deleted after delivery.
 
 Preparation refuses modified tracked files, running ScriptFlow records (including
 stale controllers), unreadable records, another known controller awaiting its
@@ -52,10 +52,9 @@ views. A repeated acknowledged request never moves the checkout again. Use a new
 `--snapshot` selects `<clone_dir>/<commit[:12]>` instead of the shared working
 directory. This isolates it from the fixed checkout; repeated uses of the same
 commit still refer to the same per-commit directory. `flow_dir` applies in both
-modes. No result cache is involved: ScriptFlow alone decides whether existing
-outputs allow a task to be skipped.
+modes. No result cache is involved: ScriptFlow alone decides whether outputs allow a task to be skipped.
 
-The explicit existing-directory form also remains available:
+To launch from a backend directory:
 
 ```sh
 scripthut scriptflow launch --backend cluster --workdir /data/project --flow analysis --run-id manual-project --json

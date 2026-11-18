@@ -1,4 +1,4 @@
-"""ScriptHut - Remote job management system."""
+"""ScriptHut - ScriptFlow controller launch and observation."""
 
 import tomllib
 from importlib.metadata import PackageNotFoundError, version
