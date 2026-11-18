@@ -1,10 +1,8 @@
-"""Tests for the gh-style CLI (workflow/run noun groups)."""
+"""Tests for CLI routing, metadata and server connection settings."""
 
 from __future__ import annotations
 
 import argparse
-import json
-from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -14,8 +12,6 @@ from scripthut import cli
 from scripthut.config_schema import GitSourceConfig, PathSourceConfig
 
 # -- helpers -----------------------------------------------------------------
-
-
 
 
 def _ns(**kwargs) -> argparse.Namespace:
@@ -62,14 +58,6 @@ def test_main_dispatch_allowlist_covers_all_cli_subcommands():
     )
 
 
-
-
-
-
-
-
-
-
 def _leaf_parsers(
     parser: argparse.ArgumentParser, path: str = "scripthut",
 ) -> list[tuple[str, argparse.ArgumentParser]]:
@@ -102,8 +90,6 @@ def test_every_subcommand_accepts_json():
         if not any("--json" in a.option_strings for a in sp._actions)
     ]
     assert not missing, f"subcommands missing --json: {missing}"
-
-
 
 
 # -- _resolve_server ---------------------------------------------------------
@@ -285,7 +271,7 @@ async def test_local_client_view_source_returns_metadata():
     assert data["name"] == "src"
     assert data["type"] == "path"
     assert data["description"] == "My repo"
-    # Local mode degrades workflow discovery — it carries a clear hint.
+    # Source sync requires the server.
     assert data["name"] == "src"
     assert "discover_error" not in data
 
@@ -301,14 +287,6 @@ async def test_local_client_view_source_unknown_raises():
         await client.view_source("missing")
 
 
-
-
-
-
-
-
-
-
 # -- RemoteClient ------------------------------------------------------------
 
 
@@ -320,12 +298,6 @@ def _mock_remote(handler) -> cli.RemoteClient:
         base_url="http://localhost:8000/api/v1", transport=transport,
     )
     return client
-
-
-
-
-
-
 
 
 @pytest.mark.asyncio
@@ -340,14 +312,6 @@ async def test_remote_client_raises_runtime_error_on_4xx():
 
 
 # -- subcommand dispatchers --------------------------------------------------
-
-
-
-
-
-
-
-
 
 
 @pytest.mark.asyncio
@@ -371,10 +335,6 @@ async def test_source_list_prints_table(capsys):
     assert "src-b" in out
     assert "demo" in out
     assert rc == 0
-
-
-
-
 
 
 @pytest.mark.asyncio
@@ -466,7 +426,7 @@ async def test_source_sync_all_with_one_failure_still_returns_zero(capsys):
     assert rc == 0
 
 
-# -- _overlay_source_stacks --------------------------------------------------
+# -- HTTP response helpers --------------------------------------------------
 
 
 class _MockResponse:
@@ -502,23 +462,7 @@ def _fake_async_client_returning(resp: _MockResponse):
     return _AsyncClient
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# -- stack list --source -----------------------------------------------------
-
-
+# -- backend list -----------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -557,43 +501,6 @@ async def test_backend_list_json_emits_raw():
     fake.list_backends.assert_awaited_once_with()
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# -- --json output shapes ----------------------------------------------------
-
-
-
-
-
-
-
-
-
-
-
-
 # -- status command ----------------------------------------------------------
 
 
@@ -621,7 +528,7 @@ def test_status_local_mode_reports_no_server(monkeypatch):
     fake_cfg.settings.cli_auth = None
     with patch.object(cli, "load_config", return_value=fake_cfg), \
          patch("scripthut.config.discover_global_config", return_value=None), \
-         patch("scripthut.config.discover_project_config", return_value=None):
+         patch("scripthut.config.find_config_file", return_value=None):
         data = cli._gather_status(_status_ns())
 
     assert data["server"] is None
@@ -747,7 +654,7 @@ def test_status_renders_local_mode():
     data = {
         "version": "0.5.7",
         "install_path": "/x/y/scripthut",
-        "config_paths": {"global": "/u/scripthut.yaml", "project": None},
+        "config_paths": {"global": "/u/scripthut.yaml", "local": None},
         "config_error": None,
         "server": None,
         "server_source": "none",
@@ -770,7 +677,7 @@ def test_status_renders_remote_authorized():
     data = {
         "version": "0.5.7",
         "install_path": "/x/y/scripthut",
-        "config_paths": {"global": None, "project": None},
+        "config_paths": {"global": None, "local": None},
         "config_error": None,
         "server": "https://srv.example",
         "server_source": "config",
@@ -804,7 +711,7 @@ def test_status_renders_auth_failure_with_hint():
     data = {
         "version": "0.5.7",
         "install_path": None,
-        "config_paths": {"global": None, "project": None},
+        "config_paths": {"global": None, "local": None},
         "config_error": None,
         "server": "https://srv.example",
         "server_source": "env",
@@ -821,7 +728,7 @@ def test_status_renders_auth_failure_with_hint():
                        "redirect_location": "https://team.cloudflareaccess.com/.."},
     }
     out = cli._render_status(data, probe=probe)
-    # Hint should mention the cloudflared login command, populated with the app URL.
+    # The login hint includes the configured application URL.
     assert "cloudflared access login https://srv.example" in out
 
 
@@ -927,29 +834,6 @@ async def test_cmd_status_json_includes_probe(monkeypatch, capsys):
     assert payload["server"] == "https://srv.example"
     assert payload["probe"]["health"]["status_code"] == 200
     assert rc == 0
-
-
-# -- stack remote routing -----------------------------------------------------
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 # -- local daemon autostart ---------------------------------------------------

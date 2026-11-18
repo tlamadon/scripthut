@@ -16,3 +16,16 @@ def test_prompt_surface():
     for command in ("scripthut run ", "scripthut workflow ", "scripthut task ", "scripthut stack ", "scripthut disk "):
         assert command not in text
     assert "observation problems" in text
+
+
+def test_prompt_without_config(monkeypatch, capsys):
+    from scripthut import cli
+
+    def missing_config(_):
+        raise FileNotFoundError("No configuration")
+
+    monkeypatch.setattr(cli, "load_config", missing_config)
+    assert cli.main(["agent", "prompt"]) == 0
+    output = capsys.readouterr().out
+    assert "scriptflow launch" in output
+    assert "Configured inventory" not in output

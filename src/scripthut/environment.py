@@ -1,18 +1,7 @@
-"""Env-rule resolution for tasks.
+"""Resolve ordered backend environment rules and named groups.
 
-The resolver collects ``EnvRule`` lists from every layer that contributes
-environment configuration — backend, server, workflow, task — concatenates
-them, and evaluates them in order against a seed of ``SCRIPTHUT_*`` runtime
-variables.
-
-Design notes:
-- Conditionals see the env as resolved so far, so later rules can react to
-  earlier rules (including the SCRIPTHUT_* seed).
-- ``if:`` is AND across keys; list values inside one if-clause mean OR.
-- ``${name}`` substitution is applied to every string in ``set:``, ``append:``,
-  and ``init:`` against the env-so-far. Missing keys expand to "" with a warning.
-- Keys starting with ``SCRIPTHUT_`` are protected — rules cannot overwrite or
-  append to them. The resolver warns and skips silently.
+Conditions see variables set by earlier rules. Keys in a condition are ANDed;
+list values are ORed. Substitution uses the resolved environment.
 """
 
 from __future__ import annotations
@@ -21,14 +10,9 @@ import logging
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import datetime
 
-from scripthut.config_schema import EnvRule, ScriptHutConfig
-from typing import Protocol
+from scripthut.config_schema import EnvRule
 
-
-class EnvironmentTarget(Protocol):
-    env: list[EnvRule]
 
 logger = logging.getLogger(__name__)
 
@@ -38,24 +22,16 @@ _VAR_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 @dataclass
 class LabeledRule:
-    """A rule paired with the layer it came from (for provenance).
+    """A rule paired with its source label and inherited conditions.
 
     ``extra_guards`` carries if-guards inherited from outer ``include:`` rules.
     Every guard plus the rule's own ``if_`` must match for the rule to apply.
     """
 
     rule: EnvRule
-    source: str  # e.g. "backend:cluster", "server", "workflow:train", "task"
+    source: str  # e.g. "backend:cluster", "scriptflow"
     extra_guards: list[dict[str, str | list[str]]] = field(default_factory=list)
 
-
-@dataclass
-class Provenance:
-    """Per-key audit trail of every write to that key during resolution."""
-
-    value: str
-    ops: list[tuple[str, str, str]] = field(default_factory=list)
-    # Each tuple: (source_label, op_name in {"seed","set","append"}, contribution_string)
 
 
 def _expand(value: str, env: Mapping[str, str]) -> str:
@@ -91,25 +67,10 @@ def resolve(
     rules: list[EnvRule] | list[LabeledRule],
     seed: Mapping[str, str],
 ) -> tuple[dict[str, str], str]:
-    """Apply *rules* in order against *seed*. Returns ``(env, extra_init)``."""
-    env, init, _ = resolve_detailed(rules, seed)
-    return env, init
-
-
-def resolve_detailed(
-    rules: list[EnvRule] | list[LabeledRule],
-    seed: Mapping[str, str],
-) -> tuple[dict[str, str], str, dict[str, Provenance]]:
-    """Resolve with per-key provenance tracking.
-
-    Accepts either bare ``EnvRule``s (provenance source becomes ``rule[i]``)
-    or ``LabeledRule``s (provenance source is the rule's ``source`` label).
-    """
+    """Apply rules against the seed and return environment and shell initialization."""
     env: dict[str, str] = {}
-    prov: dict[str, Provenance] = {}
     for k, v in seed.items():
         env[k] = v
-        prov[k] = Provenance(value=v, ops=[("seed", "seed", v)])
 
     init_parts: list[str] = []
     for index, item in enumerate(rules):
@@ -132,9 +93,6 @@ def resolve_detailed(
                 continue
             value = _expand(raw, env)
             env[key] = value
-            p = prov.setdefault(key, Provenance(value=value))
-            p.value = value
-            p.ops.append((source, "set", value))
 
         for key, raw in rule.append.items():
             if _is_protected(key):
@@ -147,88 +105,11 @@ def resolve_detailed(
             existing = env.get(key, "")
             value = f"{existing}:{contribution}" if existing else contribution
             env[key] = value
-            p = prov.setdefault(key, Provenance(value=value))
-            p.value = value
-            p.ops.append((source, "append", contribution))
 
         if rule.init:
             init_parts.append(_expand(rule.init, env))
 
-    return env, "\n".join(init_parts), prov
-
-
-def build_seed(
-    *,
-    backend_name: str,
-    workflow_name: str,
-    run_id: str,
-    created_at: datetime,
-    git_repo: str | None = None,
-    git_branch: str | None = None,
-    git_sha: str | None = None,
-) -> dict[str, str]:
-    """Build the SCRIPTHUT_* runtime seed env."""
-    seed: dict[str, str] = {
-        "SCRIPTHUT_BACKEND": backend_name,
-        "SCRIPTHUT_WORKFLOW": workflow_name,
-        "SCRIPTHUT_RUN_ID": run_id,
-        "SCRIPTHUT_CREATED_AT": created_at.isoformat(),
-    }
-    if git_repo is not None:
-        seed["SCRIPTHUT_GIT_REPO"] = git_repo
-    if git_branch is not None:
-        seed["SCRIPTHUT_GIT_BRANCH"] = git_branch
-    if git_sha is not None:
-        seed["SCRIPTHUT_GIT_SHA"] = git_sha
-    return seed
-
-
-def collect_rules(
-    config: ScriptHutConfig,
-    *,
-    backend_name: str,
-    workflow_name: str,
-    task: EnvironmentTarget,
-    doc_env: list[EnvRule] | None = None,
-) -> list[LabeledRule]:
-    """Concatenate rules from every layer in fixed order, with source labels.
-
-    Layer order: backend → server → workflow-doc (the generator's JSON
-    top-level ``env:``) → task.
-    """
-    out: list[LabeledRule] = []
-    backend = config.get_backend(backend_name)
-    if backend is not None and getattr(backend, "env", None):
-        out.extend(LabeledRule(r, f"backend:{backend_name}") for r in backend.env)
-    out.extend(LabeledRule(r, "server") for r in config.env)
-    if doc_env:
-        out.extend(LabeledRule(r, "workflow-doc") for r in doc_env)
-    out.extend(LabeledRule(r, "task") for r in task.env)
-    return out
-
-
-def collect_groups(
-    config: ScriptHutConfig,
-    *,
-    backend_name: str,
-    workflow_name: str,
-    doc_env_groups: dict[str, list[EnvRule]] | None = None,
-) -> dict[str, list[EnvRule]]:
-    """Merge env_groups from every layer; later layers shadow earlier by name.
-
-    Order: backend → server → workflow-doc (the JSON document's top-level
-    ``env_groups:``). Later definitions win.
-    """
-    groups: dict[str, list[EnvRule]] = {}
-    backend = config.get_backend(backend_name)
-    if backend is not None:
-        groups.update(getattr(backend, "env_groups", {}) or {})
-    groups.update(getattr(config, "env_groups", {}) or {})
-    if doc_env_groups:
-        groups.update(doc_env_groups)
-    return groups
-
-
+    return env, "\n".join(init_parts)
 
 
 def flatten(
@@ -266,75 +147,3 @@ def flatten(
         if lr.rule.set or lr.rule.append or lr.rule.init:
             out.append(lr)
     return out
-
-
-def resolve_for_task(
-    config: ScriptHutConfig,
-    *,
-    backend_name: str,
-    workflow_name: str,
-    run_id: str,
-    created_at: datetime,
-    task: EnvironmentTarget,
-    git_repo: str | None = None,
-    git_branch: str | None = None,
-    git_sha: str | None = None,
-    doc_env: list[EnvRule] | None = None,
-    doc_env_groups: dict[str, list[EnvRule]] | None = None,
-) -> tuple[dict[str, str], str]:
-    """Resolve layered environment rules against a runtime seed."""
-    seed = build_seed(
-        backend_name=backend_name,
-        workflow_name=workflow_name,
-        run_id=run_id,
-        created_at=created_at,
-        git_repo=git_repo,
-        git_branch=git_branch,
-        git_sha=git_sha,
-    )
-    rules = collect_rules(
-        config, backend_name=backend_name, workflow_name=workflow_name,
-        task=task, doc_env=doc_env,
-    )
-    groups = collect_groups(
-        config, backend_name=backend_name, workflow_name=workflow_name,
-        doc_env_groups=doc_env_groups,
-    )
-    rules = flatten(rules, groups)
-    return resolve(rules, seed)
-
-
-def resolve_for_task_detailed(
-    config: ScriptHutConfig,
-    *,
-    backend_name: str,
-    workflow_name: str,
-    run_id: str,
-    created_at: datetime,
-    task: EnvironmentTarget,
-    git_repo: str | None = None,
-    git_branch: str | None = None,
-    git_sha: str | None = None,
-    doc_env: list[EnvRule] | None = None,
-    doc_env_groups: dict[str, list[EnvRule]] | None = None,
-) -> tuple[dict[str, str], str, dict[str, Provenance]]:
-    """Same as ``resolve_for_task`` but also returns per-key provenance."""
-    seed = build_seed(
-        backend_name=backend_name,
-        workflow_name=workflow_name,
-        run_id=run_id,
-        created_at=created_at,
-        git_repo=git_repo,
-        git_branch=git_branch,
-        git_sha=git_sha,
-    )
-    rules = collect_rules(
-        config, backend_name=backend_name, workflow_name=workflow_name,
-        task=task, doc_env=doc_env,
-    )
-    groups = collect_groups(
-        config, backend_name=backend_name, workflow_name=workflow_name,
-        doc_env_groups=doc_env_groups,
-    )
-    rules = flatten(rules, groups)
-    return resolve_detailed(rules, seed)

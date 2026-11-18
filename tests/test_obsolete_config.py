@@ -1,4 +1,4 @@
-"""Removed configuration is rejected explicitly before startup."""
+"""Obsolete configuration is rejected explicitly before startup."""
 
 import pytest
 import yaml
@@ -32,9 +32,9 @@ def test_unsupported_backend_is_error(tmp_path, kind):
 
 def test_environment_names_are_not_obsolete_keys(tmp_path):
     path = tmp_path / "config.yaml"
-    path.write_text(yaml.safe_dump({"env_groups": {"stacks": [{"if": {"stacks": "ready"}, "set": {"stacks": "value"}}]}}))
+    path.write_text(yaml.safe_dump({"backends": [{"type": "slurm", "name": "cluster", "ssh": {"host": "hpc-cluster.example.edu", "user": "alice"}, "env_groups": {"stacks": [{"if": {"stacks": "ready"}, "set": {"stacks": "value"}}]}}]}))
     config = load_yaml_config(path)
-    assert config.env_groups["stacks"][0].set == {"stacks": "value"}
+    assert config.backends[0].env_groups["stacks"][0].set == {"stacks": "value"}
 
 
 def test_backend_rule_obsolete_reference(tmp_path):

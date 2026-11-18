@@ -11,10 +11,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 class EnvRule(BaseModel):
     """A single environment-resolution rule.
 
-    Rules are accumulated from every layer (backend, server, workflow, task)
-    into a single ordered list, then evaluated top-to-bottom against a seed
-    of ``SCRIPTHUT_*`` runtime vars. Conditionals see the env as resolved so
-    far, so later rules can react to earlier rules.
+    Backend rules and the selected controller group are evaluated in order.
+    Conditions see variables resolved by earlier rules.
     """
 
     model_config = ConfigDict(populate_by_name=True)
@@ -83,12 +81,6 @@ class SSHConfig(BaseModel):
         return self.known_hosts.expanduser() if self.known_hosts else None
 
 
-
-
-
-
-
-
 def image_reference(value: str, allow_tag: bool = False) -> str:
     value = value.strip()
     if "://" in value.removeprefix("docker://"):
@@ -128,6 +120,8 @@ class SourceImage(BaseModel):
 
 
 class ImageBackendConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     image_dir: str | None = None
     image_scratch_dir: str | None = None
     image_pull_timeout_seconds: int = Field(default=600, ge=1)
@@ -182,16 +176,16 @@ class SlurmBackendConfig(ImageBackendConfig):
     partition_map: dict[str, str] = Field(
         default_factory=dict,
         description=(
-            "Map logical task partition names to this cluster's actual partition "
-            "names (e.g. {standard: cpu, gpu: gpu-a100}). Tasks keep a portable "
+            "Map controller partition names to this cluster's actual partition "
+            "names (e.g. {standard: cpu, gpu: gpu-a100}). Controllers use a "
             "logical name; each backend translates at submit time."
         ),
     )
     default_partition: str | None = Field(
         default=None,
         description=(
-            "Partition to use when the task's partition isn't in partition_map. "
-            "If unset, the task's literal partition value is used."
+            "Partition to use when the controller's partition isn't in partition_map. "
+            "If unset, the controller's literal partition value is used."
         ),
     )
     login_shell: bool = Field(
@@ -208,49 +202,28 @@ class SlurmBackendConfig(ImageBackendConfig):
     )
     env_groups: dict[str, list[EnvRule]] = Field(
         default_factory=dict,
-        description="Named, reusable rule lists. Visible to this backend's env: and to all later layers (server, workflow, task).",
+        description="Named, reusable rule lists. Used by this backend's controller environment.",
     )
 
 
-class PBSBackendConfig(ImageBackendConfig):
+class PBSBackendConfig(BaseModel):
     """PBS/Torque backend configuration."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    image_dir: str | None = None
 
     name: str = Field(description="Unique identifier for this backend")
     type: Literal["pbs"] = "pbs"
     ssh: SSHConfig = Field(description="SSH connection settings")
-    account: str | None = Field(
-        default=None,
-        description="PBS account to charge jobs to (-A flag)",
-    )
-    login_shell: bool = Field(
-        default=False,
-        description="Use login shell (#!/bin/bash -l) in PBS scripts to source profile",
-    )
     queue: str | None = Field(
         default=None,
-        description="Default PBS queue to submit jobs to (overrides task partition)",
+        description="Display queue when a PBS job has no queue field",
     )
     clone_dir: str = Field(
         default="~/scripthut-repos",
         description="Parent directory for backend source checkouts",
     )
-    env: list[EnvRule] = Field(
-        default_factory=list,
-        description="Backend-level env rules — cluster facts like SCRATCH and module init",
-    )
-    env_groups: dict[str, list[EnvRule]] = Field(
-        default_factory=dict,
-        description="Named, reusable rule lists. Visible to this backend's env: and to all later layers (server, workflow, task).",
-    )
-
-
-
-
-
-
-
-
-
 
 BackendConfig = Annotated[
     SlurmBackendConfig | PBSBackendConfig,
@@ -276,6 +249,8 @@ class GitSourceConfig(BaseModel):
     ``url`` then stays as metadata for repository identification.
     """
 
+    model_config = ConfigDict(extra="forbid")
+
     name: str = Field(description="Unique identifier for this source")
     type: Literal["git"] = "git"
     url: str = Field(
@@ -300,11 +275,20 @@ class GitSourceConfig(BaseModel):
     )
     clone_dir: str = Field(
         default="~/scripthut-repos",
-        description="Parent directory on the backend where repos are cloned into (clone goes into <clone_dir>/<commit_hash>/)",
+        description="Parent directory for fixed source checkouts and commit snapshots",
     )
     images: list[SourceImage] = Field(default_factory=list)
     workdir: str | None = None
     flow_dir: str = "."
+
+    postclone: str | None = Field(
+        default=None,
+        description="Shell command to run in the clone directory after cloning",
+    )
+    description: str = Field(
+        default="",
+        description="Human-readable description of this source",
+    )
 
     @property
     def working_directory(self) -> str:
@@ -330,15 +314,6 @@ class GitSourceConfig(BaseModel):
         self.flow_dir = str(PurePosixPath(self.flow_dir))
         return self
 
-    postclone: str | None = Field(
-        default=None,
-        description="Shell command to run in the clone directory after cloning",
-    )
-    description: str = Field(
-        default="",
-        description="Human-readable description of this source",
-    )
-
     @property
     def deploy_key_resolved(self) -> Path | None:
         """Return the resolved deploy key path with ~ expansion."""
@@ -360,7 +335,9 @@ class GitSourceConfig(BaseModel):
 
 
 class PathSourceConfig(BaseModel):
-    """Path-based source on a backend filesystem."""
+    """Display-only metadata for a directory on a backend filesystem."""
+
+    model_config = ConfigDict(extra="forbid")
 
     name: str = Field(description="Unique identifier for this source")
     type: Literal["path"] = "path"
@@ -388,12 +365,6 @@ class ScriptFlowConfig(BaseModel):
     memory: str = Field(default="2G", pattern=r"^[1-9][0-9]*[KMGTP]?$")
     time_limit: str = Field(default="01:00:00", pattern=r"^[0-9]+(?:-[0-9]+)?(?::[0-9]+){0,2}$")
     partition: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_.-]+$")
-
-
-
-
-
-
 
 
 class CliAuthConfig(BaseModel):
@@ -497,8 +468,6 @@ class GlobalSettings(BaseModel):
         return self.data_dir_resolved / "sources"
 
 
-
-
 class ScriptHutConfig(BaseModel):
     """Root configuration model for scripthut.yaml."""
 
@@ -509,7 +478,7 @@ class ScriptHutConfig(BaseModel):
         if not isinstance(data, dict):
             return data
         obsolete = []
-        for key in ("cache", "stacks", "agent", "pricing", "projects", "workflows", "notifications", "disk"):
+        for key in ("cache", "stacks", "agent", "pricing", "projects", "workflows", "notifications", "disk", "env", "env_groups"):
             if key in data:
                 obsolete.append(key)
         settings = data.get("settings", {})
@@ -547,7 +516,7 @@ class ScriptHutConfig(BaseModel):
         for index, backend in enumerate(data.get("backends", []) or []):
             env_keys(backend, f"backends[{index}].")
         if obsolete:
-            raise ValueError("Obsolete configuration keys: " + ", ".join(sorted(set(obsolete))) + ". Remove them; ScriptHut no longer schedules tasks.")
+            raise ValueError("Obsolete configuration keys: " + ", ".join(sorted(set(obsolete))) + ". Use backend controller environments and ScriptFlow task definitions.")
         return data
 
     backends: list[BackendConfig] = Field(
@@ -560,14 +529,6 @@ class ScriptHutConfig(BaseModel):
             "List of sources (git remotes, local git repos, or backend "
             "paths)"
         ),
-    )
-    env: list[EnvRule] = Field(
-        default_factory=list,
-        description="Server-level environment rules",
-    )
-    env_groups: dict[str, list[EnvRule]] = Field(
-        default_factory=dict,
-        description="Named, reusable rule lists. Visible to server environment resolution.",
     )
     scriptflow: ScriptFlowConfig = Field(default_factory=ScriptFlowConfig)
     settings: GlobalSettings = Field(
@@ -588,14 +549,3 @@ class ScriptHutConfig(BaseModel):
             if source.name == name:
                 return source
         return None
-
-
-    @property
-    def slurm_backends(self) -> list[SlurmBackendConfig]:
-        """Get all Slurm backends."""
-        return [c for c in self.backends if isinstance(c, SlurmBackendConfig)]
-
-    @property
-    def pbs_backends(self) -> list[PBSBackendConfig]:
-        """Get all PBS backends."""
-        return [c for c in self.backends if isinstance(c, PBSBackendConfig)]

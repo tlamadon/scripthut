@@ -1,20 +1,18 @@
 # Configuration
 
 Use `scripthut --config scripthut.yaml` or pass `--config` after a CLI subcommand.
-Without an explicit path, ScriptHut discovers the user-global file
-`~/.config/scripthut/scripthut.yaml` (or `~/.scripthut.yaml`) and a project
-`scripthut.yaml` by walking up from the working directory. When both exist,
-project `env` rules append to global rules and project `env_groups` override
-names. Infrastructure belongs in the global file. The deprecated `.env` fallback
-still supports a single SSH backend when no YAML exists.
+Without an explicit path, ScriptHut uses the first user-global file at
+`~/.config/scripthut/scripthut.yaml` or `~/.scripthut.yaml`. If neither exists,
+it checks `scripthut.yaml` then `scripthut.yml` in the current directory.
+One file supplies the entire configuration. The `.env` fallback supports a
+single SSH backend when no YAML exists.
 
 ## Sections
 
 | Section | Purpose |
 |---|---|
 | `backends` | Named Slurm or PBS SSH connections; see [backends](backends.md) |
-| `sources` | Git remote/local repository metadata, deploy keys, clone directory and postclone; path sources describe an existing backend directory |
-| `env`, `env_groups` | Environment rules and reusable groups; see [environments](environments.md) |
+| `sources` | Git remote/local repository metadata, deploy keys, clone directory and postclone; path sources describe a backend directory |
 | `scriptflow` | Controller `env_group`, `cpus`, `memory`, `time_limit`, optional `partition` |
 | `settings` | Server, polling, local state and CLI connection defaults |
 
@@ -45,17 +43,21 @@ sources:
 
 Without `workdir`, the fixed checkout is
 `<clone_dir>/.worktrees/source-<URL-encoded source name>`. This cannot collide
-with the existing `<clone_dir>/<12-character commit>` layout selected by
+with the `<clone_dir>/<12-character commit>` layout selected by
 `--snapshot`. `flow_dir` is relative, contains no `..`, and must resolve inside
 the repository. ScriptFlow runs from `<workdir>/<flow_dir>`; its default records
 live there under `.sf/runs`. `--runs-dir` can override the records directory.
 
 Git sources are backend-independent: specify `--backend` if more than one is
 configured. A single backend is selected automatically. `local_path` takes
-precedence over `url`; committed objects travel through the existing Git push
+precedence over `url`; committed objects travel through the Git push
 mechanism into a source-specific backend mirror. URL sources use the configured
 deploy key, or HTTPS conversion for public Git SSH URLs. Postclone runs only for
 a newly created checkout. No result cache is used.
+
+Path sources (`type: path`) are display-only metadata for backend directories.
+ScriptFlow source commands require a Git source. To launch from a backend
+directory directly, use `scriptflow launch --workdir`.
 
 ## Source container images
 
@@ -103,7 +105,7 @@ missing image is built in a private node-local directory. Scratch selection uses
 writable `$TMPDIR`, then `/tmp`. An override must be an absolute, writable directory
 on the compute node. Runtime temporary, build, configuration and cache files all
 stay there. Only the completed image is copied into a temporary file in `image_dir`
-and published by rename. Existing images are never overwritten or deleted.
+and published by rename. Published images are never overwritten or deleted.
 
 `image_pull_timeout_seconds` is a positive integer, default **600**. It bounds the
 whole preparation worker, including lock waits and copying. Set the controller
@@ -111,7 +113,7 @@ walltime long enough for preparation plus the workflow. Timeout or a termination
 signal stops the worker, records a launch error, and prevents ScriptFlow from
 starting. Cleanup removes only this job's temporary copy and scratch directory;
 finished images and lock files remain. Uncatchable SIGKILL or node loss can still
-leave temporary files. Old partial files from earlier launches are not removed.
+leave temporary files. Old partial files from earlier launches are left in place.
 The shared filesystem must support `flock`; compute nodes need Bash and GNU file
 utilities, including `timeout`.
 
@@ -150,17 +152,21 @@ flow, and module loads/runtime setup belong to `env_groups`.
 | `cli_autostart` | `ask` | Local daemon startup policy: ask, always or never |
 
 See the repository's `scripthut.example.yaml` for a complete placeholder config.
-Backend changes require server restart. Settings/environment/source metadata can
+Backend changes, including environment rules, require server restart. Settings/source metadata can
 be reloaded through the settings page; no reload submits tasks.
 
-## Obsolete keys: errors, never ignored
+## Migration
 
+### Obsolete keys: errors, never ignored
+
+Unknown keys in backend and source entries are errors.
 Every detected obsolete key causes a validation error. One message lists all
 detected keys, with indexed paths for nested settings. Remove them and retry;
 there is no compatibility mode or `legacy_runs_enabled` switch.
 
 - Top-level: `cache`, `stacks`, `agent`, `pricing`, `projects`, `workflows`,
-  `notifications`, `disk`.
+  `notifications`, `disk`, `env`, `env_groups`. Top-level environment keys and
+  project overlays are unsupported; put controller rules/groups on the backend.
 - Settings: `legacy_runs_enabled`.
 - Backend entries: `max_concurrent`; backend types other than `slurm` and `pbs`
   are errors, including removed `batch`, `ecs`, `ec2`, `local` and unknown types.
@@ -169,5 +175,7 @@ there is no compatibility mode or `legacy_runs_enabled` switch.
 - Environment rules/groups: `stacks` references. Replace needed activation with
   an environment group's `init`/`include` rules; ScriptHut does not install stacks.
 
+The `run`, `workflow`, `task`, `stack`, `disk` and AWS setup commands are unsupported.
+
 Old legacy run records and usage ledgers remain on disk untouched. ScriptHut no
-longer loads or cleans them. The disk inspection/deletion tools themselves are removed.
+longer loads or cleans them. Disk inspection is read-only. The deletion tools are removed.

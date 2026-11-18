@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -13,8 +12,6 @@ from scripthut.api import make_api_router
 from scripthut.config_schema import GitSourceConfig, PathSourceConfig
 
 # -- fixtures ----------------------------------------------------------------
-
-
 
 
 def _make_state(
@@ -72,10 +69,6 @@ def test_list_sources_returns_configured_sources():
     assert by_name["git"]["url"] == "git@h:o/r.git"
 
 
-
-
-
-
 def test_view_source_unknown_returns_404():
     state = _make_state(sources=[])
 
@@ -93,7 +86,6 @@ def test_list_backends_returns_configured_with_status():
     slurm = SlurmBackendConfig(
         name="cluster-a",
         ssh=SSHConfig(host="login.example.com", user="me"),
-        max_concurrent=100,
     )
     state = _make_state()
     state.config = MagicMock()
@@ -121,33 +113,7 @@ def test_list_backends_no_config_returns_empty():
     assert resp.json() == {"backends": []}
 
 
-# -- /sources/{name}/run -----------------------------------------------------
-
-
-
-
-
-
-
-
-
-
-
-
-# -- /sources/{name}/config --------------------------------------------------
-
-
-
-
-
-
-
-
-
-
 # -- /sources/{name}/sync ----------------------------------------------------
-
-
 
 
 def test_sync_unknown_source_returns_404():
@@ -212,72 +178,6 @@ def test_sync_all_sources_empty_config_returns_empty_list():
     resp = _client(state).post("/api/v1/sources/sync")
     assert resp.status_code == 200
     assert resp.json() == {"sources": []}
-
-
-# -- /runs --------------------------------------------------------------------
-
-
-
-
-
-
-
-
-# -- /runs/{run_id}/rerun -----------------------------------------------------
-
-
-
-
-# -- /runs/{run_id}/tasks/{task_id}/logs --------------------------------------
-
-
-
-
-
-
-
-
-
-
-
-
-# -- /stacks/{name}/check ----------------------------------------------------
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# -- /stacks/{name}/install --------------------------------------------------
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# -- /stacks/{name} (DELETE) -------------------------------------------------
-
-
-
-
 
 
 # -- /health ------------------------------------------------------------------

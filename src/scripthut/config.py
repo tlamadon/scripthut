@@ -30,12 +30,6 @@ GLOBAL_CONFIG_PATHS = [
     Path.home() / ".scripthut.yaml",
 ]
 
-# Top-level fields that may only appear in the user-global config because
-# they describe the user's infrastructure (backends, secrets, settings),
-# not the project. A project-local config that uses any of these is
-# rejected with a clear error.
-PROJECT_FORBIDDEN_FIELDS = {"backends", "sources", "settings", "pricing", "cache"}
-
 
 class LegacySettings(BaseSettings):
     """Legacy settings loaded from environment variables or .env file.
@@ -104,26 +98,6 @@ def discover_global_config() -> Path | None:
     for p in GLOBAL_CONFIG_PATHS:
         if p.exists():
             return p
-    return None
-
-
-def discover_project_config(start_dir: Path | None = None) -> Path | None:
-    """Walk up from ``start_dir`` looking for a project-local ``scripthut.yaml``.
-
-    Returns the first ``scripthut.yaml`` / ``scripthut.yml`` found at the
-    starting directory or any of its ancestors. Returns ``None`` if the
-    only match is the user-global config (so we don't double-count it as
-    project-local when CWD happens to be under ``~/.config``).
-    """
-    cwd = (start_dir or Path.cwd()).resolve()
-    global_resolved = {p.resolve() for p in GLOBAL_CONFIG_PATHS if p.exists()}
-    for candidate_dir in [cwd, *cwd.parents]:
-        for name in ("scripthut.yaml", "scripthut.yml"):
-            f = candidate_dir / name
-            if f.exists():
-                if f.resolve() in global_resolved:
-                    return None
-                return f
     return None
 
 
@@ -205,90 +179,6 @@ def load_yaml_config(config_path: Path) -> ScriptHutConfig:
     return cfg
 
 
-
-
-def _validate_project_local_yaml(raw: dict, path: Path) -> None:
-    """Reject project-local configs that try to define user-infra fields."""
-    bad = sorted(set(raw.keys()) & PROJECT_FORBIDDEN_FIELDS)
-    if not bad:
-        return
-    raise ConfigError(
-        f"Project-local config '{path}' contains fields that belong in the "
-        f"user-global config (~/.config/scripthut/scripthut.yaml): "
-        f"{', '.join(bad)}.\n\n"
-        f"Move those sections to the global file and keep only "
-        f"env / env_groups in the "
-        f"project file."
-    )
-
-
-def _merge_configs(
-    global_cfg: ScriptHutConfig, project_cfg: ScriptHutConfig
-) -> ScriptHutConfig:
-    """Overlay project-local entries on top of global.
-
-    The ``env_groups`` mapping is dict-merged (project keys win). The ``env``
-    list is concatenated (global first, then project) so project rules
-    run *after* global rules and can react to the env they set up.
-    Infrastructure fields (``backends``, ``sources``, ``settings``,
-    ``scriptflow``) come strictly from the global config.
-    """
-    merged_env_groups = {**global_cfg.env_groups, **project_cfg.env_groups}
-    merged_env = list(global_cfg.env) + list(project_cfg.env)
-
-    return global_cfg.model_copy(update={
-        "env_groups": merged_env_groups,
-        "env": merged_env,
-    })
-
-
-def load_layered_config(cwd: Path | None = None) -> ScriptHutConfig | None:
-    """Load and merge user-global + project-local configs.
-
-    Returns ``None`` when neither a global nor a project-local YAML
-    is discovered, letting the caller decide on a legacy fallback.
-
-    Discovery rules:
-
-    - The user-global config is at ``~/.config/scripthut/scripthut.yaml``
-      (or the legacy ``~/.scripthut.yaml``).
-    - The project-local config is the first ``scripthut.yaml`` found by
-      walking up from ``cwd``. Skipped if it resolves to the same file
-      as the global one.
-    - If both exist they're merged (project overrides by name). The
-      project-local file is rejected if it tries to define backends,
-      sources, settings, or pricing.
-    - If only one exists, that file is used directly (matches the
-      legacy single-file setup).
-    """
-    global_path = discover_global_config()
-    project_path = discover_project_config(cwd)
-
-    if global_path is None and project_path is None:
-        return None
-
-    if global_path is None:
-        # Only a project-local file — treat it as the entire config.
-        assert project_path is not None
-        return load_yaml_config(project_path)
-
-    global_cfg = load_yaml_config(global_path)
-    if project_path is None:
-        return global_cfg
-
-    # Validate raw YAML before parsing the layered form so the error
-    # message names the offending field directly from the user's source.
-    with open(project_path) as f:
-        raw = yaml.safe_load(f) or {}
-    project_cfg = load_yaml_config(project_path)
-    _validate_project_local_yaml(raw, project_path)
-    merged = _merge_configs(global_cfg, project_cfg)
-    logger.info(
-        f"Loaded layered config: global={global_path}, project={project_path}"
-    )
-    return merged
-
-
 class ConfigError(Exception):
     """User-friendly configuration error."""
 
@@ -310,7 +200,7 @@ def load_legacy_config() -> ScriptHutConfig:
 
     legacy = LegacySettings()
 
-    # Convert to new config format
+    # Map environment settings into the YAML schema.
     ssh_config = SSHConfig(
         host=legacy.ssh_host,
         port=legacy.ssh_port,
@@ -341,26 +231,18 @@ def load_legacy_config() -> ScriptHutConfig:
 def load_config(config_path: Path | None = None) -> ScriptHutConfig:
     """Load application configuration.
 
-    With an explicit ``config_path`` only that file is loaded (used by
-    ``--config`` and tests). Otherwise scripthut layers a user-global
-    config and a project-local one:
-
-    1. User-global at ``~/.config/scripthut/scripthut.yaml`` carries
-       backends, settings, controller resources, and remote sources.
-    2. Project-local ``scripthut.yaml`` found by walking up from CWD
-       carries the project's environment rules and groups.
-       It may **not** define infrastructure sections.
-    3. When both exist, they're merged (project overrides by name).
-    4. When neither exists, falls back to the legacy ``.env`` loader.
+    An explicit path selects one file. Otherwise the user-global YAML takes
+    priority over a YAML file in the current directory. With no YAML file,
+    load SSH and server settings from the environment or .env.
     """
     if config_path is not None:
         if not config_path.exists():
             raise FileNotFoundError(f"Config file not found: {config_path}")
         return load_yaml_config(config_path)
 
-    layered = load_layered_config()
-    if layered is not None:
-        return layered
+    path = discover_global_config() or find_config_file()
+    if path is not None:
+        return load_yaml_config(path)
 
     # No YAML found anywhere — fall back to the legacy .env loader.
     try:
@@ -414,24 +296,3 @@ def set_global_setting(key: str, value: str) -> Path:
 
     path.write_text(updated)
     return path
-
-
-# Global config instance (set by main.py)
-_config: ScriptHutConfig | None = None
-
-
-def get_config() -> ScriptHutConfig:
-    """Get the loaded configuration.
-
-    Raises:
-        RuntimeError: If config hasn't been loaded yet.
-    """
-    if _config is None:
-        raise RuntimeError("Configuration not loaded. Call load_config() first.")
-    return _config
-
-
-def set_config(config: ScriptHutConfig) -> None:
-    """Set the global configuration instance."""
-    global _config
-    _config = config

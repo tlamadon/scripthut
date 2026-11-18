@@ -13,7 +13,6 @@ from scripthut.environment import (
     _matches,
     flatten,
     resolve,
-    resolve_detailed,
 )
 
 
@@ -103,15 +102,15 @@ def test_resolve_set_overrides_earlier_set():
 
 def test_resolve_conditional_matches():
     env, _ = resolve(
-        [rule(**{"if": {"BACKEND": "mercury"}, "set": {"SCRATCH": "/scratch"}})],
-        {"BACKEND": "mercury"},
+        [rule(**{"if": {"BACKEND": "cluster"}, "set": {"SCRATCH": "/scratch"}})],
+        {"BACKEND": "cluster"},
     )
     assert env["SCRATCH"] == "/scratch"
 
 
 def test_resolve_conditional_skips_when_no_match():
     env, _ = resolve(
-        [rule(**{"if": {"BACKEND": "mercury"}, "set": {"SCRATCH": "/scratch"}})],
+        [rule(**{"if": {"BACKEND": "cluster"}, "set": {"SCRATCH": "/scratch"}})],
         {"BACKEND": "anvil"},
     )
     assert "SCRATCH" not in env
@@ -119,9 +118,9 @@ def test_resolve_conditional_skips_when_no_match():
 
 def test_resolve_conditional_list_or():
     rules = [
-        rule(**{"if": {"BACKEND": ["mercury", "delta"]}, "set": {"X": "ok"}}),
+        rule(**{"if": {"BACKEND": ["cluster", "delta"]}, "set": {"X": "ok"}}),
     ]
-    assert resolve(rules, {"BACKEND": "mercury"})[0]["X"] == "ok"
+    assert resolve(rules, {"BACKEND": "cluster"})[0]["X"] == "ok"
     assert resolve(rules, {"BACKEND": "delta"})[0]["X"] == "ok"
     assert "X" not in resolve(rules, {"BACKEND": "anvil"})[0]
 
@@ -176,7 +175,7 @@ def test_resolve_init_concatenates():
 
 def test_resolve_init_skipped_when_guard_fails():
     rules = [
-        rule(**{"if": {"BACKEND": "mercury"}, "init": "module load cuda"}),
+        rule(**{"if": {"BACKEND": "cluster"}, "init": "module load cuda"}),
     ]
     _, init = resolve(rules, {"BACKEND": "anvil"})
     assert init == ""
@@ -232,44 +231,8 @@ def test_resolve_set_protected_key_is_ignored(caplog):
 def test_resolve_append_protected_key_is_ignored(caplog):
     rules = [rule(append={"SCRIPTHUT_BACKEND": "extra"})]
     with caplog.at_level(logging.WARNING):
-        env, _ = resolve(rules, {"SCRIPTHUT_BACKEND": "mercury"})
-    assert env["SCRIPTHUT_BACKEND"] == "mercury"
-
-
-# ---- resolve_detailed(): provenance ---------------------------------------
-
-
-def test_resolve_detailed_records_seed_provenance():
-    _, _, prov = resolve_detailed([], {"SCRIPTHUT_RUN_ID": "r1"})
-    assert prov["SCRIPTHUT_RUN_ID"].ops == [("seed", "seed", "r1")]
-
-
-def test_resolve_detailed_records_labeled_source():
-    rules = [
-        LabeledRule(rule(set={"FOO": "1"}), source="backend:mercury"),
-        LabeledRule(rule(set={"FOO": "2"}), source="task"),
-    ]
-    _, _, prov = resolve_detailed(rules, {})
-    assert prov["FOO"].value == "2"
-    assert [op[:2] for op in prov["FOO"].ops] == [
-        ("backend:mercury", "set"),
-        ("task", "set"),
-    ]
-
-
-def test_resolve_detailed_records_append_chain():
-    rules = [
-        LabeledRule(rule(set={"PATH": "/a"}), source="backend"),
-        LabeledRule(rule(append={"PATH": "/b"}), source="workflow"),
-        LabeledRule(rule(append={"PATH": "/c"}), source="task"),
-    ]
-    _, _, prov = resolve_detailed(rules, {})
-    assert prov["PATH"].value == "/a:/b:/c"
-    assert [(o[0], o[1]) for o in prov["PATH"].ops] == [
-        ("backend", "set"),
-        ("workflow", "append"),
-        ("task", "append"),
-    ]
+        env, _ = resolve(rules, {"SCRIPTHUT_BACKEND": "cluster"})
+    assert env["SCRIPTHUT_BACKEND"] == "cluster"
 
 
 # ---- end-to-end "module load" example from the design ---------------------
@@ -281,7 +244,7 @@ def test_design_scenario_per_backend_module_load():
         rule(set={"PROJECT": "training"}),
         rule(
             **{
-                "if": {"SCRIPTHUT_BACKEND": "mercury"},
+                "if": {"SCRIPTHUT_BACKEND": "cluster"},
                 "set": {"SCRATCH": "/scratch/${USER}"},
                 "init": "module load gcc/12 cuda/11",
             }
@@ -295,23 +258,23 @@ def test_design_scenario_per_backend_module_load():
         ),
         rule(
             **{
-                "if": {"SCRIPTHUT_BACKEND": "mercury", "GPU": "1"},
+                "if": {"SCRIPTHUT_BACKEND": "cluster", "GPU": "1"},
                 "append": {"PATH": "/opt/cuda/bin"},
             }
         ),
     ]
 
-    # Run on mercury without GPU
-    env, init = resolve(rules, {"SCRIPTHUT_BACKEND": "mercury", "USER": "alice"})
+    # Run on cluster without GPU
+    env, init = resolve(rules, {"SCRIPTHUT_BACKEND": "cluster", "USER": "alice"})
     assert env["PROJECT"] == "training"
     assert env["SCRATCH"] == "/scratch/alice"
     assert init == "module load gcc/12 cuda/11"
     assert "PATH" not in env
 
-    # Run on mercury with GPU
+    # Run on cluster with GPU
     env, init = resolve(
         rules,
-        {"SCRIPTHUT_BACKEND": "mercury", "USER": "alice", "GPU": "1"},
+        {"SCRIPTHUT_BACKEND": "cluster", "USER": "alice", "GPU": "1"},
     )
     assert env["PATH"] == "/opt/cuda/bin"
 
@@ -428,12 +391,12 @@ def test_flatten_detects_indirect_cycle():
 def test_flatten_inherits_parent_guard():
     """Inner rules inherit the parent include rule's if-guard."""
     groups = {"g": [rule(set={"X": "1"})]}
-    rules = [_lr(rule(if_={"BACKEND": "mercury"}, include=["g"]))]
+    rules = [_lr(rule(if_={"BACKEND": "cluster"}, include=["g"]))]
     out = flatten(rules, groups)
-    assert out[0].extra_guards == [{"BACKEND": "mercury"}]
+    assert out[0].extra_guards == [{"BACKEND": "cluster"}]
 
     # Resolve confirms the guard applies
-    env, _ = resolve(out, {"BACKEND": "mercury"})
+    env, _ = resolve(out, {"BACKEND": "cluster"})
     assert env["X"] == "1"
     env, _ = resolve(out, {"BACKEND": "anvil"})
     assert "X" not in env
@@ -442,16 +405,16 @@ def test_flatten_inherits_parent_guard():
 def test_flatten_ands_multiple_guards():
     """Parent guard + child guard both must match — including conflicting keys."""
     groups = {"g": [rule(if_={"GPU": "1"}, set={"X": "1"})]}
-    rules = [_lr(rule(if_={"BACKEND": "mercury"}, include=["g"]))]
+    rules = [_lr(rule(if_={"BACKEND": "cluster"}, include=["g"]))]
     out = flatten(rules, groups)
-    # The rule has both its own if_ (GPU=1) and an inherited guard (BACKEND=mercury)
-    assert out[0].extra_guards == [{"BACKEND": "mercury"}]
+    # The rule has both its own if_ (GPU=1) and an inherited guard (BACKEND=cluster)
+    assert out[0].extra_guards == [{"BACKEND": "cluster"}]
     assert out[0].rule.if_ == {"GPU": "1"}
 
     # Both must match
-    env, _ = resolve(out, {"BACKEND": "mercury", "GPU": "1"})
+    env, _ = resolve(out, {"BACKEND": "cluster", "GPU": "1"})
     assert env["X"] == "1"
-    env, _ = resolve(out, {"BACKEND": "mercury", "GPU": "0"})
+    env, _ = resolve(out, {"BACKEND": "cluster", "GPU": "0"})
     assert "X" not in env
     env, _ = resolve(out, {"BACKEND": "anvil", "GPU": "1"})
     assert "X" not in env
@@ -459,14 +422,11 @@ def test_flatten_ands_multiple_guards():
 
 def test_flatten_guards_with_conflicting_keys_never_match():
     """If two guards constrain the same key to different values, rule can never apply."""
-    # Parent says BACKEND=mercury, child group says BACKEND=anvil — impossible
+    # Parent says BACKEND=cluster, child group says BACKEND=anvil — impossible
     groups = {"g": [rule(if_={"BACKEND": "anvil"}, set={"X": "1"})]}
-    rules = [_lr(rule(if_={"BACKEND": "mercury"}, include=["g"]))]
+    rules = [_lr(rule(if_={"BACKEND": "cluster"}, include=["g"]))]
     out = flatten(rules, groups)
-    env, _ = resolve(out, {"BACKEND": "mercury"})
+    env, _ = resolve(out, {"BACKEND": "cluster"})
     assert "X" not in env
     env, _ = resolve(out, {"BACKEND": "anvil"})
     assert "X" not in env
-
-
-# ---- stacks: references ----------------------------------------------------

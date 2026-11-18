@@ -19,11 +19,10 @@ import uvicorn
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
-from sse_starlette.sse import EventSourceResponse
 
 from scripthut import __version__
-from scripthut.config import find_config_file, load_config, load_yaml_config, set_config
-from scripthut.config_schema import GitSourceConfig, PathSourceConfig, ScriptHutConfig
+from scripthut.config import find_config_file, load_config, load_yaml_config
+from scripthut.config_schema import GitSourceConfig, ScriptHutConfig
 from scripthut.models import ConnectionStatus, HPCJob
 from scripthut.runtime import BackendState, Runtime, init_runtime, shutdown_runtime
 from scripthut.sources.git import GitSourceManager, SourceStatus
@@ -41,21 +40,17 @@ class AppState:
     backends: dict[str, BackendState] = field(default_factory=dict)
     source_manager: GitSourceManager | None = None
     source_statuses: dict[str, SourceStatus] = field(default_factory=dict)
-    path_sources: list[PathSourceConfig] = field(default_factory=list)
     terminal_manager: TerminalManager = field(default_factory=TerminalManager)
-    disabled_sources: set[str] = field(default_factory=set)  # Source names toggled off
     filter_enabled: bool = False
     filter_user: str | None = None
     live_view: bool = True
     # Startup readiness: a phase string ("connecting backends", ...) while
     # background initialization runs; None once the server is fully ready.
-    # The default is None so CLI/local-runtime contexts that never run the
-    # web lifespan behave as before.
     startup_phase: str | None = None
     _startup_task: asyncio.Task[None] | None = None
     _polling_task: asyncio.Task[None] | None = None
     _shutdown_event: asyncio.Event = field(default_factory=asyncio.Event)
-    # SSE: global poll event for dashboard/runs pages
+    # SSE poll event for cached dashboard pages
     _poll_event: asyncio.Event = field(default_factory=asyncio.Event)
     _force_poll_event: asyncio.Event = field(default_factory=asyncio.Event)
     _last_poll_time: float = 0.0  # time.monotonic() of last poll completion
@@ -94,9 +89,6 @@ class AppState:
                 jobs.append((backend_name, job))
         return jobs
 
-    def get_filtered_jobs(self) -> list[tuple[str, HPCJob]]:
-        """Get jobs - filtering now happens server-side during polling."""
-        return self.all_jobs
 
     @property
     def any_connected(self) -> bool:
@@ -172,7 +164,6 @@ async def poll_jobs() -> None:
 
     interval = state.config.settings.poll_interval
     logger.info(f"Starting job polling (interval: {interval}s)")
-    poll_count = 0
 
     while not state._shutdown_event.is_set():
         filter_user = state.filter_user if state.filter_enabled else None
@@ -227,7 +218,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         yield
         return
 
-    set_config(config)
     state.config = config
     logger.info(f"Loaded configuration with {len(config.backends)} backends, {len(config.sources)} sources")
 
@@ -240,8 +230,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     for source in config.sources:
         if isinstance(source, GitSourceConfig):
             state.source_manager.add_source(source)
-        elif isinstance(source, PathSourceConfig):
-            state.path_sources.append(source)
 
     # Everything slow — SSH connections — happens in a
     # background task so uvicorn binds the socket immediately. Until the
@@ -316,7 +304,7 @@ class ReloadReport:
 def _diff_named(
     old_items: list[Any], new_items: list[Any]
 ) -> tuple[set[str], set[str], set[str]]:
-    """Return (added, removed, modified) names for two lists of named pydantic models."""
+    """Compare names and values in two lists of configuration models."""
     old_map = {item.name: item.model_dump() for item in old_items}
     new_map = {item.name: item.model_dump() for item in new_items}
     added = set(new_map) - set(old_map)
@@ -327,17 +315,13 @@ def _diff_named(
 def reload_runtime_config(new_config: ScriptHutConfig) -> ReloadReport:
     """Apply a freshly parsed config to the running server, in-process.
 
-    Hot-reloadable: environments, sources, most settings.
-    Backend changes are detected and reported but NOT applied (SSH connections
-    and the polling task are kept as-is to avoid losing in-flight job state).
-    Pricing service changes also require a restart.
+    Sources and most settings are hot-reloadable. Backend connections and
+    polling intervals require a restart.
     """
     report = ReloadReport()
 
     if state.config is None:
-        # No prior config (config_error path). A full restart is the only
-        # safe way to bring up SSH backends, the polling loop, and the run
-        # manager — those are wired up in lifespan(), not here.
+        # Backend connections and polling are initialized by lifespan().
         raise RuntimeError(
             "Cannot hot-reload: server started without a valid config. Restart required."
         )
@@ -360,25 +344,17 @@ def reload_runtime_config(new_config: ScriptHutConfig) -> ReloadReport:
         )
 
     state.config = new_config
-    set_config(new_config)
 
     state.filter_user = new_config.settings.filter_user
     state.filter_enabled = new_config.settings.filter_user is not None
 
-    report.reloaded.extend(["env rules", "settings"])
-    report.counts["env_rules"] = len(new_config.env)
+    report.reloaded.append("settings")
 
-    previously_disabled = set(state.disabled_sources)
     state.source_manager = GitSourceManager(new_config.settings.sources_cache_dir_resolved)
-    state.path_sources = []
     state.source_statuses = {}
-    new_source_names = {s.name for s in new_config.sources}
-    state.disabled_sources = previously_disabled & new_source_names
     for source in new_config.sources:
         if isinstance(source, GitSourceConfig):
             state.source_manager.add_source(source)
-        elif isinstance(source, PathSourceConfig):
-            state.path_sources.append(source)
     report.reloaded.append("sources")
     report.counts["sources"] = len(new_config.sources)
 
@@ -566,13 +542,6 @@ async def clear_backend_log(name: str) -> dict[str, str]:
     backend_state.command_log.clear()
     return {"status": "cleared"}
 
-@app.get("/filter/status")
-async def filter_status() -> dict[str, Any]:
-    """Get current filter status."""
-    return {
-        "enabled": state.filter_enabled,
-        "user": state.filter_user,
-    }
 
 @app.get("/settings", response_class=HTMLResponse)
 async def settings_page(request: Request, message: str = "", message_type: str = "success") -> HTMLResponse:
@@ -619,8 +588,10 @@ def _section_summary() -> dict[str, dict[str, Any]]:
     return {
         "env_rules": {
             "label": "Env rules",
-            "names": [f"rule #{i}" for i, _ in enumerate(cfg.env)],
-            "hot_reload": True,
+            "names": [f"rule #{i}" for i, _ in enumerate(
+                rule for backend in cfg.backends for rule in getattr(backend, "env", [])
+            )],
+            "hot_reload": False,
         },
         "sources": {
             "label": "Sources",
@@ -751,8 +722,7 @@ async def terminal_ws(websocket: WebSocket, backend_name: str) -> None:
 
     After accepting, expects an init JSON message:
       {"type": "init", "cols": 80, "rows": 24,
-       "session_type": "headnode" | "job",
-       "node": "...", "job_id": "..."}  (node/job_id for job sessions)
+       "node": "compute-1", "session": "sf-request"}
     """
     await websocket.accept()
 
@@ -764,38 +734,26 @@ async def terminal_ws(websocket: WebSocket, backend_name: str) -> None:
         await websocket.close()
         return
 
-    # Peek at the init message to determine session type and build command
+    # Read the compute host and tmux session.
     try:
         init_data = await asyncio.wait_for(websocket.receive_json(), timeout=10)
     except Exception:
         await websocket.close()
         return
 
-    session_type = init_data.get("session_type", "headnode")
-    command: str | None = None
-    session_node: str | None = None
-    session_job_id: str | None = None
-    session_label: str | None = None
-
     node = init_data.get("node", "")
-    job_id = init_data.get("job_id", "")
-    tmux_session = init_data.get("session") or (f"sh-{job_id}" if job_id else "")
+    tmux_session = init_data.get("session", "")
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", node) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", tmux_session):
         await websocket.send_json({"type": "error", "message": "An existing compute host and tmux session are required"})
         await websocket.close()
         return
     command = f'ssh -tt {node} "tmux attach -t {tmux_session}"'
-    session_type = "job"
-    session_node = node
-    session_job_id = job_id or None
-    session_label = f"{backend_name} - {tmux_session} on {node}"
-
     session = state.terminal_manager.create_session(
-        backend_name, session_type,
-        node=session_node, job_id=session_job_id, label=session_label,
+        backend_name, "job", node=node,
+        label=f"{backend_name} - {tmux_session} on {node}",
     )
     session.websocket = websocket
-    logger.info(f"Terminal session {session.id} ({session_type}) for backend '{backend_name}'")
+    logger.info(f"Terminal session {session.id} (job) for backend '{backend_name}'")
 
     try:
         cols = init_data.get("cols", 80)
@@ -904,7 +862,7 @@ def _dispatch_subcommand(name: str, argv_rest: list[str]) -> int:
 def run() -> None:
     """Run the application with uvicorn (or dispatch to a subcommand)."""
     import sys
-    if len(sys.argv) > 1 and sys.argv[1] in _SUBCOMMANDS:
+    if len(sys.argv) > 1 and sys.argv[1] in _CLI_SUBCOMMANDS:
         sys.exit(_dispatch_subcommand(sys.argv[1], sys.argv[2:]))
 
     global _config_path
@@ -942,7 +900,6 @@ def run() -> None:
 
 
 _CLI_SUBCOMMANDS = frozenset({"backend", "source", "agent", "status", "daemon", "scriptflow"})
-_SUBCOMMANDS = _CLI_SUBCOMMANDS
 
 
 from scripthut.scriptflow_web import dashboard_context  # noqa: E402

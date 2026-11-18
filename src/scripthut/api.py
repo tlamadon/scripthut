@@ -1,5 +1,7 @@
 """Shared backend and source API."""
 from __future__ import annotations
+from scripthut.sources.summary import source_summary
+
 import logging
 from typing import Any, TYPE_CHECKING
 from fastapi import APIRouter, HTTPException
@@ -45,32 +47,11 @@ def make_api_router(state: AppState) -> APIRouter:
         return {"backends": result}
 
 
-    def _source_summary(src: Any) -> dict[str, Any]:
-        """Compact dict for a GitSourceConfig or PathSourceConfig.
-
-        Hides type-specific fields under a discriminator so callers can
-        format both variants without sniffing the class.
-        """
-        from scripthut.config_schema import GitSourceConfig, PathSourceConfig
-        common: dict[str, Any] = {
-            "name": src.name,
-            "type": src.type,
-            "description": getattr(src, "description", ""),
-        }
-        if isinstance(src, GitSourceConfig):
-            common.update({"url": src.url, "branch": src.branch})
-            if src.local_path is not None:
-                common["local_path"] = str(src.local_path_resolved)
-        elif isinstance(src, PathSourceConfig):
-            common.update({"path": src.path, "backend": src.backend})
-        return common
-
-
     @router.get("/sources")
     async def list_sources() -> dict[str, Any]:
         if state.config is None:
             return {"sources": []}
-        return {"sources": [_source_summary(s) for s in state.config.sources]}
+        return {"sources": [source_summary(s) for s in state.config.sources]}
 
 
     @router.get("/sources/{name}")
@@ -83,7 +64,7 @@ def make_api_router(state: AppState) -> APIRouter:
             raise HTTPException(status_code=404, detail=f"Source '{name}' not found")
         status = state.source_statuses.get(name)
         return {
-            **_source_summary(source),
+            **source_summary(source),
             "warnings": list(status.warnings) if status else [],
             "dirty": bool(status.dirty) if status else False,
         }

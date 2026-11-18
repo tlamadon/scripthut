@@ -1,6 +1,6 @@
 # Backends
 
-Slurm and PBS use the existing SSH command transport. Configure `name`, `type`
+Slurm and PBS use the SSH command transport. Configure `name`, `type`
 and `ssh` (`host`, `user`, optional `port`, `key_path`, `cert_path`, `known_hosts`).
 Set `known_hosts` to enable host-key verification. Secrets and private hostnames
 belong in your untracked configuration.
@@ -28,6 +28,7 @@ scriptflow:
 `/api/v1/backends` reports connections; `/api/v1/backends/NAME/jobs` returns cached
 job observations. No endpoint cancels or submits these listed jobs.
 
-Automated ScriptFlow launch/cleanup/release currently uses Slurm only. PBS remains
-available for observing existing runs and listing jobs. Cloud and local execution
-backends are no longer supported.
+Automated ScriptFlow launch/cleanup/release uses Slurm. PBS supports run
+observation and job listing. Its configuration fields are `name`, `type`, `ssh`,
+`queue` (display fallback), `clone_dir`, and `image_dir` for read-only image
+inspection.

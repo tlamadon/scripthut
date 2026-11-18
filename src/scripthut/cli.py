@@ -14,6 +14,9 @@ from scripthut.config_schema import ScriptHutConfig
 from scripthut.runtime import Runtime, init_runtime, shutdown_runtime
 logger = logging.getLogger(__name__)
 
+from scripthut.sources.summary import source_summary
+
+
 def _emit_json(payload: Any) -> int:
     """Print ``payload`` as indented JSON. Returns 0 for use as a tail call."""
     print(json.dumps(payload, indent=2, default=str))
@@ -43,7 +46,6 @@ class LocalClient:
         return self._runtime
 
     async def list_backends(self) -> dict[str, Any]:
-        config = self.runtime.config
         return {
             "backends": [
                 {
@@ -56,41 +58,14 @@ class LocalClient:
         }
 
     async def list_sources(self) -> dict[str, Any]:
-        from scripthut.config_schema import GitSourceConfig, PathSourceConfig
-        config = self.runtime.config
-        out: list[dict[str, Any]] = []
-        for s in config.sources:
-            base: dict[str, Any] = {
-                "name": s.name, "type": s.type,
-                "description": getattr(s, "description", ""),
-            }
-            if isinstance(s, GitSourceConfig):
-                base.update({"url": s.url, "branch": s.branch})
-                if s.local_path is not None:
-                    base["local_path"] = str(s.local_path_resolved)
-            elif isinstance(s, PathSourceConfig):
-                base.update({"path": s.path, "backend": s.backend})
-            out.append(base)
-        return {"sources": out}
+        return {"sources": [source_summary(s) for s in self.runtime.config.sources]}
 
     async def view_source(self, name: str) -> dict[str, Any]:
         """Return configured source metadata."""
-        from scripthut.config_schema import GitSourceConfig, PathSourceConfig
-        config = self.runtime.config
-        source = config.get_source(name)
+        source = self.runtime.config.get_source(name)
         if source is None:
             raise RuntimeError(f"Source '{name}' not found")
-        base: dict[str, Any] = {
-            "name": source.name, "type": source.type,
-            "description": getattr(source, "description", ""),
-        }
-        if isinstance(source, GitSourceConfig):
-            base.update({"url": source.url, "branch": source.branch})
-            if source.local_path is not None:
-                base["local_path"] = str(source.local_path_resolved)
-        elif isinstance(source, PathSourceConfig):
-            base.update({"path": source.path, "backend": source.backend})
-        return base
+        return source_summary(source)
 
     async def sync_source(self, name: str) -> dict[str, Any]:
         raise RuntimeError(
@@ -103,10 +78,6 @@ class LocalClient:
             "Source sync is not available in local CLI mode. "
             "Run a scripthut server and re-run with `--server <url>`."
         )
-
-
-
-
 
 
 class RemoteAuth:
@@ -208,14 +179,6 @@ class RemoteClient:
 
     async def sync_all_sources(self) -> dict[str, Any]:
         return await self._post("/sources/sync")
-
-
-
-
-
-
-
-
 
 
 def _fetch_cloudflared_token(app_url: str) -> str:
@@ -387,11 +350,7 @@ def _resolve_auth_with_source(
     )
 
 def _resolve_auth(args: argparse.Namespace) -> RemoteAuth | None:
-    """Backwards-compatible wrapper around ``_resolve_auth_with_source``.
-
-    Existing call sites (``_make_client``) only care about the
-    ``RemoteAuth`` itself; the source attribution is for ``status``.
-    """
+    """Resolve authentication credentials without source attribution."""
     return _resolve_auth_with_source(args).auth
 
 def _resolve_server_with_source(
@@ -422,7 +381,7 @@ def _resolve_server_with_source(
     return None, "none"
 
 def _resolve_server(args: argparse.Namespace) -> str | None:
-    """Backwards-compatible wrapper around ``_resolve_server_with_source``.
+    """Resolve the server URL without source attribution.
 
     ``--server local`` forces local mode (returns ``None``) even when env
     or config points at a remote URL — useful for one-off debugging.
@@ -432,9 +391,7 @@ def _resolve_server(args: argparse.Namespace) -> str | None:
 def _confirm_stderr(question: str, default_yes: bool = True) -> bool:
     """Yes/no prompt on stderr (keeps ``--json | jq`` pipelines clean).
 
-    Mirrors ``scripthut.setup.aws_ec2._confirm`` — stdlib only, no
-    click/prompt_toolkit dependency. EOF (ctrl-d, closed stdin) counts
-    as "no".
+    EOF counts as "no".
     """
     suffix = "[Y/n]" if default_yes else "[y/N]"
     while True:
@@ -579,8 +536,8 @@ async def _cmd_agent_install(args: argparse.Namespace) -> int:
         return 1
     print(
         "\nInstalled. Claude Code picks these up automatically: the "
-        "`scripthut` skill loads when a task involves submitting or "
-        "monitoring compute, and `/scripthut:debug <run-id>` diagnoses a "
+        "`scripthut` skill loads when a task involves launching or "
+        "observing ScriptFlow runs, and `/scripthut:debug <run-id>` inspects a "
         "failed run."
     )
     return 0
@@ -606,11 +563,11 @@ def _gather_status(args: argparse.Namespace) -> dict[str, Any]:
     if explicit_cfg:
         config_paths["explicit"] = str(explicit_cfg)
     else:
-        from scripthut.config import discover_global_config, discover_project_config
+        from scripthut.config import discover_global_config, find_config_file
         g = discover_global_config()
-        p = discover_project_config()
+        p = find_config_file() if g is None else None
         config_paths["global"] = str(g) if g else None
-        config_paths["project"] = str(p) if p else None
+        config_paths["local"] = str(p) if p else None
 
     config: ScriptHutConfig | None
     config_error: str | None = None
@@ -654,21 +611,7 @@ def _gather_status(args: argparse.Namespace) -> dict[str, Any]:
 
 def _local_source_summaries(config: ScriptHutConfig) -> list[dict[str, Any]]:
     """Compact dicts for the status renderer's local-mode source listing."""
-    from scripthut.config_schema import GitSourceConfig, PathSourceConfig
-    out: list[dict[str, Any]] = []
-    for s in config.sources:
-        base: dict[str, Any] = {
-            "name": s.name, "type": s.type,
-            "description": getattr(s, "description", ""),
-        }
-        if isinstance(s, GitSourceConfig):
-            base.update({"url": s.url, "branch": s.branch})
-            if s.local_path is not None:
-                base["local_path"] = str(s.local_path_resolved)
-        elif isinstance(s, PathSourceConfig):
-            base.update({"path": s.path, "backend": s.backend})
-        out.append(base)
-    return out
+    return [source_summary(s) for s in config.sources]
 
 async def _probe_server(
     server: str, auth: RemoteAuth | None, *, timeout: float = 5.0,
@@ -749,9 +692,9 @@ def _render_status(data: dict[str, Any], probe: dict[str, Any] | None) -> str:
         lines.append(f"Config:        {cfg_paths['explicit']}  (--config)")
     else:
         g = cfg_paths.get("global") or "(none)"
-        p = cfg_paths.get("project") or "(none)"
+        p = cfg_paths.get("local") or "(none)"
         lines.append(f"Config:        global={g}")
-        lines.append(f"               project={p}")
+        lines.append(f"               local={p}")
     if data.get("config_error"):
         lines.append(f"               ! {data['config_error']}")
 
@@ -1136,11 +1079,7 @@ async def _cmd_backend_list(args: argparse.Namespace) -> int:
     return 0
 
 def _add_common(parser: argparse.ArgumentParser) -> None:
-    # --json lives here so *every* subcommand accepts it. Agents are told
-    # (by `scripthut agent prompt` and the installed skill) that the flag is
-    # universal; a subcommand that omitted it died with "unrecognized
-    # arguments: --json" mid-pipeline. Handlers must honour it — see
-    # test_every_subcommand_accepts_json.
+    # All subcommands accept --json for machine-readable output.
     parser.add_argument(
         "--json", action="store_true",
         help="Emit machine-readable JSON on stdout instead of a table.",
@@ -1259,7 +1198,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_ag_install.set_defaults(handler=_cmd_agent_install)
 
-    # ----- project ----------------------------------------------------------
+    # ----- source ----------------------------------------------------------
     p_src = sub.add_parser("source", help="Inspect configured sources")
     src_sub = p_src.add_subparsers(dest="src_cmd", required=True)
 
@@ -1372,7 +1311,9 @@ def main(argv: list[str]) -> int:
         return 130
 
 
-def _render_agent_prompt(config: ScriptHutConfig) -> str:
+def _render_agent_prompt(config: ScriptHutConfig | None) -> str:
     from scripthut.agent_skill import render_skill
+    if config is None:
+        return render_skill()
     inventory = {"backends": [b.name for b in config.backends], "sources": [s.name for s in config.sources]}
     return render_skill() + "\nConfigured inventory:\n" + json.dumps(inventory, indent=2)
