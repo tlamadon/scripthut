@@ -20,6 +20,7 @@ from scripthut.config_schema import (
 )
 from scripthut.models import ConnectionStatus, HPCJob
 from scripthut.ssh.client import SSHClient
+from scripthut.ssh.config import ssh_client_for
 from scripthut.ssh.command_log import CommandLog
 
 logger = logging.getLogger(__name__)
@@ -39,7 +40,6 @@ class BackendState:
     )
     enabled: bool = True
     command_log: CommandLog = field(default_factory=CommandLog)
-    clone_dir: str = "~/scripthut-repos"
     _reconnect_after: float = 0.0
     _reconnect_delay: float = 0.0
 
@@ -52,22 +52,9 @@ class Runtime:
     backends: dict[str, BackendState]
 
 
-
-
-
-
-
-
 async def init_backend(backend_config: SlurmBackendConfig | PBSBackendConfig) -> BackendState:
     """Initialize an SSH-based backend connection (Slurm or PBS)."""
-    ssh_client = SSHClient(
-        host=backend_config.ssh.host,
-        user=backend_config.ssh.user,
-        key_path=backend_config.ssh.key_path_resolved,
-        port=backend_config.ssh.port,
-        cert_path=backend_config.ssh.cert_path_resolved,
-        known_hosts=backend_config.ssh.known_hosts_resolved,
-    )
+    ssh_client = ssh_client_for(backend_config)
 
     backend: JobBackend
     if isinstance(backend_config, PBSBackendConfig):
@@ -77,8 +64,6 @@ async def init_backend(backend_config: SlurmBackendConfig | PBSBackendConfig) ->
         backend = SlurmBackend(
             ssh_client,
             account=backend_config.account,
-            partition_map=backend_config.partition_map,
-            default_partition=backend_config.default_partition,
         )
         backend_type = "slurm"
 
@@ -88,7 +73,6 @@ async def init_backend(backend_config: SlurmBackendConfig | PBSBackendConfig) ->
         ssh_client=ssh_client,
         backend=backend,
         status=ConnectionStatus(connected=False, host=backend_config.ssh.host),
-        clone_dir=backend_config.clone_dir,
     )
     ssh_client.on_command = backend_state.command_log.append
 
@@ -121,9 +105,6 @@ async def init_backend(backend_config: SlurmBackendConfig | PBSBackendConfig) ->
         )
 
     return backend_state
-
-
-
 
 
 async def init_runtime(config: ScriptHutConfig, *, on_phase: Callable[[str], None] | None = None) -> Runtime:

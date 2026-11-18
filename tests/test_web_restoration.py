@@ -226,7 +226,7 @@ def test_source_launch_repeats_existing_handler(checkout, monkeypatch):  # noqa:
     c = checkout
     from scripthut.scriptflow_launch import ControllerBackend
 
-    monkeypatch.setattr("scripthut.ssh.config._ssh_client_for", lambda settings: c.shell)
+    monkeypatch.setattr("scripthut.ssh.config.ssh_client_for", lambda settings: c.shell)
     submit = AsyncMock(return_value="123")
     monkeypatch.setattr(ControllerBackend, "submit_job", submit)
     state = main.AppState(config=c.config)

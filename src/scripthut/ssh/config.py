@@ -4,8 +4,8 @@ from scripthut.config_schema import SlurmBackendConfig, PBSBackendConfig
 from scripthut.ssh.client import SSHClient
 
 
-def _ssh_client_for(backend_cfg: SlurmBackendConfig | PBSBackendConfig) -> SSHClient:
-    """Build an SSHClient from a backend's SSH config (CLI-only; no shared pool)."""
+def ssh_client_for(backend_cfg: SlurmBackendConfig | PBSBackendConfig) -> SSHClient:
+    """Build an SSHClient from backend connection settings."""
     return SSHClient(
         host=backend_cfg.ssh.host,
         user=backend_cfg.ssh.user,

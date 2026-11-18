@@ -1,4 +1,4 @@
-"""On-demand ScriptFlow observation without the server or legacy runtime."""
+"""On-demand ScriptFlow observation through direct backend connections."""
 
 from __future__ import annotations
 
@@ -177,7 +177,7 @@ async def observe(
     store: ReferenceStore,
     args: argparse.Namespace,
 ) -> tuple[dict[str, Any], bool]:
-    from scripthut.ssh.config import _ssh_client_for
+    from scripthut.ssh.config import ssh_client_for
 
     backend = config.get_backend(cached.reference.backend)
     client = None
@@ -185,7 +185,7 @@ async def observe(
     try:
         if not isinstance(backend, (SlurmBackendConfig, PBSBackendConfig)):
             raise ObservationError("unreachable", "Registered backend is not configured for SSH")
-        client = _ssh_client_for(backend)
+        client = ssh_client_for(backend)
         reader = RecordReader(client)
         await reader.fetch(cached)
         if cached.launch_key:
@@ -446,7 +446,7 @@ async def handle_controller(
         source_config,
         workdir_for,
     )
-    from scripthut.ssh.config import _ssh_client_for
+    from scripthut.ssh.config import ssh_client_for
 
     source = source_config(config, args.source) if getattr(args, "source", None) else None
     revision = None
@@ -480,7 +480,7 @@ async def handle_controller(
     settings = config.get_backend(name) if args.scriptflow_cmd == "images" else backend_config(config, name)
     if settings is None:
         raise ValueError("Unknown image backend")
-    client = _ssh_client_for(settings)
+    client = ssh_client_for(settings)
     backend = ControllerBackend(client)
     reader = RecordReader(client)
     try:

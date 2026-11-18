@@ -1,4 +1,4 @@
-"""Git source delivery independent of workflow execution."""
+"""Git object delivery to backend source mirrors."""
 from __future__ import annotations
 
 import asyncio
@@ -35,7 +35,6 @@ async def _run_local_shell(command: str, timeout: float = 60.0) -> tuple[str, st
     )
 
 
-
 class SourceDelivery:
     """Repository delivery operations with configuration and transport inputs."""
 
@@ -44,17 +43,6 @@ class SourceDelivery:
 
     _source_shell = staticmethod(_run_local_shell)
 
-    async def _get_git_root(self, ssh_client: SSHClient, working_dir: str) -> str:
-        """Detect the git repository root for a working directory on the backend."""
-        stdout, stderr, exit_code = await ssh_client.run_command(
-            f"cd {working_dir} && git rev-parse --show-toplevel"
-        )
-        if exit_code != 0:
-            raise ValueError(
-                f"'{working_dir}' is not inside a git repository. "
-                f"ScriptHut requires workflows to live in git repos."
-            )
-        return stdout.strip()
 
     @staticmethod
     def _to_https_url(repo: str) -> str:
@@ -151,93 +139,6 @@ class SourceDelivery:
         """Remove a temporary deploy key from the backend."""
         await ssh_client.run_command(f"rm -f {remote_key_path}")
 
-    async def _clone_git_repo(
-        self,
-        ssh_client: SSHClient,
-        *,
-        repo: str,
-        branch: str,
-        deploy_key: Path | None,
-        clone_dir: str,
-        postclone: str | None,
-    ) -> tuple[str, str]:
-        """Clone a git repo on the backend if not already present.
-
-        Steps:
-            1. Upload the local deploy key (if any) to a temp file on the backend.
-            2. ``git ls-remote`` to resolve the branch HEAD commit hash.
-            3. Clone into ``<clone_dir>/<short_hash>/`` if absent.
-            4. Clean up the temp deploy key.
-
-        Returns:
-            ``(clone_path, short_hash)`` — the remote clone directory and the
-            12-char commit hash prefix.
-        """
-        remote_key: str | None = None
-        try:
-            # 1. Upload deploy key if configured
-            if deploy_key is not None:
-                key_path = deploy_key.expanduser()
-                remote_key = await self._upload_deploy_key(
-                    ssh_client, key_path
-                )
-
-            git_ssh = await self._build_remote_git_ssh_command(
-                ssh_client, remote_key, clone_dir
-            )
-            # Use HTTPS for public repos (no deploy key) to avoid SSH key issues
-            effective_repo = repo if remote_key else self._to_https_url(repo)
-
-            # 2. Resolve HEAD commit hash
-            cmd = f"{git_ssh}GIT_TERMINAL_PROMPT=0 git ls-remote {effective_repo} refs/heads/{branch}"
-            stdout, stderr, exit_code = await ssh_client.run_command(cmd, timeout=30)
-            if exit_code != 0 or not stdout.strip():
-                raise ValueError(
-                    f"Failed to resolve branch '{branch}' from "
-                    f"'{repo}': {stderr}"
-                )
-            commit_hash = stdout.split()[0]
-            short_hash = commit_hash[:12]
-
-            # 3. Clone if not already present
-            clone_path = f"{clone_dir}/{short_hash}"
-            stdout, _, _ = await ssh_client.run_command(
-                f"test -d {clone_path} && echo exists"
-            )
-            if "exists" not in stdout:
-                logger.info(
-                    f"Cloning {repo}@{branch} ({short_hash}) "
-                    f"to {clone_path}"
-                )
-                cmd = (
-                    f"{git_ssh}GIT_TERMINAL_PROMPT=0 git clone --branch {branch} "
-                    f"--single-branch --depth 1 {effective_repo} {clone_path}"
-                )
-                _, stderr, exit_code = await ssh_client.run_command(
-                    cmd, timeout=300
-                )
-                if exit_code != 0:
-                    raise ValueError(f"Git clone failed: {stderr}")
-
-                # Run postclone command if configured
-                if postclone:
-                    logger.info(f"Running postclone command in {clone_path}")
-                    cmd = f"cd {clone_path} && {postclone}"
-                    _, stderr, exit_code = await ssh_client.run_command(
-                        cmd, timeout=300
-                    )
-                    if exit_code != 0:
-                        raise ValueError(f"Postclone command failed: {stderr}")
-            else:
-                logger.info(
-                    f"Reusing existing clone at {clone_path} ({short_hash})"
-                )
-
-            return clone_path, short_hash
-        finally:
-            # 4. Always clean up the temp deploy key
-            if remote_key is not None:
-                await self._cleanup_deploy_key(ssh_client, remote_key)
 
     def _local_push_target(
         self, source: GitSourceConfig, backend_name: str,
@@ -289,10 +190,8 @@ class SourceDelivery:
     ) -> tuple[str, str]:
         """Materialise a local git repo on the backend by pushing to it.
 
-        The counterpart to :meth:`_clone_git_repo` for sources that carry a
-        ``local_path``: instead of the backend fetching from a git remote
-        (and needing a deploy key to do it), the commit travels over the
-        connection scripthut already holds.
+        Sources with ``local_path`` push committed objects through the
+        backend connection.
 
             1. Resolve the commit locally — no ``git ls-remote``.
             2. Ensure a bare mirror at ``<clone_dir>/.mirror.git``.
@@ -304,8 +203,7 @@ class SourceDelivery:
         clone on the backend, so git hardlinks the objects.
 
         Returns:
-            ``(clone_path, short_hash)`` — same contract as
-            :meth:`_clone_git_repo`.
+            ``(clone_path, short_hash)``.
         """
         local_path = source.local_path_resolved
         if local_path is None:  # pragma: no cover — guarded by the caller
@@ -332,8 +230,7 @@ class SourceDelivery:
         commit_hash = stdout.strip().split("\n")[0]
         short_hash = commit_hash[:12]
 
-        # Uncommitted work is not what runs — say so rather than let the
-        # difference go unnoticed.
+        # Delivery uses committed objects only.
         dirty, _, _ = await self._source_shell(
             f"git -C {repo} status --porcelain", timeout=30.0,
         )
@@ -412,24 +309,3 @@ class SourceDelivery:
                 raise ValueError(f"Postclone command failed: {stderr}")
 
         return clone_path, short_hash
-
-    async def _ls_remote_commit(
-        self, repo: str, branch: str,
-    ) -> str | None:
-        """Resolve a remote git ref to a commit hash via local ``git ls-remote``.
-
-        Used by API-only backends (Batch) so they can pass a concrete SHA to
-        their container's runtime clone step.  Returns None on failure; the
-        container will fall back to the branch name.
-        """
-        cmd = f"git ls-remote {repo} {branch}"
-        try:
-            stdout, stderr, code = await self._source_shell(cmd, timeout=30.0)
-        except Exception as e:
-            logger.warning(f"Local git ls-remote failed: {e}")
-            return None
-        if code != 0:
-            logger.warning(f"Local git ls-remote exit {code}: {stderr.strip()}")
-            return None
-        line = stdout.strip().split("\n", 1)[0]
-        return line.split()[0] if line else None

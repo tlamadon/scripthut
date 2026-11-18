@@ -28,10 +28,6 @@ def is_safe_branch_name(branch: str) -> bool:
     )
 
 
-
-
-
-
 @dataclass
 class SourceStatus:
     """Status of a git source repository."""
@@ -44,20 +40,8 @@ class SourceStatus:
     last_commit_date: str | None = None  # ISO format datetime of HEAD commit
     error: str | None = None
     warnings: list[str] = field(default_factory=list)
-    # local_path source whose working tree has drifted from HEAD. Kept as
-    # a flag rather than only a warning string because `discover_workflows`
-    # rewrites `warnings` on every pass.
+    # Local working tree differs from HEAD, or its status is unreadable.
     dirty: bool = False
-
-    @property
-    def dirty_warning(self) -> str | None:
-        """What a dirty local working tree means for the next submission."""
-        if not self.dirty:
-            return None
-        return (
-            "working tree has uncommitted changes; the backend runs committed "
-            f"HEAD ({self.last_commit or 'unknown'})"
-        )
 
 
 class GitSourceManager:
@@ -88,7 +72,7 @@ class GitSourceManager:
 
         A ``local_path`` source is read in place — the user's own working
         tree, never a copy under ``cache_dir``. Pointing the status here
-        is what makes workflow discovery, HEAD metadata and tree reads at
+        is what makes source inspection, HEAD metadata and tree reads at
         a ref work against it with no further changes.
         """
         source = self._sources.get(name)
@@ -214,8 +198,7 @@ class GitSourceManager:
         source = self._sources[name]
         status = self._statuses[name]
 
-        # A local_path source MUST NOT reach the rmtree below: status.path
-        # is the user's own repository, not a cache copy we own.
+        # Local source paths belong to the user and cannot be cleared as cache.
         if source.local_path is not None:
             return await self._refresh_local_source(name)
 
@@ -224,7 +207,7 @@ class GitSourceManager:
         # Ensure cache directory exists
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
-        # Remove existing directory if it exists
+        # Clear the incomplete clone directory.
         if dest_path.exists():
             shutil.rmtree(dest_path)
 
@@ -334,104 +317,3 @@ class GitSourceManager:
             return await self.pull_source(name)
         else:
             return await self.clone_source(name)
-
-    async def sync_all(self) -> dict[str, SourceStatus]:
-        """Sync all registered sources.
-
-        Returns:
-            Dictionary of source names to their statuses.
-        """
-        tasks = [self.sync_source(name) for name in self._sources]
-        await asyncio.gather(*tasks, return_exceptions=True)
-        return dict(self._statuses)
-
-    async def fetch_branch(self, name: str, branch: str) -> str:
-        """Fetch an arbitrary branch into the source's existing clone.
-
-        The cache clone is ``--single-branch``, but that only limits the
-        default fetch refspec — any branch can still be fetched on
-        demand. The fetched objects land in the clone's object store
-        (so later ``git show <sha>:...`` reads work) without touching
-        the checked-out default branch.
-
-        Args:
-            name: Name of the source.
-            branch: Branch to fetch.
-
-        Returns:
-            The full commit hash of the branch tip.
-
-        Raises:
-            ValueError: Unknown source, unsafe branch name, or the
-                fetch/resolve failed (e.g. branch doesn't exist).
-        """
-        if name not in self._sources:
-            raise ValueError(f"Unknown source: {name}")
-        if not is_safe_branch_name(branch):
-            raise ValueError(f"Invalid branch name: {branch!r}")
-
-        source = self._sources[name]
-        status = self._statuses[name]
-
-        if source.local_path is not None:
-            # Every branch is already here; fetching would only churn the
-            # user's FETCH_HEAD.
-            status = await self._refresh_local_source(name)
-            if not status.cloned:
-                raise ValueError(
-                    f"Source '{name}' is not readable: {status.error}"
-                )
-            stdout, stderr, code = await self._run_git(
-                ["rev-parse", "--verify", f"refs/heads/{branch}"],
-                cwd=status.path,
-            )
-            if code != 0 or not stdout:
-                raise ValueError(
-                    f"Branch '{branch}' not found in local repo "
-                    f"{status.path} for source '{name}': "
-                    f"{stderr or 'rev-parse failed'}"
-                )
-            return stdout
-
-        if not status.cloned or not status.path.exists():
-            status = await self.clone_source(name)
-            if not status.cloned:
-                raise ValueError(
-                    f"Source '{name}' could not be cloned: {status.error}"
-                )
-
-        _, stderr, code = await self._run_git(
-            ["fetch", "origin", f"refs/heads/{branch}"],
-            cwd=status.path,
-            deploy_key=source.deploy_key_resolved,
-        )
-        if code != 0:
-            raise ValueError(
-                f"Failed to fetch branch '{branch}' for source '{name}': "
-                f"{stderr or 'fetch failed'}"
-            )
-
-        stdout, stderr, code = await self._run_git(
-            ["rev-parse", "FETCH_HEAD"], cwd=status.path,
-        )
-        if code != 0 or not stdout:
-            raise ValueError(
-                f"Failed to resolve branch '{branch}' for source '{name}': "
-                f"{stderr or 'rev-parse failed'}"
-            )
-        return stdout
-
-    def get_status(self, name: str) -> SourceStatus | None:
-        """Get the status of a source."""
-        return self._statuses.get(name)
-
-    def get_all_statuses(self) -> dict[str, SourceStatus]:
-        """Get statuses of all sources."""
-        return dict(self._statuses)
-
-    def get_source_path(self, name: str) -> Path | None:
-        """Get the local path for a cloned source."""
-        status = self._statuses.get(name)
-        if status and status.cloned:
-            return status.path
-        return None

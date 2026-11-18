@@ -1,29 +1,13 @@
-"""Git sources that live on this machine (``local_path``) instead of a remote.
-
-A source with ``local_path`` set is read in place and materialised on the
-backend by pushing to a bare mirror under its ``clone_dir``, rather than
-having the backend clone from a git remote with a deploy key. Three things
-need holding down:
-
-1. **Nothing ever writes to the user's repo.** ``status.path`` for such a
-   source *is* their working tree, and ``clone_source`` used to begin with
-   ``shutil.rmtree(status.path)``. Everything here that touches
-   GitSourceManager exists to keep that from coming back.
-2. **The push sequence.** Mirror init, a content-addressed refspec, a clone
-   of that ref, then postclone — and reuse of an already-materialised commit.
-3. **What is read versus what runs.** Workflow JSON and ``scripthut.yaml``
-   come from the working tree; the commit the backend runs is the branch
-   tip. A dirty tree makes those differ, and has to say so.
-"""
+"""Local Git source validation, metadata and backend object delivery."""
 
 from __future__ import annotations
-from scripthut.sources.delivery import SourceDelivery as RunManager
+from scripthut.sources.delivery import SourceDelivery
 
 import json
 import subprocess
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -96,16 +80,15 @@ def _manager(repo: Path, tmp_path: Path, **kw: Any) -> GitSourceManager:
     return mgr
 
 
-def _run_manager(
+def _delivery(
     source: GitSourceConfig, tmp_path: Path, backends: list[Any],
-) -> RunManager:
+) -> SourceDelivery:
     config = ScriptHutConfig(
         sources=[source],
         backends=backends,
         settings=GlobalSettings(sources_cache_dir=tmp_path / "cache"),
     )
-    return RunManager(config)
-
+    return SourceDelivery(config)
 
 
 def _slurm(tmp_path: Path, port: int = 22) -> SlurmBackendConfig:
@@ -206,61 +189,18 @@ class TestDirtyTree:
         mgr = _manager(repo, tmp_path)
         status = await mgr.sync_source("demo")
         assert status.dirty is False
-        assert status.dirty_warning is None
 
     async def test_tracked_edit_is_dirty(self, repo: Path, tmp_path: Path):
         (repo / "code.py").write_text("print('edited')\n")
         mgr = _manager(repo, tmp_path)
         status = await mgr.sync_source("demo")
         assert status.dirty is True
-        assert "uncommitted changes" in (status.dirty_warning or "")
-        assert status.last_commit in (status.dirty_warning or "")
 
     async def test_gitignored_file_is_not_dirty(self, repo: Path, tmp_path: Path):
         """Build artefacts would otherwise warn on every single sync."""
         mgr = _manager(repo, tmp_path)
         status = await mgr.sync_source("demo")
         assert status.dirty is False  # keep-me.txt is ignored
-
-
-
-
-
-
-class TestFetchBranch:
-    async def test_resolves_a_local_branch_without_fetching(
-        self, repo: Path, tmp_path: Path,
-    ):
-        """There is no remote to fetch from, and fetching would churn the
-        user's FETCH_HEAD for nothing."""
-        _git("checkout", "-q", "-b", "feature", cwd=repo)
-        (repo / "code.py").write_text("print('feature')\n")
-        _git("commit", "-qam", "feature work", cwd=repo)
-        _git("checkout", "-q", "main", cwd=repo)
-        expected = _git("rev-parse", "feature", cwd=repo)
-
-        mgr = _manager(repo, tmp_path)
-        assert await mgr.fetch_branch("demo", "feature") == expected
-        assert not (repo / ".git" / "FETCH_HEAD").exists()
-
-    async def test_unknown_branch_raises(self, repo: Path, tmp_path: Path):
-        mgr = _manager(repo, tmp_path)
-        with pytest.raises(ValueError, match="not found in local repo"):
-            await mgr.fetch_branch("demo", "no-such-branch")
-
-    async def test_unsafe_branch_name_still_rejected(
-        self, repo: Path, tmp_path: Path,
-    ):
-        mgr = _manager(repo, tmp_path)
-        with pytest.raises(ValueError, match="Invalid branch name"):
-            await mgr.fetch_branch("demo", "--upload-pack=evil")
-
-    async def test_checkout_is_left_where_it_was(self, repo: Path, tmp_path: Path):
-        _git("checkout", "-q", "-b", "feature", cwd=repo)
-        _git("checkout", "-q", "main", cwd=repo)
-        mgr = _manager(repo, tmp_path)
-        await mgr.fetch_branch("demo", "feature")
-        assert _git("rev-parse", "--abbrev-ref", "HEAD", cwd=repo) == "main"
 
 
 # ---------------------------------------------------------------------------
@@ -274,7 +214,7 @@ class TestPushLocalRepo:
             name="demo", local_path=repo, clone_dir="~/scripthut-repos",
             postclone="uv sync",
         )
-        mgr = _run_manager(src, tmp_path, [_slurm(tmp_path)])
+        mgr = _delivery(src, tmp_path, [_slurm(tmp_path)])
         ssh = _ScriptedSSH()
         sha = _git("rev-parse", "HEAD", cwd=repo)
         short = sha[:12]
@@ -287,7 +227,7 @@ class TestPushLocalRepo:
                 return (sha + "\n", "", 0)
             return ("", "", 0)
 
-        with patch.object(RunManager, "_source_shell", staticmethod(fake_shell)):
+        with patch.object(SourceDelivery, "_source_shell", staticmethod(fake_shell)):
             clone_path, got = await mgr._push_local_repo(ssh, src, "cluster")  # type: ignore[arg-type]
 
         assert (clone_path, got) == (f"~/scripthut-repos/{short}", short)
@@ -315,7 +255,7 @@ class TestPushLocalRepo:
         src = GitSourceConfig(
             name="demo", local_path=repo, clone_dir="/repos", postclone="uv sync",
         )
-        mgr = _run_manager(src, tmp_path, [_slurm(tmp_path)])
+        mgr = _delivery(src, tmp_path, [_slurm(tmp_path)])
         sha = _git("rev-parse", "HEAD", cwd=repo)
         ssh = _ScriptedSSH([
             ("", "", 0),            # mkdir + mirror init
@@ -325,7 +265,7 @@ class TestPushLocalRepo:
         async def fake_shell(cmd: str, timeout: float = 60.0):
             return ((sha + "\n", "", 0) if "rev-parse" in cmd else ("", "", 0))
 
-        with patch.object(RunManager, "_source_shell", staticmethod(fake_shell)):
+        with patch.object(SourceDelivery, "_source_shell", staticmethod(fake_shell)):
             clone_path, short = await mgr._push_local_repo(ssh, src, "cluster")  # type: ignore[arg-type]
 
         assert clone_path == f"/repos/{sha[:12]}"
@@ -338,7 +278,7 @@ class TestPushLocalRepo:
     ):
         """scp-style URLs have nowhere to put a port."""
         src = GitSourceConfig(name="demo", local_path=repo, clone_dir="/repos")
-        mgr = _run_manager(src, tmp_path, [_slurm(tmp_path, port=2222)])
+        mgr = _delivery(src, tmp_path, [_slurm(tmp_path, port=2222)])
         ssh = _ScriptedSSH()
         sha = _git("rev-parse", "HEAD", cwd=repo)
         pushed: list[str] = []
@@ -347,7 +287,7 @@ class TestPushLocalRepo:
             pushed.append(cmd)
             return ((sha + "\n", "", 0) if "rev-parse" in cmd else ("", "", 0))
 
-        with patch.object(RunManager, "_source_shell", staticmethod(fake_shell)):
+        with patch.object(SourceDelivery, "_source_shell", staticmethod(fake_shell)):
             await mgr._push_local_repo(ssh, src, "cluster")  # type: ignore[arg-type]
 
         push = next(c for c in pushed if "push --force" in c)
@@ -356,7 +296,7 @@ class TestPushLocalRepo:
 
     async def test_push_failure_names_the_target(self, repo: Path, tmp_path: Path):
         src = GitSourceConfig(name="demo", local_path=repo, clone_dir="/repos")
-        mgr = _run_manager(src, tmp_path, [_slurm(tmp_path)])
+        mgr = _delivery(src, tmp_path, [_slurm(tmp_path)])
         ssh = _ScriptedSSH()
         sha = _git("rev-parse", "HEAD", cwd=repo)
 
@@ -365,7 +305,7 @@ class TestPushLocalRepo:
                 return (sha + "\n", "", 0)
             return ("", "Permission denied (publickey).", 128)
 
-        with patch.object(RunManager, "_source_shell", staticmethod(fake_shell)):
+        with patch.object(SourceDelivery, "_source_shell", staticmethod(fake_shell)):
             with pytest.raises(ValueError, match="Permission denied"):
                 await mgr._push_local_repo(ssh, src, "cluster")  # type: ignore[arg-type]
 
@@ -375,7 +315,7 @@ class TestPushLocalRepo:
         src = GitSourceConfig(
             name="demo", local_path=repo, branch="nope", clone_dir="/repos",
         )
-        mgr = _run_manager(src, tmp_path, [_slurm(tmp_path)])
+        mgr = _delivery(src, tmp_path, [_slurm(tmp_path)])
         ssh = _ScriptedSSH()
         with pytest.raises(ValueError, match="Could not resolve"):
             await mgr._push_local_repo(ssh, src, "cluster")  # type: ignore[arg-type]

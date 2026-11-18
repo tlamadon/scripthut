@@ -265,7 +265,7 @@ async def test_selection_cli_and_source_root(example, tmp_path, monkeypatch, cap
     )
     (run_dir / "run.json").write_text(json.dumps(raw))
     cached = await store.register(Reference.create("cluster", str(run_dir)))
-    monkeypatch.setattr("scripthut.ssh.config._ssh_client_for", lambda backend: c.client)
+    monkeypatch.setattr("scripthut.ssh.config.ssh_client_for", lambda backend: c.client)
     monkeypatch.setattr("scripthut.scriptflow_cli.load_config", lambda _: config)
     parser = cli.build_parser()
     args = parser.parse_args(

@@ -278,13 +278,13 @@ async def fetch_outputs(
 
 async def handle_fetch(config: ScriptHutConfig, store: ReferenceStore, args: Any) -> dict[str, Any]:
     from scripthut.scriptflow_launch import LaunchStore
-    from scripthut.ssh.config import _ssh_client_for
+    from scripthut.ssh.config import ssh_client_for
 
     cached = await store.get(args.reference)
     backend = config.get_backend(cached.reference.backend)
     if not isinstance(backend, (SlurmBackendConfig, PBSBackendConfig)):
         raise ValueError("Registered backend is not configured for SSH")
-    client = _ssh_client_for(backend)
+    client = ssh_client_for(backend)
     try:
         reader = RecordReader(client)
         await reader.fetch(cached)

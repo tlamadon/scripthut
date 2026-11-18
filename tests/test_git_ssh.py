@@ -9,7 +9,7 @@ Nothing tested the flags at all.
 """
 
 from __future__ import annotations
-from scripthut.sources.delivery import SourceDelivery as RunManager
+from scripthut.sources.delivery import SourceDelivery
 
 from pathlib import Path
 
@@ -116,8 +116,8 @@ class _FakeSSHClient:
 
 async def _remote_cmd(version: tuple[int, int] | None, key: str | None = "/tmp/k") -> str:
     # The builder never touches self; None keeps the test free of a
-    # fully-wired RunManager.
-    return await RunManager._build_remote_git_ssh_command(
+    # fully-wired SourceDelivery.
+    return await SourceDelivery._build_remote_git_ssh_command(
         None, _FakeSSHClient(version), key, "~/scripthut-repos"
     )
 
@@ -154,7 +154,7 @@ async def test_remote_is_empty_without_a_deploy_key():
 
 async def test_remote_does_not_probe_when_there_is_no_key():
     client = _FakeSSHClient((9, 6))
-    await RunManager._build_remote_git_ssh_command(None, client, None, "~/repos")
+    await SourceDelivery._build_remote_git_ssh_command(None, client, None, "~/repos")
     assert client.probes == 0
 
 

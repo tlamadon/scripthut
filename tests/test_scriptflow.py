@@ -306,23 +306,19 @@ def cli_context(tmp_path, monkeypatch):
     )
     transport = FakeTransport(json.dumps(record()))
     monkeypatch.setattr(scriptflow_cli, "load_config", lambda _: config)
-    monkeypatch.setattr("scripthut.ssh.config._ssh_client_for", lambda _: transport)
+    monkeypatch.setattr("scripthut.ssh.config.ssh_client_for", lambda _: transport)
 
     def forbidden(*args, **kwargs):
         pytest.fail("Legacy runtime or run storage invoked")
 
-    from tests.legacy_guards import RunManager
-    from tests.legacy_guards import RunStorageManager
 
     monkeypatch.setattr(cli, "init_runtime", forbidden)
     monkeypatch.setattr(cli, "_make_client", forbidden)
     monkeypatch.setattr(cli, "_ensure_local_server", forbidden)
-    monkeypatch.setattr(RunManager, "__init__", forbidden)
-    monkeypatch.setattr(RunStorageManager, "__init__", forbidden)
     return config, transport
 
 
-def test_cli_register_view_list_and_no_legacy_storage(cli_context, tmp_path, capsys):
+def test_cli_register_view_list(cli_context, tmp_path, capsys):
     config, transport = cli_context
     assert (
         cli.main(
@@ -588,13 +584,13 @@ def test_unregister_local_only(cli_context, capsys, tmp_path):
     assert not transport.commands
 
 
-def test_cli_cancel_no_legacy_and_default_wait(cli_context, capsys, monkeypatch):
+def test_cli_cancel_default_wait(cli_context, capsys, monkeypatch):
     cli.main(
         ["scriptflow", "register", "--backend", "cluster", "--run-dir", RUN_DIRECTORY, "--json"]
     )
     reference = json.loads(capsys.readouterr().out)["reference_id"]
     transport = CancelTransport([fresh_record()])
-    monkeypatch.setattr("scripthut.ssh.config._ssh_client_for", lambda _: transport)
+    monkeypatch.setattr("scripthut.ssh.config.ssh_client_for", lambda _: transport)
     assert cli.main(["scriptflow", "cancel", reference, "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["cancel_result"]["status"] == "requested"
     args = cli.build_parser().parse_args(["scriptflow", "cancel", reference, "--wait"])

@@ -4,19 +4,12 @@ from __future__ import annotations
 
 import logging
 import re
-import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 
 from scripthut.backends.base import (
     ClusterInfo,
     JobBackend,
-    JobStats,
     PartitionInfo,
-)
-from scripthut.backends.utils import (
-    format_bytes,
-    parse_duration_hms,
-    parse_rss_to_bytes,
 )
 from scripthut.models import HPCJob, JobState
 from scripthut.ssh.client import SSHClient
@@ -24,21 +17,6 @@ from scripthut.ssh.client import SSHClient
 
 logger = logging.getLogger(__name__)
 
-
-# PBS failure states from accounting
-PBS_FAILURE_STATES: dict[str, str] = {
-    "FAILED": "Non-zero exit code",
-    "CANCELLED": "Cancelled (qdel)",
-    "WALLTIME_EXCEEDED": "Exceeded walltime",
-    "MEM_EXCEEDED": "Exceeded memory limit",
-    "NODE_FAIL": "Node failure",
-}
-
-# All terminal PBS states
-PBS_TERMINAL_STATES = frozenset({
-    "COMPLETED", "FAILED", "CANCELLED", "WALLTIME_EXCEEDED",
-    "MEM_EXCEEDED", "NODE_FAIL",
-})
 
 # Map PBS single-letter states to our JobState
 _PBS_STATE_MAP: dict[str, JobState] = {
@@ -56,10 +34,6 @@ _PBS_STATE_MAP: dict[str, JobState] = {
     "X": JobState.COMPLETED,     # Subjob completed (PBS Pro)
     "U": JobState.SUSPENDED,     # Suspended due to workstation becoming busy
 }
-
-
-
-
 
 
 def _strip_server_suffix(job_id: str) -> str:
@@ -120,7 +94,6 @@ def parse_qstat_line(line: str) -> HPCJob | None:
         except ValueError:
             cpus = 1
         memory = parts[7] if parts[7] != "--" else "-"
-        time_limit = parts[8] if parts[8] != "--" else "0:00"
         state_char = parts[9]
         elapsed = parts[10] if len(parts) > 10 and parts[10] != "--" else "0:00"
 
@@ -232,312 +205,6 @@ class PBSBackend(JobBackend):
         logger.debug(f"Fetched {len(jobs)} jobs from PBS")
         return jobs
 
-    async def get_job_stats(
-        self, job_ids: list[str], user: str | None = None
-    ) -> dict[str, JobStats]:
-        """Fetch resource utilization stats for completed jobs using qstat -xf.
-
-        PBS Pro: qstat -xf <job_id> returns detailed XML/text output for
-        completed jobs. For Torque, tracejob or qstat -f may be needed.
-        """
-        if not job_ids:
-            return {}
-
-        stats: dict[str, JobStats] = {}
-
-        for job_id in job_ids:
-            # Try qstat -xf first (PBS Pro), fall back to tracejob (Torque)
-            s = await self._get_job_stats_qstat(job_id)
-            if s is None:
-                s = await self._get_job_stats_tracejob(job_id)
-            if s is not None:
-                stats[job_id] = s
-
-        logger.info(
-            f"PBS stats: fetched {len(stats)}/{len(job_ids)} jobs"
-        )
-        return stats
-
-    async def _get_job_stats_qstat(self, job_id: str) -> JobStats | None:
-        """Try fetching stats via qstat -xf (PBS Pro / some Torque)."""
-        try:
-            stdout, _, exit_code = await self._ssh.run_command(
-                f"qstat -xf {job_id} 2>/dev/null", timeout=15
-            )
-        except Exception:
-            return None
-        if exit_code != 0 or not stdout.strip():
-            return None
-        parsed = self._parse_qstat_xf(stdout)
-        return parsed.get(job_id)
-
-    async def _get_job_stats_tracejob(self, job_id: str) -> JobStats | None:
-        """Fetch stats via tracejob (Torque fallback).
-
-        Parses the "obit" / exit line from tracejob output, e.g.:
-            Exit_status=0 resources_used.cput=1 resources_used.walltime=00:00:11
-            resources_used.mem=0kb resources_used.vmem=0kb
-        """
-        try:
-            stdout, _, exit_code = await self._ssh.run_command(
-                f"tracejob -n 1 {job_id} 2>/dev/null", timeout=15
-            )
-        except Exception as e:
-            logger.debug(f"tracejob failed for {job_id}: {e}")
-            return None
-        if exit_code != 0 or not stdout.strip():
-            return None
-        return self._parse_tracejob(job_id, stdout)
-
-    def _parse_tracejob(self, job_id: str, output: str) -> JobStats | None:
-        """Parse tracejob output into JobStats."""
-        attrs: dict[str, str] = {}
-        job_run_time: datetime | None = None
-        job_exit_time: datetime | None = None
-
-        for line in output.split("\n"):
-            line = line.strip()
-
-            # Parse "Job Run at request of" line for start time
-            # Format: MM/DD/YYYY HH:MM:SS.mmm S    Job Run at request of ...
-            if "Job Run at request" in line:
-                job_run_time = self._parse_tracejob_timestamp(line)
-
-            # Parse the exit/resources line
-            # Format: MM/DD/YYYY HH:MM:SS.mmm S    Exit_status=0 resources_used.cput=...
-            if "Exit_status=" in line:
-                job_exit_time = self._parse_tracejob_timestamp(line)
-                # Extract key=value pairs from the line
-                # Find the part after the S marker
-                parts = line.split("    ", 1)
-                if len(parts) >= 2:
-                    kv_part = parts[-1]
-                else:
-                    kv_part = line
-                for token in kv_part.split():
-                    if "=" in token:
-                        key, _, value = token.partition("=")
-                        attrs[key.strip()] = value.strip()
-
-        if not attrs:
-            return None
-
-        # Map tracejob fields to the same format as qstat -xf
-        walltime_str = attrs.get("resources_used.walltime", "")
-        cput_str = attrs.get("resources_used.cput", "")
-        mem_str = attrs.get("resources_used.mem", "")
-
-        walltime_s = parse_duration_hms(walltime_str)
-        # tracejob may report cput as plain seconds (e.g. "1")
-        if cput_str and ":" not in cput_str:
-            try:
-                cput_s = float(cput_str)
-            except ValueError:
-                cput_s = 0.0
-        else:
-            cput_s = parse_duration_hms(cput_str)
-
-        mem_bytes = 0
-        if mem_str:
-            mem_clean = re.sub(r"([kmgtp])b$", lambda m: m.group(1).upper(), mem_str, flags=re.IGNORECASE)
-            mem_bytes = parse_rss_to_bytes(mem_clean)
-        rss_formatted = format_bytes(mem_bytes)
-
-        denominator = walltime_s * 1  # tracejob doesn't report ncpus easily
-        efficiency = (cput_s / denominator * 100) if denominator > 0 else 0.0
-
-        # Determine state
-        exit_status_str = attrs.get("Exit_status", attrs.get("exit_status", ""))
-        try:
-            exit_status = int(exit_status_str)
-            pbs_state = "COMPLETED" if exit_status == 0 else "FAILED"
-        except (ValueError, TypeError):
-            pbs_state = None
-
-        return JobStats(
-            cpu_efficiency=round(efficiency, 1),
-            max_rss=rss_formatted,
-            total_cpu=f"{cput_s:.0f}s",
-            start_time=job_run_time,
-            end_time=job_exit_time,
-            state=pbs_state,
-        )
-
-    @staticmethod
-    def _parse_tracejob_timestamp(line: str) -> datetime | None:
-        """Parse timestamp from a tracejob line like '03/19/2026 15:38:18.133 S ...'"""
-        parts = line.split()
-        if len(parts) >= 2:
-            dt_str = f"{parts[0]} {parts[1].split('.')[0]}"
-            try:
-                dt = datetime.strptime(dt_str, "%m/%d/%Y %H:%M:%S")
-                return dt.replace(tzinfo=timezone.utc)
-            except ValueError:
-                pass
-        return None
-
-    def _parse_qstat_xf(self, output: str) -> dict[str, JobStats]:
-        """Parse qstat -xf output into JobStats.
-
-        Supports both XML (Torque) and text key-value (PBS Pro) formats.
-        """
-        stripped = output.strip()
-        if stripped.startswith("<?xml") or stripped.startswith("<Data"):
-            return self._parse_qstat_xf_xml(stripped)
-        return self._parse_qstat_xf_text(stripped)
-
-    def _parse_qstat_xf_xml(self, output: str) -> dict[str, JobStats]:
-        """Parse Torque XML qstat -xf output."""
-        stats: dict[str, JobStats] = {}
-        try:
-            root = ET.fromstring(output)
-        except ET.ParseError as e:
-            logger.warning(f"Failed to parse qstat -xf XML: {e}")
-            return stats
-
-        for job_el in root.findall("Job"):
-            job_id_el = job_el.find("Job_Id")
-            if job_id_el is None or not job_id_el.text:
-                continue
-            job_id = _strip_server_suffix(job_id_el.text.strip())
-
-            # Flatten XML into dot-notation attrs dict
-            attrs: dict[str, str] = {}
-            for child in job_el:
-                if len(child) > 0:
-                    # Nested element (e.g. <resources_used><cput>...</cput></resources_used>)
-                    prefix = child.tag
-                    for sub in child:
-                        if sub.text:
-                            attrs[f"{prefix}.{sub.tag}"] = sub.text.strip()
-                elif child.text:
-                    attrs[child.tag] = child.text.strip()
-
-            s = self._build_stats_from_attrs(job_id, attrs)
-            if s is not None:
-                stats[job_id] = s
-
-        return stats
-
-    def _parse_qstat_xf_text(self, output: str) -> dict[str, JobStats]:
-        """Parse PBS Pro text key-value qstat -xf output."""
-        stats: dict[str, JobStats] = {}
-        current_job_id: str | None = None
-        attrs: dict[str, str] = {}
-
-        def _flush() -> None:
-            nonlocal current_job_id, attrs
-            if current_job_id is not None:
-                s = self._build_stats_from_attrs(current_job_id, attrs)
-                if s is not None:
-                    stats[current_job_id] = s
-            current_job_id = None
-            attrs = {}
-
-        for line in output.split("\n"):
-            if line.startswith("Job Id:"):
-                _flush()
-                raw_id = line.split(":", 1)[1].strip()
-                current_job_id = _strip_server_suffix(raw_id)
-                continue
-
-            line = line.strip()
-            if "=" in line and current_job_id is not None:
-                key, _, value = line.partition("=")
-                attrs[key.strip()] = value.strip()
-
-        _flush()
-        return stats
-
-    def _build_stats_from_attrs(
-        self, job_id: str, attrs: dict[str, str]
-    ) -> JobStats | None:
-        """Build a JobStats from parsed qstat -xf attributes."""
-        walltime_str = attrs.get("resources_used.walltime", "")
-        cput_str = attrs.get("resources_used.cput", "")
-        mem_str = attrs.get("resources_used.mem", "")
-
-        walltime_s = parse_duration_hms(walltime_str)
-        cput_s = parse_duration_hms(cput_str)
-
-        # Parse memory used (PBS uses lowercase units: 1024mb, 512kb)
-        mem_bytes = 0
-        if mem_str:
-            mem_clean = re.sub(r"([kmgtp])b$", lambda m: m.group(1).upper(), mem_str, flags=re.IGNORECASE)
-            mem_bytes = parse_rss_to_bytes(mem_clean)
-        rss_formatted = format_bytes(mem_bytes)
-
-        # CPU efficiency — PBS Pro uses Resource_List.ncpus,
-        # Torque uses Resource_List.nodes (e.g. "1:ppn=4")
-        ncpus = 1
-        ncpus_str = attrs.get("Resource_List.ncpus", "")
-        if ncpus_str:
-            try:
-                ncpus = int(ncpus_str)
-            except ValueError:
-                pass
-        else:
-            nodes_str = attrs.get("Resource_List.nodes", "")
-            ppn_match = re.search(r"ppn=(\d+)", nodes_str)
-            if ppn_match:
-                ncpus = int(ppn_match.group(1))
-        denominator = walltime_s * max(ncpus, 1)
-        efficiency = (cput_s / denominator * 100) if denominator > 0 else 0.0
-
-        # Determine terminal state
-        pbs_state = self._determine_terminal_state(attrs)
-
-        # Parse timestamps (PBS Pro uses "stime", Torque XML uses "start_time")
-        start_time = parse_pbs_datetime(attrs.get("stime", "")) or parse_pbs_datetime(
-            attrs.get("start_time", "")
-        )
-        end_time = parse_pbs_datetime(attrs.get("comp_time", "")) or parse_pbs_datetime(
-            attrs.get("mtime", "")
-        )
-
-        return JobStats(
-            cpu_efficiency=round(efficiency, 1),
-            max_rss=rss_formatted,
-            total_cpu=f"{cput_s:.0f}s",
-            start_time=start_time,
-            end_time=end_time,
-            state=pbs_state,
-        )
-
-    @staticmethod
-    def _determine_terminal_state(attrs: dict[str, str]) -> str | None:
-        """Determine the terminal state from qstat -xf attributes."""
-        exit_status_str = attrs.get("exit_status", "")
-        job_state = attrs.get("job_state", "")
-
-        # Check for walltime/memory exceeded first (from resources)
-        resources_used_walltime = attrs.get("resources_used.walltime", "")
-        resource_list_walltime = attrs.get("Resource_List.walltime", "")
-        if resources_used_walltime and resource_list_walltime:
-            used_s = parse_duration_hms(resources_used_walltime)
-            limit_s = parse_duration_hms(resource_list_walltime)
-            if limit_s > 0 and used_s >= limit_s:
-                return "WALLTIME_EXCEEDED"
-
-        # Check exit status
-        try:
-            exit_status = int(exit_status_str)
-        except (ValueError, TypeError):
-            exit_status = None
-
-        if exit_status is not None:
-            if exit_status == 0:
-                return "COMPLETED"
-            # PBS signals: 271 = qdel (SIGTERM+256), -11 = SIGSEGV
-            if exit_status == 271 or exit_status == -29:
-                return "CANCELLED"
-            return "FAILED"
-
-        # Fall back to job_state letter
-        if job_state in ("C", "F", "X"):
-            return "COMPLETED"
-
-        return None
 
     async def get_cluster_info(self, user: str | None = None) -> ClusterInfo | None:
         """Fetch cluster availability from pbsnodes + qstat.
@@ -716,34 +383,3 @@ class PBSBackend(JobBackend):
             gpus_idle=idle_gpus,
         )
         return ClusterInfo(partitions=[partition], pending_reasons=pending_reasons)
-
-
-
-
-
-
-
-
-
-    async def is_available(self) -> bool:
-        """Check if PBS is available by running qstat --version."""
-        try:
-            stdout, _, exit_code = await self._ssh.run_command("qstat --version 2>&1")
-            if exit_code == 0:
-                return True
-            # Some PBS versions return non-zero for --version but still work
-            stdout2, _, exit_code2 = await self._ssh.run_command("qstat 2>&1")
-            return exit_code2 == 0 or "pbs" in stdout2.lower()
-        except Exception as e:
-            logger.warning(f"PBS availability check failed: {e}")
-            return False
-
-    @property
-    def failure_states(self) -> dict[str, str]:
-        """PBS failure states."""
-        return PBS_FAILURE_STATES
-
-    @property
-    def terminal_states(self) -> frozenset[str]:
-        """All terminal PBS states."""
-        return PBS_TERMINAL_STATES

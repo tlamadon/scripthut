@@ -380,10 +380,8 @@ async def test_generated_script_runs_locally_with_fake_tmux(setup, tmp_path, exi
     assert await process.wait() == 73
 
 
-def test_cli_launch_no_legacy(setup, monkeypatch, capsys):
+def test_cli_launch_without_runtime(setup, monkeypatch, capsys):
     from scripthut import scriptflow_cli, scriptflow_launch
-    from tests.legacy_guards import RunManager
-    from tests.legacy_guards import RunStorageManager
 
     config, _, launch, store = setup
     transport = Transport()
@@ -395,7 +393,7 @@ def test_cli_launch_no_legacy(setup, monkeypatch, capsys):
 
     backend.submit_job = submit
     monkeypatch.setattr(scriptflow_cli, "load_config", lambda _: config)
-    monkeypatch.setattr("scripthut.ssh.config._ssh_client_for", lambda _: transport)
+    monkeypatch.setattr("scripthut.ssh.config.ssh_client_for", lambda _: transport)
     monkeypatch.setattr(scriptflow_launch, "ControllerBackend", lambda _: backend)
 
     def forbidden(*args, **kwargs):
@@ -403,8 +401,6 @@ def test_cli_launch_no_legacy(setup, monkeypatch, capsys):
 
     for target, name in [
         (cli, "init_runtime"),
-        (RunManager, "__init__"),
-        (RunStorageManager, "__init__"),
     ]:
         monkeypatch.setattr(target, name, forbidden)
     assert (

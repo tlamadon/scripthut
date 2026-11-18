@@ -341,7 +341,7 @@ async def test_cli_source_launch_flows_discover_and_pages(checkout, monkeypatch)
     c = checkout
     from scripthut.scriptflow_launch import ControllerBackend
 
-    monkeypatch.setattr("scripthut.ssh.config._ssh_client_for", lambda settings: c.shell)
+    monkeypatch.setattr("scripthut.ssh.config.ssh_client_for", lambda settings: c.shell)
     submit = AsyncMock(return_value="123")
     monkeypatch.setattr(ControllerBackend, "submit_job", submit)
     parser = cli.build_parser()

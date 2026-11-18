@@ -208,16 +208,9 @@ def test_not_started_template(web):
 
 
 async def test_launched_terminal_poll_policy(service, monkeypatch):
-    from tests.legacy_guards import RunManager
-    from tests.legacy_guards import RunStorageManager
 
     service, transport = service
 
-    def forbidden(*args, **kwargs):
-        pytest.fail("Legacy manager/storage invoked")
-
-    monkeypatch.setattr(RunManager, "__init__", forbidden)
-    monkeypatch.setattr(RunStorageManager, "__init__", forbidden)
     cached = await register(service, "completed")
     cached.launch_key = "1" * 32
     cached.controller = {"state": "running", "observed_at": "earlier"}

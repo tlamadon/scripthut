@@ -86,19 +86,6 @@ class HPCJob:
     # Only meaningful while pending; None for running/terminal jobs.
     reason: str | None = None
 
-    @property
-    def state_class(self) -> str:
-        """Return CSS class for job state styling."""
-        state_classes = {
-            JobState.RUNNING: "text-green-600",
-            JobState.PENDING: "text-yellow-600",
-            JobState.COMPLETED: "text-blue-600",
-            JobState.FAILED: "text-red-600",
-            JobState.CANCELLED: "text-gray-600",
-            JobState.TIMEOUT: "text-orange-600",
-        }
-        return state_classes.get(self.state, "text-gray-500")
-
 
 @dataclass
 class ConnectionStatus:
@@ -122,7 +109,3 @@ class ConnectionStatus:
     @property
     def cpus_idle(self) -> int | None:
         return self.cluster_info.cpus_idle if self.cluster_info else None
-
-
-# Backward-compat alias
-SlurmJob = HPCJob

@@ -378,7 +378,7 @@ async def test_images_cli_read_only(checkout, monkeypatch, backend_type):  # noq
 
         c.config.backends = [PBSBackendConfig(name="cluster", ssh=c.config.backends[0].ssh)]
     c.config.backends[0].image_dir = str(c.repo.parent / "images")
-    monkeypatch.setattr("scripthut.ssh.config._ssh_client_for", lambda settings: c.shell)
+    monkeypatch.setattr("scripthut.ssh.config.ssh_client_for", lambda settings: c.shell)
     args = cli.build_parser().parse_args(["scriptflow", "images", "--source", "example"])
     result = await handle_controller(c.config, c.store, args)
     assert result["images"][0]["present"] is False
@@ -411,7 +411,7 @@ async def test_source_launch_resolves_images_before_preparing(checkout, monkeypa
     c.source.local_path = c.repo
     c.source.images = [SourceImage(name="app", ref=REF)]
     c.config.backends[0].image_dir = str(c.repo.parent / "image-files")
-    monkeypatch.setattr("scripthut.ssh.config._ssh_client_for", lambda settings: c.shell)
+    monkeypatch.setattr("scripthut.ssh.config.ssh_client_for", lambda settings: c.shell)
     monkeypatch.setattr(
         "scripthut.scriptflow_sources.SourceCheckout._local_push_target",
         lambda self, source, backend: (source.clone_dir + "/.mirror.git", ""),

@@ -94,7 +94,6 @@ class TestInitRuntimePhases:
                 ssh_client=None,
                 backend=None,
                 status=ConnectionStatus(connected=False, host=cfg.ssh.host),
-                clone_dir=cfg.clone_dir,
             )
 
         phases: list[str] = []

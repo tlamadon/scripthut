@@ -4,31 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from datetime import datetime
 from typing import Any
-
-
-
-@dataclass
-class JobStats:
-    """Resource utilization stats from a job scheduler's accounting system."""
-
-    cpu_efficiency: float  # 0-100%
-    max_rss: str  # Human-readable, e.g. "1.2G"
-    total_cpu: str  # Raw time string
-    start_time: datetime | None = None
-    end_time: datetime | None = None
-    state: str | None = None  # Terminal state from accounting, e.g. "COMPLETED"
-    # Numeric exit code from accounting. For Slurm: the exit half of
-    # sacct's ``ExitCode`` (``<exit>:<signal>``); signal != 0 with exit
-    # 0 is treated as a non-zero exit by the consumer logic. ``None``
-    # means accounting either didn't return a row or didn't surface a
-    # parseable value — distinct from "exit was 0", which is an int.
-    exit_code: int | None = None
-
-
-
-
 
 
 @dataclass
@@ -120,62 +96,13 @@ class JobBackend(ABC):
         """
         ...
 
-    @abstractmethod
-    async def is_available(self) -> bool:
-        """Check if the backend is available and responding."""
-        ...
-
-
-
-
-    @abstractmethod
-    async def get_job_stats(
-        self, job_ids: list[str], user: str | None = None
-    ) -> dict[str, JobStats]:
-        """Fetch resource utilization stats for completed jobs.
-
-        Args:
-            job_ids: List of job IDs to query.
-            user: Optional username to scope the query.
-
-        Returns:
-            Dict mapping job_id to JobStats. IDs not found are omitted.
-        """
-        ...
 
     @abstractmethod
     async def get_cluster_info(self, user: str | None = None) -> ClusterInfo | None:
         """Fetch cluster resource availability.
 
-        Returns a snapshot with one entry per partition/queue plus a
-        breakdown of why pending jobs are waiting. Backends without a
-        partition concept (Batch, EC2) return a single ``"default"``
-        pseudo-partition.
-
-        Args:
-            user: The dashboard's current job-list filter, if any. It does
-                NOT choose whose quota to report: ``user_quota`` always
-                reflects the identity the backend submits as (its own SSH
-                login), since "Your usage" must track the account that
-                actually owns our jobs. Backends that don't support
-                per-user quota leave the field as ``None``.
-
-        Returns:
-            ClusterInfo, or None on failure.
+        Return partitions/queues and pending reasons. The job filter does
+        not select quota identity: quota describes the SSH login.
+        Return None when cluster observation fails.
         """
-        ...
-
-
-
-
-    @property
-    @abstractmethod
-    def failure_states(self) -> dict[str, str]:
-        """Map of terminal failure state names to human-readable reasons."""
-        ...
-
-    @property
-    @abstractmethod
-    def terminal_states(self) -> frozenset[str]:
-        """Set of all terminal accounting state names (success and failure)."""
         ...

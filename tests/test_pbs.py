@@ -4,20 +4,15 @@ import pytest
 from unittest.mock import AsyncMock
 
 from scripthut.backends.pbs import (
-    PBS_FAILURE_STATES,
-    PBS_TERMINAL_STATES,
     PBSBackend,
     _strip_server_suffix,
     parse_pbs_datetime,
     parse_qstat_line,
 )
-from scripthut.backends.base import JobStats
-from scripthut.models import HPCJob, JobState
+from scripthut.models import JobState
 
 
 # -- Utility tests --
-
-
 
 
 class TestStripServerSuffix:
@@ -89,18 +84,6 @@ class TestParseQstatLine:
         assert job.job_id == "99999"
 
 
-# -- Script generation --
-
-
-
-
-
-
-# -- Submit / Cancel --
-
-
-
-
 # -- get_jobs --
 
 
@@ -142,126 +125,6 @@ class TestGetJobs:
 
         jobs = await backend.get_jobs()
         assert jobs == []
-
-
-# -- get_job_stats --
-
-
-class TestGetJobStats:
-    @pytest.mark.asyncio
-    async def test_parse_completed_job(self):
-        qstat_xf_output = (
-            "Job Id: 500.pbs-server\n"
-            "    Job_Name = test-task\n"
-            "    job_state = F\n"
-            "    exit_status = 0\n"
-            "    resources_used.cput = 00:05:00\n"
-            "    resources_used.walltime = 00:10:00\n"
-            "    resources_used.mem = 1024mb\n"
-            "    Resource_List.ncpus = 2\n"
-            "    Resource_List.walltime = 01:00:00\n"
-        )
-        ssh = AsyncMock()
-        ssh.run_command = AsyncMock(return_value=(qstat_xf_output, "", 0))
-        backend = PBSBackend(ssh)
-
-        stats = await backend.get_job_stats(["500"])
-        assert "500" in stats
-        assert stats["500"].state == "COMPLETED"
-        assert stats["500"].cpu_efficiency > 0
-
-    @pytest.mark.asyncio
-    async def test_parse_failed_job(self):
-        qstat_xf_output = (
-            "Job Id: 501.pbs\n"
-            "    Job_Name = bad-task\n"
-            "    job_state = F\n"
-            "    exit_status = 1\n"
-            "    resources_used.cput = 00:00:05\n"
-            "    resources_used.walltime = 00:00:10\n"
-            "    resources_used.mem = 128mb\n"
-            "    Resource_List.ncpus = 1\n"
-        )
-        ssh = AsyncMock()
-        ssh.run_command = AsyncMock(return_value=(qstat_xf_output, "", 0))
-        backend = PBSBackend(ssh)
-
-        stats = await backend.get_job_stats(["501"])
-        assert stats["501"].state == "FAILED"
-
-    @pytest.mark.asyncio
-    async def test_walltime_exceeded(self):
-        qstat_xf_output = (
-            "Job Id: 502.pbs\n"
-            "    job_state = F\n"
-            "    exit_status = 271\n"
-            "    resources_used.cput = 00:59:00\n"
-            "    resources_used.walltime = 01:00:00\n"
-            "    resources_used.mem = 256mb\n"
-            "    Resource_List.ncpus = 1\n"
-            "    Resource_List.walltime = 01:00:00\n"
-        )
-        ssh = AsyncMock()
-        ssh.run_command = AsyncMock(return_value=(qstat_xf_output, "", 0))
-        backend = PBSBackend(ssh)
-
-        stats = await backend.get_job_stats(["502"])
-        assert stats["502"].state == "WALLTIME_EXCEEDED"
-
-    @pytest.mark.asyncio
-    async def test_cancelled_job(self):
-        qstat_xf_output = (
-            "Job Id: 503.pbs\n"
-            "    job_state = F\n"
-            "    exit_status = 271\n"
-            "    resources_used.cput = 00:00:01\n"
-            "    resources_used.walltime = 00:00:05\n"
-            "    resources_used.mem = 64mb\n"
-            "    Resource_List.ncpus = 1\n"
-            "    Resource_List.walltime = 01:00:00\n"
-        )
-        ssh = AsyncMock()
-        ssh.run_command = AsyncMock(return_value=(qstat_xf_output, "", 0))
-        backend = PBSBackend(ssh)
-
-        stats = await backend.get_job_stats(["503"])
-        # exit_status 271 with walltime not exceeded → cancelled
-        assert stats["503"].state == "CANCELLED"
-
-    @pytest.mark.asyncio
-    async def test_multiple_jobs(self):
-        qstat_xf_output = (
-            "Job Id: 600.pbs\n"
-            "    job_state = F\n"
-            "    exit_status = 0\n"
-            "    resources_used.cput = 00:05:00\n"
-            "    resources_used.walltime = 00:10:00\n"
-            "    resources_used.mem = 512mb\n"
-            "    Resource_List.ncpus = 1\n"
-            "\n"
-            "Job Id: 601.pbs\n"
-            "    job_state = F\n"
-            "    exit_status = 1\n"
-            "    resources_used.cput = 00:00:01\n"
-            "    resources_used.walltime = 00:00:05\n"
-            "    resources_used.mem = 128mb\n"
-            "    Resource_List.ncpus = 1\n"
-        )
-        ssh = AsyncMock()
-        ssh.run_command = AsyncMock(return_value=(qstat_xf_output, "", 0))
-        backend = PBSBackend(ssh)
-
-        stats = await backend.get_job_stats(["600", "601"])
-        assert stats["600"].state == "COMPLETED"
-        assert stats["601"].state == "FAILED"
-
-    @pytest.mark.asyncio
-    async def test_empty_job_ids(self):
-        ssh = AsyncMock()
-        backend = PBSBackend(ssh)
-
-        stats = await backend.get_job_stats([])
-        assert stats == {}
 
 
 # -- get_cluster_info --
@@ -429,20 +292,7 @@ class TestParseQstatQueues:
 
 
 class TestProperties:
-    def test_failure_states(self):
-        ssh = AsyncMock()
-        backend = PBSBackend(ssh)
-        assert "FAILED" in backend.failure_states
-        assert "CANCELLED" in backend.failure_states
-        assert "WALLTIME_EXCEEDED" in backend.failure_states
-        assert "MEM_EXCEEDED" in backend.failure_states
 
-    def test_terminal_states(self):
-        ssh = AsyncMock()
-        backend = PBSBackend(ssh)
-        assert "COMPLETED" in backend.terminal_states
-        assert "FAILED" in backend.terminal_states
-        assert backend.terminal_states == PBS_TERMINAL_STATES
 
     def test_name(self):
         ssh = AsyncMock()

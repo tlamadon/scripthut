@@ -9,85 +9,14 @@ from datetime import datetime, timezone
 from scripthut.backends.base import (
     ClusterInfo,
     JobBackend,
-    JobStats,
     PartitionInfo,
     QuotaInfo,
 )
-from scripthut.backends.utils import (
-    format_bytes,
-    parse_duration_hms,
-    parse_rss_to_bytes,
-)
-from scripthut.models import JobState, SlurmJob
+from scripthut.models import JobState, HPCJob
 from scripthut.ssh.client import SSHClient
 
 
 logger = logging.getLogger(__name__)
-
-
-# Sacct states that indicate a Slurm-killed job
-SLURM_FAILURE_STATES: dict[str, str] = {
-    "FAILED": "Non-zero exit code",
-    "TIMEOUT": "Exceeded walltime",
-    "OUT_OF_MEMORY": "Out of memory (OOM killed)",
-    "CANCELLED": "Cancelled",
-    "NODE_FAIL": "Node failure",
-    "PREEMPTED": "Preempted",
-}
-
-# All terminal sacct states (both success and failure)
-from scripthut.scheduler import SLURM_TERMINAL_STATES
-
-
-# Re-export for backward compatibility
-parse_slurm_duration = parse_duration_hms
-
-
-def _slurm_exitcode_indicates_failure(field: str) -> bool:
-    """True when an ``ExitCode`` field reports a non-zero exit or signal.
-
-    sacct's ``ExitCode`` column is formatted ``<exit>:<signal>`` (e.g.
-    ``1:0`` for ``exit 1`` with no signal, ``0:15`` for SIGTERM with no
-    explicit exit). Either non-zero half means the job didn't end
-    cleanly. Empty / unparseable fields return ``False`` so we never
-    flip COMPLETED → FAILED on a parse glitch — the existing State
-    logic still owns the default verdict.
-    """
-    field = (field or "").strip()
-    if ":" not in field:
-        # Anything not in the documented ``exit:signal`` shape is treated as
-        # unparseable. Better to leave the State-based verdict in place than
-        # to invent a failure from a column scripthut doesn't recognize.
-        return False
-    parts = field.split(":")
-    for p in parts:
-        try:
-            if int(p.strip()) != 0:
-                return True
-        except ValueError:
-            return False
-    return False
-
-
-def _slurm_parse_exit_int(field: str) -> int | None:
-    """Return the numeric exit code from a sacct ``ExitCode`` field.
-
-    ``<exit>:<signal>`` is the documented format. We return the exit
-    half as an int; signal-only failures (exit=0, signal!=0) surface as
-    0 here, but the boolean ``_slurm_exitcode_indicates_failure`` will
-    still flip the state to FAILED — consumers reading the numeric
-    code should cross-check with status when interpreting a 0.
-    Returns ``None`` for empty / non-``<n>:<n>`` shaped fields so the
-    caller doesn't invent a value from a parse miss.
-    """
-    field = (field or "").strip()
-    if ":" not in field:
-        return None
-    head = field.split(":", 1)[0].strip()
-    try:
-        return int(head)
-    except ValueError:
-        return None
 
 
 def _safe_float(s: str) -> float | None:
@@ -230,9 +159,6 @@ def _parse_gres_gpu(gres_str: str) -> tuple[int, set[str]]:
 # jobs it's the nodelist, so we only keep it for PENDING jobs below.
 SQUEUE_FORMAT = "%i|%j|%u|%T|%P|%M|%N|%C|%m|%V|%S|%R"
 
-# sbatch typically writes: "Submitted batch job 12345"
-# Pull the numeric ID out of any line that matches this; tolerates extra
-# warnings/info lines that some sbatch wrappers append before/after.
 
 
 def parse_slurm_datetime(dt_str: str) -> datetime | None:
@@ -250,8 +176,8 @@ def parse_slurm_datetime(dt_str: str) -> datetime | None:
         return None
 
 
-def parse_squeue_line(line: str) -> SlurmJob | None:
-    """Parse a single line of squeue output into a SlurmJob."""
+def parse_squeue_line(line: str) -> HPCJob | None:
+    """Parse a single line of squeue output into a HPCJob."""
     parts = line.strip().split("|")
     if len(parts) < 12:
         logger.warning(f"Invalid squeue line (expected 12 fields): {line}")
@@ -267,7 +193,7 @@ def parse_squeue_line(line: str) -> SlurmJob | None:
         if state == JobState.PENDING:
             raw_reason = parts[11].strip().strip("()")
             reason = raw_reason or None
-        return SlurmJob(
+        return HPCJob(
             job_id=parts[0],
             name=parts[1],
             user=parts[2],
@@ -290,20 +216,16 @@ class SlurmBackend(JobBackend):
     """Slurm job backend using SSH to run squeue."""
 
 
-    def __init__(self, ssh_client: SSHClient, account: str | None = None,
-                 partition_map: dict[str, str] | None = None,
-                 default_partition: str | None = None):
+    def __init__(self, ssh_client: SSHClient, account: str | None = None):
         self._ssh = ssh_client
         self._account = account
-        self._partition_map = partition_map or {}
-        self._default_partition = default_partition
 
 
     @property
     def name(self) -> str:
         return "slurm"
 
-    async def get_jobs(self, user: str | None = None) -> list[SlurmJob]:
+    async def get_jobs(self, user: str | None = None) -> list[HPCJob]:
         """
         Fetch current jobs from Slurm using squeue.
 
@@ -311,7 +233,7 @@ class SlurmBackend(JobBackend):
             user: Optional filter by username. None means all users.
 
         Returns:
-            List of SlurmJob objects.
+            List of HPCJob objects.
         """
         # Build squeue command. TZ=UTC forces Slurm to format SubmitTime/StartTime
         # in UTC so the naive timestamps we parse line up with the tzinfo=utc we
@@ -326,7 +248,7 @@ class SlurmBackend(JobBackend):
             logger.error(f"squeue failed (exit {exit_code}): {stderr}")
             return []
 
-        jobs: list[SlurmJob] = []
+        jobs: list[HPCJob] = []
         for line in stdout.strip().split("\n"):
             if not line.strip():
                 continue
@@ -337,222 +259,6 @@ class SlurmBackend(JobBackend):
         logger.debug(f"Fetched {len(jobs)} jobs from Slurm")
         return jobs
 
-    async def _get_known_sacct_ids(
-        self, user: str | None = None,
-    ) -> set[str] | None:
-        """Return the set of job IDs that sacct knows about for *user*.
-
-        Runs a lightweight ``sacct --format=JobIDRaw`` scoped to the user
-        (last 60 days).  Returns ``None`` on failure so callers can fall back
-        to optimistic behaviour.
-        """
-        cmd = "sacct --noheader --parsable2 --format=JobIDRaw --starttime=now-60days"
-        if user:
-            cmd += f" --user={user}"
-        try:
-            stdout, _, exit_code = await self._ssh.run_command(cmd, timeout=30)
-        except Exception as e:
-            logger.warning(f"sacct ID pre-check failed: {e}")
-            return None
-
-        if exit_code != 0 or not stdout.strip():
-            return None
-
-        known: set[str] = set()
-        for line in stdout.strip().split("\n"):
-            raw_id = line.strip().split("|")[0]
-            base_id = raw_id.split(".")[0] if "." in raw_id else raw_id
-            if base_id:
-                known.add(base_id)
-        return known
-
-    async def get_job_stats(
-        self,
-        job_ids: list[str],
-        user: str | None = None,
-    ) -> dict[str, JobStats]:
-        """Fetch resource utilization stats for completed jobs using sacct.
-
-        Post-mortem analysis only using sacct accounting data.
-
-        Args:
-            job_ids: List of Slurm job IDs to query via sacct.
-            user: Optional username to scope the pre-filter query.
-
-        Returns:
-            Dict mapping job_id to JobStats.  IDs not yet in sacct are
-            omitted so callers retry on the next poll cycle.
-        """
-        if not job_ids:
-            return {}
-
-        # Pre-filter: ask sacct which IDs it still knows about so we never
-        # pass invalid/expired IDs to the main query (which would make it
-        # fail entirely).
-        stats: dict[str, JobStats] = {}
-        known_ids = await self._get_known_sacct_ids(user=user)
-        if known_ids is not None:
-            valid_ids = [jid for jid in job_ids if jid in known_ids]
-            stale_ids = [jid for jid in job_ids if jid not in known_ids]
-            if stale_ids:
-                logger.info(
-                    f"sacct pre-check: {len(stale_ids)} IDs not yet in accounting "
-                    f"DB, will retry: {stale_ids[:10]}"
-                )
-        else:
-            # Pre-check failed — fall back to querying all IDs.
-            valid_ids = list(job_ids)
-
-        if not valid_ids:
-            return stats
-
-        # --- sacct for CPU efficiency + post-completion memory + timing ---
-        # ExitCode is included so we can override `State=COMPLETED` when
-        # the script actually exited non-zero — happens with masking
-        # bash patterns the framework can't always defend against
-        # (e.g. trailing statement after the failing command).
-        ids_str = ",".join(valid_ids)
-        # TZ=UTC forces Slurm to emit Start/End in UTC, matching the
-        # tzinfo=utc we attach to the parsed naive timestamps below.
-        cmd = (
-            f"TZ=UTC sacct --noheader --parsable2"
-            f" --format=JobIDRaw,TotalCPU,Elapsed,AllocCPUS,MaxRSS,"
-            f"Start,End,State,ExitCode"
-            f" --jobs={ids_str}"
-        )
-
-        try:
-            stdout, stderr, exit_code = await self._ssh.run_command(cmd, timeout=30)
-        except Exception as e:
-            logger.warning(f"sacct command failed: {e}")
-            return stats  # still return stale markers
-
-        if exit_code != 0:
-            logger.warning(f"sacct failed (exit {exit_code}): {stderr}")
-            return stats
-
-        logger.debug(f"sacct raw output ({len(stdout)} chars): {stdout[:500]}")
-
-        # Parse sacct output. Each job produces multiple lines (main, .batch, .extern).
-        # Collect Elapsed/AllocCPUS/TotalCPU from main entry, TotalCPU from .batch,
-        # and MaxRSS from ALL steps (taking the maximum).
-        main_data: dict[str, tuple[float, int, float]] = {}  # job_id -> (elapsed_s, alloc_cpus, total_cpu_s)
-        batch_cpu: dict[str, float] = {}  # job_id -> total_cpu_s from .batch
-        max_rss_bytes: dict[str, int] = {}  # job_id -> best MaxRSS in bytes across all steps
-        sacct_start: dict[str, datetime | None] = {}  # job_id -> actual start time
-        sacct_end: dict[str, datetime | None] = {}  # job_id -> actual end time
-        sacct_state: dict[str, str] = {}  # job_id -> State from main entry
-        # Numeric exit code, parsed from "exit:signal". .batch (where
-        # the user's script ran) wins on conflict; main entry is the
-        # fallback for jobs without a .batch step.
-        sacct_exit_code: dict[str, int] = {}
-
-        for line in stdout.strip().split("\n"):
-            if not line.strip():
-                continue
-            parts = line.split("|")
-            if len(parts) < 9:
-                continue
-
-            (raw_id, total_cpu, elapsed, alloc_cpus_str, max_rss,
-             start_str, end_str, job_state, exit_code_str) = parts[:9]
-
-            # Extract base job ID (strip .batch, .extern, .0, etc.)
-            base_id = raw_id.split(".")[0] if "." in raw_id else raw_id
-
-            # Track MaxRSS from every step, keep the maximum
-            rss_b = parse_rss_to_bytes(max_rss)
-            if rss_b > max_rss_bytes.get(base_id, 0):
-                max_rss_bytes[base_id] = rss_b
-
-            # ExitCode format is "<exit>:<signal>" — either non-zero means
-            # the script didn't end cleanly. Used both to override
-            # COMPLETED (boolean) and to populate `JobStats.exit_code`
-            # (numeric, so consumers can read the actual code).
-            exit_nonzero = _slurm_exitcode_indicates_failure(exit_code_str)
-            exit_int = _slurm_parse_exit_int(exit_code_str)
-
-            if ".batch" in raw_id:
-                batch_cpu[base_id] = parse_slurm_duration(total_cpu)
-                # .batch is where user code actually runs — if it failed
-                # (e.g. OOM), override the main entry's state which may
-                # misleadingly say COMPLETED.
-                batch_state = job_state.split()[0] if job_state else ""
-                if batch_state and batch_state in SLURM_FAILURE_STATES:
-                    sacct_state[base_id] = batch_state
-                elif exit_nonzero:
-                    # State says COMPLETED but the script returned non-zero —
-                    # most often a masked failure (`solve | tee log` without
-                    # pipefail, trailing statement after the failing command).
-                    # Treat as FAILED so the user sees the truth.
-                    sacct_state[base_id] = "FAILED"
-                # .batch exit code wins over the main entry's because
-                # this is where user code ran.
-                if exit_int is not None:
-                    sacct_exit_code[base_id] = exit_int
-            elif "." not in raw_id:
-                # Main entry — has aggregate TotalCPU (used as fallback when .batch is 0)
-                elapsed_s = parse_slurm_duration(elapsed)
-                main_cpu_s = parse_slurm_duration(total_cpu)
-                try:
-                    alloc_cpus = int(alloc_cpus_str) if alloc_cpus_str else 1
-                except ValueError:
-                    alloc_cpus = 1
-                main_data[raw_id] = (elapsed_s, alloc_cpus, main_cpu_s)
-                # Strip trailing modifiers like "CANCELLED by 12345"
-                main_state = job_state.split()[0] if job_state else ""
-                # Only set if .batch hasn't already overridden with a failure
-                if raw_id not in sacct_state:
-                    sacct_state[raw_id] = main_state
-                # Defense in depth: even if .batch was missing (e.g. interactive
-                # job, srun-only step layout), an ExitCode != 0:0 on the main
-                # entry still flips us to FAILED.
-                if exit_nonzero and sacct_state.get(raw_id) == "COMPLETED":
-                    sacct_state[raw_id] = "FAILED"
-                # Main-entry exit code is a fallback for jobs without a
-                # .batch row.
-                if exit_int is not None and raw_id not in sacct_exit_code:
-                    sacct_exit_code[raw_id] = exit_int
-
-                # Parse actual start/end timestamps from sacct
-                try:
-                    if start_str and start_str not in ("Unknown", "None", "N/A", ""):
-                        sacct_start[raw_id] = datetime.strptime(start_str, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
-                except ValueError:
-                    pass
-                try:
-                    if end_str and end_str not in ("Unknown", "None", "N/A", ""):
-                        sacct_end[raw_id] = datetime.strptime(end_str, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
-                except ValueError:
-                    pass
-
-        # --- Compute final stats ---
-        for job_id in valid_ids:
-            if job_id not in main_data:
-                continue
-
-            elapsed_s, alloc_cpus, main_cpu_s = main_data[job_id]
-            # Prefer .batch TotalCPU, fall back to main entry's aggregate TotalCPU
-            total_cpu_s = batch_cpu.get(job_id, 0.0) or main_cpu_s
-
-            # CPU efficiency: total_cpu / (elapsed * alloc_cpus) * 100
-            denominator = elapsed_s * max(alloc_cpus, 1)
-            efficiency = (total_cpu_s / denominator * 100) if denominator > 0 else 0.0
-
-            rss_formatted = format_bytes(max_rss_bytes.get(job_id, 0))
-
-            stats[job_id] = JobStats(
-                cpu_efficiency=round(efficiency, 1),
-                max_rss=rss_formatted,
-                total_cpu=f"{total_cpu_s:.0f}s",
-                start_time=sacct_start.get(job_id),
-                end_time=sacct_end.get(job_id),
-                state=sacct_state.get(job_id),
-                exit_code=sacct_exit_code.get(job_id),
-            )
-
-        logger.debug(f"Fetched stats for {len(stats)}/{len(job_ids)} jobs via sacct")
-        return stats
 
     async def get_cluster_info(self, user: str | None = None) -> ClusterInfo | None:
         """Fetch per-partition availability, pending reasons, and quota.
@@ -563,13 +269,8 @@ class SlurmBackend(JobBackend):
         scheduling limits. Each query is best-effort: a failure of one
         does not block the others.
 
-        ``user`` (the dashboard's job filter) is intentionally ignored for
-        quota: "Your usage" must reflect the identity we actually submit
-        and run jobs as — the SSH login — regardless of whatever user the
-        jobs list is currently filtered to (or if it isn't filtered at
-        all). Querying quota with a filter user that differs from the SSH
-        login points ``squeue``/``sshare`` at the wrong account and reports
-        all-zero usage even while our jobs are running.
+        Quota queries use the SSH login and configured account, independent
+        of the dashboard's job filter.
         """
         partitions = await self._fetch_partitions()
         if partitions is None:
@@ -720,8 +421,7 @@ class SlurmBackend(JobBackend):
             st = stats.setdefault(partition, _PartitionNodeStats())
             st.gpus_total += gpu_total
             st.gpus_idle += free_gpus
-            # Largest single-node slot wins — a 4-CPU job needs 4 CPUs on
-            # ONE node, not 4 spread across the partition.
+            # Largest single-node slot bounds the immediately schedulable job size.
             if free_cpus > st.cpus_free_max_node:
                 st.cpus_free_max_node = free_cpus
             if free_mem_mb is not None and (
@@ -826,7 +526,7 @@ class SlurmBackend(JobBackend):
 
         # Prefer the row whose Account matches self._account; fall back to
         # the first parseable row (handles older Slurm builds that ignore
-        # -A or aliases like "pi-kilianhuber" vs "pi_kilianhuber").
+        # -A or aliases like "pi-example" vs "pi_example").
         first: QuotaInfo | None = None
         for raw in stdout.splitlines():
             line = raw.strip()
@@ -903,8 +603,7 @@ class SlurmBackend(JobBackend):
             and best.gpus_max is None
         ):
             return None
-        # Always carry the configured account name even if it wasn't on a row
-        # (clearer for the dashboard than a blank field).
+        # Use the configured account when accounting omits it.
         if self._account and best.account is None:
             best.account = self._account
         return best
@@ -928,30 +627,3 @@ class SlurmBackend(JobBackend):
                 continue
             reasons[reason] = reasons.get(reason, 0) + 1
         return reasons
-
-
-
-    async def is_available(self) -> bool:
-        """Check if Slurm is available by running squeue --version."""
-        try:
-            stdout, _, exit_code = await self._ssh.run_command("squeue --version")
-            return exit_code == 0 and "slurm" in stdout.lower()
-        except Exception as e:
-            logger.warning(f"Slurm availability check failed: {e}")
-            return False
-
-
-
-
-
-
-
-    @property
-    def failure_states(self) -> dict[str, str]:
-        """Slurm failure states from sacct."""
-        return SLURM_FAILURE_STATES
-
-    @property
-    def terminal_states(self) -> frozenset[str]:
-        """All terminal sacct states."""
-        return SLURM_TERMINAL_STATES
