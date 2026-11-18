@@ -6,10 +6,8 @@ import asyncio
 import fcntl
 import hashlib
 import json
-import os
 import re
 import shlex
-import tempfile
 import uuid
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
@@ -17,11 +15,14 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from scripthut.storage import atomic_write
+
 from pydantic import BaseModel, Field
 
 from scripthut.config_schema import ScriptFlowConfig, ScriptHutConfig, SlurmBackendConfig
 from scripthut.environment import LabeledRule, flatten, resolve
-from scripthut.scheduler import SLURM_TERMINAL_STATES, SlurmControl
+from scripthut.scheduler import controller_commands, controller_state
+from scripthut.ssh.client import SSHClient
 from scripthut.scriptflow import (
     TERMINAL_STATES,
     CachedRun,
@@ -128,45 +129,49 @@ class LaunchStore:
     async def save(self, launch: Launch) -> None:
         launch.updated_at = now()
 
-        def write() -> None:
-            self.directory.mkdir(parents=True, exist_ok=True)
-            fd, name = tempfile.mkstemp(dir=self.directory)
-            try:
-                with os.fdopen(fd, "w") as stream:
-                    stream.write(launch.model_dump_json(indent=2))
-                    stream.flush()
-                    os.fsync(stream.fileno())
-                os.replace(name, self.path(launch.key))
-            finally:
-                if os.path.exists(name):
-                    os.unlink(name)
-
-        await asyncio.to_thread(write)
+        await asyncio.to_thread(atomic_write, self.path(launch.key), launch.model_dump_json(indent=2))
 
 
-class ControllerBackend(SlurmControl):
-    async def _verify_job_accepted(self, job_id: str) -> bool:
-        # Acknowledged sbatch IDs survive delayed queue/accounting visibility.
-        return True
+def format_submit_output(stdout: str, stderr: str) -> str:
+    """Combine sbatch stdout and stderr for error diagnostics."""
+    parts: list[str] = []
+    out = (stdout or "").strip()
+    err = (stderr or "").strip()
+    if out:
+        parts.append(f"stdout: {out}")
+    if err:
+        parts.append(f"stderr: {err}")
+    return " | ".join(parts)
+
+
+_SBATCH_JOB_ID_RE = re.compile(r"Submitted batch job\s+(\d+)")
+
+
+class ControllerBackend:
+    def __init__(self, ssh_client: SSHClient):
+        self._ssh = ssh_client
+
+    async def submit_job(self, script: str) -> str:
+        """Return the acknowledged sbatch ID, allowing delayed queue visibility."""
+        submit_cmd = f"sbatch <<'SCRIPTHUT_EOF'\n{script}\nSCRIPTHUT_EOF"
+        stdout, stderr, exit_code = await self._ssh.run_command(submit_cmd)
+        combined = format_submit_output(stdout, stderr)
+
+        if exit_code != 0:
+            raise RuntimeError(f"sbatch failed (exit {exit_code}): {combined}")
+
+        match = _SBATCH_JOB_ID_RE.search(stdout) or _SBATCH_JOB_ID_RE.search(stderr)
+        if not match:
+            raise RuntimeError(
+                f"Could not parse job ID from sbatch output: {combined}"
+            )
+        job_id = match.group(1)
+
+        return job_id
 
     async def query(self, name: str, since: str) -> dict[str, str]:
         result: dict[str, str] = {}
-        commands = [
-            shlex.join(
-                [
-                    "sacct",
-                    "-n",
-                    "-P",
-                    "-X",
-                    "--starttime",
-                    accounting_start_date(since),
-                    "--name",
-                    name,
-                    "--format=JobIDRaw,JobName%100,State",
-                ]
-            ),
-            shlex.join(["squeue", "--noheader", "--name", name, "--format=%i|%j|%T"]),
-        ]
+        commands = controller_commands(name=name, start_date=accounting_start_date(since))
         for command in commands:
             stdout, stderr, code = await self._ssh.run_command(command)
             if code:
@@ -552,12 +557,7 @@ async def controller_observation(
         receipt = await receipt_read(reader, launch)
         data["receipt"] = receipt
         state = jobs.get(launch.job_id or "")
-        if state in SLURM_TERMINAL_STATES:
-            data["state"] = "ended"
-        elif state in ("RUNNING", "COMPLETING", "SUSPENDED"):
-            data["state"] = "running"
-        elif state in ("PENDING", "CONFIGURING"):
-            data["state"] = "queued"
+        data["state"] = controller_state([state] if state else [])
         # An absent job is unknown, even if the application wrote an exit receipt.
     except Exception as exc:
         data["error"] = str(exc)

@@ -10,7 +10,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any, cast
 
-from scripthut.scheduler import SLURM_TERMINAL_STATES
+from scripthut.scheduler import controller_commands, controller_state
 from scripthut.scriptflow import (
     TERMINAL_STATES,
     CachedRun,
@@ -44,13 +44,10 @@ class CombinedRead:
         if not re.fullmatch(r"[0-9]+", self.job_id):
             raise ObservationError("unknown", "Invalid controller ID")
         marker = "\nSF_" + uuid.uuid4().hex + "\n"
-        accounting_args = ["sacct", "-n", "-P", "-X", "--jobs", self.job_id, "--format=State"]
-        if self.since:
-            accounting_args += ["--starttime", accounting_start_date(self.since)]
-        query = shlex.join(accounting_args)
-        # Name queries succeed with an empty queue after a job has ended.
-        selector = ["--name", self.job_name] if self.job_name else ["--jobs", self.job_id]
-        queue = shlex.join(["squeue", "--noheader", *selector, "--format=%T"])
+        query, queue = controller_commands(
+            name=self.job_name, job_id=self.job_id,
+            start_date=accounting_start_date(self.since) if self.since else None,
+        )
         script = command + "\nrc=$?\nprintf %s " + shlex.quote(marker) + '\nprintf "%s\\n" "$rc"\n'
         script += query + "\nqr=$?\nprintf %s " + shlex.quote(marker) + '\nprintf "%s\\n" "$qr"\n'
         script += queue + "\nqr=$?\nprintf %s " + shlex.quote(marker) + '\nprintf "%s\\n" "$qr"'
@@ -80,12 +77,7 @@ class CombinedRead:
                 for line in (queued.strip() or accounting).splitlines()
                 if line.strip()
             ]
-            if states and all(s in SLURM_TERMINAL_STATES for s in states):
-                state = "ended"
-            elif states and all(s in ("RUNNING", "COMPLETING", "SUSPENDED") for s in states):
-                state = "running"
-            elif states and all(s in ("PENDING", "CONFIGURING") for s in states):
-                state = "queued"
+            state = controller_state(states)
         self.controller = {
             "job_id": self.job_id,
             "state": state,

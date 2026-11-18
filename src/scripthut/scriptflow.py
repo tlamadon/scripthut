@@ -5,14 +5,14 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import os
 import posixpath
 import re
 import shlex
-import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, Protocol
+
+from scripthut.storage import atomic_write
 
 from pydantic import (
     AwareDatetime,
@@ -203,7 +203,7 @@ class CachedRun(BaseModel):
 
 
 class ReferenceStore:
-    """One atomically replaced file per reference, outside legacy run storage."""
+    """One atomically replaced observation file per reference."""
 
     def __init__(self, directory: Path) -> None:
         self.directory = directory
@@ -249,20 +249,7 @@ class ReferenceStore:
             raise ObservationError("not_found", "ScriptFlow reference is not registered") from exc
 
     async def save(self, cached: CachedRun) -> None:
-        def write() -> None:
-            self.directory.mkdir(parents=True, exist_ok=True)
-            fd, temporary = tempfile.mkstemp(dir=self.directory, prefix=".snapshot-")
-            try:
-                with os.fdopen(fd, "w") as stream:
-                    stream.write(cached.model_dump_json(indent=2))
-                    stream.flush()
-                    os.fsync(stream.fileno())
-                os.replace(temporary, self._path(cached.reference.id))
-            finally:
-                if os.path.exists(temporary):
-                    os.unlink(temporary)
-
-        await asyncio.to_thread(write)
+        await asyncio.to_thread(atomic_write, self._path(cached.reference.id), cached.model_dump_json(indent=2))
 
 
 class CommandTransport(Protocol):

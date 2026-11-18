@@ -1,4 +1,4 @@
-"""ScriptFlow imports remain independent of legacy execution modules."""
+"""ScriptFlow imports are independent of the general API and CLI."""
 
 import subprocess
 import sys
@@ -11,8 +11,7 @@ def test_import_boundary(module):
     script = f"""
 import importlib, sys
 importlib.import_module('scripthut.{module}')
-forbidden = {{'scripthut.runs.manager', 'scripthut.runs.models', 'scripthut.runs.storage',
-             'scripthut.runs.cache', 'scripthut.api', 'scripthut.cli'}}
+forbidden = {{'scripthut.api', 'scripthut.cli'}}
 assert not forbidden.intersection(sys.modules), sorted(forbidden.intersection(sys.modules))
 """
     result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)

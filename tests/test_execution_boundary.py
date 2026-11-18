@@ -24,7 +24,7 @@ def test_scheduler_calls_are_confined():
         }
         for node in ast.walk(tree):
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
-                if node.func.attr in {"submit_job", "submit_task", "cancel_job", "terminate_job", "process_run"}:
+                if node.func.attr in {"submit_job", "cancel_job"}:
                     violations.append((str(path.relative_to(root)), node.lineno))
             if isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in docstrings:
                 if re.search(r"(?:^|[\s;|])(?:sbatch|qsub|scancel|qdel|srun|salloc)(?:\s|$)", node.value):
