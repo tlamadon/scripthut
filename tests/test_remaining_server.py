@@ -29,10 +29,10 @@ def test_plain_startup_preserves_old_data(tmp_path, monkeypatch):
                 break
             time.sleep(.01)
         assert main.state.startup_phase is None
-        assert client.get("/").url.path == "/scriptflow"
-        for path in ("/scriptflow", "/backends", "/sources", "/terminals", "/api/v1/scriptflow/runs"):
+        assert client.get("/").url.path == "/"
+        for path in ("/runs", "/disk", "/scriptflow", "/backends", "/sources", "/terminals", "/api/v1/scriptflow/runs"):
             assert client.get(path).status_code == 200
-        for path in ("/runs", "/disk", "/api/v1/tasks/run"):
+        for path in ("/api/v1/runs", "/disk/cleanup", "/api/v1/tasks/run"):
             assert client.get(path).status_code == 404
     assert before == {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in before}
 

@@ -10,3 +10,5 @@
 {% if run.image_preparation.status == 'failed' %}<p class="text-amber-800">Launch problem: image preparation failed before ScriptFlow started.</p><pre class="whitespace-pre-wrap">{{ run.image_preparation.error }}</pre>{% endif %}
 {% if run.image_preparation.log_tail %}<pre class="whitespace-pre-wrap">{{ run.image_preparation.log_tail }}</pre>{% endif %}
 {% endif %}
+
+{% if run.controller_notice %}<p class="text-amber-800">{{ run.controller_notice }}</p>{% endif %}

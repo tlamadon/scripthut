@@ -360,8 +360,14 @@ async def test_cli_source_launch_flows_discover_and_pages(checkout, monkeypatch)
         c.config, {"cluster": SimpleNamespace(ssh_client=c.shell, enabled=True)}
     )
     env = Environment(loader=FileSystemLoader("src/scripthut/templates"), autoescape=True)
-    html = env.get_template("sources.html").render(sources=rows)
-    assert str(c.directory) in html and "first, second" in html
+    from scripthut.scriptflow_web import configure_templates
+    configure_templates(SimpleNamespace(env=env))
+    html = env.get_template("sources.html").render(
+        source_rows=rows, source_configs={c.source.name: c.source},
+        source_workflows={c.source.name: rows[0]["flows"]}, source_statuses={},
+        disabled_sources=set(), backend_names=["cluster"],
+    )
+    assert str(c.directory) in html and "first" in html and "second" in html
     run = (await c.store.get(result["reference_id"])).projection()
     html = env.get_template("scriptflow.html").render(run=run, runs=[])
     assert run["source"]["short_commit"] in html and "Branch: main" in html

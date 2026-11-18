@@ -128,12 +128,16 @@ Controller expiry leaves task jobs running. Unregister removes only local state.
 ## Server
 
 Run `scripthut --config scripthut.yaml`, or use `scripthut daemon start`, `status`,
-`logs`, and `stop`. Open `/scriptflow` for runs, `/backends` for read-only job
-listing, and `/terminals` to attach to an existing tmux session. The versioned
+`logs`, and `stop`. Open `/` for the overview, `/runs` (also `/scriptflow`) for
+runs, `/backends` for read-only job listing, and `/terminals` to attach to an existing tmux session. The versioned
 ScriptFlow API offers list/view, refresh, bounded attempt logs and non-waiting
-cancel; there is no API launch, cleanup or release operation. Viewing or
+cancel; there is no cleanup or release endpoint. Viewing or
 refreshing never changes remote execution. Do not log into hosts directly or
 issue scheduler task submission/cancellation commands.
+
+The Sources page launches controllers through the CLI handler, retaining the form's
+run ID for retries. `/disk` displays cached sizes only, with no delete/cleanup action.
+Page rendering and passive SSE use local cached records.
 """
 
 

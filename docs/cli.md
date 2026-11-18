@@ -56,8 +56,9 @@ included in launch output and run list/view JSON and text.
 `flows` reads committed text from `local_path`, otherwise the existing fixed
 backend checkout. The latter must already contain the requested commit; a missing
 checkout, commit or `sflow.py` is an explicit error, not an empty flow list.
-It performs no clone, fetch, import or launch. The Sources page likewise reads
-local code or each connected backend's existing copy and displays errors.
+It performs no clone, fetch, import or launch. The polling loop observes local code or each connected backend's existing copy.
+The Sources page renders those cached flow names and errors; its Launch action
+uses the same controller launch handler as this CLI.
 
 For source launches with `images`, references resolve before backend preparation
 and are saved in the launch record without credentials. Pulling happens inside the

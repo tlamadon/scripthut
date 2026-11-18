@@ -25,8 +25,12 @@ scripthut --config scripthut.yaml
 ```
 
 The default address remains `http://127.0.0.1:8000`; configuration or existing
-`--host`/`--port` overrides control binding. `/` opens the ScriptFlow runs page.
-Other pages are `/backends`, `/sources`, `/terminals` and `/settings`.
+`--host`/`--port` overrides control binding. `/` shows the overview: CPU-hour
+activity, active/recent ScriptFlow runs and backend status. Runs are at `/runs`
+(`/scriptflow` remains an alias). Other pages are `/backends`, `/sources`,
+`/terminals`, `/disk` (read-only sizes) and `/settings`. Sources offers a Launch
+action per flow through the same repeat-safe controller launch path as the CLI.
+Pages render cached observations; the existing polling loop updates them over SSE.
 
 ## Observe or launch
 
@@ -85,7 +89,7 @@ normally it exits by itself. Controller expiry leaves task jobs running.
 - [Environment groups](docs/configuration/environments.md)
 - [Coding-agent guidance](docs/coding-agents.md)
 
-Removed features include legacy scheduling, disk tools, result caching, software
+Removed features include legacy scheduling, disk deletion/cleanup tools, result caching, software
 stacks, coding-agent jobs, cloud/local execution, pricing and run notifications.
 Their existing data files are left untouched and are no longer read.
 

@@ -36,7 +36,6 @@
             <span id="status-text" class="text-xs text-yellow-500">Connecting...</span>
         </div>
         <div class="flex items-center gap-2">
-
             <button onclick="window.close()"
                 class="text-xs px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-gray-300">
                 Close
@@ -48,15 +47,13 @@
     <div id="terminal-container"></div>
 
     <script>
-        const BACKEND_NAME = "{{ backend_name }}";
+        const BACKEND_NAME = {{ backend_name|tojson }};
 
-        // Parse URL params for session config
         const params = new URLSearchParams(window.location.search);
-        const sessionType = "job";
-        let jobNode = params.get("node") || "";
-        let jobId = params.get("job_id") || "";
-
-        document.getElementById("session-label").textContent = `${BACKEND_NAME} — ${params.get("session") || jobId} on ${jobNode}`;
+        const sessionType = "attach";
+        const jobNode = params.get("node") || "";
+        const jobId = params.get("job_id") || "";
+        const session = params.get("session") || "";
 
         // Create terminal
         const term = new Terminal({
@@ -113,9 +110,9 @@
                     cols: term.cols,
                     rows: term.rows,
                     session_type: sessionType,
-                    session: params.get("session") || ("sh-" + jobId),
                     node: jobNode,
                     job_id: jobId,
+                    session: session,
                 };
                 ws.send(JSON.stringify(initMsg));
                 connected = true;
@@ -173,7 +170,11 @@
             fitAddon.fit();
         });
 
-        connect();
+        if (jobNode && session) {
+            connect();
+        } else {
+            setStatus("red", "An existing node and tmux session are required");
+        }
     </script>
 </body>
 

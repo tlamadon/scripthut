@@ -35,6 +35,8 @@ class AppState:
     """Application state container."""
 
     config: ScriptHutConfig | None = None
+    web_sources: list[dict[str, Any]] = field(default_factory=list)
+    disk_usage: dict[str, Any] = field(default_factory=dict)
     config_error: str | None = None
     backends: dict[str, BackendState] = field(default_factory=dict)
     source_manager: GitSourceManager | None = None
@@ -185,6 +187,10 @@ async def poll_jobs() -> None:
             logger.info(f"Polled {total_jobs} jobs from {len(tasks)} backends (filter_user={filter_user})")
 
         await scriptflow_service.poll()
+        try:
+            await refresh_web_cache(state, scriptflow_service)
+        except Exception:
+            logger.exception("Source and disk observation failed")
 
         # Record poll time and notify SSE listeners
         state._last_poll_time = time.monotonic()
@@ -939,46 +945,15 @@ _CLI_SUBCOMMANDS = frozenset({"backend", "source", "agent", "status", "daemon", 
 _SUBCOMMANDS = _CLI_SUBCOMMANDS
 
 
-@app.get("/", response_class=HTMLResponse)
-async def overview(request: Request):
-    if state.config_error:
-        return templates.TemplateResponse("config_error.html", {"request": request, "config_error": state.config_error})
-    from fastapi.responses import RedirectResponse
-    return RedirectResponse("/scriptflow")
+from scripthut.scriptflow_web import dashboard_context  # noqa: E402
+from scripthut.scriptflow_web_observation import refresh_web_cache  # noqa: E402
+from scripthut.web_routes import make_web_router  # noqa: E402
+
+app.include_router(make_web_router(state, scriptflow_service, templates))
 
 
-@app.get("/backends", response_class=HTMLResponse)
-async def backends_page(request: Request):
-    return templates.TemplateResponse("backends.html", {"request": request, "state": state})
-
-
-@app.get("/jobs", response_class=HTMLResponse)
 async def jobs_partial(request: Request):
-    return templates.TemplateResponse("jobs.html", {"request": request, "jobs": state.all_jobs})
-
-
-@app.get("/jobs/stream")
-async def jobs_stream(request: Request):
-    async def events():
-        while not state._shutdown_event.is_set():
-            if await request.is_disconnected():
-                break
-            if await state.wait_for_poll():
-                yield {"event": "jobs", "data": templates.get_template("jobs.html").render(jobs=state.all_jobs)}
-    return EventSourceResponse(events())
-
-
-@app.get("/sources", response_class=HTMLResponse)
-async def sources_page(request: Request):
-    from scripthut.scriptflow_sources import source_rows
-
-    rows = await source_rows(state.config, state.backends) if state.config else []
-    return templates.TemplateResponse("sources.html", {"request": request, "sources": rows})
-
-
-@app.get("/terminals", response_class=HTMLResponse)
-async def terminals_page(request: Request):
-    return templates.TemplateResponse("terminals.html", {"request": request, "sessions": list(state.terminal_manager.sessions.values()), "backends": state.backends})
+    return templates.TemplateResponse(request=request, name="jobs.html", context=await dashboard_context(state, scriptflow_service))
 
 
 if __name__ == "__main__":

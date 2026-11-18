@@ -1,0 +1,10 @@
+{% for backend in disk_backends %}
+<div class="mb-6 bg-white rounded-lg shadow-md p-6">
+    <div class="flex items-center gap-3"><h2 class="text-lg font-semibold text-gray-800">{{ backend.name }}</h2><span class="text-xs text-gray-500">Observed {{ backend.observed_at or 'never' }}</span></div>
+    {% if backend.error %}<p class="text-sm text-amber-700 mt-2">{{ backend.error }}</p>{% endif %}
+    <div class="overflow-x-auto mt-4"><table class="min-w-full text-sm">
+        <thead class="text-xs text-gray-500 uppercase border-b"><tr><th class="text-left py-2">Source / Kind</th><th class="text-left py-2">Path</th><th class="text-right py-2">Size</th></tr></thead>
+        <tbody class="divide-y divide-gray-100">{% for row in backend.rows %}<tr class="hover:bg-gray-50"><td class="py-2">{{ row.source }} · {{ row.kind }}</td><td class="py-2 font-mono text-xs">{{ row.path }}</td><td class="py-2 text-right">{{ row.size|disk_bytes if row.size is not none else row.error }}</td></tr>{% else %}<tr><td colspan="3" class="py-4 text-gray-500">Awaiting disk observation.</td></tr>{% endfor %}</tbody>
+    </table></div>
+</div>
+{% else %}<div class="bg-white rounded-lg shadow-md p-6 text-gray-500">No backends configured.</div>{% endfor %}

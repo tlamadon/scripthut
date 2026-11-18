@@ -402,7 +402,11 @@ async def source_rows(config: ScriptHutConfig, backends: dict[str, Any]) -> list
                     row["flows"] = await list_flows(config, revision)
                 else:
                     connection = backends.get(name) if name else None
-                    if not connection or not connection.ssh_client or not connection.enabled:
+                    if (
+                        not connection or not connection.ssh_client or not connection.enabled
+                        or (getattr(connection, "status", None) is not None
+                            and not connection.status.connected)
+                    ):
                         raise ValueError("Backend copy unavailable; select a connected backend")
                     reader = RecordReader(connection.ssh_client)
                     directory = await workdir_for(reader, source)

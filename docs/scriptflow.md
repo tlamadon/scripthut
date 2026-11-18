@@ -11,8 +11,9 @@ scripthut --config scripthut.yaml
 ```
 
 No bind settings are changed. Use the configured `settings.server_host` and
-`settings.server_port` (defaults `127.0.0.1:8000`). Open `/scriptflow` via the navigation
-link, then choose a run at `/scriptflow/<reference-id>`.
+`settings.server_port` (defaults `127.0.0.1:8000`). Open `/` for the overview,
+`/runs` for runs and `/runs/<reference-id>` for a run. `/scriptflow` and
+`/scriptflow/<reference-id>` remain aliases.
 
 The list and detail page separate workflow state, observation status and controller state.
 They show the last successful read, errors, cleanup pending and cancellation requested.
@@ -28,8 +29,10 @@ For launched runs that command includes checked controller queue/accounting obse
 Failed record reads retain the last workflow, controller and cancellation evidence, updating
 only observation error/fetch fields. Stale/unreachable never becomes a workflow outcome.
 
-Pages receive passive SSE notifications at `/scriptflow/stream` from the existing poll
-event, then reload cached data. Page loads and SSE do not read remote files or trigger jobs.
+Pages receive passive SSE fragments from the existing poll event: `/overview/stream`,
+`/runs/stream`, `/runs/<reference-id>/events`, `/jobs/stream` and `/disk/stream`.
+The compatibility `/scriptflow/stream` notification remains available. Page loads
+and SSE do not read remote files or trigger jobs.
 There is no independent polling timer or automatic cleanup/release.
 
 ## JSON API
@@ -60,7 +63,12 @@ Cancellation uses ScriptFlow's file protocol, fetching first and refusing writes
 records. `cancel_result.status` is `requested`, `terminal`, or `unreachable`, with a message.
 These outcomes return HTTP 200; delivery does not imply cleanup is finished. Clients read
 or refresh the run to observe eventual terminal state and `cleanup_pending: false`.
-No launch, cleanup or release endpoints are exposed.
+There are no cleanup or release endpoints. The Sources form posts to
+`/sources/launch` with `source`, `flow`, `backend` and `run_id`. It calls the CLI's
+existing controller launch handler and returns the same result; refusals return
+HTTP 409 with their original message in `detail`. A form keeps its run ID for
+retries, so a repeated acknowledged launch submits no second job. Reloading the
+Sources page gives each form a new run ID for an intentional new run.
 
 ## Launch fixes
 
@@ -72,7 +80,7 @@ Environment activation runs with unset-variable checking disabled, while failure
 fatal. Strict `set -eu` resumes after activation. `scriptflow release` on a controller
 confirmed ended reports `already_ended` and “nothing to release” without issuing scancel.
 
-For older controllers, server accounting queries start at the launch date and
+For older controllers, server accounting queries start one UTC day before the launch date and
 queue queries use the unique controller name. Empty scheduler results or query
 failures remain unknown. Release persists a confirmed ended observation locally.
 
@@ -81,7 +89,7 @@ Source launches carry a `source` object in list/view JSON: `name`, `branch`,
 `snapshot`. Both run pages display this metadata alongside the three independent
 states. `/sources` displays each source's working directory, flow directory and
 flow names from committed text, with explicit errors for unavailable copies.
-It has no launch action.
+It offers the controller Launch action described above.
 
 Image declarations appear in `images` on launch and run projections, with `name`,
 `ref` and `path`. `image_preparation` is null or has `status` (`preparing`, `ready`,
@@ -93,3 +101,38 @@ The workflow remains `not started` when its record is absent. A pull error is a 
 The run page and list show the images and error separately from workflow,
 controller and observation states. Server polling reads image status in the same
 remote command as the workflow record and controller queries.
+
+## Dashboard pages
+
+The layout, navigation, status panels and styles follow the original ScriptHut
+interface. The run data is now ScriptFlow's cached record, with no legacy run model.
+
+| Page | Contents |
+| --- | --- |
+| `/` | Activity calendar, hourly CPU-hours by source, active/recent runs and backend cards |
+| `/backends` | Connections, account/fair-share, partition CPU/node/memory/time-limit/features, pending reasons and jobs |
+| `/runs` | Run table and mobile cards; filters for state, backend, source and flow |
+| `/runs/<reference-id>` | Three independent states, source/images, tasks and attempts, attempt timeline, logs and cancellation |
+| `/sources` | Cached flow names, working directory, flow directory, images and controller Launch forms |
+| `/terminals` | Active browser sessions and attachment to an existing node/tmux session; no allocation action |
+| `/disk` | Last observed sizes of source working directories, their immediate result/other folders, run-record folders and shared images |
+| `/settings` | Existing configuration editor |
+
+CPU-hours are requested task CPUs multiplied by each attempt's elapsed time.
+Running attempts end at now. Missing `cpus` defaults to 1; missing `started_at`
+falls back to `submitted_at`. These estimates, and stale observations, are marked
+approximate. Calendar and hourly buckets use the server's local timezone. Sources
+come from launch records; manually registered runs appear under `manual`. No pricing
+or cost data is displayed.
+
+Source inspection and read-only disk sizing run in the same polling cycle using
+existing backend connections. Disk uses plain `find` and `du`; it has no deletion,
+classification or cleanup operation. A failed disk read is shown explicitly, with
+the last observation retained on transport failure. Folder sizes overlap their
+parent totals and are not added together. Hidden `.git` and `.sf` directories are
+excluded from the immediate result/other folder rows; `.sf/runs` has separate rows.
+
+The log page opens the existing bounded log API on demand. It does not load logs
+while rendering the page. Cancellation writes the existing request file only;
+ScriptFlow still owns every task job. Legacy workflow/task APIs, retry/delete-run
+routes, disk cleanup routes and interactive task submission remain absent.

@@ -1,0 +1,200 @@
+{% if backends %}
+<div class="space-y-2">
+    {% for name, backend in backends.items() %}
+    <div
+        class="flex flex-col sm:flex-row sm:items-center sm:justify-between p-2 rounded gap-2 {% if not backend.enabled %}bg-gray-100{% elif backend.status.connected %}bg-green-50{% else %}bg-red-50{% endif %}">
+        <!-- Top row: name + toggle -->
+        <div class="flex items-center justify-between sm:justify-start gap-2">
+            <div class="flex items-center gap-2">
+                <span
+                    class="w-2.5 h-2.5 rounded-full flex-shrink-0 {% if not backend.enabled %}bg-gray-400{% elif backend.status.connected %}bg-green-500{% else %}bg-red-500{% endif %}"></span>
+                <span class="font-medium text-gray-800 {% if not backend.enabled %}opacity-50{% endif %}">{{ name }}</span>
+                <span class="text-xs text-gray-500 {% if not backend.enabled %}opacity-50{% endif %}">({{ backend.backend_type }})</span>
+            </div>
+            <!-- Toggle visible on mobile next to name -->
+            <div class="flex items-center gap-2 sm:hidden">
+                <a href="/backends/{{ name }}/log"
+                    class="text-xs px-1.5 py-0.5 bg-gray-100 hover:bg-gray-200 rounded text-gray-500"
+                    title="SSH command log">Log</a>
+                <button onclick="fetch('/backends/{{ name }}/toggle',{method:'POST'}).then(function(){location.reload()})"
+                    class="relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none {% if backend.enabled %}bg-green-500{% else %}bg-gray-300{% endif %}"
+                    title="{% if backend.enabled %}Disable{% else %}Enable{% endif %} {{ name }}">
+                    <span class="pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out {% if backend.enabled %}translate-x-4{% else %}translate-x-0{% endif %}"></span>
+                </button>
+            </div>
+        </div>
+        <!-- Bottom row: status details -->
+        <div class="flex items-center gap-2 sm:text-right flex-wrap">
+            {% if not backend.enabled %}
+            <span class="text-xs text-gray-400">Disabled</span>
+            {% elif backend.status.connected %}
+            {# jobs/cpus usage, cluster availability and disk moved to the
+               consolidated "Your usage" line below. Keep only poll timing here. #}
+            {% if backend.status.last_poll_duration_ms is not none %}
+            <span
+                class="text-xs font-mono {% if backend.status.last_poll_duration_ms > 5000 %}text-red-500{% elif backend.status.last_poll_duration_ms > 2000 %}text-yellow-600{% else %}text-gray-400{% endif %}"
+                title="Poll duration">{{ backend.status.last_poll_duration_ms }}ms</span>
+            {% endif %}
+            {% if backend.status.last_poll %}
+            <time class="text-xs text-gray-400 local-time" datetime="{{ backend.status.last_poll.isoformat() }}" data-format="time"></time>
+            {% endif %}
+            {% else %}
+            <span class="text-sm text-red-700">Disconnected</span>
+            {% if backend.status.last_poll_duration_ms is not none %}
+            <span class="text-xs font-mono text-gray-400">{{ backend.status.last_poll_duration_ms
+                }}ms</span>
+            {% endif %}
+            {% endif %}
+            <!-- Log + Toggle visible on desktop -->
+            <a href="/backends/{{ name }}/log"
+                class="hidden sm:inline-block text-xs px-1.5 py-0.5 bg-gray-100 hover:bg-gray-200 rounded text-gray-500"
+                title="SSH command log">Log</a>
+            <button onclick="fetch('/backends/{{ name }}/toggle',{method:'POST'}).then(function(){location.reload()})"
+                class="hidden sm:inline-flex relative h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none {% if backend.enabled %}bg-green-500{% else %}bg-gray-300{% endif %}"
+                title="{% if backend.enabled %}Disable{% else %}Enable{% endif %} {{ name }}">
+                <span class="pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out {% if backend.enabled %}translate-x-4{% else %}translate-x-0{% endif %}"></span>
+            </button>
+        </div>
+    </div>
+    {% if backend.enabled and backend.status.error %}
+    <div class="ml-4 p-2 bg-red-100 rounded text-sm text-red-700 font-mono text-xs">
+        {{ backend.status.error }}
+    </div>
+    {% endif %}
+    {% if backend.enabled and backend.status.connected %}
+    {# Consolidated usage line: jobs/cpus counted from scripthut's own run
+       items (reliable), fair-share / limits / account from Slurm when
+       available, plus the cluster availability and disk moved down here from
+       the card's top-right corner. #}
+    {% set q = backend.status.cluster_info.user_quota if backend.status.cluster_info else None %}
+    {% set u = backend_usage.get(name, {}) %}
+    {% set jobs_used = u.get('jobs', 0) %}
+    {% set cpus_used = u.get('cpus', 0) %}
+    <div class="ml-4 mt-1 text-xs text-gray-600 flex flex-wrap items-center gap-x-3 gap-y-0.5">
+        <span class="text-gray-400">Your usage:</span>
+        <span class="font-mono {% if q and q.jobs_max and jobs_used >= q.jobs_max %}text-red-600{% endif %}">
+            jobs <span class="font-medium">{{ jobs_used }}</span>{% if q and q.jobs_max %}<span class="text-gray-400">/{{ q.jobs_max }}</span>{% endif %}
+        </span>
+        <span class="font-mono {% if q and q.cpus_max and cpus_used >= q.cpus_max %}text-red-600{% elif q and q.cpus_max and cpus_used * 4 >= q.cpus_max * 3 %}text-yellow-700{% endif %}">
+            cpus <span class="font-medium">{{ cpus_used }}</span>{% if q and q.cpus_max %}<span class="text-gray-400">/{{ q.cpus_max }}</span>{% endif %}
+        </span>
+        {% if q and (q.gpus_used is not none and q.gpus_used > 0 or q.gpus_max is not none) %}
+        <span class="font-mono {% if q.gpus_max and q.gpus_used and q.gpus_used >= q.gpus_max %}text-red-600{% elif q.gpus_max and q.gpus_used and q.gpus_used * 4 >= q.gpus_max * 3 %}text-yellow-700{% endif %}">
+            gpus <span class="font-medium">{{ q.gpus_used if q.gpus_used is not none else '?' }}</span>{% if q.gpus_max %}<span class="text-gray-400">/{{ q.gpus_max }}</span>{% endif %}
+        </span>
+        {% endif %}
+        {% if q and q.fair_share is not none %}
+        <span class="font-mono" title="Slurm fair-share priority weight (0.0-1.0, higher = better)">
+            fair-share <span class="font-medium {% if q.fair_share < 0.3 %}text-red-600{% elif q.fair_share < 0.5 %}text-yellow-700{% else %}text-green-700{% endif %}">{{ '%.2f'|format(q.fair_share) }}</span>
+        </span>
+        {% endif %}
+        {% if q and q.account %}
+        <span class="text-gray-400">account <span class="font-mono text-gray-600">{{ q.account }}</span></span>
+        {% endif %}
+        {% if backend.status.cpus_idle is not none %}
+        <span class="text-gray-300">·</span>
+        <span><span class="font-medium">{{ backend.status.cpus_idle }}</span> CPUs free</span>
+        {% endif %}
+        {% if backend.status.disk_avail_bytes is not none and backend.status.disk_total_bytes %}
+        {% set disk_used_pct = ((backend.status.disk_total_bytes - backend.status.disk_avail_bytes) * 100 / backend.status.disk_total_bytes) | round(0, 'floor') | int %}
+        <span class="{% if disk_used_pct >= 90 %}text-red-600{% elif disk_used_pct >= 75 %}text-yellow-600{% else %}text-gray-600{% endif %}"
+            title="Disk usage at {{ backend.status.disk_clone_dir }}">
+            <span class="font-medium">{{ backend.status.disk_avail_bytes | disk_bytes }}</span> free ({{ disk_used_pct }}% used)
+        </span>
+        {% endif %}
+    </div>
+    {% endif %}
+    {% if backend.enabled and backend.status.connected and backend.status.cluster_info %}
+    {% set ci = backend.status.cluster_info %}
+    {% set has_gpus = ci.partitions|selectattr('gpus_total', 'gt', 0)|list|length > 0 %}
+    {% if ci.partitions|length > 1 or ci.pending_reasons or has_gpus %}
+    <details class="ml-4 mt-1">
+        <summary class="text-xs text-gray-500 cursor-pointer hover:text-gray-700 select-none">
+            Partition details
+            {% if ci.pending_reasons %}
+            <span class="ml-1 text-yellow-700">• {{ ci.pending_reasons.values()|sum }} pending</span>
+            {% endif %}
+        </summary>
+        {% set cpu_avail = ci.partitions | selectattr('cpus_free_max_node', 'gt', 0) | sort(attribute='cpus_free_max_node', reverse=true) | list %}
+        {% set gpu_avail = ci.partitions | selectattr('gpus_schedulable', 'gt', 0) | sort(attribute='gpus_schedulable', reverse=true) | list %}
+        <div class="mt-1 text-xs">
+            {% if cpu_avail %}
+            <span class="text-gray-400">Easiest to start now:</span>
+            <span class="font-mono font-medium text-green-700">{{ cpu_avail[0].name }}</span>
+            <span class="text-gray-500">(up to {{ cpu_avail[0].cpus_free_max_node }} CPU{% if cpu_avail[0].mem_free_max_node_mb %}/{{ (cpu_avail[0].mem_free_max_node_mb // 1024) }}G{% endif %} on one node)</span>
+            {% else %}
+            <span class="text-yellow-700">No partition can start a job immediately — every node is full or unavailable, so jobs will queue.</span>
+            {% endif %}
+            {% if has_gpus %}
+                {% if gpu_avail %}
+                <span class="text-gray-400 ml-2">· GPUs now:</span>
+                <span class="font-mono font-medium text-green-700">{{ gpu_avail[0].name }}</span>
+                <span class="text-gray-500">({{ gpu_avail[0].gpus_schedulable }} {{ gpu_avail[0].gpu_types or 'gpu' }})</span>
+                {% else %}
+                <span class="text-yellow-700 ml-2">· No GPUs schedulable right now (idle GPUs are on CPU-saturated nodes)</span>
+                {% endif %}
+            {% endif %}
+        </div>
+        <div class="mt-1 overflow-x-auto">
+            <table class="text-xs w-full">
+                <thead>
+                    <tr class="text-gray-400 border-b">
+                        <th class="text-left pr-3 font-normal py-1">Partition</th>
+                        <th class="text-right pr-3 font-normal py-1">Idle/Total CPUs</th>
+                        <th class="text-right pr-3 font-normal py-1" title="Largest job that would start immediately — the biggest free slot on a single node (idle CPUs, and free memory). Partition-wide idle counts can't run a job if they're scattered across nodes.">Free now (1 node)</th>
+                        {% if has_gpus %}
+                        <th class="text-right pr-3 font-normal py-1" title="Schedulable now / idle / total. A GPU is only schedulable if its node also has a free CPU — idle GPUs on a CPU-saturated node can't be claimed, which is why a job queues despite 'idle GPUs'.">GPUs (now/idle/total)</th>
+                        {% endif %}
+                        <th class="text-right pr-3 font-normal py-1">Nodes</th>
+                        <th class="text-right pr-3 font-normal py-1">Mem/Node</th>
+                        <th class="text-right pr-3 font-normal py-1">Timelimit</th>
+                        <th class="text-left font-normal py-1">Features</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for p in ci.partitions %}
+                    <tr class="border-b border-gray-100">
+                        <td class="pr-3 py-0.5">
+                            <span class="font-medium">{{ p.name }}</span>{% if p.is_default %}<span class="text-gray-400" title="Default partition">*</span>{% endif %}
+                            {% if p.state and p.state != 'up' %}<span class="ml-1 text-red-500">({{ p.state }})</span>{% endif %}
+                        </td>
+                        <td class="text-right pr-3 py-0.5 font-mono {% if p.cpus_idle == 0 %}text-red-600{% elif p.cpus_total and p.cpus_idle * 10 < p.cpus_total %}text-yellow-600{% else %}text-green-700{% endif %}">
+                            {{ p.cpus_idle }} / {{ p.cpus_total }}
+                        </td>
+                        <td class="text-right pr-3 py-0.5 font-mono {% if p.cpus_free_max_node == 0 %}text-red-600{% else %}text-green-700{% endif %}"
+                            title="Largest job that starts immediately: up to {{ p.cpus_free_max_node }} CPUs{% if p.mem_free_max_node_mb %} + {{ (p.mem_free_max_node_mb // 1024) }}G{% endif %} on a single node{% if p.cpus_free_max_node == 0 %} (no node has a free CPU — jobs will queue){% endif %}">
+                            {% if p.cpus_free_max_node %}{{ p.cpus_free_max_node }}c{% if p.mem_free_max_node_mb %}/{{ (p.mem_free_max_node_mb // 1024) }}G{% endif %}{% else %}full{% endif %}
+                        </td>
+                        {% if has_gpus %}
+                        <td class="text-right pr-3 py-0.5 font-mono {% if p.gpus_total == 0 %}text-gray-400{% elif p.gpus_schedulable > 0 %}text-green-700{% elif p.gpus_idle > 0 %}text-yellow-600{% else %}text-red-600{% endif %}"
+                            title="{% if p.gpus_total %}{{ p.gpus_schedulable }} schedulable now (on a node with a free CPU), {{ p.gpus_idle }} idle, {{ p.gpus_total }} total{% if p.gpus_idle > p.gpus_schedulable %} — {{ p.gpus_idle - p.gpus_schedulable }} idle GPU(s) are stuck on CPU-saturated nodes{% endif %}{% if p.gpu_types %} · {{ p.gpu_types }}{% endif %}{% else %}no GPUs{% endif %}">
+                            {% if p.gpus_total %}{{ p.gpus_schedulable }} / {{ p.gpus_idle }} / {{ p.gpus_total }}{% if p.gpu_types %}<span class="text-gray-400 ml-1">{{ p.gpu_types }}</span>{% endif %}{% else %}—{% endif %}
+                        </td>
+                        {% endif %}
+                        <td class="text-right pr-3 py-0.5 font-mono text-gray-600">{{ p.nodes_total }}</td>
+                        <td class="text-right pr-3 py-0.5 font-mono text-gray-600">
+                            {% if p.mem_per_node_mb %}{{ (p.mem_per_node_mb // 1024) }}G{% else %}—{% endif %}
+                        </td>
+                        <td class="text-right pr-3 py-0.5 font-mono text-gray-600">{{ p.timelimit or '—' }}</td>
+                        <td class="py-0.5 font-mono text-gray-500">{{ p.features or '—' }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% if ci.pending_reasons %}
+            <div class="mt-2 text-xs">
+                <span class="text-gray-400">Pending jobs by reason:</span>
+                {% for reason, count in ci.pending_reasons.items()|sort(attribute=1, reverse=true) %}
+                <span class="inline-block ml-1 px-1.5 py-0.5 rounded bg-yellow-50 text-yellow-700 font-mono">{{ reason }} × {{ count }}</span>
+                {% endfor %}
+            </div>
+            {% endif %}
+        </div>
+    </details>
+    {% endif %}
+    {% endif %}
+    {% endfor %}
+</div>
+{% else %}
+<p class="text-sm text-gray-500">No backends configured</p>
+{% endif %}

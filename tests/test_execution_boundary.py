@@ -42,7 +42,7 @@ def test_removed_modules_and_commands_are_absent():
     commands = next(a.choices for a in cli.build_parser()._actions if isinstance(a, argparse._SubParsersAction))
     assert set(commands) == {"scriptflow", "source", "backend", "agent", "status", "daemon"}
     paths = [getattr(route, "path", "") for route in main.app.routes]
-    assert not any(path.startswith(("/runs", "/disk", "/api/v1/runs", "/api/v1/tasks", "/api/v1/stacks", "/terminal/interactive")) for path in paths)
+    assert not any(path.startswith(("/api/v1/runs", "/api/v1/tasks", "/api/v1/stacks", "/terminal/interactive")) for path in paths)
 
 
 def test_public_help_lists_retained_commands():

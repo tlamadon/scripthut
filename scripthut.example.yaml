@@ -40,6 +40,7 @@ settings:
   fetch_max_file_bytes: 1073741824  # 1 GiB
   fetch_max_total_bytes: 10737418240  # 10 GiB
   poll_interval: 60
+  # Web: / overview, /runs, /sources (launch), /disk (read-only).
   server_host: 127.0.0.1
   server_port: 8000
   data_dir: ~/.cache/scripthut

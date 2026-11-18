@@ -1,0 +1,66 @@
+{% from '_status.html' import status_dot, status_bar %}
+{% if run %}
+<div class="grid grid-cols-2 md:grid-cols-5 gap-4">
+    <div>
+        <p class="text-sm text-gray-500">Status</p>
+        <span class="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-full
+            {% if run.status.value == 'running' %}bg-indigo-100 text-indigo-700
+            {% elif run.status.value == 'pending' %}bg-gray-100 text-gray-600
+            {% elif run.status.value == 'completed' %}bg-green-100 text-green-700
+            {% elif run.status.value == 'failed' %}bg-red-100 text-red-700
+            {% elif run.status.value == 'cancelled' %}bg-gray-100 text-gray-600
+            {% else %}bg-gray-100 text-gray-600{% endif %}">
+            {{ status_dot(run.status.value) }}
+            {{ run.status.value }}
+        </span>
+    </div>
+    <div>
+        <p class="text-sm text-gray-500">Progress</p>
+        <p class="text-lg font-semibold text-gray-800">{{ run.progress[0] }} / {{ run.progress[1] }}</p>
+    </div>
+    <div>
+        <p class="text-sm text-gray-500">CPU Hours</p>
+        <p class="text-lg font-semibold text-gray-800 font-mono">
+            {% if run.total_cpu_hours >= 1 %}
+                {{ "%.1f"|format(run.total_cpu_hours) }}h
+            {% elif run.total_cpu_hours > 0 %}
+                {{ "%.1f"|format(run.total_cpu_hours * 60) }}m
+            {% else %}
+                —
+            {% endif %}
+        </p>
+    </div>
+    <div>
+        <p class="text-sm text-gray-500">Created</p>
+        <p class="text-lg font-semibold text-gray-800"><time class="local-time" datetime="{{ run.created_at.isoformat() }}" data-format="datetime-seconds"></time></p>
+    </div>
+    <div><p class="text-sm text-gray-500">Elapsed</p><p class="text-lg font-semibold text-gray-800">{{ '%.1f'|format(run.elapsed / 60) }} min</p></div>
+</div>
+
+<!-- Progress Bar -->
+<div class="mt-4">
+    {{ status_bar(run.status_counts, 'w-full h-3') }}
+    <div class="flex justify-between text-sm text-gray-500 mt-1">
+        <span>{{ run.completed_count }} completed</span>
+        <span>{{ run.running_count }} running</span>
+        <span>{{ run.pending_count }} pending</span>
+        {% if run.failed_count > 0 %}
+        <span class="text-red-600">{{ run.failed_count }} failed</span>
+        {% endif %}
+        {% if run.dep_failed_count > 0 %}
+        <span class="text-orange-600">{{ run.dep_failed_count }} dep failed</span>
+        {% endif %}
+    </div>
+</div>
+
+{% if run.approximate %}<p class="mt-2 text-xs text-amber-700">Approximate CPU-hours: missing CPUs/start timestamps or stale observation.</p>{% endif %}
+{% include 'scriptflow_states.html' %}
+{% if run.workflow and run.workflow.error %}<pre class="text-red-700 whitespace-pre-wrap">{{ run.workflow.error }}</pre>{% endif %}
+<p class="text-sm text-gray-600">Cleanup pending: {{ run.workflow.cleanup_pending if run.workflow else 'unknown' }} · Cancel requested: {{ run.cancellation.requested }}</p>
+<div class="mt-4 flex gap-2">
+    <button onclick="cancelRun(this)" data-reference="{{ run.id }}"
+        {% if run.status.value != 'running' %}disabled{% endif %}
+        class="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:bg-gray-300 text-sm font-medium">Cancel Run</button>
+    <p id="cancel-result" class="text-sm text-gray-600"></p>
+</div>
+{% endif %}

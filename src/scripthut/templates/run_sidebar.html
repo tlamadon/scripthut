@@ -1,0 +1,9 @@
+{% from '_status.html' import status_dot %}
+{% for item in run.items %}
+<div class="px-3 py-2 text-sm border-b border-gray-100" data-task-id="{{ item.task.id }}">
+    {{ status_dot(item.status.value) }} <span class="text-gray-700">{{ item.task.name }}</span>
+    {% for attempt in item.attempts %}{% if attempt.log %}
+    <a class="block text-xs text-blue-600" href="/runs/{{ run.id }}/logs?task={{ item.task.id|urlencode }}&attempt={{ attempt.number }}">Attempt {{ attempt.number }}</a>
+    {% endif %}{% endfor %}
+</div>
+{% endfor %}

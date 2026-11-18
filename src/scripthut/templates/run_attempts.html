@@ -1,0 +1,14 @@
+<div class="space-y-2">
+    {% if not item.task.cpus %}<p class="text-xs text-amber-700">CPU-hours approximate (CPUs unknown; assuming 1).</p>{% endif %}
+    {% for attempt in item.attempts %}
+    <div class="border-l-2 border-gray-100 pl-3 py-1">
+        <span class="font-medium">Attempt {{ attempt.number }} · {{ attempt.state }}</span>
+        <span class="font-mono text-xs text-gray-500">Job {{ attempt.job_id or '—' }} · Exit {{ attempt.exit_code if attempt.exit_code is not none else '—' }}</span>
+        <p class="text-xs text-gray-500">{{ attempt.started_at or attempt.submitted_at or 'not started' }} → {{ attempt.finished_at or '—' }}</p>
+        {% if attempt.error %}<pre class="text-red-700 whitespace-pre-wrap">{{ attempt.error }}</pre>{% endif %}
+        {% if attempt.log %}
+        <a class="text-blue-600 hover:text-blue-800 text-xs" href="/runs/{{ run.id }}/logs?task={{ item.task.id|urlencode }}&attempt={{ attempt.number }}">View log</a>
+        {% endif %}
+    </div>
+    {% else %}<span class="text-gray-400 text-xs">No attempts</span>{% endfor %}
+</div>

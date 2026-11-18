@@ -41,6 +41,7 @@ class Attempt(BaseModel):
     log: StrictStr | None = None
     exit_code: StrictInt | StrictStr | None = None
     error: StrictStr | None = None
+    started_at: AwareDatetime | None = None
     submitted_at: AwareDatetime | None = None
     finished_at: AwareDatetime | None = None
 
@@ -50,6 +51,10 @@ class Task(BaseModel):
     name: StrictStr
     state: StrictStr
     error: StrictStr | None = None
+    cpus: StrictInt | None = None
+    memory: float | str | None = None
+    walltime: float | str | None = None
+    partition: StrictStr | None = None
     outputs: list[StrictStr] = Field(default_factory=list)
     attempts: list[Attempt]
 

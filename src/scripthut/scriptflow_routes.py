@@ -3,21 +3,24 @@
 from __future__ import annotations
 
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from sse_starlette.sse import EventSourceResponse
 
-from scripthut.scriptflow import CachedRun, ObservationError, RecordReader
+from scripthut.scriptflow import CachedRun, ObservationError, RecordReader, Snapshot
 from scripthut.scriptflow_cli import cancel
 from scripthut.scriptflow_server import ScriptFlowService
+
+from scripthut.scriptflow_web import configure_templates, runs_context, timeline
 
 LOG_CAP = 262144
 
 
 def make_scriptflow_router(service: ScriptFlowService, templates: Any) -> APIRouter:
     router = APIRouter()
+    configure_templates(templates)
     api = "/api/v1/scriptflow/runs"
 
     async def get(reference: str) -> CachedRun:
@@ -102,21 +105,113 @@ def make_scriptflow_router(service: ScriptFlowService, templates: Any) -> APIRou
 
         return EventSourceResponse(events())
 
+    async def context(request: Request) -> dict[str, Any]:
+        data = await runs_context(service)
+        filters = {
+            key: request.query_params.get(key, "") for key in ("state", "backend", "source", "flow")
+        }
+        data["runs"] = [
+            run
+            for run in data["runs"]
+            if all(
+                not value
+                or value.lower()
+                in str(
+                    getattr(
+                        run,
+                        {
+                            "state": "workflow_status",
+                            "backend": "backend_name",
+                            "source": "source_name",
+                            "flow": "workflow_name",
+                        }[key],
+                    )
+                ).lower()
+                for key, value in filters.items()
+            )
+        ]
+        return dict(data, filters=filters, filter_query=urlencode(filters))
+
+    async def detail(reference: str) -> dict[str, Any]:
+        await get(reference)
+        data = await runs_context(service)
+        run = next(r for r in data["runs"] if r.id == reference)
+        return dict(run=run, urlquote=quote, **timeline(run))
+
+    @router.get("/runs/stream")
+    async def runs_stream(request: Request) -> EventSourceResponse:
+        async def events() -> Any:
+            while not await request.is_disconnected():
+                if await service.state.wait_for_poll():
+                    yield dict(
+                        event="runs-update",
+                        data=templates.get_template("runs_list.html").render(
+                            request=request, **await context(request)
+                        ),
+                    )
+
+        return EventSourceResponse(events())
+
+    @router.get("/runs", response_class=HTMLResponse)
     @router.get("/scriptflow", response_class=HTMLResponse)
     async def page(request: Request) -> Any:
         return templates.TemplateResponse(
-            request=request,
-            name="scriptflow.html",
-            context={"request": request, "runs": await listing(), "run": None},
+            request=request, name="runs.html", context=await context(request)
         )
 
+    @router.get("/runs/{reference}", response_class=HTMLResponse)
     @router.get("/scriptflow/{reference}", response_class=HTMLResponse)
     async def run_page(request: Request, reference: str) -> Any:
-        run = (await get(reference)).projection()
         return templates.TemplateResponse(
-            request=request,
-            name="scriptflow.html",
-            context={"request": request, "runs": [], "run": run, "urlquote": quote},
+            request=request, name="run_detail.html", context=await detail(reference)
         )
+
+    @router.get("/runs/{reference}/events")
+    async def run_events(request: Request, reference: str) -> EventSourceResponse:
+        await get(reference)
+
+        async def events() -> Any:
+            while not await request.is_disconnected():
+                if await service.state.wait_for_poll():
+                    data = await detail(reference)
+                    for event, name in [
+                        ("info", "run_info"),
+                        ("items", "run_items"),
+                        ("gantt", "run_gantt"),
+                        ("sidebar", "run_sidebar"),
+                    ]:
+                        yield dict(
+                            event=event + "-update",
+                            data=templates.get_template(name + ".html").render(
+                                request=request, **data
+                            ),
+                        )
+
+        return EventSourceResponse(events())
+
+    @router.get("/runs/{reference}/logs", response_class=HTMLResponse)
+    async def log_page(
+        request: Request, reference: str, task: str, attempt: int = Query(1, ge=1)
+    ) -> Any:
+        data = await detail(reference)
+        record = (await get(reference)).snapshot
+        try:
+            snapshot = Snapshot.model_validate(record)
+            task_id = RecordReader.select_task(snapshot, task)
+            if attempt > len(snapshot.tasks[task_id].attempts):
+                raise HTTPException(404, "Attempt not found")
+        except (ObservationError, ValueError, AttributeError, TypeError):
+            raise HTTPException(404, "Task not found")
+        data.update(
+            title=f"{task} · Attempt {attempt}",
+            task_name=task,
+            attempt=attempt,
+            log_url=api
+            + "/"
+            + quote(reference)
+            + "/logs?"
+            + urlencode(dict(task=task_id, attempt=attempt)),
+        )
+        return templates.TemplateResponse(request=request, name="log_viewer.html", context=data)
 
     return router

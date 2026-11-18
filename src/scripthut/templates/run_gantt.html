@@ -1,0 +1,120 @@
+{% from "_status.html" import status_color, status_dot %}
+{% if run and gantt_items %}
+<div class="px-6 py-4 bg-gray-50 border-b flex justify-between items-center">
+    <h2 class="text-xl font-semibold text-gray-800">Timeline</h2>
+    <span class="text-sm text-gray-600">{{ gantt_items|length }} attempts</span>
+</div>
+<div class="px-6 py-4">
+    <!-- Time axis -->
+    <div class="relative h-6 mb-1 ml-44">
+        {% for m in markers %}
+        <span class="absolute text-xs text-gray-400 -translate-x-1/2 select-none" style="left: {{ m.pct }}%">{{ m.label }}</span>
+        {% endfor %}
+    </div>
+
+    <!-- Attempt rows -->
+    <div class="relative" id="gantt-rows-container">
+
+        <div class="flex flex-col">
+            {% set ns = namespace(current_group='') %}
+            {% for gi in gantt_items %}
+            {% set item = gi.item %}
+            {% set group = item.task.id.rsplit('.', 1)[0] if '.' in item.task.id else '' %}
+
+            {# Group header #}
+            {% if group != ns.current_group and group != '' %}
+            {% set ns.current_group = group %}
+            <div class="flex items-center h-6 mt-2 mb-1">
+                <div class="w-44 flex-shrink-0">
+                    <span class="text-xs font-semibold text-gray-400 uppercase tracking-wider">{{ group }}</span>
+                </div>
+                <div class="flex-1"></div>
+            </div>
+            {% elif group == '' and ns.current_group != '' %}
+            {% set ns.current_group = '' %}
+            {% endif %}
+
+            {# Task bar row -- click anywhere on the row to open the task detail view #}
+            <div class="flex items-center h-7 group hover:bg-gray-50 rounded gantt-task-row cursor-pointer"
+                 onclick="if(window.showTaskDetail)showTaskDetail(this.dataset.taskId)"
+                 data-task-id="{{ gi.task_id }}"
+                 data-bar-start="{{ gi.bar_start }}"
+                 data-bar-end="{{ gi.bar_end }}"
+                 data-has-bar="{{ gi.has_bar | lower }}">
+                {# Label #}
+                <div class="w-44 flex-shrink-0 pr-3 truncate text-right" title="{{ gi.name }}">
+                    <span class="text-xs font-mono text-gray-600">
+                        {{ gi.name }}
+                    </span>
+                </div>
+                {# Bar area #}
+                <div class="gantt-bar-area flex-1 relative h-5 bg-gray-50 rounded-sm border border-gray-100">
+                    {# Vertical grid lines #}
+                    {% for m in markers %}
+                    {% if m.pct > 0 %}
+                    <div class="absolute top-0 bottom-0 w-px bg-gray-100" style="left: {{ m.pct }}%"></div>
+                    {% endif %}
+                    {% endfor %}
+
+                    {% if gi.has_bar %}
+                    {# Wait segment (submitted -> started) #}
+                    {% if gi.wait_width > 0.1 %}
+                    <div class="absolute top-1 bottom-1 rounded-sm bg-amber-200 opacity-70"
+                         style="left: {{ gi.wait_left }}%; width: {{ gi.wait_width }}%"
+                         title="Waiting: {{ gi.wait_width|round(1) }}%"></div>
+                    {% endif %}
+
+                    {% if gi.run_width > 0 %}
+                    {# Run segment -- colored by state, canonical palette (see _status.html).
+                       min-width keeps very short runs from shrinking to nothing. #}
+                    <div class="absolute top-0.5 bottom-0.5 rounded-sm {{ status_color(gi.status) }}{% if gi.status in ('running', 'settling') %} animate-pulse{% endif %}"
+                         style="left: {{ gi.run_left }}%; width: {{ gi.run_width }}%; min-width: 2px"
+                         title="{{ gi.name }} ({{ gi.status }})"></div>
+                    {% else %}
+                    {# Has timestamps but never ran (still queued, or ended while
+                       waiting). Cap the wait bar with the current/terminal state so
+                       it never reads as a bare amber "still waiting" bar. #}
+                    <div class="absolute top-1 bottom-1 w-1.5 rounded-full {{ status_color(gi.status) }}"
+                         style="left: calc({{ gi.bar_end }}% - 3px)"
+                         title="{{ gi.name }} ({{ gi.status }})"></div>
+                    {% endif %}
+                    {% else %}
+                    {# No timestamps yet (pending / dep_failed / not-yet-submitted).
+                       Always show a colored marker so no state is ever invisible. #}
+                    <div class="absolute top-1.5 bottom-1.5 w-1.5 rounded-full {{ status_color(gi.status) }}"
+                         style="left: 0"
+                         title="{{ gi.name }} ({{ gi.status }})"></div>
+                    {% endif %}
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+
+    <!-- Legend -- same state glyphs/colors/names as the table and sidebar
+         (status_dot in _status.html), so the vocabulary matches every other
+         view. The amber bar is queue time (a duration), not a state. -->
+    <div class="flex flex-wrap items-center gap-x-3 gap-y-1.5 mt-4 text-xs text-gray-500">
+        <div class="flex items-center gap-1.5">
+            <div class="w-3 h-2 rounded-sm bg-amber-200 opacity-70"></div>
+            <span>Queue time</span>
+        </div>
+        <span class="text-gray-300">·</span>
+        {% for s, label in [
+            ('pending', 'Pending'),
+            ('submitted', 'Submitted'),
+            ('queued', 'Queued'),
+            ('running', 'Running'),
+            ('completed', 'Completed'),
+            ('failed', 'Failed'),
+            ('skipped', 'Skipped'),
+            ('cancelled', 'Cancelled'),
+            ('interrupted', 'Interrupted'),
+        ] %}
+        <div class="flex items-center gap-1">{{ status_dot(s) }}<span>{{ label }}</span></div>
+        {% endfor %}
+    </div>
+</div>
+
+
+{% else %}<p class="p-6 text-gray-500">No attempts recorded.</p>{% endif %}
