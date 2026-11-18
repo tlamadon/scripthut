@@ -19,7 +19,7 @@ from scripthut.scriptflow import (
     RecordReader,
     ReferenceStore,
 )
-from scripthut.scriptflow_launch import LaunchStore
+from scripthut.scriptflow_launch import LaunchStore, accounting_start_date
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +46,7 @@ class CombinedRead:
         marker = "\nSF_" + uuid.uuid4().hex + "\n"
         accounting_args = ["sacct", "-n", "-P", "-X", "--jobs", self.job_id, "--format=State"]
         if self.since:
-            accounting_args += ["--starttime", self.since[:10]]
+            accounting_args += ["--starttime", accounting_start_date(self.since)]
         query = shlex.join(accounting_args)
         # Name queries succeed with an empty queue after a job has ended.
         selector = ["--name", self.job_name] if self.job_name else ["--jobs", self.job_id]

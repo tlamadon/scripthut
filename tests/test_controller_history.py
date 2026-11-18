@@ -20,7 +20,7 @@ async def test_old_controller_agrees_between_server_and_cli(setup, tmp_path, que
     bins.mkdir()
     accounting = bins / "sacct"
     accounting.write_text('''#!/bin/sh
-case "$*" in *--starttime*2001-01-01*) ;; *) exit 0;; esac
+case "$*" in *--starttime*2000-12-31*) ;; *) exit 0;; esac
 case "$*" in *--format=State*) printf 'COMPLETED|\\n';; *) printf '1234|%s|COMPLETED\\n' "$JOB_NAME";; esac
 ''')
     queue = bins / "squeue"

@@ -13,7 +13,7 @@ import tempfile
 import uuid
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +33,11 @@ from scripthut.scriptflow import (
 )
 
 q = shlex.quote
+
+
+def accounting_start_date(launched_at: str) -> str:
+    """Include the previous UTC day when querying a scheduler in local time."""
+    return (datetime.fromisoformat(launched_at).astimezone(UTC) - timedelta(days=1)).date().isoformat()
 
 
 def now() -> str:
@@ -154,7 +159,7 @@ class ControllerBackend(SlurmControl):
                     "-P",
                     "-X",
                     "--starttime",
-                    since[:10],
+                    accounting_start_date(since),
                     "--name",
                     name,
                     "--format=JobIDRaw,JobName%100,State",
