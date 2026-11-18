@@ -37,6 +37,8 @@ sources:
     #     ref_file: image.ref  # committed registry reference pinned by sha256 digest
 
 settings:
+  fetch_max_file_bytes: 1073741824  # 1 GiB
+  fetch_max_total_bytes: 10737418240  # 10 GiB
   poll_interval: 60
   server_host: 127.0.0.1
   server_port: 8000

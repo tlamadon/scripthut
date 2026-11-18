@@ -21,6 +21,12 @@ still supports a single SSH backend when no YAML exists.
 `scriptflow.env_group` must name an environment group on the selected backend.
 Launch options can override resources. Configuration does not install ScriptFlow.
 
+Output fetching uses `settings.fetch_max_file_bytes` (default 1073741824, 1 GiB)
+and `settings.fetch_max_total_bytes` (default 10737418240, 10 GiB). Both must be
+positive integers. See [fetch outputs](../cli.md#fetch-outputs) for selection,
+containment, dry-run and overwrite behavior. These limits do not change controller
+resources or launch identity.
+
 ## Git source working directories
 
 ```yaml

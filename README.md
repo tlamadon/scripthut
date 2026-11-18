@@ -35,6 +35,7 @@ scripthut scriptflow register --config scripthut.yaml --backend cluster --run-di
 scripthut scriptflow list --config scripthut.yaml --json
 scripthut scriptflow view REFERENCE --config scripthut.yaml --json
 scripthut scriptflow logs REFERENCE TASK --config scripthut.yaml --tail 200
+scripthut scriptflow fetch REFERENCE --config scripthut.yaml --to ./results --dry-run
 scripthut scriptflow launch --config scripthut.yaml --backend cluster --workdir /data/project --flow analysis --run-id example --json
 ```
 

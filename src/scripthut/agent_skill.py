@@ -104,6 +104,15 @@ preparation is a launch problem. Do not print tokens or delete image files. A fa
 is a launch problem with workflow `not started`; use a new run ID after fixing it.
 Binds belong to the flow and runtime activation belongs to the environment group.
 
+Fetch declared outputs with `scriptflow fetch REFERENCE --to LOCAL_DIR`.
+Use repeatable `--task NAME_OR_ID` or `--path PATH`, not both; `--strip PREFIX`
+removes a relative staging prefix. Inspect `--dry-run --json` before copying.
+Existing local files require `--overwrite`. Fetch stays inside the source checkout
+(or launch/record workdir), rejects escaping symlinks, verifies size/SHA-256 and
+never writes remotely. Missing/skipped files yield exit 1 while other files proceed.
+Raise `settings.fetch_max_file_bytes` / `fetch_max_total_bytes` for larger outputs
+(default 1 GiB/file, 10 GiB total). No fetch API or web action exists.
+
 Keep workflow state, controller state and observation freshness separate.
 Stale, unreachable, malformed and unsupported-version are observation problems,
 not outcomes. Logs accept a task ID or unique name; IDs win. Use `--verbose`

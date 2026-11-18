@@ -12,6 +12,7 @@ describes server startup. Every CLI leaf supports `--json`.
 | `list` | Fetch references on demand; include per-reference observation problems |
 | `view REFERENCE` | Show workflow, controller, freshness, tasks and attempts |
 | `logs REFERENCE TASK --tail 200` | Read an attempt log; task ID or unique name; `--attempt` is 1-based |
+| `fetch REFERENCE --to LOCAL_DIR` | Copy declared outputs; repeatable `--task` or `--path`, `--strip`, `--dry-run`, `--overwrite` |
 | `unregister REFERENCE` | Remove local reference/cache only |
 | `launch --backend B --workdir /absolute/project --flow FLOW` | Submit one detached controller; supports `--run-id`, `--runs-dir`, resource overrides and `--force-pattern` |
 | `launch --source NAME --flow FLOW` | Prepare a fixed git checkout, then launch; `--branch`, `--commit`, `--snapshot`, optional `--backend` |
@@ -69,6 +70,65 @@ and the run page show elapsed seconds and the last 20 redacted log lines (capped
 "Controller ended during image preparation", with workflow `not started`. Retry with a **new run ID**
 after resolving the image problem; an acknowledged launch is never resubmitted.
 `launch --workdir` has no image preparation behavior.
+
+## Fetch outputs
+
+```sh
+scripthut scriptflow fetch REFERENCE --to ./results --dry-run --json
+scripthut scriptflow fetch REFERENCE --to ./results --task analysis --task summary
+scripthut scriptflow fetch REFERENCE --to ./results --path staging --strip staging
+scripthut scriptflow fetch REFERENCE --to ./results --path tables/result.csv --overwrite
+```
+
+Without a selection, `fetch` copies all tasks' declared outputs from a freshly read
+run record. Repeat `--task` to select IDs or unique names (an ID wins); repeat
+`--path` to select files or directory trees instead. These selectors are mutually
+exclusive. Directory selections include empty directories and contained symlink
+targets; local copies are regular files/directories. Duplicate paths transfer once.
+
+Paths must remain inside the source repository working directory for a source
+launch, the launch workdir otherwise, or the record's `working_directory` for a
+manually registered run. A source's `flow_dir` does not narrow the repository
+boundary. `--path` accepts absolute paths or paths relative to that boundary.
+Parent traversal (`..`) and escaping symlinks are refused. Symlink cycles and
+unreadable directory enumeration are reported as errors.
+
+Local paths preserve their path relative to that working directory. `--strip`
+removes a relative leading prefix: `staging/tables/result.csv` becomes
+`tables/result.csv` with `--strip staging`. Files outside that prefix are skipped
+with an error. Local symlinks, including destination parents, are refused. Existing
+files require `--overwrite`; directories can already exist.
+
+Transfers stream binary bytes over the existing SSH connection. Size and SHA-256
+must match the plan before publication. A temporary local file is atomically
+published without clobbering concurrent writers (hard link, then removal of the
+temporary name); `--overwrite` uses atomic replacement. A failed transfer never
+publishes partial contents or replaces an existing file. Local filesystem support
+for POSIX directory descriptors, no-follow opens and hard links is required.
+Remote files are only read; no archive or other backend file is created. Bash and
+GNU `find`, `realpath`, `stat`, `sha256sum` and `head` are used on the backend.
+
+Defaults are **1 GiB per file** and **10 GiB total per invocation**, in bytes:
+
+```yaml
+settings:
+  fetch_max_file_bytes: 1073741824
+  fetch_max_total_bytes: 10737418240
+```
+
+Raise these positive integer settings for larger outputs. Files beyond a cap are
+reported and skipped; other eligible files continue. Bytes reserved for a failed
+transfer still count against the total cap. Metadata reads and individual binary
+transfers each have a 600-second timeout.
+
+`--dry-run` reports paths, sizes, destinations and skip reasons without creating
+local directories, transferring contents, or saving the run cache. It still reads
+remote metadata and checksums. JSON contains `ok`, `dry_run`, `working_directory`,
+`to` and `files`; entries contain `path`, `size`, `status`, `reason` and, when
+available, `kind`, `sha256`, `destination`. Status is `fetched`, `would_fetch` or
+`skipped`. Exit 0 means every selected entry was fetched (or would be fetched);
+exit 1 means something requested could not be fetched, including missing outputs,
+existing local files or failed verification. Successful files are retained.
 
 ## Other commands
 
